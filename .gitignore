@@ -1,0 +1,29 @@
+# Build outputs
+out/
+build/
+*.o
+*.a
+*.elf
+*.fry
+*.tot
+*.iso
+*.img
+
+# Large vendor/tool archives and ISOs
+*.tar
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.bz2
+*.xz
+
+# Captured media / sidecar streams
+*.mp4
+*.jfif
+*:Zone.Identifier
+
+# Tooling scratch
+.claude/
+
+# Ignore Windows export failures
+/mnt/

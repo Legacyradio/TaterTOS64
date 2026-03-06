@@ -1,0 +1,49 @@
+========================================================================
+TaterTOS64v3 - fry569 - replace signed reverse index with size_t loop
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 00:22:41 UTC
+2026-03-05 18:22:41 CST
+
+CONTEXT
+-------
+- Review requested removing signed `int` reverse indexing in path construction
+  for long-mode correctness/perf hygiene.
+
+WHY
+---
+- Signed `int` reverse loop over depth values can introduce avoidable 32-bit
+  semantics and signed conversions.
+- `size_t` countdown form is clearer and naturally width-appropriate on x86_64.
+
+CHANGES APPLIED
+---------------
+- File updated:
+  - `src/drivers/acpi_bus/acpi_bus.c`
+    - Added `<stddef.h>` include for `size_t`.
+    - Changed reverse traversal in `node_path()` from signed form:
+      `for (int i = (int)depth - 1; i >= 0; i--)`
+      to unsigned countdown form:
+      `for (size_t i = (size_t)depth; i-- > 0;)`
+
+EFFECT
+------
+- Removes signed/truncation-prone index math in this path builder.
+- Keeps behavior identical while using width-appropriate iteration type.
+
+VALIDATION (THIS SESSION)
+-------------------------
+1) Inspect updated section:
+   - `nl -ba src/drivers/acpi_bus/acpi_bus.c | sed -n '1,64p'`
+2) Verify file diff:
+   - `git diff -- src/drivers/acpi_bus/acpi_bus.c | sed -n '1,140p'`
+3) RESULT:
+   - PASS (size_t countdown loop present and compiles syntactically)
+
+NOTES
+-----
+- No rebuild requested; per plan rule 16, no SHA-256 recorded.
+
+========================================================================

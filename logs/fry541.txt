@@ -1,0 +1,72 @@
+========================================================================
+TaterTOS64v3 - fry541 — professional EFI ExitBootServices handoff hardening
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 19:18:59 UTC
+2026-03-05 13:18:59 CST
+
+CONTEXT
+-------
+- User required non-minimal, full professional work on a bare-metal boot stop
+  observed after `TATER EFI: handoff ExitBS`.
+- This step strengthens the EFI handoff path and adds explicit diagnostics so
+  failure location is unambiguous.
+
+WHY
+---
+- Existing path already retried `ExitBootServices`, but screen-only evidence
+  could not clearly distinguish:
+  1) true ExitBootServices failure,
+  2) post-ExitBootServices framebuffer fault, or
+  3) kernel-entry contract failure.
+- Needed stronger pre-jump validation and status-rich telemetry, while keeping
+  the UEFI memory-map/key contract strict.
+
+CHANGE APPLIED
+--------------
+- Updated `src/boot/efi_loader.c` with the following hardening:
+  - Added `efi_serial_puthex64()` and detailed serial breadcrumbs for:
+    - ExitBS entry context (map buffer + entry PA),
+    - attempt index,
+    - map key/map size/descriptor size,
+    - map buffer growth events.
+  - Added strict identity-limit guard in `fb_mark_raw()`:
+    - framebuffer writes are skipped if `fb_base >= 4GiB`.
+    - prevents potential post-ExitBS marker faults on systems with high VRAM
+      physical addresses.
+  - Added kernel-entry and handoff pointer contract checks:
+    - `E16` if entry physical address is above 4GiB (outside early identity map),
+    - `E17` if handoff struct pointer is above 4GiB.
+  - Expanded E11/E14/E15 failure paths with explicit status-code output
+    (`st=` and related fields) before halt.
+  - Added pre-ExitBS screen line printing `mapbuf` and `entry` addresses for
+    operator-visible context on hardware.
+
+FILES
+-----
+- `src/boot/efi_loader.c`
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Clean:
+   - `make clean`
+2) Required rebuild mode:
+   - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+3) RESULT:
+   - PASS (kernel + userspace + UEFI loader + ISO pipeline)
+   - ISO: `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+   - Windows export step failed due read-only mount at:
+     `/mnt/c/Users/jjsako/Documents/tateriso`
+
+HARDWARE NOTE
+-------------
+- BIOS revision/date was not visible in this shell session, so BIOS metadata
+  is not recorded in this log entry.
+
+HASH POLICY
+-----------
+- SHA-256 not recorded (no explicit user request for hash verification).
+
+========================================================================

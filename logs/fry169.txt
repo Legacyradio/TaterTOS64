@@ -1,0 +1,8 @@
+2026-02-20 19:27:26
+Change: Avoided PC-relative relocation overflow for kernel stack top in mb_entry.
+Why: Build failed with R_X86_64_PC32 relocation truncated for kernel_stack_top; the high-half symbol is too far for RIP-relative encoding.
+Details:
+- mb_entry.asm: use absolute 64-bit symbol __kernel_stack_top and move into RSP directly.
+- main.c: removed kernel_stack_top variable (not needed).
+- kernel_linker.ld: added __kernel_stack_top = kernel_stack + 16384.
+Next: rebuild ISO and rerun QEMU to confirm boot continues without relocation errors.

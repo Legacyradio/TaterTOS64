@@ -1,0 +1,4 @@
+[2026-02-20 20:06:33 UTC] Step: Force GRUB serial console and text payload.
+Why: GRUB warned no console available; need serial output for visibility.
+Change: Enabled serial terminal input/output and set gfxpayload=text.
+Files: build_iso.sh

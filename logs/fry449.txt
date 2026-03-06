@@ -1,0 +1,67 @@
+fry449 - Shell scrollbar jitter reduction + protocol-correct window resize behavior
+===============================================================================
+Date: 2026-03-02
+Timestamp (UTC): 2026-03-02 02:35:48 UTC
+
+HASH VERIFICATION (performed before this log per Rule 15)
+===============================================================================
+- Source build ISO:
+  d7359031308860b30980bba529ed8ccffe115207d721e7066fdd3b789a6a8da8  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Target/export ISO:
+  d7359031308860b30980bba529ed8ccffe115207d721e7066fdd3b789a6a8da8  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- Result:
+  Source and target hashes match.
+
+WHAT WAS REPORTED
+===============================================================================
+- Shell no longer crashes, but UI is jittery.
+- Scrollbar behavior is visibly jittery.
+- Window resize/maximize grows frame but shell content does not correctly fit
+  the new window size.
+- Request to follow TaterWin protocol rules.
+
+ROOT CAUSES
+===============================================================================
+1) GUI maximize/restore changed only outer frame geometry and did not perform
+   a TaterWin resize handshake to deliver a new client SHM to the app.
+2) Shell input stream parsing for TW_MSG_RESIZED used a byte-guess heuristic,
+   which is fragile and can contribute to jittery behavior under mixed input.
+3) Scrollbar thumb placement at live-tail relied on interpolation/rounding
+   each frame instead of exact edge pinning.
+
+FIXES APPLIED
+===============================================================================
+File: /home/jjsako/TaterTOS64v3/src/user/gui/gui.c
+- Added `clamp_client_size()` and `resize_client_surface()` helpers.
+- `resize_client_surface()` now:
+  - allocates/maps new SHM first,
+  - frees old SHM only after new mapping succeeds,
+  - sends `TW_MSG_RESIZED` to app via `fry_proc_input`.
+- `TW_MSG_RESIZE` handling now uses the helper.
+- Maximize/restore button now resizes client SHM and sends protocol resize
+  notification, so app content can refit the new window size.
+Why:
+- Enforces TaterWin protocol semantics for compositor-driven resize actions.
+- Prevents "bigger frame, old client surface" mismatch.
+
+File: /home/jjsako/TaterTOS64v3/src/user/shell/shell.c
+- Replaced ad-hoc byte accumulator with a framed mixed-input parser:
+  - supports keyboard bytes + TW protocol frames in one stream,
+  - handles `TW_MSG_RESIZED` only when full frame is present.
+- Scrollbar thumb logic updated:
+  - exact bottom pin when `scroll_offset == 0`,
+  - exact top pin when fully scrolled back,
+  - interpolation only for middle range.
+Why:
+- Reduces visible scrollbar jitter at edge states.
+- Makes resize event handling more reliable and protocol-aligned.
+
+BUILD / EXPORT
+===============================================================================
+Command executed:
+  PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh
+
+Result:
+- Build succeeded.
+- ISO regenerated and exported to:
+  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso

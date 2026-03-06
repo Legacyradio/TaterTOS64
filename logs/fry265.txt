@@ -1,0 +1,43 @@
+Step fry265 - 2026-02-22
+
+Summary
+- Diagnosed new AP fault after fry264 fix (trampoline now works, AP reaches idt_init).
+- Fixed: AP #UD (Invalid Opcode) inside idt_init() due to SSE2 instructions in AP before CR4.OSFXSR was set.
+
+Fault chain (qemu.log 22:36)
+  v=06 e=0000  IP=0018:ffffffff80000563  ← #UD inside idt_init (offset +0x13)
+  v=0d e=0032               ← #GP trying to deliver #UD via IDT[6] (IDT not yet loaded for AP)
+  v=08                      ← double fault → triple fault
+
+Root cause
+  Compiler vectorized the 256-entry IDT fill loop in idt_init() using SSE2:
+    ffffffff80000563: 66 0f 6e f6   movd %esi, %xmm6
+    ffffffff80000567: 66 0f ef ed   pxor %xmm5, %xmm5
+    ffffffff8000056b: 66 0f 70 f6 00 pshufd $0x0, %xmm6, %xmm6
+    ... etc.
+
+  SSE2 instructions require CR4.OSFXSR (bit 9) = 1.
+  The AP's pm_entry only set CR4.PAE (bit 5), never CR4.OSFXSR (bit 9) or OSXMMEXCPT (bit 10).
+  BSP had these set from early boot. Each AP has its own CR4 and must set them independently.
+
+Fix
+  src/drivers/smp/trampoline.asm, pm_entry:
+  Before: or eax, 1 << 5
+  After:  or eax, (1 << 5) | (1 << 9) | (1 << 10)   ; PAE, OSFXSR, OSXMMEXCPT
+
+Why OSXMMEXCPT too
+  OSXMMEXCPT (bit 10) enables #XM exceptions for SSE. Required for correct SSE behavior
+  when OSFXSR is set. Setting only OSFXSR without OSXMMEXCPT is technically incomplete.
+
+Build
+  PATH="/usr/bin:/opt/cross/bin:$PATH" make all && ./build_iso.sh
+  ISO exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+Test Commands
+qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+  -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+  -cdrom ./out/tatertos64v3.iso \
+  -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+
+Expected: serial.log shows SMP: CPU1 online, CPU2 online, CPU3 online

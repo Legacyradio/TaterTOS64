@@ -1,0 +1,10 @@
+[2026-02-22 08:01:10 UTC] Prevent allocation of physical page 0.
+
+Changes:
+- src/kernel/mm/pmm.c: reserve page 0 explicitly; start pmm_alloc_page and pmm_alloc_page_below from page 1.
+
+Why:
+- NVMe queue alloc returned sq=0x0 (valid page 0) which is treated as failure. Reserving page 0 avoids 0-as-failure ambiguity and should allow queue allocation to succeed.
+
+Tests (not run):
+- bash build_iso.sh

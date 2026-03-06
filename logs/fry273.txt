@@ -1,0 +1,28 @@
+fry273 - 2026-02-25 19:03:56 -0600
+
+Summary:
+- Fixed GPT/FAT sector-size handling so 4K logical-sector NVMe devices do not overflow 512-byte stack buffers during partition probing.
+- Updated FAT32 sector loops/offset math to use fs->bytes_per_sector instead of hardcoded 512 where file/dir sectors are scanned.
+- Added robust VFS fallback: if NVMe exists but FAT32/VFS init fails, kernel now falls back to ramdisk when available.
+- Added NVMe readiness telemetry log showing NSID, LBA size, and total sectors.
+
+Why:
+- Real-hardware boot log showed: "GPT: header read failed", "FAT32: GPT header read failed", and then GUI/SHELL launch failures.
+- Root cause candidate: reading one logical sector into 512-byte buffers can corrupt state on 4Kn paths; even when no corruption occurs, hardcoded 512 assumptions break FAT32 sector walks.
+- Launch failures were a downstream effect of no mounted VFS source.
+
+Files:
+- src/kernel/fs/part.c
+- src/kernel/fs/fat32.c
+- src/kernel/main.c
+- src/drivers/storage/nvme.c
+
+Build/Test Commands:
+- PATH="/opt/cross/bin:/usr/bin:/bin:$PATH" make clean all
+- PATH="/opt/cross/bin:/usr/bin:/bin:$PATH" make -j4
+
+Result:
+- Build succeeded.
+- Next hardware validation should confirm either:
+  1) GPT/FAT mount succeeds and userland launches from NVMe, or
+  2) if NVMe mount still fails and ramdisk exists, ramdisk fallback launches userland.

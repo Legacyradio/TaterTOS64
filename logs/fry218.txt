@@ -1,0 +1,3 @@
+2026-02-21 03:07 - Step: Mirror stage markers to serial for live QEMU visibility.
+Why: user sees live serial output; need authoritative stage markers in both serial and debugcon to confirm ACPI entry.
+Change: main.c after_vmm now emits stage markers to early_debug and early_serial; added 'T'/'t' around acpi_tables_init.

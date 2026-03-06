@@ -1,0 +1,6 @@
+2026-02-21 01:24:57 CST
+Step: Rebuilt ISO with new RSP/heap debug markers (K_BEFORE_RSP/K_AFTER_RSP/K_BEFORE_HEAP).
+Why: Need to verify whether crash occurs before or during RSP print/heap_init.
+Result:
+- ISO built at /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- WSL export to C:\Users\jjsako\Documents\tateriso failed (permission denied).

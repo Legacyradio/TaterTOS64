@@ -1,0 +1,50 @@
+Handoff Log - 2026-02-21 17:02:00 -0600
+
+Summary
+- Current goal: stabilize UEFI boot past vmm_init and capture real fault telemetry (RIP/CR2/CR3) using IST stacks + early serial.
+- Recent changes: separated kernel stack (.stack) with guard page; added IST stacks for #DF/#PF/#GP; moved IST stacks to low identity map; aligned LMA; routed #GP to IST2.
+- Result so far: kernel reaches markers through pmm_init (debugcon: kgtubp), prints K_PMM and VMM on serial, then #GP loop -> #PF guard -> #DF. Still no !EXC printed.
+
+What We Need Next (for Claude)
+- Confirm early serial output is captured in serial.log (COM1). It now includes "K_PMM" and "VMM".
+- Expectation after latest change: #GP uses IST2 so common_isr should run and emit !EXC (vector/err/RIP/CR2/CR3). That line is the key diagnostic target.
+- If !EXC still not printed, verify IST stack addresses and that IDT entry IST bits are set properly; verify TSS base and IST pointers are valid and mapped.
+
+Recent QEMU Behavior (latest logs)
+- debugcon.log: kgtubp
+- serial.log: K_PMM, VMM, then "PANIC: %s" on stdio (stdio shows it; file capture should be COM1).
+- qemu.log: non-canonical RIP (0007fdffffffff80) -> #GP loop -> #PF at CR2=ffffffff80200ff8 -> #DF.
+- Stack layout: __kernel_stack_base=0xffffffff80200000, top=0xffffffff80240000; guard page hit at 0xffffffff80200ff8.
+
+Key Fixes Applied (by order)
+1) Stack size increase to 256 KiB (then later moved to .stack section).
+2) Separate .stack section, aligned to 2MB; guard page at base, map stack with 4KB pages.
+3) IST stacks added (IST1/IST2) in tss.c; IDT set IST for #DF (8) and #PF (14).
+4) LMA for .stack/.iststack aligned to 4KB (prevent phys mapping issues).
+5) Moved IST stacks to .boot (low identity map) to avoid high-half mapping issues.
+6) Routed #GP (13) to IST2.
+7) Fixed SMP AP TSS init to pass ist2_top (build fix).
+
+Files Touched Recently
+- src/kernel/main.c (kernel_stack in .stack)
+- kernel_linker.ld (.stack section, LMA alignments)
+- src/kernel/mm/vmm.c (stack mapping + guard page)
+- src/boot/tss.c / src/boot/tss.h (IST stacks)
+- src/boot/idt.c (IST for #DF/#PF/#GP)
+- src/drivers/smp/smp.c (tss_init_local arg fix)
+
+Current Expected Fault Telemetry
+- !EXC vec=0x0D (or vec=0x0E) with RIP/CR2/CR3 pointing to real fault origin.
+- Once !EXC is visible, use RIP to find offending code path and fix root cause.
+
+Test Commands (must include)
+PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh
+qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+  -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+  -cdrom ./out/tatertos64v3.iso \
+  -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+
+tail -n 50 logs/debugcon.log
+tail -n 50 logs/serial.log
+tail -n 100 logs/qemu.log

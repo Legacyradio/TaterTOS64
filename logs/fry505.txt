@@ -1,0 +1,3 @@
+STEP 505
+TIME: 2026-03-03 15:53:37
+ACTION: Fixed build failure by including vfs.h in process.c and performed clean+verbose rebuild. Why: process.c uses vfs_close() and must include the VFS API to avoid implicit declaration errors.

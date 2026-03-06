@@ -1,0 +1,44 @@
+Action Log - fry256 - 2026-02-21
+
+BOOT STABILITY MILESTONE ACHIEVED
+
+Summary
+After fry255 ACPI double-conversion fix, kernel runs through ALL init phases
+with zero CPU exceptions, zero triple faults, zero crashes.
+
+Serial output confirms:
+  K_START → K_GDT_IDT → K_TSS → K_PMM → K_VMM (VMM stable)
+  TaterTOS64v3 starting (kprint_init working)
+  ACPI: RSDP, RSDT, FACP, APIC, HPET, MCFG parsed
+  MADT: LAPICs=2 IOAPICs=1 ISOs=5
+  FADT: SCI=9 PM1a_CNT=0x604
+  MCFG: ECAMs=1
+  HPET: enabled
+  AML: namespace populated
+  platform: dummy device probed
+  PCI bus 0 and bus 128 enumerated
+  SMP: detected 2 CPU(s)
+  HPET timer enabled
+  (kernel continues into USB/NVMe/network/VFS/process/shell/hlt)
+
+qemu.log: 0 faults recorded in this run.
+
+Known remaining issues (non-blocking for stability, blocking for Phase 17.5):
+1. SMP trampoline: "no low memory for trampoline"
+   AP startup code needs placement below 1MB.
+2. kprint format: %llx/%llu/%x/%u output as "lx"/"lu"/"4x" etc.
+   kprint formatter is incomplete — cosmetic but affects diagnostics.
+3. PCI enumeration: bus 128 scanning all slots (mostly empty),
+   vendor/class IDs display garbled due to kprint %x bug.
+4. Phase 11-15 (NVMe/VFS/Userspace/Shell): not verified functional,
+   required before Phase 17.5 can begin.
+
+Phase 17.5 prerequisites per planv3:
+  - Phase 15 (Shell) ← needs Phase 14 (Userspace) ← needs Phase 13 (VFS)
+    ← needs Phase 11 (NVMe block device)
+  - Phase 16 (Extended AML / ACPI stable)
+
+Assessment: Boot stability is confirmed. Foundation is solid.
+Phase 17.5 cannot begin yet — needs shell and ACPI stable first.
+Next step: fix kprint formatter, verify storage/VFS/process chain,
+get shell launching before starting GUI work.

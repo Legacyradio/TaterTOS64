@@ -1,0 +1,28 @@
+fry375 — Syscall reentrancy hardening: revert IRQ-enable in syscall body
+Timestamp: 2026-02-28
+
+Why:
+  User requested a strict, non-lazy stability fix after instability began
+  during shell-input fix attempts. The SYSCALL path had been changed to enable
+  IRQs during syscall_dispatch, which increases reentrancy pressure on
+  scheduler/process paths in this kernel.
+
+Change:
+  File: src/kernel/proc/syscall.c
+  - Removed `sti` before syscall_dispatch and matching `cli` before return.
+  - Syscall body now remains non-preemptible with IF masked for full dispatch.
+  - Updated comments to reflect this model.
+
+Rationale:
+  - Current kernel does not yet have full fine-grained locking discipline
+    across all syscall-touching subsystems.
+  - Non-preemptible syscall execution is a coherent stability-first model.
+
+Build/Test commands (rule 10 + rule 11):
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+Status:
+  Pending rebuild after this log.
+
+Next log: fry376.txt

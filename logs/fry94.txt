@@ -1,0 +1,3 @@
+STEP 94
+TIME: 2026-02-20 07:48:08
+ACTION: Restricted PMM allocations to low 4GB by reserving higher pages in pmm.c.

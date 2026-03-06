@@ -1,0 +1,34 @@
+========================================================================
+TaterTOS64v3 - fry511 — Ramdisk root stat fix for File Manager
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 19:29:16 CST
+
+WHY THIS LOG
+------------
+- File Manager showed "not a directory: /" when ramdisk was the root FS because rd_stat rejected "/".
+
+CHANGES
+-------
+- Ramdisk VFS: treat "/" as a directory in rd_stat (attr 0x10) so path_is_dir("/") succeeds and readdir works.
+
+FILES
+-----
+- src/kernel/fs/vfs.c
+
+COMMANDS
+--------
+PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/fs/vfs.o
+
+BUILD / TEST STATUS
+-------------------
+- Kernel object builds clean.
+- Full kernel/ISO not rebuilt in this log (pending user go-ahead).
+
+NOTES
+-----
+- File Manager should now add "Root" in Places and open "/" without the error when booted from ramdisk.
+
+========================================================================

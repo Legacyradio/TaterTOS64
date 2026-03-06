@@ -1,0 +1,94 @@
+========================================================================
+TaterTOS64v3 - fry476 — Freeze + False 0B Mitigation (NTFS + File Manager)
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 04:00:37 UTC
+
+USER-REPORTED SYMPTOMS
+----------------------
+1) Freeze/hang when navigating NTFS-backed secondary drive paths.
+2) File list shows entries but some files report 0B even when they are not.
+
+WHY THESE CHANGES
+-----------------
+- File Manager was calling stat() for every entry after readdir(); on NTFS this
+  could trigger repeated expensive directory lookup scans.
+- On stat() failure, File Manager forced size=0, which rendered false 0B values.
+- NTFS $DATA resolution only used the current MFT record, which is fragile when
+  attributes are split via ATTRIBUTE_LIST extension records.
+
+CODE CHANGES
+------------
+1) src/kernel/fs/ntfs.h
+   - Added NTFS directory cache state to mount struct:
+     dir_cache_mft, dir_cache_count, dir_cache_valid, dir_cache[].
+
+2) src/kernel/fs/ntfs.c
+   A) Added directory-entry cache helpers:
+      - ntfs_cache_reset(), ntfs_cache_add(), ntfs_cache_lookup_name(),
+        ntfs_cache_lookup_mft()
+      - Readdir now populates cache from INDEX_ROOT/INDEX_ALLOCATION entries.
+      - dir lookup now fast-paths from cache before full index scan.
+
+   B) Added ATTRIBUTE_LIST-aware $DATA resolution:
+      - ntfs_find_primary_data_attr_in_record()
+      - ntfs_get_attr_list_buf() (resident and non-resident list handling)
+      - ntfs_find_data_attr_resolved() to locate unnamed primary data extent
+        across extension records (LowestVcn/start_vcn == 0).
+
+   C) Updated NTFS info/read/open paths:
+      - ntfs_get_file_info() now uses cache fast-path by MFT ref and
+        uses resolved $DATA attribute selection.
+      - ntfs_open_vfs() pre-cache now uses resolved $DATA selector.
+      - ntfs_read_vfs() now reads using resolved $DATA selector (including
+        extension-record-hosted attributes).
+
+3) src/user/apps/fileman.c
+   - Added per-entry stat_ok flag.
+   - On stat() failure, no longer reports synthetic 0B as if authoritative.
+   - Fallback classification probes fry_readdir(path) to preserve directory
+     navigation when stat is temporarily unavailable.
+   - UI now shows size "?" for unresolved file stats and status line includes
+     unresolved stat count.
+   - open_selected() reports "size unknown" instead of a false formatted size.
+
+BUILD / VALIDATION
+------------------
+Commands executed:
+1) PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" \
+   make src/kernel/fs/ntfs.o src/user/apps/fileman.o kernel fileman
+2) make clean
+3) PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Results:
+- Compile/link successful.
+- New ISO produced: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Export copy to /mnt/c failed in this environment (read-only filesystem).
+
+HASH / FRESHNESS (Rule 15)
+--------------------------
+Source ISO:
+- 2026-03-02 22:00:20.560970834 -0600  135548928 bytes
+- SHA256: 9119a3a7ecb1a940805d12581726bf4aca4cd83323e7dd1ed57460f9e56a7270
+- Path: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+Target/export ISO:
+- 2026-03-02 21:27:41.972048700 -0600  135544832 bytes
+- SHA256: abd5ab79d7f0eb290a396006e18b6c59e32c8156221e8dd30fb678eecf98f98f
+- Path: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+Note:
+- Target hash/size differ because export write was blocked by read-only mount;
+  target is older than source in this execution environment.
+
+NEXT HARDWARE CHECKS (DELL 7530)
+--------------------------------
+1) Boot from freshly produced source ISO.
+2) In File Manager, enter `/nvme` and `/nvme1` repeatedly:
+   - verify no UI clock freeze/hard lock.
+3) Confirm unresolved entries show "?" not false 0B.
+4) Verify representative file open/read behavior on NTFS paths.
+
+========================================================================

@@ -1,0 +1,131 @@
+========================================================================
+TaterTOS64v3 - Session Handoff Log (fry460)
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-02 19:24:55 UTC
+
+USER DIRECTION (LATEST)
+-----------------------
+- Add a graphical File Explorer modeled after desktop file manager UX.
+- It must be a standalone `.FRY` userspace app using TaterWin protocol
+  (same window handling pattern as sysinfo/shell).
+- Do not hardcode app existence in kernel/GUI in a way that blocks removal.
+- Extend storage browsing to support additional mounted partitions on the
+  same NVMe drive (supported filesystems only).
+
+IMPLEMENTED CHANGES
+-------------------
+1) New graphical app: FILEMAN.FRY
+   - File: src/user/apps/fileman.c
+   - TaterWin protocol implemented:
+     * TW_MSG_CREATE_WINDOW request
+     * SHM mapping via WINDOW_CREATED/RESIZED
+     * redraw + TW_MSG_UPDATE loop
+   - Uses existing libc syscalls only (no new syscall added):
+     * fry_readdir, fry_stat, fry_spawn, fry_storage_info, fry_read
+   - UI/layout:
+     * top path bar
+     * left "Places"
+     * right file list (dirs + files, size/type)
+     * status bar with root/secondary/nvme summary
+   - Navigation:
+     * j/k (or s/w) move selection
+     * Enter/l open dir or launch .FRY
+     * h/backspace go parent
+     * 1..9 jump to place
+     * r refresh
+     * q quit
+
+2) GUI app listing is now runtime-discovered (not fixed hardcoded list)
+   - File: src/user/gui/gui.c
+   - Start menu now scans `/` and `/fry` for `*.FRY` at runtime.
+   - Launch fallback path order:
+     * /APP.FRY
+     * /fry/APP.FRY
+   - Effect: removing a `.FRY` file removes it from menu on next open.
+
+3) Build + packaging integration for FILEMAN
+   - Files:
+     * Makefile
+     * build_iso.sh
+   - Added target + packaging for:
+     * fileman.elf
+     * fileman.fry
+     * FILEMAN.FRY copied into root and /fry for FAT/ISO/NVMe images
+
+4) Multi-partition secondary mount support on same NVMe drive
+   - File: src/kernel/fs/vfs.c
+   - `vfs_mount_secondary()` now scans GPT and mounts multiple supported
+     partitions, not just first match.
+   - Mount scheme:
+     * primary preferred secondary: /nvme
+       (priority: ToTFS > NTFS > best FAT32)
+     * additional supported partitions: /nvme1, /nvme2, ...
+   - Supported secondary fs mount types:
+     * ToTFS (rw)
+     * NTFS (ro stubs for write/create/mkdir/unlink)
+     * FAT32 (rw via existing ops where supported)
+
+5) FAT32 mountpoint root stat fix
+   - File: src/kernel/fs/vfs.c
+   - `fat32_stat_vfs()` now returns directory attr for empty/relative-root
+     path so mountpoints like `/nvmeX` are recognized as dirs in userspace.
+
+CURRENT ARTIFACT STATUS
+-----------------------
+- ISO built successfully:
+  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- SHA256:
+  34dd4b935287a9b2f9009abb8aa12c15dd87dd61dd719b567691cf5f2e8e4fbc
+- Size:
+  137943040 bytes
+- Export to Windows path failed due read-only mount (non-fatal):
+  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+FILES MODIFIED THIS SESSION
+---------------------------
+- src/user/apps/fileman.c
+- src/user/gui/gui.c
+- Makefile
+- build_iso.sh
+- src/kernel/fs/vfs.c
+
+BUILD/VERIFY COMMANDS RUN
+-------------------------
+From /home/jjsako/TaterTOS64v3:
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make fileman gui
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make kernel
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+KNOWN LIMITS / NOTES
+--------------------
+- Multi-secondary scan currently uses GPT path (expected for your NVMe flow).
+- Unsupported filesystems are ignored (not mounted).
+- NTFS remains read-only.
+- Existing unrelated warnings still appear during build (pre-existing).
+
+BARE-METAL VALIDATION CHECKLIST (NEXT)
+--------------------------------------
+1) Boot the new ISO on target hardware.
+2) Confirm serial logs show secondary mounts:
+   - look for `VFS: ... mounted at /nvme`
+   - and possibly `/nvme1`, `/nvme2`, etc.
+3) In Shell:
+   - ls /nvme
+   - ls /nvme1
+   - ls /nvme2
+4) Open File Explorer app and verify Places includes:
+   - NVMe (/nvme)
+   - any discovered /nvmeN entries
+5) Open a `.FRY` file from File Explorer and confirm launch works.
+
+UNINSTALL/REMOVAL PATH (FILEMAN)
+--------------------------------
+- Remove FILEMAN.FRY from your filesystem image(s) (`/FILEMAN.FRY` and
+  `/fry/FILEMAN.FRY`).
+- Because GUI menu now discovers apps dynamically, it disappears from menu
+  automatically when the file is absent.
+
+========================================================================

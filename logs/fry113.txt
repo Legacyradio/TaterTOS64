@@ -1,0 +1,7 @@
+DATE: 2026-02-22 21:10 CST
+CHANGE: Added framebuffer info/map syscalls for userland and corresponding libc wrappers.
+WHY: Userland GUI needs a safe, explicit way to discover and map the GOP framebuffer.
+FILES:
+- src/kernel/proc/syscall.c
+- src/user/libc/libc.h
+- src/user/libc/libc.c

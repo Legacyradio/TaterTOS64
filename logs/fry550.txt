@@ -1,0 +1,67 @@
+========================================================================
+TaterTOS64v3 - fry550 - derive NVMe NS list scan bound from buffer size
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 22:47:26 UTC
+2026-03-05 16:47:26 CST
+
+CONTEXT
+-------
+- Follow-up review noted `nvme_pick_nsid()` used a hardcoded loop bound:
+  `for (uint32_t i = 0; i < 1024; i++)`.
+- The namespace list buffer is page-sized (4096 bytes), so 1024 entries is
+  correct today but should be derived from buffer size rather than magic
+  numbers.
+
+WHY
+---
+- Keeps bounds tied to declared capacity and avoids hidden assumptions.
+- Improves readability/maintainability with explicit intent.
+
+CHANGE APPLIED
+--------------
+- File updated: `src/drivers/storage/nvme.c`
+  - Added:
+    - `#define NVME_PAGE_BYTES 4096u`
+    - `#define NVME_NS_LIST_ENTRIES (NVME_PAGE_BYTES / (uint32_t)sizeof(uint32_t))`
+  - Updated `nvme_pick_nsid()` loop bound:
+    - From: `i < 1024`
+    - To:   `i < NVME_NS_LIST_ENTRIES`
+
+EFFECT
+------
+- NSID scan count now derives from buffer byte size and element width.
+- Behavior remains unchanged (4096 / 4 == 1024 entries).
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Kernel build validation:
+   - `PATH="/opt/cross/bin:$PATH" make -j"$(nproc)"`
+2) RESULT:
+   - PASS (build succeeded)
+3) User-requested clean rebuild + ISO pipeline:
+   - `make clean && PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+4) RESULT:
+   - PASS (clean rebuild + ISO build succeeded)
+   - ToTFS NVMe image: `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+   - ISO: `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+   - Export warning unchanged:
+     `cp: cannot create regular file '/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso': Read-only file system`
+5) SHA-256 (post user-requested rebuild):
+   - `out/tatertos64v3.iso`:
+     `228bfd316e9ed301cef0ed15d1fa96bfdfa6c7454791fb8ca0a2e4e34b02c78a`
+   - `out/tater_nvme.img`:
+     `7f8b167f1f9992fe678a7e285baee536c12fd6a58164f4599b22c51389030c38`
+
+UPDATE RECORDED
+---------------
+2026-03-05 22:48:50 UTC
+2026-03-05 16:48:50 CST
+
+NOTES
+-----
+- Hashes recorded because this included a user-requested rebuild (planv3 rule 16).
+
+========================================================================

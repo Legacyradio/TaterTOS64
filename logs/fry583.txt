@@ -1,0 +1,77 @@
+========================================================================
+TaterTOS64v3 - fry583 - lock live app launch to ramdisk root only
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 04:08:00 UTC
+2026-03-05 22:08:00 CST
+
+CONTEXT
+-------
+- User requested a hard policy fix, not another heuristic:
+  - live root must stay on ramdisk
+  - live apps must come from that ramdisk-backed primary root only
+  - NVMe must remain available only as explicit secondary storage for browsing,
+    future install work, or manual file operations
+- Recent regressions came from GUI app discovery/spawn consulting `/nvme*`
+  again when live/secondary detection drifted.
+
+WHY
+---
+- Any implicit launcher fallback to `/nvme*` reintroduces the same class of
+  failure:
+  - start menu entries can depend on secondary mount timing/policy
+  - app launch semantics become coupled to live-media storage state
+  - root/app provenance becomes ambiguous on bare metal
+- The solid fix is to remove `/nvme*` from GUI launcher behavior entirely.
+
+CHANGES APPLIED
+---------------
+- Files updated:
+  - `src/user/gui/gui.c`
+    - Added `gui_path_is_primary_app_source(...)`.
+    - GUI app discovery now ignores `/nvme*` paths outright.
+    - Start-menu launch now ignores stored `/nvme*` app paths outright.
+    - Removed secondary `/nvme*` fallback from `spawn_app_with_variants(...)`.
+    - Result: desktop app discovery/spawn only uses `/`, `/fry`, `/FRY`,
+      `/EFI/...` within the primary root view.
+  - `src/user/apps/fileman.c`
+    - Added live-root check via `FRY_STORAGE_FLAG_ROOT_RAMDISK_SOURCE`.
+    - When booted live from ramdisk, opening `.FRY` / `SHELL.TOT` from
+      `/nvme*` is now blocked with a status message instead of spawning it.
+    - Result: File Manager still browses secondary storage, but does not turn
+      live session apps into secondary-storage apps.
+
+POLICY AFTER THIS CHANGE
+------------------------
+- Live session root stays on ramdisk.
+- Live session launcher only starts apps from the primary root view.
+- `/nvme`, `/nvme1`, ... remain valid secondary mounts for explicit browsing.
+- Installer / future write workflows can still target `/nvme*` without making
+  the desktop depend on `/nvme*` for app launch.
+
+VALIDATION (THIS SESSION)
+-------------------------
+1) Targeted userspace rebuilds:
+   - `PATH="/opt/cross/bin:$PATH" make gui`
+   - `PATH="/opt/cross/bin:$PATH" make fileman`
+   - Result:
+     - PASS
+2) Full rebuild / repack:
+   - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+   - Result:
+     - PASS
+     - ISO produced at `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+     - NVMe image produced at `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+     - Export to `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+       failed in this environment because `/mnt/c` is read-only
+
+NOTES
+-----
+- This intentionally favors determinism over auto-discovery flexibility.
+- Secondary FAT32 mounts in the current tree are still browse/read oriented for
+  new-file workflows; full create/mkdir/unlink on secondary FAT32 is separate
+  work and was not changed here.
+
+========================================================================

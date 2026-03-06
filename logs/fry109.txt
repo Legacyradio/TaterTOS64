@@ -1,0 +1,5 @@
+DATE: 2026-02-22 20:52 CST
+CHANGE: Forced terminal window offsets even on smaller framebuffers and clamped sizes to ensure chrome is visible.
+WHY: Chrome/title were not visible; output still appeared at (0,0), indicating offsets were not applied.
+FILES:
+- src/kernel/kprint.c

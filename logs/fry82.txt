@@ -1,0 +1,3 @@
+STEP 82
+TIME: 2026-02-20 07:30:34
+ACTION: Added VFS init guard when no block device is present.

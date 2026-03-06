@@ -1,0 +1,3 @@
+STEP 8
+TIME: 2026-02-20 00:44:02
+ACTION: Implemented kernel entry in src/kernel/main.c (_fry_start, init chain, prints 'FryOS starting').

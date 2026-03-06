@@ -1,0 +1,55 @@
+fry398 — Intel PCR[DMI] LPC IOE mirror + EC early-status diagnostics
+Timestamp: 2026-02-28 22:38:52 UTC
+
+PROBLEM:
+  On Dell Precision 7530 (Intel 300-series PCH), EC still failed at 0x62/0x66
+  with sts=0xFF even after restoring default EC ports. LPC config IOE looked
+  enabled, but sideband decode likely was not mirrored to PCR[DMI], so EC I/O
+  cycles were not forwarded.
+
+CHANGES:
+1) src/kernel/acpi/extended.c
+   - Added Intel SBREG/PCR constants and PCR diagnostic globals.
+   - Added local inb() helper and early EC status probe in ec_reg_init():
+     g_ec_early_sts = inb(0x66) before any EC init work.
+   - Fixed IOE bitmask bug in ec_enable_lpc_decode():
+     - old: bit 13 (EC 0x4E/0x4F)
+     - new: bit 11 EC_62_66 + bit 10 KBC_60_64
+   - Implemented pcr_get_sbreg_bar() to unhide/read/re-hide P2SB (00:1f.1).
+   - Implemented ec_mirror_pcr_ioe() to mirror IOE and IOD into PCR[DMI]
+     registers (LPCIOE/LPCIOD) via physmap UC mapping.
+   - Wired PCR mirror call after Intel LPC IOE programming.
+   - Exposed new diagnostics in acpi_get_diag().
+
+2) src/kernel/acpi/extended.h
+   - Extended struct fry_acpi_diag with:
+     pcr_ioe_before, pcr_ioe_after, pcr_mirror_done, p2sb_hidden, ec_early_sts.
+
+3) src/user/libc/libc.h
+   - Mirrored the same fry_acpi_diag struct extension for userspace ABI sync.
+
+4) src/user/apps/sysinfo.c
+   - Increased window height (430 -> 480).
+   - Added PCR diagnostic line:
+     "PCR IOE: ... mir=... early=..."
+   - Shifted subsequent battery/backlight lines down by 16 px to avoid overlap.
+
+WHY:
+  Intel eSPI/LPC decode on affected platforms may require PCR[DMI] mirror writes
+  in addition to PCI config IOE writes. The new path keeps Intel gating checks,
+  preserves non-Intel behavior, and surfaces enough diagnostics to determine if
+  PCR mirror resolved sts=0xFF.
+
+TEST COMMANDS:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+TEST RESULT:
+  PASS (both commands completed, build_iso.sh exit code 0)
+  ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  NVMe image: /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+
+NOTES:
+  Non-fatal environment warning from build script export step:
+  cp to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso failed
+  due to read-only filesystem in this environment.

@@ -1,0 +1,4 @@
+[2026-02-22 08:31:05 UTC] Step: Request NVMe I/O queue allocation via Set Features.
+Why: Some controllers require the Number of Queues feature to be set before creating I/O queues; without it, I/O commands can time out.
+Change: Add nvme_set_num_queues(1) using opcode 0x09/FID 0x07 before I/O queue creation.
+Files: src/drivers/storage/nvme.c

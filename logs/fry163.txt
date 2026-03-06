@@ -1,0 +1,4 @@
+[2026-02-20 21:11:18 UTC] Step: Discard .eh_frame to avoid LMA overlap.
+Why: Linker reported .eh_frame overlapping .data in LMA layout.
+Change: Added /DISCARD/ for .eh_frame and .eh_frame_hdr in kernel linker script.
+Files: kernel_linker.ld

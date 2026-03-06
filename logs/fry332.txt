@@ -1,0 +1,66 @@
+2026-02-26 02:54:23 UTC
+Step: Logged the long-term attack plan (with product software + installer phase) for later execution.
+Why: User requested a persistent text log to resume after the current bug fix.
+
+TaterTOS64v3 Attack Plan (post-current bug fix)
+==============================================
+
+Phase 0: Baseline Reality
+1) Freeze a known-good boot image and record exact QEMU + hardware logs.
+2) Define green-boot criteria (serial markers, GUI launch, shell launch).
+3) Add one build+run command for consistent QEMU testing.
+
+Phase 1: Stability Foundation
+1) Deterministic boot ordering and init stages.
+2) Crash reporting: panic dumps to serial + on-disk logs.
+3) Guard pages around stacks/heaps; detect overflow.
+4) Kernel self-test entrypoint + smoke tests.
+
+Phase 2: Security Core
+1) W^X enforcement for user mappings.
+2) Minimal permissions model (UID + file perms in VFS).
+3) Syscall validation and audit logs.
+4) Signed binaries format (verification can be stubbed initially).
+
+Phase 3: Driver Model Maturity
+1) Formal driver ABI + versioning.
+2) Capability flags + probe contracts.
+3) User-mode driver sandbox (initial stub).
+4) .tot loader (no hot-unload yet).
+
+Phase 4: File System Upgrade
+1) Journaling FS.
+2) fsck pass on mount + recovery on dirty flag.
+3) Caching + writeback with safe flush.
+
+Phase 5: Networking Stack
+1) IPv4 + ARP + ICMP + UDP.
+2) DHCP + DNS.
+3) TCP stack (single-connection first).
+4) TLS in userland.
+
+Phase 6: Graphics Stack
+1) 2D compositor (damage tracking, double buffer).
+2) Font caching + proper text renderer.
+3) Window manager API for apps.
+
+Phase 7: Tooling + Ecosystem
+1) SDK + headers + libc + build tooling.
+2) Debugger + symbol map + stack trace.
+3) Sampling profiler.
+4) Package manager (signed local packages).
+
+Phase 8: Product Software + Installer
+1) Installer: disk partitioning, format, bootloader install, first-boot setup.
+2) Core apps: file manager, terminal, settings, updater, system monitor.
+3) Browser: lightweight HTML renderer (basic CSS, JS subset).
+4) Media: image viewer, audio playback.
+5) Developer tools: text editor, package repo tooling.
+
+Current Status / Waiting On
+===========================
+Waiting on boot results after the ACPI/VFS fixes:
+- ACPI: _HID integer/EISA matching fix (PCI root, battery, backlight, _PRT routing).
+- VFS/FAT32: raw-LBA fallback when GPT is unreadable (try LBA 2048, then 0).
+Expected: ACPI no longer reports missing PCI root/battery/backlight, and GUI/SHELL
+launch should succeed once FAT32 mounts.

@@ -1,0 +1,67 @@
+========================================================================
+TaterTOS64v3 - fry536 — critical storage fixes + storage metadata fuzz harness rebuild
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 06:51:57 UTC
+2026-03-05 00:51:57 CST
+
+COMPLETED STEPS
+---------------
+- Fixed 3 critical/high-priority storage safety issues.
+- Added host-side storage metadata fuzz harness for malformed GPT/NTFS inputs.
+- Ran clean rebuild and generated a new ISO.
+
+CODE CHANGES
+------------
+- `src/kernel/fs/part.c`
+  - Fixed GPT partition name copy to read exactly the 72-byte name field
+    (prevents out-of-bounds reads from GPT entry buffer).
+- `src/drivers/storage/nvme.c`
+  - Added explicit controller quiesce helper before buffer teardown:
+    clear `CC.EN`, wait for `CSTS.RDY=0`, then free DMA pages.
+  - Hooked quiesce into init-fail path and `nvme_init()` re-init path.
+  - Updated VMD bus-count use to 16-bit in enumeration loop.
+- `src/drivers/storage/vmd.c`
+  - Widened VMD bus-count path to `uint16_t` so 256-bus windows do not
+    truncate to zero.
+- `src/drivers/storage/vmd.h`
+  - Updated `vmd_bus_count()` return type to `uint16_t`.
+- `tools/storage_meta_fuzz.c`
+  - New fuzz harness that mutates GPT headers/entries and NTFS data-run
+    metadata inputs; validates parser behavior and targeted malformed cases.
+- `Makefile`
+  - Added `test-storage-fuzz` and `out/storage_meta_fuzz` host build targets.
+
+REBUILD / VALIDATION COMMANDS
+-----------------------------
+1) `make clean`
+2) `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+3) `make test-storage-fuzz`
+
+COMMAND RESULTS
+---------------
+- `make clean`: PASS
+- `build_iso.sh`: PASS
+  - Kernel/userland rebuilt with warnings only (no fatal errors).
+  - ISO produced successfully.
+- `make test-storage-fuzz`: PASS
+  - `storage_meta_fuzz: OK (gpt=20000 ntfs=50000)`
+
+ISO ARTIFACT
+------------
+- ISO output:
+  `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+- ISO mtime:
+  `2026-03-05 00:51:49.703020371 -0600`
+- SHA256:
+  `4c3af826471a3cd3b4ae8968545c11d4d1e0e55fb25c4d8ae1a56ee0e5797906`
+
+EXPORT RESULT (THIS SESSION)
+----------------------------
+- Auto-export from `build_iso.sh` to Windows path failed again due to:
+  `Read-only file system`
+- Linux-side ISO artifact above is valid.
+
+========================================================================

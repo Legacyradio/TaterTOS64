@@ -1,0 +1,3 @@
+STEP 31
+TIME: 2026-02-20 09:13:09
+ACTION: Added parsing for DefBankField and DefIndexField in src/kernel/acpi/aml_parse.c, storing bank/index register metadata on field nodes, because the plan requires decoding these AML field forms for correct device resource access.

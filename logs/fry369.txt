@@ -1,0 +1,32 @@
+fry369 — Scheduler IRQ-safety hardening for GUI shell-input regression
+Timestamp: 2026-02-28
+
+Why:
+  User reported ongoing bare-metal lockups after the "shell window accepts
+  typed text" feature path was introduced. This path exercises frequent
+  syscall-driven scheduling transitions (read/sleep/yield) from GUI + shell.
+  On real hardware timing, scheduler runqueue/state mutations could occur
+  with interrupts enabled, risking mid-update preemption and scheduler state
+  corruption/stalls.
+
+Changes:
+  File: src/kernel/proc/sched.c
+  - Added irq_save_disable()/irq_restore() helpers.
+  - Wrapped scheduler mutating entry points with IRQ save/disable + restore:
+      sched_add()
+      sched_remove()
+      sched_yield()
+      sched_sleep()
+      sched_block()
+      sched_wake()
+  - Behavior goal: prevent interrupt-driven reentry while runqueues/process
+    scheduling state are being updated from syscall context.
+
+Build/Test commands (rule 10 + rule 11):
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+Status:
+  Pending build execution after this log entry.
+
+Next log: fry370.txt

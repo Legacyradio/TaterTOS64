@@ -1,0 +1,3 @@
+STEP 25
+TIME: 2026-02-20 08:44:48
+ACTION: Updated PIC8259 irq_chip in src/drivers/irqchip/pic8259.c to set the ack callback (same as EOI), because the IRQ core now calls chip->ack before handlers and requires a valid hook.

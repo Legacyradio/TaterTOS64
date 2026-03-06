@@ -1,0 +1,16 @@
+fry382 — Rule 11 update: remove unnecessary bash xtrace flag
+Timestamp: 2026-02-28 14:44:54 UTC
+
+Why:
+  User requested removing `-x` from the default rebuild command because it is
+  not necessary for normal rebuild flow.
+
+Change:
+  File: planv3.txt
+  - Rule 11 command updated from:
+    PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+  - to:
+    PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Notes:
+  - Rules-only update; no kernel/userspace code changed.

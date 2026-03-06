@@ -1,0 +1,46 @@
+fry404 - Keep nuclear SBREG option but disable on bare metal by default (Dell safety)
+Timestamp: 2026-03-01 01:43:31 UTC
+
+CONTEXT:
+  After fry403 introduced full SBREG brute-force fallback sweep
+  (0xFD000000..0xFE000000), Dell Precision 7530 boot regressed.
+  QEMU/VM behavior remained acceptable, indicating a real-hardware MMIO
+  probing hazard rather than a generic logic error.
+
+CHANGES:
+1) src/kernel/acpi/extended.c
+   - Added CPUID helper:
+       cpuid_count(leaf, subleaf, eax, ebx, ecx, edx)
+   - Added safety policy constant:
+       SBREG_NUCLEAR_ALLOW_BARE_METAL = 0
+   - Added runtime gate:
+       pcr_nuclear_sweep_allowed()
+       * Returns 1 under hypervisor (CPUID.1:ECX[31])
+       * Returns 0 on bare metal unless policy constant is flipped to 1
+   - Updated pcr_probe_fallback_sbreg_bar():
+       * Keeps existing fixed-candidate probes unchanged.
+       * Runs nuclear page sweep only if pcr_nuclear_sweep_allowed() == 1.
+       * On bare metal, prints:
+         "ACPI: SBREG brute-force sweep skipped (bare metal safety)"
+         and returns 0 to preserve prior default fallback behavior.
+
+WHY:
+  The nuclear sweep remains available (still compiled, still active in VM)
+  but no longer executes on bare metal by default, reducing risk of Dell
+  boot failure caused by broad MMIO reads across sideband-adjacent space.
+
+BUILD / VALIDATION:
+Commands run:
+  PATH=/opt/cross/bin:/home/jjsako/.local/bin:/home/jjsako/.codex/tmp/arg0/codex-arg0aexC5B:/home/jjsako/.nvm/versions/node/v22.22.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/path:/home/jjsako/.local/bin:/home/jjsako/.nvm/versions/node/v22.22.0/bin:/usr/lib/jvm/java-17-openjdk-amd64/bin:/home/jjsako/Android/Sdk/cmdline-tools/latest/bin:/home/jjsako/Android/Sdk/platform-tools:/home/jjsako/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/usr/lib/wsl/lib:/mnt/c/Program Files/WindowsApps/CanonicalGroupLimited.Ubuntu_2404.1.68.0_x64__79rhkp1fndgsc:/mnt/c/Windows/system32:/mnt/c/Windows:/mnt/c/Windows/System32/Wbem:/mnt/c/Windows/System32/WindowsPowerShell/v1.0/:/mnt/c/Windows/System32/OpenSSH/:/mnt/c/Program Files/usbipd-win/:/mnt/c/Users/jjsako/AppData/Local/Microsoft/WindowsApps:/snap/bin make src/kernel/acpi/extended.o
+  PATH=/opt/cross/bin:/home/jjsako/.local/bin:/home/jjsako/.codex/tmp/arg0/codex-arg0aexC5B:/home/jjsako/.nvm/versions/node/v22.22.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/path:/home/jjsako/.local/bin:/home/jjsako/.nvm/versions/node/v22.22.0/bin:/usr/lib/jvm/java-17-openjdk-amd64/bin:/home/jjsako/Android/Sdk/cmdline-tools/latest/bin:/home/jjsako/Android/Sdk/platform-tools:/home/jjsako/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/usr/lib/wsl/lib:/mnt/c/Program Files/WindowsApps/CanonicalGroupLimited.Ubuntu_2404.1.68.0_x64__79rhkp1fndgsc:/mnt/c/Windows/system32:/mnt/c/Windows:/mnt/c/Windows/System32/Wbem:/mnt/c/Windows/System32/WindowsPowerShell/v1.0/:/mnt/c/Windows/System32/OpenSSH/:/mnt/c/Program Files/usbipd-win/:/mnt/c/Users/jjsako/AppData/Local/Microsoft/WindowsApps:/snap/bin make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:/home/jjsako/.local/bin:/home/jjsako/.codex/tmp/arg0/codex-arg0aexC5B:/home/jjsako/.nvm/versions/node/v22.22.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/path:/home/jjsako/.local/bin:/home/jjsako/.nvm/versions/node/v22.22.0/bin:/usr/lib/jvm/java-17-openjdk-amd64/bin:/home/jjsako/Android/Sdk/cmdline-tools/latest/bin:/home/jjsako/Android/Sdk/platform-tools:/home/jjsako/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/usr/lib/wsl/lib:/mnt/c/Program Files/WindowsApps/CanonicalGroupLimited.Ubuntu_2404.1.68.0_x64__79rhkp1fndgsc:/mnt/c/Windows/system32:/mnt/c/Windows:/mnt/c/Windows/System32/Wbem:/mnt/c/Windows/System32/WindowsPowerShell/v1.0/:/mnt/c/Windows/System32/OpenSSH/:/mnt/c/Program Files/usbipd-win/:/mnt/c/Users/jjsako/AppData/Local/Microsoft/WindowsApps:/snap/bin" /bin/bash build_iso.sh
+
+Result:
+  PASS - build and ISO generation succeeded.
+  ISO:
+    /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+NOTES:
+  - Existing warnings remain non-fatal and pre-existing.
+  - Windows export to /mnt/c failed in this environment (read-only FS);
+    local ISO artifact is valid.

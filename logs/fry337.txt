@@ -1,0 +1,35 @@
+2026-02-26 19:24:58 UTC
+Step: Fixed NVMe DMA virtual->physical translation path so GPT/FAT32 reads can succeed on real hardware.
+Why: Boot showed NVMe identify/ready succeeded but GPT header and FAT32 reads failed. The remaining translation path for kernel-stack buffers still produced bad physical addresses.
+
+Changes made:
+- src/kernel/mm/vmm.c
+  - vmm_virt_to_phys(): restricted physmap fast-path to only
+    [VMM_PHYSMAP_BASE, KERNEL_VMA_BASE).
+  - Prevents treating all higher-half kernel addresses as physmap.
+- src/drivers/storage/nvme.c
+  - build_prp(): added explicit zero-physical-address checks for prp1/prp2,
+    PRP-list entries, and the PRP-list pointer itself; fail command build if
+    translation fails.
+
+Technical root cause:
+- vmm_virt_to_phys() previously did:
+    if (virt >= VMM_PHYSMAP_BASE) return virt - VMM_PHYSMAP_BASE;
+  This incorrectly matched kernel text/stack addresses at
+  KERNEL_VMA_BASE+ (0xFFFFFFFF80000000+), yielding bogus physical addresses.
+  NVMe identify used physmap-backed buffers and still worked; GPT/FAT32 reads
+  used stack buffers and failed.
+
+Build/test commands run:
+- PATH="/opt/cross/bin:$PATH" make kernel
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+- PATH="/opt/cross/bin:$PATH" make kernel
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Results:
+- kernel build succeeded.
+- ISO/NVMe artifacts rebuilt successfully:
+  - out/tatertos64v3.iso
+  - out/tater_nvme.img
+- build_iso.sh exited non-zero only at Windows export copy step:
+  cp: cannot create regular file '/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso': Read-only file system

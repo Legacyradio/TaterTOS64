@@ -1,0 +1,65 @@
+Handoff Action Log - fry253 - 2026-02-21
+
+Summary
+Two confirmed bugs fixed. Both prevent reliable fault telemetry and correct serial output.
+
+---
+
+Fix 1: kernel_linker.ld — .rodata/.data/.bss LMA alignment
+
+Why:
+The AT() clauses for .rodata/.data/.bss used raw LOADADDR+SIZEOF with no alignment,
+so the LMA had no gap where VMA alignment rounds up. .text ends at VMA offset 0x144a5
+but .rodata VMA starts at 0x144c0 (32-byte alignment = 0x1b byte gap). The LMA had no
+matching gap: CPU read .rodata[X+0x1b] instead of .rodata[X], shifting every string
+by 27 bytes. This is why serial printed "K_PMM" / "VMM" / " PANIC: %s" when the actual
+calls were to "K_START\n" / "K_GDT_IDT\n" / "K_PMM\n".
+
+Change:
+  Before:
+    .rodata : AT(LOADADDR(.text) + SIZEOF(.text)) { ... }
+    .data   : AT(LOADADDR(.rodata) + SIZEOF(.rodata)) { ... }
+    .bss    : AT(LOADADDR(.data) + SIZEOF(.data)) { ... }
+
+  After:
+    .rodata : AT(ALIGN(LOADADDR(.text) + SIZEOF(.text), ALIGNOF(.rodata))) { ... }
+    .data   : AT(ALIGN(LOADADDR(.rodata) + SIZEOF(.rodata), ALIGNOF(.data))) { ... }
+    .bss    : AT(ALIGN(LOADADDR(.data) + SIZEOF(.data), ALIGNOF(.bss))) { ... }
+
+File: kernel_linker.ld
+
+---
+
+Fix 2: src/boot/stack_switch.asm — save RDX before `mov dx, 0xE9` corrupts it
+
+Why:
+stack_switch_and_call receives: rdi=new_rsp, rsi=fn, rdx=arg0 (handoff ptr).
+`mov dx, 0xE9` is a 16-bit write that does NOT zero-extend in 64-bit mode, so it
+corrupts the lower 16 bits of RDX (handoff pointer). The subsequent `mov rdi, rdx`
+then passes a corrupted pointer to after_vmm, causing garbage handoff.
+
+Change:
+  Added `mov r8, rdx` before the first `mov dx, 0xE9` to save the handoff pointer.
+  Changed `mov rdi, rdx` to `mov rdi, r8` to pass the preserved value.
+  r8 is caller-saved in SysV AMD64 ABI — safe to use freely here.
+
+File: src/boot/stack_switch.asm
+
+---
+
+Expected Outcome
+- Serial output should now show correct strings: K_START, K_GDT_IDT, K_TSS, K_PMM, K_VMM
+- after_vmm should receive correct handoff pointer
+- Fault telemetry (!EXC) still pending — next target once correct serial confirmed
+
+Test Commands
+PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh
+qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+  -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+  -cdrom ./out/tatertos64v3.iso \
+  -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+
+tail -n 50 logs/serial.log
+tail -n 50 logs/debugcon.log
+tail -n 100 logs/qemu.log

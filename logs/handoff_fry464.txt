@@ -1,0 +1,53 @@
+========================================================================
+TaterTOS64v3 — HANDOFF after fry464
+========================================================================
+Date: 2026-03-02
+
+WHAT WAS DONE (fry464)
+----------------------
+FILEMAN.FRY was missing from the EFI loader's hardcoded ramdisk file
+list in src/boot/efi_loader.c. The loader only packed 5 files:
+  GUI.FRY, SHELL.TOT, SYSINFO.FRY, UPTIME.FRY, PS.FRY
+
+On Dell ISO boot, the ramdisk contained only those 5. The GUI's
+discover_apps() scanned "/" via fry_readdir, found those 5, so
+app_count > 0 and the fallback list (which did include FILEMAN) never
+ran. Result: FILEMAN never appeared in the start menu.
+
+Fix: bumped FRY_FILE_COUNT from 5 to 6, added FILEMAN.FRY path
+variants (8 paths) and "FILEMAN.FRY" to fry_names[].
+
+Also in fry463 (previous session): gui.c filters out "GUI" from the
+start menu (line 156) so launching a second compositor is impossible.
+
+FILE CHANGED
+------------
+src/boot/efi_loader.c — FRY_FILE_COUNT 5→6, added FILEMAN.FRY entries
+
+ISO LOCATION
+------------
+/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+Windows: C:\Users\jjsako\Documents\tateriso\tatertos64v3.iso
+
+TEST CHECKLIST
+--------------
+1. Boot ISO on Dell Precision 7530
+2. Start menu should show: SHELL, SYSINFO, UPTIME, PS, FILEMAN
+   Should NOT show: GUI
+3. Click FILEMAN — file manager window should open
+4. No screen jitter
+5. File manager controls: j/k or w/s to navigate, Enter/l to open,
+   h/Backspace for parent, 1-9 for sidebar places, r to refresh, q to quit
+6. Other apps still work normally
+
+WHAT TO REPORT BACK
+--------------------
+- Does FILEMAN appear in the start menu? (Y/N)
+- Does it open without jitter? (Y/N)
+- Does it show a file listing? (Y/N)
+- Any crashes or visual glitches?
+
+NEXT FRY LOG
+------------
+fry465.txt
+========================================================================

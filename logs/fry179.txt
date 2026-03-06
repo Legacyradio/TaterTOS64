@@ -1,0 +1,7 @@
+2026-02-20 23:23:53
+Change: Removed early_serial_puts from the K_KPRINT marker (debugcon only) to test if COM1 output is triggering the crash.
+Why: debugcon reached K_BEFORE_PRINT but never K_KPRINT; the next line executed was early_serial_puts("K_KPRINT"), so we isolate whether COM1 I/O is the fault point.
+Details:
+- main.c: K_KPRINT marker now uses only early_debug_puts.
+Rule note: Temporary debug change; will be reverted after diagnosis.
+Next: rebuild ISO, run QEMU with debugcon, report last marker seen.

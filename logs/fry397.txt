@@ -1,0 +1,44 @@
+fry397 — EC _CRS junk-port hardening (reject 0x00/0x04 class placeholders) for multi-PC compatibility
+Timestamp: 2026-02-28 21:49:42 UTC
+
+PROBLEM:
+  Latest hardware diagnostics showed:
+    EC: FAIL ports=0x00/0x04
+    probe: STS_FF sts=0xff try=5
+    EC src: _CRS
+  That means _CRS extraction/selection accepted placeholder low I/O ports,
+  causing EC probe to hit non-functional addresses.
+
+CHANGES:
+1) src/kernel/acpi/resources.c
+   - Added IO candidate sanitizer/deduper for _CRS port extraction:
+     - drops low placeholder ports (< 0x10),
+     - deduplicates repeated descriptors,
+     - applies to small I/O, fixed I/O, and GAS-derived SystemIO entries.
+
+2) src/kernel/acpi/extended.c
+   - Added EC-specific plausibility filtering and pair scoring:
+     - rejects non-plausible EC ports/pairs (including low placeholder ports),
+     - strongly prefers 0x62/0x66, then legacy alternate 0x68/0x6C,
+     - otherwise selects best plausible pair while keeping non-standard port support.
+   - Added verbose _CRS candidate logging and explicit rejection log when no
+     plausible EC pair is found.
+   - Preserves existing fallback chain:
+     selected-node _CRS -> ECDT -> default 0x62/0x66.
+
+WHY:
+  This prevents bad _CRS templates from forcing EC to 0x00/0x04 while keeping
+  compatibility across different machines by still allowing plausible
+  non-standard EC ports.
+
+TEST COMMANDS:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+TEST RESULT:
+  PASS (both commands exit code 0)
+  ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  NVMe image: /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+  Non-fatal environment warning:
+    cp to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso failed
+    (read-only filesystem in this environment)

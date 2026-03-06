@@ -1,0 +1,5 @@
+2026-02-21 01:12:49 CST
+Step: Fix build error in efi_main by removing duplicate EFI_MEMORY_DESCRIPTOR typedef.
+Why: efi_handoff.h already defines EFI_MEMORY_DESCRIPTOR; duplicate definition caused conflicting types during build.
+Changes:
+- Removed local EFI_MEMORY_DESCRIPTOR typedef from src/boot/efi_main.c.

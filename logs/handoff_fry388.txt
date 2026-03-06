@@ -1,0 +1,52 @@
+========================================================================
+  TaterTOS64v3 — Session Handoff Log (2026-02-28)
+  Covers: fry388 (Claude turn)
+========================================================================
+
+TIMESTAMP
+---------
+2026-02-28 16:53:44 UTC
+
+SESSION SUMMARY
+---------------
+Applied a hardware-agnostic ACPI compatibility hardening pass to improve
+battery/backlight discovery on Dell Precision 7530 without model-specific
+checks. Rebuilt successfully using Rule 11 commands.
+
+CHANGES COMPLETED
+-----------------
+1) src/kernel/acpi/namespace.c
+   - Added alias resolution helper for HID/ADR matching.
+   - Relaxed ns_hid_match() type gate (no strict DEVICE-only requirement).
+   - Added case-insensitive HID string compare.
+   - Added node-type promotion in ns_create() for Scope/Unknown placeholders
+     when later concrete declarations (Device/Method/etc.) appear.
+   - Updated _ADR scan path to resolve aliases first.
+
+2) src/kernel/acpi/extended.c
+   - Removed strict DEVICE-type requirement in battery/backlight candidate
+     scans and battery shape check.
+   - Kept discovery generic via HID/method-signature criteria.
+
+3) logs/fry388.txt
+   - Added timestamped completion log with why/changes/build/test/result.
+
+BUILD / TEST (RULE 11)
+----------------------
+make clean
+PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+RESULT
+------
+- Build succeeded.
+- ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- NVMe image: /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+- Non-fatal export warning remains for /mnt/c/... (read-only filesystem).
+
+NEXT ACTION ON HARDWARE
+-----------------------
+Boot this build on Precision 7530 and capture:
+- ACPI: battery ...
+- ACPI: backlight ...
+Then decide next compatibility patch from real boot output.
+========================================================================

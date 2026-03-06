@@ -1,0 +1,61 @@
+========================================================================
+TaterTOS64v3 - fry525 — Dell app-launch failure traced to secondary FAT32 suppression
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-04 09:45:55 CST
+
+WHY THIS LOG
+------------
+- User reported: apps open in QEMU but fail to open on Dell after filesystem issues.
+- Investigation focused on GUI spawn paths and VFS secondary mount policy.
+
+ROOT CAUSE
+----------
+- In `src/kernel/fs/vfs.c`, `vfs_mount_secondary()` marked FAT32 candidates as
+  "boot media" and could disable all FAT32 secondary candidates.
+- On Dell, that can leave no usable `/nvme*` app source even though storage is present.
+- Behavior appears like storage "disappeared" mid-operation, but it is policy-driven
+  candidate filtering, not a physical disconnect.
+
+CODE CHANGE
+-----------
+- File: `src/kernel/fs/vfs.c`
+- Function: `vfs_mount_secondary(...)`
+- Added tracking:
+  - `non_fat32_seen`
+  - `fat32_seen`
+- Updated logic:
+  - Skip FAT32 candidates only when `boot_media_seen && non_fat32_seen`.
+  - Keep FAT32 candidates when FAT32 is all that was found.
+- Added explicit diagnostic log for the keep-FAT32 path:
+  - `VFS: boot-media-like FAT32 seen at %s, keeping FAT32 (no alternate FS)`
+
+WHY THIS FIX
+------------
+- Preserves original intent (prefer non-boot-media alternatives) without removing
+  all fallback FAT32 mounts.
+- Prevents false "no supported FS" outcome that breaks Dell app launches from
+  secondary storage.
+
+BUILD / VERIFY
+--------------
+- `make src/kernel/fs/vfs.o` -> PASS
+- `make kernel` -> PASS
+- `bash build_iso.sh` -> PASS
+
+ARTIFACTS
+---------
+- Updated ISO: `out/tatertos64v3.iso`
+- Updated NVMe image: `out/tater_nvme.img`
+- Updated EFI image: `out/efiboot.img`
+- Exported ISO: `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+USER-FACING SUMMARY
+-------------------
+- QEMU looked fine because ramdisk payloads were available.
+- Dell depended on secondary mount policy and hit FAT32 suppression.
+- Patch keeps FAT32 mountable when no NTFS/ToTFS alternative exists.
+
+========================================================================

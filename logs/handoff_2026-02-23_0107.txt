@@ -1,0 +1,47 @@
+Date: 2026-02-23 01:07
+Owner: Codex
+
+Summary
+- Fixed GUI freeze after pressing Enter on "run <app>" by removing blocking wait in GUI launcher.
+- Tuned PS/2 mouse handling for more natural movement; final state is close to correct per user.
+- Built fresh ISO after each change; latest ISO at out/tatertos64v3.iso. Copy to /mnt/c failed due to permissions.
+
+What Changed (code)
+1) GUI no longer blocks after spawn
+   File: src/user/gui/gui.c
+   - launch_app() now only calls fry_spawn(); removed fry_wait() that blocked the GUI loop.
+   Result: pressing Enter to run app no longer freezes the GUI (user confirmed).
+
+2) Shell quality-of-life
+   File: src/user/shell/shell.c
+   - Added "exit" and "quit" commands; updated help text.
+   Result: allows shell to exit cleanly if launched (still useful even though GUI no longer waits).
+
+3) PS/2 mouse tuning (iterative)
+   File: src/drivers/input/ps2_mouse.c
+   - Earlier: lighter smoothing + larger clamp for responsiveness.
+   - Then: acceleration version (responsiveness improved but caused drift/erratic behavior).
+   - Final: removed acceleration, small deadzone, moderate clamp, inverted Y to align with screen coords.
+     * dy is now inverted before applying to mouse_y.
+   Result: user reports "close enough to perfect" with movement matching hand better; drift to top addressed.
+
+Build/Artifacts
+- Build command used:
+  PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh
+- Latest ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- NVMe image updated: /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+- Repeated warning: copy to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso failed (permission denied).
+
+Notes / Rationale
+- GUI freeze: caused by GUI blocking on fry_wait() immediately after launching apps. Removing wait keeps the event loop alive.
+- Mouse drift/erratic: likely due to sign/accel/smoothing interactions. Final fix focuses on direct deltas and correct Y inversion.
+
+Open Items / Next Steps
+- If mouse still feels off, consider:
+  - expose runtime toggles for deadzone/clamp/accel
+  - add sensitivity scaling in GUI based on DPI/host
+- If copy to /mnt/c is needed, fix permissions or provide alternate destination for ISO copy.
+
+User Reported Results
+- GUI freeze after Enter is fixed.
+- Mouse is much better; final state acceptable ("close enough to perfect").

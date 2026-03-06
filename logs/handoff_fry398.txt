@@ -1,0 +1,284 @@
+========================================================================
+  TaterTOS64v3 - Session Handoff Log (2026-02-28)
+  Covers: fry398 (NOT YET IMPLEMENTED — plan only)
+========================================================================
+
+TIMESTAMP
+---------
+2026-02-28 ~23:30 UTC
+
+LAST FRY LOG
+------------
+logs/fry397.txt (previous session — no code was changed this session)
+
+========================================================================
+RULES (STRICTLY, ABSOLUTELY NON-NEGOTIABLE - MUST FOLLOW EXACTLY)
+========================================================================
+1) Follow the plan step by step. No shortcuts or cut corners.
+2) No "minimal" implementations; do thorough, functional work.
+3) No Linux or Windows code inside the OS. Use references only.
+4) Use Edit/Write tools for code edits (apply_patch equivalent).
+5) Log every completed step in its own logs/fryN.txt with timestamps.
+6) If you change code, include a brief "why" in the log.
+7) Don't pause after saying you'll continue; just continue.
+8) Branding is TaterTOS64v3 (never FryOS).
+9) UEFI-only boot path.
+10) When testing, always include the necessary commands to run the test.
+11) Default rebuild mode is clean + verbose:
+    make clean
+    PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+12) All apps built and run must follow the TaterWin protocol.
+
+========================================================================
+WHAT WAS DIAGNOSED THIS SESSION (research only, no code changed)
+========================================================================
+
+ROOT CAUSE IDENTIFIED: PCR[DMI] Sideband Mirror Missing
+---------------------------------------------------------
+On Intel 300 series PCH (Coffee Lake, which Dell Precision 7530 uses),
+the PCI config space IOE register at offset 0x82 is NOT the authoritative
+decode control. The ACTUAL I/O decode is governed by PCR[DMI] sideband
+registers accessed through the P2SB (Primary to Sideband Bridge).
+
+Evidence from coreboot (reference only — NOT copied into OS):
+  - coreboot's lpc_enable_fixed_io_ranges() explicitly mirrors IOE to
+    GPMR/PCR[DMI] via gpmr_write32(GPMR_LPCIOE, io_enables)
+  - Without this mirror, the eSPI controller may not forward I/O cycles
+    to the EC even though PCI config 0x82 looks correct
+  - This explains: PCI config IOE=0x3F0F (bit 11 set = EC 0x62/0x66),
+    PS/2 at 0x60/0x64 works (KBC bit mirrored by Dell BIOS),
+    but EC at 0x62/0x66 returns 0xFF (EC bit NOT mirrored by Dell BIOS)
+
+Key register addresses (from Intel PCH datasheets & coreboot headers):
+  PID_DMI           = 0x88       (DMI port ID in PCR space)
+  PCR_DMI_LPCIOD    = 0x2770     (LPC I/O Decode Ranges mirror)
+  PCR_DMI_LPCIOE    = 0x2774     (LPC I/O Enable mirror)
+  SBREG_BAR default = 0xFD000000 (P2SB sideband register base)
+  P2SB device       = PCI 00:1f.1 (hidden by Dell BIOS)
+  P2SB hide bit     = config offset 0xE0, bit 8 (byte 0xE1 bit 0)
+
+  PCR physical addr = SBREG_BAR + (PID << 16) + offset
+  DMI LPCIOE phys   = 0xFD000000 + (0x88 << 16) + 0x2774 = 0xFD882774
+
+IOE bit definitions (from coreboot lpc_lib.h — reference only):
+  LPC_IOE_COMA_EN       = (1 << 0)   // COM A 3F8-3FF
+  LPC_IOE_COMB_EN       = (1 << 1)   // COM B 2F8-2FF
+  LPC_IOE_LPT_EN        = (1 << 2)   // LPT 378-37F
+  LPC_IOE_FDD_EN        = (1 << 3)   // FDD 3F0-3F7
+  LPC_IOE_LGE_200       = (1 << 8)   // Game 200-207
+  LPC_IOE_HGE_208       = (1 << 9)   // Game 208-20F
+  LPC_IOE_KBC_60_64     = (1 << 10)  // KBC (PS/2) 60h/64h
+  LPC_IOE_EC_62_66      = (1 << 11)  // EC 62h/66h  <<< THIS IS THE KEY BIT
+  LPC_IOE_SUPERIO_2E_2F = (1 << 12)  // SuperIO 2Eh/2Fh
+  LPC_IOE_EC_4E_4F      = (1 << 13)  // EC alt 4Eh/4Fh
+
+EXISTING BUG FOUND:
+  Line 619 of extended.c says:
+    ioe_after = ioe_before | (1u << 13);  /* MC_LPC2_EN: decode 0x62/0x66 */
+  This is WRONG. Bit 13 = EC_4E_4F (decode 0x4E/0x4F), NOT 0x62/0x66.
+  The correct bit for EC 0x62/0x66 is bit 11.
+  It was harmless because Dell BIOS sets 0x3F0F (all bits already set),
+  but the code and comment are incorrect and must be fixed.
+
+========================================================================
+IMPLEMENTATION PLAN — fry398 (4 steps, must do ALL)
+========================================================================
+
+STEP 1: Add PCR diagnostic fields to fry_acpi_diag structs
+-----------------------------------------------------------
+Files: src/kernel/acpi/extended.h, src/user/libc/libc.h
+
+Add these fields AT THE END of struct fry_acpi_diag (after lpc_reg88)
+in BOTH files (they must be identical):
+
+    /* PCR[DMI] sideband mirror diagnostics (fry398) */
+    uint32_t pcr_ioe_before;    /* PCR[DMI]+0x2774 before mirror write */
+    uint32_t pcr_ioe_after;     /* PCR[DMI]+0x2774 after mirror write */
+    uint8_t  pcr_mirror_done;   /* 1 if PCR mirror write was performed */
+    uint8_t  p2sb_hidden;       /* P2SB was hidden, had to unhide */
+    uint8_t  ec_early_sts;      /* port 0x66 status BEFORE any init */
+    uint8_t  _pad6;
+
+STEP 2: Add PCR[DMI] mirror write to ec_enable_lpc_decode()
+------------------------------------------------------------
+File: src/kernel/acpi/extended.c
+
+2a) Add include at top (after line 14):
+    #include "../mm/vmm.h"
+
+2b) Add PCR constants after the existing globals (after line 47):
+
+    /* Intel PCH SBREG/PCR constants (from Intel 300 Series PCH datasheet) */
+    #define SBREG_BAR_DEFAULT    0xFD000000ULL
+    #define P2SB_CFG_HIDE_OFF    0xE0u
+    #define P2SB_CFG_HIDE_BIT    (1u << 8)
+    #define PID_DMI              0x88u
+    #define PCR_DMI_LPCIOD       0x2770u
+    #define PCR_DMI_LPCIOE       0x2774u
+    #define IOE_KBC_60_64        (1u << 10)
+    #define IOE_EC_62_66         (1u << 11)
+
+2c) Add PCR diagnostic globals (after the constants):
+
+    static uint32_t g_pcr_ioe_before = 0xFFFFFFFFu;
+    static uint32_t g_pcr_ioe_after  = 0xFFFFFFFFu;
+    static uint8_t  g_pcr_mirror_done;
+    static uint8_t  g_p2sb_was_hidden;
+    static uint8_t  g_ec_early_sts = 0xFFu;
+
+2d) Add helper function pcr_get_sbreg_bar() — BEFORE ec_enable_lpc_decode():
+
+    Purpose: Unhide P2SB at PCI 00:1f.1, read SBREG_BAR from BAR0
+    (offset 0x10+0x14 for 64-bit BAR), re-hide P2SB, return bar.
+    If P2SB can't be accessed, return SBREG_BAR_DEFAULT.
+
+    Pseudocode:
+      - Read PCI 00:<bus>:1f.1 offset 0x00 (vendor/device)
+      - If 0xFFFFFFFF: P2SB is hidden
+        - Read offset 0xE0, clear bit 8, write back (unhide)
+        - Set g_p2sb_was_hidden = 1
+        - Re-read vendor/device
+      - If still 0xFFFFFFFF or vendor != 0x8086: return default
+      - Read BAR0 low (offset 0x10) and BAR0 high (offset 0x14)
+      - Re-hide P2SB if we unhid it (set bit 8 back)
+      - Combine into 64-bit bar, mask off low bits
+      - If bar is 0 or all-F: return default
+      - Return bar
+
+2e) Add function ec_mirror_pcr_ioe() — BEFORE ec_enable_lpc_decode():
+
+    Purpose: Write IOE value to PCR[DMI]+0x2774 sideband register.
+    This mirrors the PCI config IOE to the actual decode logic.
+
+    Pseudocode:
+      - Call pcr_get_sbreg_bar(bus) to get SBREG_BAR
+      - Compute phys addr: sbreg_bar + (PID_DMI << 16) + PCR_DMI_LPCIOE
+      - Call vmm_ensure_physmap_uc(phys_addr + 4) to map the region UC
+      - Compute virt addr: VMM_PHYSMAP_BASE + phys_addr
+      - Read current value via volatile uint32_t* → g_pcr_ioe_before
+      - Compute new value: current | IOE_EC_62_66 | IOE_KBC_60_64
+      - Also OR in the full ioe_val from PCI config
+      - Write new value
+      - Read back → g_pcr_ioe_after
+      - Set g_pcr_mirror_done = 1
+      - Also do the same for PCR_DMI_LPCIOD (offset 0x2770) with iod value
+      - kprint diagnostics showing before/after values
+
+2f) Modify ec_enable_lpc_decode() itself:
+
+    - Fix line 619: change (1u << 13) to IOE_EC_62_66 | IOE_KBC_60_64
+      and fix the comment to say "EC_62_66 + KBC_60_64"
+    - After the existing PCI config write block (around line 657),
+      add a call:
+        if (vendor == 0x8086u && class_code == 0x06u && subclass == 0x01u) {
+            uint16_t iod_val = (uint16_t)(reg80 & 0xFFFFu);
+            ec_mirror_pcr_ioe(bus, g_lpc_ioe_after, iod_val);
+        }
+
+2g) Add early EC status probe in ec_reg_init() at the very beginning
+    (before any other init, around line 1133):
+
+      g_ec_early_sts = inb(0x66);
+      kprint("ACPI: EC early status 0x%02x (before init)\n", g_ec_early_sts);
+
+    This tells us if the EC was alive at boot before we touched anything.
+    Need to add inb() declaration or include at top of file — but ec.c
+    already has it as a static inline. Either make a shared header or
+    duplicate the inline in extended.c (it's a 3-line inline asm).
+
+2h) Fill the new PCR diagnostic fields in acpi_get_diag() (around line 1093):
+
+      out->pcr_ioe_before  = g_pcr_ioe_before;
+      out->pcr_ioe_after   = g_pcr_ioe_after;
+      out->pcr_mirror_done = g_pcr_mirror_done;
+      out->p2sb_hidden     = g_p2sb_was_hidden;
+      out->ec_early_sts    = g_ec_early_sts;
+
+STEP 3: Update sysinfo.c to display PCR diagnostics
+-----------------------------------------------------
+File: src/user/apps/sysinfo.c
+
+- Increase WIN_H from 430 to 480 (or adjust as needed for one more line)
+- After the LPC84/LPC88 line (y=304), add a new line at y=320:
+
+    snprintf(buf, sizeof(buf), "  PCR IOE: 0x%04x -> 0x%04x mir=%u early=0x%02x",
+             diag.pcr_ioe_before & 0xFFFF, diag.pcr_ioe_after & 0xFFFF,
+             (unsigned)diag.pcr_mirror_done, (unsigned)diag.ec_early_sts);
+    gfx_draw_text(ctx, 10, 320, buf, 0xAAAAAA, 0xFF000000);
+
+- Shift all subsequent y-coordinates down by 16 (Batt line from 324→340, etc.)
+  OR insert the new line between existing lines and adjust spacing.
+
+STEP 4: Build, test, and log
+------------------------------
+- make clean
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+- Create logs/fry398.txt with timestamp, list of changed files, and why
+- Update this handoff with BUILD STATUS
+
+========================================================================
+CROSS-COMPATIBILITY NOTES
+========================================================================
+- PCR mirror only runs on Intel (vendor 0x8086) ISA bridges (class 06/01)
+- AMD systems: ec_enable_lpc_decode() skips writes (vendor != 0x8086)
+- Older Intel (pre-Skylake): PCR mirror is harmless — same register layout
+  existed from Skylake onwards; older systems don't use eSPI so PCI config
+  IOE alone suffices, and writing PCR is a no-op if SBREG isn't configured
+- Non-Intel P2SB: pcr_get_sbreg_bar() checks vendor == 0x8086 before
+  touching P2SB, falls back to SBREG_BAR_DEFAULT which is safe
+
+========================================================================
+WHAT THE DELL SYSINFO SHOULD SHOW AFTER THIS FIX
+========================================================================
+Best case (fix works):
+  EC:  OK  ports=0x62/0x66
+  probe: OK sts=0xXX try=1
+  PCR IOE: 0x3C0F -> 0x3F0F mir=1 early=0xff
+  (PCR IOE before=0x3C0F means bit 11 was NOT set in sideband = root cause)
+
+Diagnostic case (PCR was already correct, problem is elsewhere):
+  EC:  FAIL  ports=0x62/0x66
+  probe: STS_FF sts=0xff try=5
+  PCR IOE: 0x3F0F -> 0x3F0F mir=1 early=0xff
+  (PCR was already 0x3F0F = problem is NOT the PCR mirror, look elsewhere)
+
+Valuable either way — early=0xff vs early=0xXX tells us if EC was EVER
+responsive on these ports after UEFI handoff.
+
+========================================================================
+FILES TO MODIFY (exact paths)
+========================================================================
+src/kernel/acpi/extended.c   — main fix (PCR mirror, early probe, IOE bit fix)
+src/kernel/acpi/extended.h   — add PCR fields to fry_acpi_diag
+src/user/libc/libc.h         — add same PCR fields to user-side struct
+src/user/apps/sysinfo.c      — display PCR diagnostics
+logs/fry398.txt               — change log
+
+NEXT FRY LOG: fry398.txt
+========================================================================
+
+========================================================================
+BUILD STATUS UPDATE (2026-02-28 22:38:52 UTC)
+========================================================================
+Status: IMPLEMENTED + BUILT
+
+Completed:
+- Step 1: fry_acpi_diag extended in kernel/user headers
+- Step 2: extended.c updated (IOE bit fix, PCR mirror path, early EC status,
+          diag plumbing)
+- Step 3: sysinfo updated with PCR line and layout shift
+- Step 4: clean rebuild and ISO generation completed
+
+Build commands run:
+- make clean
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Build result:
+- PASS (exit code 0)
+- ISO: out/tatertos64v3.iso
+- NVMe image: out/tater_nvme.img
+
+Environment note:
+- Optional export copy to /mnt/c/Users/jjsako/Documents/tateriso/ failed due
+  to read-only filesystem in this environment (non-fatal for build output).
+========================================================================

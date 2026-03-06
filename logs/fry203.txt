@@ -1,0 +1,8 @@
+2026-02-21 01:57:15 CST
+Step: Replace post-VMM debug strings with single-byte markers in after_vmm.
+Why: Output order was corrupted; need to verify stack switch and after_vmm entry without string pointer/serial dependencies.
+Changes:
+- after_vmm now emits 'A','B','C' via early_debug_putc and halts.
+- Added 'v' marker immediately after VMM before stack_switch_and_call.
+Notes:
+- Temporary diagnostics will be removed once call flow is confirmed.

@@ -1,0 +1,77 @@
+fry457 — ToTFS: Tater OS Total Filesystem
+==========================================
+Date: 2026-03-01 23:48 UTC
+
+## Summary
+Implemented ToTFS, a custom writable extent-based filesystem for
+TaterTOS64v3, replacing FAT32 on the NVMe partition. FAT32 is retained
+for the ISO/EFI boot path (ramdisk fallback).
+
+## What Changed
+
+### New Files Created
+- src/kernel/fs/totfs.h — On-disk structures (superblock 256B, inode 256B,
+  extent 16B, dirent variable-length), constants (TOTFS_MAGIC=0x544F5446,
+  TOTFS_PART_GUID), kernel-side structs (totfs_fs, totfs_file_private 128B)
+- src/kernel/fs/totfs.c — Full kernel driver: probe, mount, block I/O,
+  inode read/write, path resolution, directory lookup, extent-based
+  read/write, block/inode allocation/free, VFS wrappers (open, read,
+  write, close, readdir, stat, create, mkdir, unlink)
+- tools/mktotfs.c — Host-side formatter: creates superblock, bitmaps,
+  inode table, root directory. Compiles with system gcc.
+- tools/totcopy.c — Host-side file copy: reads superblock, resolves paths,
+  allocates inodes/blocks, writes file content, adds dirents. Supports
+  --list mode for debugging.
+
+### Modified Files
+- src/kernel/fs/vfs.h — Added create/mkdir/unlink to fs_ops; declared
+  vfs_create, vfs_mkdir, vfs_unlink
+- src/kernel/fs/vfs.c — Added ToTFS probe/mount path (GPT type GUID +
+  raw LBA 2048/4096/8192 fallback) BEFORE FAT32; implemented
+  vfs_create/mkdir/unlink dispatch
+- src/kernel/proc/syscall.c — Added SYS_CREATE(29), SYS_MKDIR(30),
+  SYS_UNLINK(31); O_CREAT(0x40) handling on SYS_OPEN
+- src/user/libc/libc.h — Declared fry_create, fry_mkdir, fry_unlink;
+  added O_CREAT constant
+- src/user/libc/libc.c — Implemented fry_create, fry_mkdir, fry_unlink
+  syscall wrappers
+- src/user/shell/shell.c — Added mkdir, rm, touch, write commands;
+  updated help text
+- Makefile — Added totfs.o to KERNEL_OBJS; added hosttools target
+  for mktotfs and totcopy
+- build_iso.sh — Creates ToTFS NVMe partition (mktotfs + totcopy)
+  instead of FAT32 mcopy; builds host tools automatically
+
+## Why
+FAT32 had 4GB file size limit, 8.3 naming, no case sensitivity, and
+fragile cluster chains. ToTFS eliminates these with:
+- 64-bit file sizes
+- 255-char filenames
+- Case-preserving (case-insensitive compare)
+- Extent-based allocation (up to 10 inline, indirect overflow)
+- Simple on-disk format: superblock + bitmaps + inode table + data
+
+## On-Disk Format
+- Block size: 4096 bytes (8 NVMe sectors)
+- Layout: superblock(B0), inode bitmap(B1), block bitmap(B2),
+  inode table(B3-B66, 1024 inodes), data(B67+)
+- Inode: 256 bytes, 10 inline extents, indirect block pointer
+- Dirent: variable-length, 4-byte aligned, packed in data blocks
+- GPT type GUID: 46544F54-0053-5441-4552-544F53363400
+
+## Write Ordering (crash safety)
+Data blocks → inode → bitmaps → superblock
+Worst case = leaked blocks (future fsck), never dangling pointers.
+
+## Test Results
+- mktotfs: Creates valid image (TOTF magic, correct bitmap marks)
+- totcopy: Copies files, --list shows correct contents
+- Full build: make clean + build_iso.sh succeeds
+- NVMe image: 5 .fry files at root (SHELL, GUI, SYSINFO, UPTIME, PS)
+- Kernel compiles clean with totfs.o linked
+- ISO + NVMe exported to Windows for QEMU testing
+
+## Awaiting
+- QEMU boot test: kernel should print "VFS: ToTFS mounted at LBA 2048"
+- Shell: ls, cat, mkdir, touch, write, rm commands
+- Dell hardware test

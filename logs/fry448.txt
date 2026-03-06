@@ -1,0 +1,55 @@
+fry448 - Shell launch fault fix (allocator state corruption across syscall)
+==========================================================================
+Date: 2026-03-02
+Timestamp (UTC): 2026-03-02 02:25:24 UTC
+
+HASH VERIFICATION (performed before this log per Rule 15)
+==========================================================================
+- Source build ISO:
+  a4492d8708e468176203cb7497f363bc6ce5aa506b3263581d98755339e77273  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Target/export ISO:
+  a4492d8708e468176203cb7497f363bc6ce5aa506b3263581d98755339e77273  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- Result:
+  Source and target hashes match.
+
+SYMPTOM
+==========================================================================
+Opening Shell triggered a user-mode page fault and fault cascade.
+From qemu trace:
+  RIP=0x40140b  CR2=ffff80000063f010
+  fault site mapped to malloc() append path.
+
+ROOT CAUSE
+==========================================================================
+User libc syscall wrappers modeled only RCX/R11 as clobbered, but kernel
+syscall return path does not preserve all caller-saved GPRs. Optimized user
+code (malloc) held allocator state across syscall and that state was corrupted.
+
+FIX
+==========================================================================
+File:
+  /home/jjsako/TaterTOS64v3/src/user/libc/libc.c
+
+Changes:
+- Updated syscall wrapper inline asm constraints/clobbers to model actual
+  register clobber behavior:
+  - syscall3: +D/+S/+d and clobber r8/r9/r10/rcx/r11
+  - syscall2: +D/+S and clobber rdx/r8/r9/r10/rcx/r11
+  - syscall1: +D and clobber rsi/rdx/r8/r9/r10/rcx/r11
+  - syscall0: clobber rdi/rsi/rdx/r8/r9/r10/rcx/r11
+
+WHY
+==========================================================================
+Prevents compiler from keeping live allocator/process state in registers that
+the kernel syscall path may overwrite, eliminating the shell startup crash.
+
+BUILD / EXPORT
+==========================================================================
+Command executed:
+  PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh
+
+Result:
+- Build succeeded.
+- ISO regenerated and exported.
+- Export path updated:
+  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso

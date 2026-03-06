@@ -1,0 +1,39 @@
+2026-02-26 04:55:41 UTC
+Step: Explicitly re-read RULES section in planv3.txt and applied next move under those constraints.
+Why: User marked rules as non-negotiable and requested immediate compliance before further work.
+
+Rules loaded from planv3.txt:17-28:
+1) Follow the plan step by step. No shortcuts or cut corners.
+2) No minimal implementations; do thorough, functional work.
+3) No Linux or Windows code inside the OS.
+4) Use apply_patch for code edits.
+5) Log every completed step in its own logs/fryN.txt with timestamps.
+6) If you change code, include a brief why in the log.
+7) Do not pause after saying you will continue; continue.
+8) Branding is TaterTOS64v3 (never FryOS).
+9) UEFI-only boot path.
+10) When testing, include necessary commands to run the test.
+
+Code change:
+- src/kernel/main.c
+  - Added build provenance print at boot:
+    kprint("build: %s\n", TATER_BUILD_TAG);
+  - Added:
+    #define TATER_BUILD_TAG __DATE__ " " __TIME__
+Reason:
+- Real-hardware serial text used older uppercase init markers and did not match current
+  lowercase source markers. Added explicit build tag so the next boot log proves which
+  kernel image is actually running.
+
+Build/Test commands run:
+- PATH="/opt/cross/bin:/usr/bin:/bin:$PATH" bash /home/jjsako/TaterTOS64v3/build_iso.sh
+- strings -a /home/jjsako/TaterTOS64v3/kernel.elf | rg -n "TaterTOS64v3 starting|build:" -S
+
+Result:
+- Artifact build completed:
+  - /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+  - /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Windows export copy still failed due mount mode:
+  cp: cannot create regular file '/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso': Read-only file system
+- Kernel image contains marker format string:
+  build: %s

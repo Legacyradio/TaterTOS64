@@ -1,0 +1,7 @@
+2026-02-21 01:30:17 CST
+Step: Reset RSP to kernel_stack after vmm_init.
+Why: Debugcon reaches K_BEFORE_RSP, then crashes before any function call returns; qemu log shows RSP in GDT/IDT area, implying stack pointer is not on kernel_stack after CR3 switch.
+Changes:
+- main.c now sets RSP to kernel_stack+sizeof(kernel_stack) immediately after vmm_init and emits K_RSP_RESET.
+Notes:
+- Temporary diagnostic markers remain until crash point is resolved.

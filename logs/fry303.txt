@@ -1,0 +1,4 @@
+[2026-02-22 16:49:21 UTC] Step: Clamp wake-up CPU index in sched_tick.
+Why: The sleeper wake loop can enqueue a process onto an invalid runqueue if its cpu field is out of range, which could corrupt scheduling and mimic "phantom" runnable tasks.
+Change: Compute CPU count in sched_tick and clamp procs[i].cpu before rq_push on wake.
+Files: src/kernel/proc/sched.c

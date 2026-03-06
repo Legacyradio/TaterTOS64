@@ -1,0 +1,64 @@
+========================================================================
+TaterTOS64v3 - fry545 - extend post-kprint stage-square instrumentation
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 21:15:57 UTC
+2026-03-05 15:15:57 CST
+
+CONTEXT
+-------
+- User report: "i got 15 little squares for TaterTOS64v3".
+- Existing guide (fry544) defines 15 squares as: passed `kprint_init`, failure
+  is later inside `after_vmm`.
+
+WHY
+---
+- Needed finer on-screen localization after stage 15 for bare-metal boots
+  where serial capture may be missing or delayed.
+- This keeps diagnosis hardware-agnostic: only adds visual breadcrumbs and
+  does not alter subsystem behavior.
+
+CHANGE APPLIED
+--------------
+- Updated `src/kernel/main.c` only.
+- Added new top-row stage markers in `after_vmm(struct fry_handoff *handoff)`:
+  - stage 16: after startup prints, before `heap_init()`
+  - stage 17: after handoff copy into heap
+  - stage 18: after ACPI table layer (`acpi_tables_init/madt/fadt/mcfg/hpet_tbl`)
+  - stage 19: after IRQ infra (`irq_desc/pic/lapic/ioapic`)
+  - stage 20: after AML/events/power
+  - stage 21: after ACPI bus init
+  - stage 22: after SMP/timer bring-up
+  - stage 23: after GOP init
+  - stage 24: after USB init
+  - stage 25: after storage init
+  - stage 26: after network init
+  - stage 27: after VFS directory/stat diagnostics
+  - stage 28: after process/userspace launch attempts
+  - stage 29: after AML background thread setup
+
+UPDATED INTERPRETATION (POST-FRY544)
+------------------------------------
+- 15 squares: passed `kprint_init`; failure later in `after_vmm`.
+- 16-29 squares: stall is between the reached marker and the next marker.
+- 29 squares: reached late steady-state path (post AML thread spawn setup).
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Build validation:
+   - `/bin/bash -lc 'PATH="/opt/cross/bin:$PATH" make -j"$(nproc)"'`
+2) ISO pipeline:
+   - `./build_iso.sh`
+3) RESULT:
+   - PASS (kernel and ISO built successfully)
+   - ISO: `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+   - Export warning unchanged:
+     `cp: cannot create regular file '/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso': Read-only file system`
+
+NOTES
+-----
+- No hash recorded in this log (planv3 rule 16).
+
+========================================================================

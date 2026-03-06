@@ -1,0 +1,76 @@
+========================================================================
+TaterTOS64v3 - fry555 - consolidate NVMe globals into controller contexts
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 23:09:32 UTC
+2026-03-05 17:09:32 CST
+
+CONTEXT
+-------
+- Review flagged excessive NVMe driver global/static state, limiting
+  reentrancy and multi-controller scalability.
+
+WHY
+---
+- Controller-specific state should be encapsulated per device instance rather
+  than spread across many process-global variables.
+- This is required groundwork for supporting multiple discovered NVMe devices.
+
+CHANGE APPLIED
+--------------
+- File updated: `src/drivers/storage/nvme.c`
+  - Introduced `struct nvme_ctrl` to hold per-controller runtime state:
+    MMIO/config fields, queues, IRQ wait state, buffers, and block-device
+    descriptor.
+  - Added controller registry:
+    - `g_nvme_ctrls[NVME_MAX_CONTROLLERS]`
+    - `g_nvme_ctrl_count`
+    - `g_primary_nvme`
+    - active-context pointer `g_nvme`
+  - Replaced direct global variable definitions with context field accessors
+    (`#define` mappings to `g_nvme->...`) to preserve existing call flow while
+    removing global-state sprawl.
+  - Added `nvme_ctrl_reset()` initialization helper.
+  - IRQ handler now uses `dev_id` controller context directly (no cross-device
+    global IRQ state coupling).
+  - IRQ request/free now pass the controller context as `dev_id`.
+  - Added controller-aware I/O dispatch:
+    - `nvme_io_rw_for_ctrl()`
+    - block callbacks use `bd.ctx` / callback `ctx` to select target
+      controller.
+    - Added sleep-safe context ownership gate around active-context switching.
+  - Reworked discovery registration:
+    - Added `nvme_try_init_ctrl()` + `nvme_try_register_active_ctrl()`.
+    - `nvme_init_from_cfg()` now scans and registers multiple matching NVMe
+      functions (bounded by `NVME_MAX_CONTROLLERS`).
+    - `nvme_init_from_rst_remap()` retained and now also registers discovered
+      remapped NVMe instances.
+    - VMD probing path still active and now accumulates controllers.
+  - Updated `nvme_init()` to:
+    - clean up previously registered controllers,
+    - probe native PCI + RST remap + VMD paths,
+    - report each discovered controller,
+    - set active context to primary controller.
+  - Updated `nvme_get_block_device()` to return primary controller block device.
+
+EFFECT
+------
+- Removes “global variables galore” layout from NVMe runtime state.
+- Keeps RST remap probing path intact.
+- Establishes per-controller state model and multi-controller registration.
+- Preserves existing primary-device API compatibility.
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Kernel build validation:
+   - `PATH="/opt/cross/bin:$PATH" make -j"$(nproc)"`
+2) RESULT:
+   - PASS (build succeeded)
+
+NOTES
+-----
+- No hash recorded in this log (planv3 rule 16; no user-requested rebuild).
+
+========================================================================

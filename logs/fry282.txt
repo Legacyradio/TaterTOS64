@@ -1,0 +1,10 @@
+[2026-02-22 07:05:26 UTC] Add minimal physmap mapping breadcrumbs.
+
+Changes:
+- src/kernel/mm/vmm.c: log start/end of physmap mapping and completion in vmm_ensure_physmap.
+
+Why:
+- Hang persists at "NVMe: map mmio"; these two lines confirm whether we stall inside vmm_ensure_physmap or after it, without flooding logs.
+
+Tests (not run):
+- bash build_iso.sh

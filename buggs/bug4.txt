@@ -1,0 +1,95 @@
+========================================================================
+TaterTOS64v3 - bug4 — SHM lifetime UAF across processes
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-04 11:12:41 CST
+
+WHY THIS LOG
+------------
+- Reported high-severity SHM lifetime bug: shared physical pages could be freed
+  while still mapped in other processes.
+- Trigger path involved `SYS_SHM_FREE` with no ownership or mapping-lifetime
+  enforcement.
+
+BUG
+---
+- File: `src/kernel/proc/syscall.c`
+- Reported path anchors:
+  - `src/kernel/proc/syscall.c:549`
+  - `src/kernel/proc/syscall.c:555`
+  - `src/kernel/proc/syscall.c:559`
+- Root issue:
+  - `SYS_SHM_FREE` freed SHM physical pages immediately.
+  - No owner check.
+  - No per-process mapping tracking.
+  - No unmap-before-free for other address spaces.
+- Impact:
+  - cross-process use-after-free / memory corruption when freed pages were
+    still mapped elsewhere.
+
+USER-VISIBLE SYMPTOMS
+---------------------
+- Random app crashes/hangs after another process frees SHM.
+- GUI corruption/flicker/garbage pixels in window surfaces.
+- Data bleed or stale view where one process reads/writes reused memory.
+- Heisenbugs (timing-dependent failures, harder to reproduce).
+- Potential kernel instability if freed pages are recycled into sensitive data.
+
+FIX APPLIED
+-----------
+1) SHM ownership and map tracking
+- File: `src/kernel/proc/syscall.c`
+- Added region metadata:
+  - `owner_pid`
+  - `map_count`
+  - `mapped_pids[PROC_MAX]` (slot+pid guarded)
+
+2) Safe destroy path
+- File: `src/kernel/proc/syscall.c`
+- Added SHM teardown helpers that:
+  - unmap region from every tracked live process first
+  - then free physical pages
+  - then reset region metadata
+
+3) Owner-only free
+- File: `src/kernel/proc/syscall.c`
+- `SYS_SHM_FREE` now rejects non-owner callers.
+
+4) Process-exit cleanup integration
+- Files: `src/kernel/proc/process.c`, `src/kernel/proc/syscall.h`
+- Added `syscall_shm_process_exit(pid)` and invoked it in `proc_free()` before
+  address-space teardown so SHM ownership/mappings are detached on process exit.
+
+5) User-space unmap primitive
+- Files: `src/kernel/mm/vmm.h`, `src/kernel/mm/vmm.c`
+- Added `vmm_unmap_user(pml4_phys, virt)` for explicit remote address-space
+  unmap during SHM teardown.
+
+WHY THIS FIX
+------------
+- Prevents freeing shared physical pages while other processes still hold valid
+  mappings.
+- Enforces SHM ownership policy for free operations.
+- Makes teardown deterministic and avoids cross-process dangling mappings.
+
+FILES CHANGED
+-------------
+- src/kernel/proc/syscall.c
+- src/kernel/proc/syscall.h
+- src/kernel/proc/process.c
+- src/kernel/mm/vmm.c
+- src/kernel/mm/vmm.h
+
+BUILD / VERIFY COMMAND
+----------------------
+- `PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh`
+
+BUILD RESULT
+------------
+- PASS (build + ISO generation)
+- Note: ISO export copy to `/mnt/c/Users/jjsako/Documents/tateriso` failed in
+  this environment due to read-only filesystem.
+
+========================================================================

@@ -1,0 +1,4 @@
+[2026-02-20 18:26:50 UTC] Step: Fix PCI core driver type usage and bus loop.
+Why: Build failed because struct fry_driver was undefined and bus loop used uint8_t with a 256 bound.
+Change: Included driver.h for fry_driver and changed bus loop to uint16_t with explicit cast.
+Files: src/drivers/pci/pci_core.c

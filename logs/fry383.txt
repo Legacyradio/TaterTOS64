@@ -1,0 +1,33 @@
+fry383 — Battery/backlight stats robustness fixes (EC + ACPI selection)
+Timestamp: 2026-02-28 15:14:42 UTC
+
+Why:
+  Battery/backlight stats still reported zeros after EC integration. Two likely
+  failure modes were present in code:
+  1) EC was disabled permanently after a single timeout.
+  2) Battery refresh could overwrite valid values with a later empty battery slot.
+
+Changes:
+  1) src/kernel/acpi/ec.c
+     - Added consecutive-failure tracking (`EC_MAX_CONSEC_FAIL=4`).
+     - EC is now disabled only after repeated failures, not a single transient timeout.
+     - Successful EC read/write resets failure counter.
+
+  2) src/kernel/acpi/extended.c
+     - Added `_STA`-based presence check helper (`dev_present()`).
+     - Battery discovery now only includes present `PNP0C0A` devices.
+     - Battery refresh now prefers the first non-zero `_BST` sample and does not
+       overwrite good data with later zero-only devices.
+     - Battery state is refreshed once during init before starting battery thread.
+     - `acpi_battery_get()` now returns error when no battery device is detected.
+     - Backlight fallback scan now skips non-present devices and chooses first
+       non-zero `_BCL` level if initial `_BQC` resolves to 0.
+
+Build/Test commands run:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Result:
+  - Build succeeded.
+  - ISO produced: out/tatertos64v3.iso
+  - Windows export copy failed due read-only filesystem (non-fatal packaging step).

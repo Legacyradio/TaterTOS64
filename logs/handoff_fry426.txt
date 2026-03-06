@@ -1,0 +1,109 @@
+========================================================================
+TaterTOS64v3 - Session Handoff Log (fry426)
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-01 16:22:12 UTC
+
+HARDWARE LOCK (NON-NEGOTIABLE)
+------------------------------
+- Model: Dell Precision 7530
+- CPU: Intel Core i5-8300H (Coffee Lake-H)
+- Firmware: latest BIOS available for this model
+- Any EC/eSPI/P2SB/ACPI decisions in this chain are pinned to this target.
+
+RULES SNAPSHOT
+--------------
+Follow planv3 rules exactly. Added hardware rule:
+- Bare-metal validation target is locked to Precision 7530 i5-8300H with latest BIOS.
+- Log BIOS revision/date whenever visible during testing.
+- OS behavior/architecture must remain hardware-agnostic. Hardware quirks are allowed only behind runtime detection and isolated paths.
+
+CURRENT CODE STATE (BEFORE USER TEST BOOT)
+------------------------------------------
+Patched file:
+- src/kernel/acpi/extended.c
+
+Key behavioral change already implemented:
+1) Restored EC handshake before first EC probe:
+   - Invoke _REG(3,1) on selected PNP0C09 node.
+   - Suppress EC region I/O during _REG via ec_set_reg_in_progress(1/0).
+2) Invoke _INI when present.
+3) Evaluate/enable _GPE dynamically (fallback to 111 if _GPE unavailable).
+4) Probe now runs after _REG/_INI/GPE handshake.
+
+Build status:
+- make clean + PATH=... /bin/bash -x build_iso.sh => PASS
+- ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- NVMe image: /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+
+POST-BOOT DATA TO CAPTURE (REQUIRED)
+------------------------------------
+Capture full ACPI lines and sysinfo ACPI block, specifically:
+- ACPI: selected EC node ...
+- ACPI: EC _REG(3,1) invoked on selected node
+- ACPI: EC _INI invoked on selected node (or failure/missing line)
+- ACPI: EC _GPE=... enabled (or fallback line)
+- ACPI: EC post-handshake pre-probe sts=...
+- ACPI: EC probe #1..#5 lines and failure mode
+- ACPI: eSPI errors cleared -> PCERR/VWERR/LNKERR
+- sysinfo:
+  - EC: OK/FAIL
+  - probe: STEP sts=... try=...
+  - node/REG/INI/GPE fields
+  - PCR PID line
+  - eSPI pid/errors line
+  - Batt: found / STA
+
+RESUME PLAN AFTER TEST BOOT (DETAILED)
+--------------------------------------
+Phase 1 - Classify result
+1) If EC probe succeeds and battery values become non-zero:
+   - Freeze EC path.
+   - Keep only diagnostic cleanup changes if needed.
+   - Log success and stop EC bring-up churn.
+2) If _REG/_INI/GPE lines do not appear:
+   - Treat as handshake execution failure path.
+   - Add explicit per-call return-type/return-value diagnostics around _REG/_INI/_GPE eval.
+3) If _REG/_INI/GPE appear but EC still fails (OBF timeout or STS_FF):
+   - Continue with Phase 2+3 below.
+
+Phase 2 - Handshake validity instrumentation
+1) Add explicit logging:
+   - whether has_method3(REG/INI/GPE) returned true
+   - _REG return object type (if any)
+   - ec_get_reg_suppressed_count right after _REG
+   - pre/post status at cmd port immediately after _REG and immediately after _INI
+2) Keep the existing recovery ladder (normal, burst, sci_drain, force_enable, force+burst),
+   but log status before each method and immediately after each method.
+
+Phase 3 - Probe-path tightening for this hardware
+1) If failure mode is OBF timeout with status 0x00:
+   - Add a second direct probe pass with extended timeout constants
+     only for this hardware signature (8086:a30e + Precision 7530).
+2) If failure mode shifts to STS_FF after an operation:
+   - Identify first operation that flips status to 0xFF and gate that operation.
+3) Keep eSPI error read/clear flow enabled for diagnosis; do not disable it blindly.
+
+Phase 4 - Battery path verification
+1) When EC probe reports OK:
+   - Verify BAT _STA != 0
+   - Verify BST package fields are non-zero where expected.
+2) If EC is OK but battery still zero:
+   - Focus on AML battery method path (_STA/_BST/_BIX/_BIF) and node selection, not EC transport.
+
+COMMANDS TO RUN ON RESUME
+-------------------------
+From /home/jjsako/TaterTOS64v3:
+1) make clean
+2) PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+3) (optional export)
+   mkdir -p /mnt/c/Users/jjsako/Documents/tateriso && cp out/tatertos64v3.iso /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+EXPECTED NEXT LOG CHAIN
+-----------------------
+- Next step log file: logs/fry427.txt
+- Keep this handoff as control plan: logs/handoff_fry426.txt
+
+========================================================================

@@ -1,0 +1,49 @@
+fry385 — Precision 7530 battery/backlight compatibility hardening
+Timestamp: 2026-02-28 15:36:08 UTC
+
+Why:
+  Real-hardware report changed from battery zeros to "Battery: unavailable" while
+  dimmer/backlight still showed 0. The detection path needed to be more tolerant
+  of firmware `_STA` edge cases while staying generic for other PC models.
+
+Changes:
+  1) src/kernel/acpi/extended.c
+     - Added `_STA` helper (`get_sta_flags`) and method-probe helper (`has_method3`).
+     - Updated `dev_present()` to treat control-method battery (`PNP0C0A`) bit4
+       as present even if bit0 is clear (compat path for firmware variance).
+     - Battery discovery (`find_battery_cb`) now accepts battery nodes when either:
+       a) `_STA` says present, or
+       b) battery methods exist (`_BST`) even if `_STA` is unreliable.
+     - Battery refresh now evaluates fallback `_BST`-capable nodes even when `_STA`
+       reports not-present, preventing false "unavailable" from discovery/refresh mismatch.
+     - Added explicit battery candidate logs with node path + `_STA`.
+     - Added `ACPI: battery candidates=%u` log during init.
+     - Backlight init now rejects non-present `ACPI0008` primary match and falls
+       back to method-based scan; logs selected backlight node path + `_STA`.
+     - Backlight fallback scan now tolerates `_STA` quirks if `_BQC`/`_BCL` exist.
+
+  2) src/kernel/acpi/notify.c
+     - Replaced string-only `_HID` checks with `ns_hid_match()` so notify refresh
+       works for both string and integer/EISA-encoded HID objects.
+     - This keeps battery/backlight refresh logic model-agnostic.
+
+Build/Test commands run (rule 11 sequence):
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Result:
+  - Build succeeded.
+  - ISO produced: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  - NVMe image produced: /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+  - Non-fatal export warning persisted:
+    cp to /mnt/c/Users/jjsako/Documents/tateriso failed (read-only filesystem).
+
+Expected on next Precision 7530 boot:
+  - One of:
+      `ACPI: no battery`
+      `ACPI: battery candidates=...`
+      `ACPI: battery _BIF count=...`
+  - And one of:
+      `ACPI: no backlight device`
+      `ACPI: backlight node ... _STA=...`
+      `ACPI: backlight levels=... current=...`

@@ -1,0 +1,75 @@
+fry271 — 2026-02-25
+Phase: SMP + VMD bug fixes (real hardware boot)
+
+=== OBSERVED SYMPTOMS ===
+Serial log showed two failures on real hardware:
+  1. SMP: CPU4 FAILED TO START (7/8 CPUs online)
+  2. VMD: MEMBAR1(ECAM) IS 0, SKIPPING → NVMe not found → VFS no device
+     → GUI launch failed, shell launch failed
+
+=== BUG 1: CPU4 FAILED TO START (smp.c) ===
+
+Root cause (two-part):
+  A) Only one SIPI was sent. Intel MP spec requires TWO SIPIs.
+     The second SIPI is ignored if the AP already started, but necessary
+     if the CPU was in a deep C-state and missed the first.
+  B) 500ms timeout too tight on real hardware. The AP DID start
+     (LAPIC TIMER: 1505 TICKS/MS printed before the fail message),
+     but there is a race: lapic_timer_init() calls kprint() which
+     holds kprint_lock. While the AP held kprint_lock printing
+     "LAPIC TIMER: 1505 TICKS/MS", the BSP's 500ms counter expired,
+     the BSP checked cpu_online[4] (still 0 — AP hadn't set it yet,
+     still inside kprint), and decided the CPU failed. The AP then
+     released kprint_lock and set cpu_online[4]=1, but too late.
+     The BSP had already moved on to CPU5.
+
+Fix (src/drivers/smp/smp.c):
+  - Poll 100ms, then send SIPI #2 if AP not yet online
+  - Extended total wait from 500ms to 2000ms
+  - This eliminates both the missed-SIPI and the timing race
+
+Why: Intel MP Specification §B.4 mandates two SIPIs. Real hardware
+     cores can be in deep C-states and take longer to respond than QEMU.
+     The kprint_lock contention makes the race window larger than expected.
+
+=== BUG 2: VMD MEMBAR1=0, NVMe not found (vmd.c) ===
+
+Root cause:
+  VMD DID=0x1911 uses a BIOS convention called
+  VMD_FEAT_HAS_MEMBAR_FROM_VMD_SCRATCH (Linux kernel term).
+  The BIOS intentionally does NOT program BAR2+BAR3 (MEMBAR1/ECAM).
+  Instead, the ECAM physical base address is stored in MEMBAR0 at
+  offset 0x6C0 (a scratch register). The driver treated
+  MEMBAR1=0 as "no ECAM, skip device" — wrong for this DID.
+
+Fix (src/drivers/storage/vmd.c):
+  When ecam==0 and device_id==0x1911:
+    1. vmd_ensure_mapped(membar0, 0x800) to cover MEMBAR0+0x6C0
+    2. Read 32-bit words at MEMBAR0+0x6C0 and MEMBAR0+0x6C4
+    3. Assemble as 64-bit ECAM physical base
+    4. If non-zero, proceed with normal VMD ECAM scan
+
+Why: Matches Linux kernel vmd.c VMD_FEAT_HAS_MEMBAR_FROM_VMD_SCRATCH path.
+     DID=0x1911 is older Intel VMD that uses the scratch register instead
+     of programming BAR2 directly.
+
+=== CASCADING EFFECTS ===
+If scratch register is valid, VMD scan finds NVMe, injects into pci_info[],
+nvme_init() finds it, VFS mounts, GUI/shell can launch.
+
+=== TEST COMMANDS ===
+Look for in serial:
+  VMD: DID=0x1911 scratch(0x6C0)=0x<nonzero>
+  VMD bus0:0.0 vid=...
+  VMD: NVMe! bar0=... bar1=...
+  NVMe: found at ...
+  SMP: CPU4 online (APIC N)
+
+=== FILES CHANGED ===
+  src/drivers/smp/smp.c   — second SIPI + 2000ms timeout
+  src/drivers/storage/vmd.c — scratch register fallback for DID=0x1911
+
+=== BUILD ===
+PATH="/opt/cross/bin:/usr/bin:/bin:$PATH" make clean all && ./build_iso.sh
+Build: clean (warnings only: fat32/vfs/syscall, pre-existing)
+ISO: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso

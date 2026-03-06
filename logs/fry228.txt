@@ -1,0 +1,6 @@
+DATE: 2026-02-21
+TIME: 09:58:00 -0600
+DESC: Use 2MB pages for early identity map to reduce page-table allocations.
+WHY: vmm_map for RSDP still fails with '!' due to early page-table exhaustion.
+FILES:
+  - src/kernel/mm/vmm.c

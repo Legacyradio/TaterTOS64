@@ -1,0 +1,55 @@
+========================================================================
+TaterTOS64v3 - fry539 — bare-metal boot hang fix at post-ExitBS handoff
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 18:29:50 UTC
+2026-03-05 12:29:50 CST
+
+CONTEXT
+-------
+- User-reported bare-metal boot stall on Dell Precision 7530 after:
+  - `TATER EFI: handoff ExitBS`
+- This step documents the applied fix and rebuild for hardware retest.
+
+WHY
+---
+- Early kernel serial output used an unbounded COM1 transmit-ready spin.
+- On systems without a usable UART path, first early print (e.g. `K_START`)
+  can hang forever and look like an ExitBootServices lockup.
+- Fix required hardware-agnostic behavior: detect UART availability at runtime
+  and fail open (continue boot) when serial is unavailable.
+
+CHANGE APPLIED
+--------------
+- Updated `src/boot/early_serial.h`:
+  - Added one-time UART presence probe using loopback test.
+  - Added cached serial state (unknown/present/unavailable).
+  - Made `early_serial_putc()` bounded with timeout.
+  - Suppressed early serial writes when UART is unavailable.
+- No global Dell-only assumptions were introduced.
+
+FILES
+-----
+- `src/boot/early_serial.h`
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Rebuild + ISO generation command used:
+   - `/bin/bash -lc 'PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh'`
+2) RESULT:
+   - PASS (build + ISO generation completed)
+   - ISO: `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+   - Export: `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+HARDWARE NOTE
+-------------
+- BIOS revision/date was not visible in this shell session, so no BIOS metadata
+  is recorded in this log entry.
+
+HASH POLICY
+-----------
+- SHA-256 not recorded in this step (not explicitly requested by user).
+
+========================================================================

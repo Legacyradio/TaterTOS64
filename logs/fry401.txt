@@ -1,0 +1,36 @@
+fry401 — P2SB CF8/CFC unhide follow-up + re-hide RMW safety + build command capture
+Timestamp: 2026-03-01 00:38:49 UTC
+
+CONTEXT:
+  Continued from fry400 where P2SB access was moved to legacy PCI config I/O
+  (CF8/CFC) because hidden P2SB may not decode via ECAM.
+
+CHANGES:
+1) src/kernel/acpi/extended.c
+   - Kept legacy CF8/CFC helper path for P2SB access:
+     outb/outl/inl + pci_cf8_read32/pci_cf8_write32/pci_cf8_read8/pci_cf8_write8.
+   - pcr_get_sbreg_bar() uses CF8/CFC for Vendor ID probe, unhide, and BAR reads.
+   - Safety fix on re-hide path:
+     replaced direct write of 0x01 to byte 0xE1 with read-modify-write to preserve
+     other bits in that byte, then set only the hide bit.
+   - Switched magic hide offsets to existing constants:
+     P2SB_CFG_HIDE_OFF and P2SB_CFG_HIDE_BIT.
+
+WHY:
+  Writing 0x01 directly to byte 0xE1 can clobber unrelated bits in P2SBC[15:8].
+  Read-modify-write sets only the hide bit and avoids side effects.
+
+BUILD / VALIDATION:
+Command run:
+  PATH=/opt/cross/bin:$PATH make -C /home/jjsako/TaterTOS64v3 src/kernel/acpi/extended.o
+
+Result:
+  PASS (object compile succeeded)
+  Warnings observed are pre-existing unused static helper warnings in extended.c.
+
+USER-REQUESTED BUILD COMMAND (full project):
+  PATH=/opt/cross/bin:$PATH make -C /home/jjsako/TaterTOS64v3
+
+ISO build command (rule-11 style):
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh

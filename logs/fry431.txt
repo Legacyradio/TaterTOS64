@@ -1,0 +1,44 @@
+fry431 - Reduce EC probe log flooding in boot diagnostics
+=======================================================================
+Date: 2026-03-01 18:31:14 UTC
+
+WHAT CHANGED (why)
+=======================================================================
+- `src/kernel/acpi/ec.c`
+  - Added `ec_probe_step_name()` helper for compact failure summaries.
+  - Updated `ec_probe_verbose()` to keep diagnostic state updates but stop
+    printing one line per retry/failure step.
+  - Updated `ec_probe_with_retries()` to print a single summary line:
+    - success: one `EC probe ok ...` line with tries/status
+    - failure: one `EC probe fail ...` line with tries/final-step/status
+  - Why: prevent ACPI/EC retry spam from flooding the on-screen log window
+    while preserving actionable diagnostics.
+
+FILES TOUCHED
+=======================================================================
+- src/kernel/acpi/ec.c
+
+TESTING
+=======================================================================
+Commands run:
+1) PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/acpi/ec.o
+2) make clean
+3) PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+4) sha256sum /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+5) sha256sum /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+Results:
+- 1) PASS
+- 2) PASS
+- 3) PASS (`out/tatertos64v3.iso` rebuilt)
+- 4) PASS
+- 5) PASS (read-only check)
+
+Artifact hashes:
+- Linux build ISO:   f1facdcadef9a3cad9ebfc7df87b8745a557b2782021bf34a6c701165eb3d496
+- Windows export ISO: 3d0f7286bb7847d80da8b4961798454a3e19d04773d1ce104f59d9137e4b9573
+
+Notes:
+- `build_iso.sh` could not overwrite `/mnt/c/.../tatertos64v3.iso` in this
+  environment (`Read-only file system`), so Windows export currently still has
+  the older hash.

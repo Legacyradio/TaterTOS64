@@ -1,0 +1,3 @@
+STEP 33
+TIME: 2026-02-20 01:19:09
+ACTION: Implemented ACPI resource buffer decoder in src/kernel/acpi/resources.c and header in src/kernel/acpi/resources.h.

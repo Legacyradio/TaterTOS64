@@ -1,0 +1,3 @@
+STEP 7
+TIME: 2026-02-20 09:21:40
+ACTION: Expanded TSS support in src/boot/tss.c/.h to provide per-CPU TSS initialization and explicit TR loading, because SMP APs require independent RSP0/IST1 stacks and TSS descriptors.

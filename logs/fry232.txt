@@ -1,0 +1,8 @@
+DATE: 2026-02-21
+TIME: 10:24:00 -0600
+DESC: Ensure physmap covers RSDP by extending mapping on demand; no extra debug added.
+WHY: Crash occurs when dereferencing RSDP; physmap likely doesn't cover rsdp_phys.
+FILES:
+  - src/kernel/mm/vmm.c
+  - src/kernel/mm/vmm.h
+  - src/kernel/acpi/tables.c

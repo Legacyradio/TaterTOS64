@@ -1,0 +1,68 @@
+=======================================================================
+TaterTOS64v3 - fry473 — ISO Hash Verification (Source vs Export)
+=======================================================================
+
+Timestamp (UTC): 2026-03-03 02:35:05 UTC
+Host: DESKTOP-FH0DVRA
+
+FILES
+-----
+Source ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+Export ISO: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+STAT
+----
+2026-03-02 20:33:02.174535744 -0600  135544832 bytes  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+2026-03-02 20:33:02.447863200 -0600  135544832 bytes  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+SHA256
+------
+9497d001415f71ccc068db44ec16145b4ca5072c0ed50fb8bc535d399bf95fc8  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+9497d001415f71ccc068db44ec16145b4ca5072c0ed50fb8bc535d399bf95fc8  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+COMPARE
+-------
+RESULT: MATCH (export is not stale relative to source at verification time)
+=======================================================================
+
+FINAL GATE STEPS (NTFS 0B / Freeze / Stale-Media Accusation Closure)
+=======================================================================
+Gate 0 - Media freshness proof [PASS]
+Criteria:
+- Source ISO and exported ISO must have identical size and SHA256.
+Evidence:
+- Verified in this log (STAT + SHA256 + MATCH).
+
+Gate 1 - Repro on verified-fresh media [PENDING]
+Criteria:
+- Boot only the hash-verified ISO from this log.
+- Capture serial and screen/video for the exact click path that previously froze.
+
+Gate 2 - No hard freeze on navigation [PENDING]
+Criteria:
+- After clicking the problematic drive icon/path, system clock must continue
+  advancing for >= 30s.
+- Pointer and window interactions remain responsive (no total kernel hang).
+
+Gate 3 - Filesystem identification consistency [PENDING]
+Criteria:
+- File Manager status bar `cwd:<fs>@<mount>` matches actual mounted filesystem.
+- Kernel logs show matching mount decision for the same mountpoint.
+
+Gate 4 - NTFS correctness (size/stat/open) [PENDING]
+Criteria:
+- In `/nvme` (or `/nvmeN`), at least 5 representative non-directory files
+  report non-zero size when expected.
+- `open`/`read` succeeds for representative files (no universal unusable files).
+
+Gate 5 - Kernel evidence clean for failure signatures [PENDING]
+Criteria:
+- No recurring NTFS fixup/runlist/coverage fatal errors in serial output during
+  the tested navigation path.
+- No NVMe timeout spin leading to UI deadlock during the same path.
+
+Gate 6 - Architecture gate closure from fry469 [PENDING]
+Criteria:
+- NVMe completion path moved from poll spin to IRQ-driven completion.
+- Timeout handling moved from spin-loop strategy to scheduler/blocking timeout.
+- Real hardware matrix completed and logged as pass/fail per scenario.

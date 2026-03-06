@@ -1,0 +1,64 @@
+========================================================================
+TaterTOS64v3 - fry537 — EFI handoff hardening for post-ExitBootServices hangs
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 11:34:07 UTC
+2026-03-05 05:34:07 CST
+
+CONTEXT
+-------
+- User report: boot output reaches:
+  - "TATER EFI: handoff ExitBS"
+  then appears to hang on Dell hardware.
+- That indicates ExitBootServices likely succeeded, with failure between
+  post-ExitBS loader path and early kernel entry visibility.
+
+CHANGE APPLIED
+--------------
+- Hardened EFI loader to avoid dereferencing GOP protocol structures after
+  ExitBootServices.
+- Added raw framebuffer marker helper and cached framebuffer metadata before
+  exiting boot services.
+- Switched stage markers to use cached `fb_base/fb_width/fb_height/fb_stride`.
+- Populated handoff framebuffer fields from cached values, not live GOP struct.
+- Added explicit serial breadcrumbs:
+  - "EFI: ExitBS ok"
+  - "EFI: jump kernel"
+
+FILES
+-----
+- `src/boot/efi_loader.c`
+
+KEY AREAS IN CODE
+-----------------
+- `fb_mark_raw(...)` helper used for stage colors without GOP dereference.
+- Cached framebuffer capture macros in `efi_main` (`CAPTURE_FB`, `FB_MARK`).
+- Post-ExitBS path now uses cached framebuffer data + serial breadcrumbs.
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) `x86_64-w64-mingw32-gcc -ffreestanding -fshort-wchar -fno-stack-protector -mno-red-zone -fno-asynchronous-unwind-tables -fno-unwind-tables -fno-ident -c src/boot/efi_loader.c -o out/efi_loader.o -O2 -Wall -Wextra -std=gnu11`
+
+RESULT
+------
+- PASS (object built successfully)
+- Non-fatal warnings remain for existing unused helper functions:
+  - `gop_mask_pos`
+  - `gop_mask_size`
+
+NOT YET DONE
+------------
+- Full `build_iso.sh` rebuild not run in this step.
+- Hardware retest pending.
+
+EXPECTED NEXT-SERIAL CHECK
+--------------------------
+- Look for sequence:
+  1) `TATER EFI: handoff ExitBS`
+  2) `EFI: ExitBS ok`
+  3) `EFI: jump kernel`
+  4) `K_START`
+
+========================================================================

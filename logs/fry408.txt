@@ -1,0 +1,39 @@
+fry408 - Actual web-research verification step (post-process correction)
+Timestamp: 2026-03-01 01:57:28 UTC
+
+CONTEXT:
+  Previous session output incorrectly implied web-verified conclusions before
+  executing actual web lookup in-session. This log records the real research
+  step and primary-source evidence now gathered.
+
+SOURCES QUERIED (primary):
+1) Linux p2sb implementation
+   https://codebrowser.dev/linux/linux/drivers/platform/x86/p2sb.c.html
+
+2) Linux patch discussion quoting Intel P2SBC HIDE behavior and p2sb_bar flow
+   https://patchew.org/linux/20220131151346.45792-1-andriy.shevchenko%40linux.intel.com/20220131151346.45792-2-andriy.shevchenko%40linux.intel.com/
+
+3) Intel register doc for P2SBC (HIDE/SBILOCK semantics)
+   https://edc.intel.com/content/www/us/en/design/products-and-solutions/processors-and-chipsets/comet-lake-u/intel-400-series-chipset-on-package-platform-controller-hub-register-database/p2sb-control-p2sbc-offset-e0/
+
+4) Coreboot PCR ID maps (cross-family PID_DMI differences)
+   Cannonlake: https://fossies.org/linux/coreboot/src/soc/intel/cannonlake/include/soc/pcr_ids.h
+   Pantherlake: https://fossies.org/linux/coreboot/src/soc/intel/pantherlake/include/soc/pcr_ids.h
+   Elkhartlake: https://fossies.org/linux/coreboot/src/soc/intel/elkhartlake/include/soc/pcr_ids.h
+
+KEY VERIFIED TAKEAWAYS:
+- P2SB hidden state can make PCI config reads return all 1s; writes remain
+  possible per Intel/patch text.
+- Linux favors controlled unhide/read/rehide and cached BAR access, not broad
+  brute-force MMIO sweeps.
+- PID_DMI is not globally fixed across Intel families (examples observed: 0x88,
+  0x2F, and others by family headers), so hardcoding one value is risky.
+
+WHY THIS MATTERS:
+  Supports rollback away from nuclear sweep and supports a family-aware PID
+  strategy for Dell 8th-gen (Coffee/Cannon Lake class) without unsafe range
+  probing.
+
+NOTES:
+- This log exists specifically to correct process fidelity: evidence is now
+  sourced from actual in-session web lookup.

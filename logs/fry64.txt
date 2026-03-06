@@ -1,0 +1,3 @@
+STEP 64
+TIME: 2026-02-20 09:39:31
+ACTION: Corrected SYSCALL register shuffling in src/kernel/proc/syscall.c to pass a1..a5 into syscall_dispatch using the proper SysV ABI mapping, because argument ordering must be correct for multi-arg syscalls.

@@ -1,0 +1,42 @@
+fry403 - SBREG_BAR nuclear fallback sweep (0xFD000000..0xFE000000) + ISO rebuild
+Timestamp: 2026-03-01 01:25:59 UTC
+
+CONTEXT:
+  Continued from fry402. The prior fallback only probed a small fixed set of
+  SBREG_BAR candidates and could still miss valid mappings when firmware keeps
+  P2SB hidden/locked.
+
+CHANGES:
+1) src/kernel/acpi/extended.c
+   - Added SBREG brute-force scan constants:
+     - SBREG_BAR_SCAN_START = 0xFD000000
+     - SBREG_BAR_SCAN_END   = 0xFE000000
+     - SBREG_BAR_SCAN_STEP  = 0x00001000 (4 KiB pages)
+   - Extended pcr_probe_fallback_sbreg_bar():
+     - Keep existing fixed candidate probe first (fast path).
+     - If none look plausible, sweep full range page-by-page and test
+       PCR[DMI] LPCIOE/LPCIOD plausibility.
+     - Select first plausible hit.
+     - If no plausible hit exists, keep first weak non-0xFFFFFFFF read as a
+       last-resort fallback for diagnostics/forward progress.
+   - Added brute-force diagnostics:
+     - sweep start/end/step line
+     - brute probe select line
+     - weak-match line
+
+WHY:
+  Hardware logs still showed no useful SBREG resolution after fixed candidates.
+  The brute-force fallback provides deterministic coverage of the expected Intel
+  sideband window when BAR visibility is blocked by firmware.
+
+BUILD / VALIDATION:
+Commands run:
+  cd /home/jjsako/TaterTOS64v3 && PATH=/opt/cross/bin:$PATH make clean && PATH=/opt/cross/bin:$PATH BASH_XTRACEFD=9 ./build_iso.sh 9>/dev/null
+
+Result:
+  PASS - ISO built successfully at:
+  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+Notes:
+  - Compile warnings observed are existing non-fatal warnings.
+  - Windows export copy failed in this environment due to read-only /mnt/c.

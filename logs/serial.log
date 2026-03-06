@@ -1,0 +1,75 @@
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0002 "EFI Internal Shell" from Fv(7CB8BDC9-F8EB-4F34-AAEA-3EE4AF6516A1)/FvFile(7C04A583-9E3E-4F1C-AD65-E05268D0B4D1)
+BdsDxe: starting Boot0002 "EFI Internal Shell" from Fv(7CB8BDC9-F8EB-4F34-AAEA-3EE4AF6516A1)/FvFile(7C04A583-9E3E-4F1C-AD65-E05268D0B4D1)
+[2J[01;01H[01;01HUEFI Interactive Shell v2.2
+EDK II
+UEFI v2.70 (EDK II, 0x00010000)
+[1m[33m[40mMapping table[0m[37m[40m
+[1m[33m[40m      FS0:[0m[37m[40m [1m[37m[40mAlias(s):[0m[37m[40mCD0a65535a0b:;BLK2:
+          PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x0,0xFFFF,0x0)/CDROM(0x0)/HD(1,MBR,0x00000000,0x0,0x203D0)
+[1m[33m[40m     BLK4:[0m[37m[40m [1m[37m[40mAlias(s):[0m[37m[40m
+          PciRoot(0x0)/Pci(0x3,0x0)/NVMe(0x1,00-00-00-00-00-00-00-00)
+[1m[33m[40m     BLK5:[0m[37m[40m [1m[37m[40mAlias(s):[0m[37m[40m
+          PciRoot(0x0)/Pci(0x3,0x0)/NVMe(0x1,00-00-00-00-00-00-00-00)/HD(1,GPT,680E30D9-A239-499B-AA2E-4797977CBEEF,0x800,0x317DF)
+[1m[33m[40m     BLK0:[0m[37m[40m [1m[37m[40mAlias(s):[0m[37m[40m
+          PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x0,0xFFFF,0x0)
+[1m[33m[40m     BLK1:[0m[37m[40m [1m[37m[40mAlias(s):[0m[37m[40m
+          PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x0,0xFFFF,0x0)/CDROM(0x0)
+[1m[33m[40m     BLK3:[0m[37m[40m [1m[37m[40mAlias(s):[0m[37m[40m
+          PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+[19;01HPress [1m[37m[40mESC[0m[37m[40m in 5 seconds to skip [1m[33m[40mstartup.nsh[0m[37m[40m or any other key to continue.[19;01HPress [1m[37m[40mESC[0m[37m[40m in 4 seconds to skip [1m[33m[40mstartup.nsh[0m[37m[40m or any other key to continue.[19;01HPress [1m[37m[40mESC[0m[37m[40m in 3 seconds to skip [1m[33m[40mstartup.nsh[0m[37m[40m or any other key to continue.[19;01HPress [1m[37m[40mESC[0m[37m[40m in 2 seconds to skip [1m[33m[40mstartup.nsh[0m[37m[40m or any other key to continue.[19;01HPress [1m[37m[40mESC[0m[37m[40m in 1 seconds to skip [1m[33m[40mstartup.nsh[0m[37m[40m or any other key to continue.
+[1m[33m[40mShell> [0m[37m[40mfs0:
+[1m[33m[40mFS0:\> [0m[37m[40m\EFI\BOOT\BOOTX64.EFI
+EFI: start
+EFI: build 2026-03-04-dell-nvme-scan
+
+TATER EFI: start
+TATER EFI: build 2026-03-04-dell-nvme-scan
+TATER EFI: LI ok
+TATER EFI: SFS ok
+TATER EFI: volume ok
+TATER EFI: kernel ok
+TATER EFI: kbuf=0x000000007DA84000 ksz=0x0000000000095A88
+TATER EFI: elf loaded
+TATER EFI: entry resolved
+TATER EFI: GOP ok
+EFI: fry pass1 found=7
+EFI: ramdisk built
+TATER EFI: ramdisk built
+TATER EFI: handoff mmap size
+TATER EFI: handoff mmap alloc
+TATER EFI: handoff mapbuf=0x000000007DC15000 entry=0x00000000020000AB
+TATER EFI: handoff ExitBS
+EFI: ExitBS enter mapbuf=0x000000007DC15000 entry=0x00000000020000AB
+EFI: ExitBS attempt 0
+EFI: ExitBS key=0x00000000000010CE map_sz=0x00000000000013E0 desc_sz=0x0000000000000030
+EFI: ExitBS ok
+EFI: jump kernel
+K_START
+K_BUILD 2026-03-04-fry531-rollback
+K_GDT_IDT
+K_TSS
+K_PMM
+VMM_00_ENTER
+VMM_01_PML4
+VMM_02_IDENT
+VMM_03_PHYSMAP
+VMM_04_KERNEL
+VMM_05_STACK
+VMM_06_FB
+VMM_07_MMIO
+VMM_08_CR3_WRITE
+VMM_09_CR3_DONE
+VMM_10_READY
+K_PMM_RELOCATE_BEGIN
+K_PMM_RELOCATE_END
+PMM_AFTER_RELOC meta=0000000002840000 page_meta=FFFF800002840000 free_next=FFFF8000028BFE18 free_heads=FFFF800002CBEEC8 head=000000000007BA00
+K_VMM
+K_STACK_SWITCH_CALL
+K_AFTER_VMM_ENTRY
+SPK_HEAP_ENTER
+PMM_AT_HEAP meta=0000000002840000 page_meta=FFFF800002840000 free_next=FFFF8000028BFE18 free_heads=FFFF800002CBEEC8 head=000000000007BA00
+K_HEAP_OK
+TRrrcCxSsEeLltMmFfGgK_FIRST_TICK
+K_FIRST_SWITCH
+K_FIRST_USER
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H

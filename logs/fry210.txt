@@ -1,0 +1,3 @@
+2026-02-21 02:39 - Step: TEMP PMM low-memory visibility for early alloc failures.
+Why: vmm_init alloc_table is failing; added minimal early-serial counters to show free pages below 1GB and first free low page.
+Change: src/kernel/mm/pmm.c outputs 'L<hex free_low>' and 'F<hex first_low or N>' before existing u/b markers. Will remove after diagnosis.

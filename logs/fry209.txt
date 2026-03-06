@@ -1,0 +1,3 @@
+2026-02-21 02:32:40 CST
+Change: add minimal early debug markers in pmm_init (0=missing mmap, B=bitmap placement failed, b=PMM ready).
+Why: alloc_table is failing; these markers identify whether PMM never initialized or couldn't place the bitmap.

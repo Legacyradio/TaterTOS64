@@ -1,0 +1,10 @@
+STEP 504
+TIME: 2026-03-03 16:45:00
+ACTION: Fixed NTFS readdir size reporting, prevented NTFS stack overflow, and fixed kernel resource leaks on process exit.
+WHY: 
+- NTFS readdir was reporting 0B for many files because it relied on duplicate metadata in index entries which is often zeroed or outdated. Added authoritative MFT metadata lookup per entry.
+- ntfs_read_nonresident allocated an 8KB array on the stack, risking overflow on the small kernel stack. Moved to kmalloc.
+- ntfs_dir_lookup failed to initialize ctx.fs, which would have caused crashes with the new authoritative metadata lookup.
+- proc_free did not close file descriptors, leading to resource exhaustion (vfs_file leaks) that caused apps to eventually fail to launch.
+- Removed forced size=0 for directories in ntfs_get_file_info to allow metadata-driven size reporting if available.
+STATUS: Verified kernel build succeeds with changes.

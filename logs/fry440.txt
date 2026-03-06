@@ -1,0 +1,26 @@
+fry440 — Provide exact ISO export command from build_iso.sh
+Date: 2026-03-01
+
+Timestamps (UTC):
+  Hash verification: 2026-03-01 22:14:48 UTC
+  Log written: 2026-03-01 22:14:51 UTC
+
+Goal:
+  Return the exact export command used by project script (no inferred variant).
+
+Rule-15 hash verification (before writing this log):
+  source ISO  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+    54edde480987e49ad5c42776285dea6991224d682312dd8c16e4a41b7c204edf
+  target ISO  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+    cb4d855dad8d081e1a7f9de0bd29312b00e59d0eddb821ef118cc3df7a1e5210
+  Result:
+    Source and target differ; target/export remains stale in this environment.
+
+Move completed:
+  - Read build script export block and extracted exact commands:
+      WIN_EXPORT="/mnt/c/Users/jjsako/Documents/tateriso"
+      mkdir -p "$WIN_EXPORT"
+      cp "$OUT_DIR/tatertos64v3.iso" "$WIN_EXPORT/tatertos64v3.iso"
+
+Code changes:
+  - None.

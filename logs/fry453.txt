@@ -1,0 +1,54 @@
+fry453 — eSPI VW Programming + Boot Log Removal
+Date: 2026-03-02 03:47 UTC
+
+PROBLEM 1: EC eSPI channel init failed on Dell (fry446 test)
+  - acpibreak output: all XMVW registers zero, VW channel toggle skipped
+  - Root cause: UEFI firmware never programmed any VW indices before handoff
+  - EC never received PLT_RST# deassert → never enabled channels → rdy=0
+  - VW toggle was gated on GenCfg VW support bit (bit 13) which was 0
+
+FIX (hardware-agnostic, eSPI Base Spec compliant):
+  1. After scanning XMVW registers, detect if ALL are zero
+  2. If so, program standard eSPI system VW indices:
+     - XMVW0: Index 2 — SLP_S3#, SLP_S4#, SLP_S5# all deasserted (system awake)
+     - XMVW1: Index 4 — OOB_RST_WARN, PLT_RST# all deasserted (not in reset)
+     - XMVW2: Index 7 — HOST_C10 low (not in C10)
+     150ms settle delay for EC to process PLT_RST# deassert
+  3. Try enabling VW in slave GenCfg via SET_CONFIGURATION even if not reported
+  4. Remove GenCfg VW support gate on VW channel toggle — try regardless
+  5. Condensed serial output: removed per-register VW dumps, summary lines only
+
+  Why this is hardware-agnostic:
+  - VW index assignments per eSPI Base Spec Rev 1.6 Table 5, not vendor-specific
+  - Only triggers when XMVW all zero (UEFI didn't set them up)
+  - PCR access already gated behind Intel PCH detection
+  - Safe for any eSPI platform: if slave rejects SET_CONFIGURATION, we proceed
+
+PROBLEM 2: User wants boot log off screen
+  - kprint was rendering text to framebuffer during boot (debug terminal chrome)
+  - User diagnoses via in-OS TaterWin apps (sysinfo, shell acpibreak), not screen
+
+FIX:
+  - kprint.c: set kcon.fb_base = 0 unconditionally in kprint_init()
+  - Screen stays black from UEFI handoff until GUI process draws
+  - All kernel kprint output goes to serial only
+  - No visible boot text, no debug chrome, no scrolling log
+
+BONUS:
+  - build_iso.sh: removed `set -x` (was printing every shell command during build)
+
+Files changed:
+  - src/kernel/acpi/extended.c (espi_channel_init: VW programming, GenCfg enable,
+    VW toggle gate removal, condensed serial output)
+  - src/kernel/kprint.c (kcon.fb_base = 0 in kprint_init)
+  - build_iso.sh (removed set -x)
+
+Awaiting Dell hardware test. Expected outcomes:
+  A. VW programming succeeds, EC wakes up, PC+VW channels go READY → EC works!
+  B. VW programming sticks but EC still doesn't respond → EC firmware needs
+     additional proprietary init beyond PLT_RST#
+  C. VW registers are read-only (readback shows 0 after write) → HW-controlled,
+     need different approach (SMI, or accept EC is inaccessible)
+  D. Boot screen is clean (no debug log), GUI appears directly
+
+SHA-256 of ISO: see build output

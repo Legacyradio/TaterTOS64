@@ -1,0 +1,3 @@
+STEP 11
+TIME: 2026-02-20 09:38:25
+ACTION: Updated src/kernel/kprint.c to use spin_lock_irqsave/spin_unlock_irqrestore around console output to prevent re-entrancy deadlocks when interrupts fire during kprint, because the console must be safe under IRQ context.

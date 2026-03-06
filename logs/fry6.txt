@@ -1,0 +1,3 @@
+STEP 6
+TIME: 2026-02-20 00:43:28
+ACTION: Implemented ISR stubs in src/boot/idt_stubs.asm with per-vector entries and stub table.

@@ -1,0 +1,6 @@
+DATE: 2026-02-21
+TIME: 09:01:00 -0600
+DESC: Add ACPI stage marker 'C' immediately after RSDP checksum pass to pinpoint new crash.
+WHY: RSDP deref now succeeds; need finer granularity to locate next failure.
+FILES:
+  - src/kernel/acpi/tables.c

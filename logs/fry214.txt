@@ -1,0 +1,3 @@
+2026-02-21 02:57 - Step: Plumb boot identity-map limit through handoff and vmm.
+Why: alloc_table zeroing faults likely due to allocating above the boot identity-mapped region; need a correct, explicit early limit.
+Change: Added boot_identity_limit to fry_handoff (efi_handoff.h), set to 1GB in mb_handoff.c and efi_main.c, and used in vmm.c early allocations before CR3 switch.

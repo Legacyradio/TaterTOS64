@@ -1,0 +1,37 @@
+[2026-02-22 22:00:00 UTC] Step: Fix syscall/sysretq: enable EFER.SCE + add GDT user code entry at 0x28.
+
+Why: After fry308 the shell's `syscall` instruction caused #UD (vec=6) at RIP=0x400CCC
+     (user CS=0x1B). Two bugs found:
+
+     Bug 1 - EFER.SCE=0: syscall_init() set STAR/LSTAR/SFMASK but never wrote to
+     MSR 0xC0000080 (IA32_EFER) to set bit 0 (SCE = SysCall Enable). Without SCE=1,
+     the `syscall` instruction raises #UD. QEMU showed EFER=0x0D00 confirming this.
+
+     Bug 2 - STAR[63:48] mismatch with GDT: STAR[63:48]=0x18. SYSRETQ loads:
+       CS = (0x18 + 16) | 3 = 0x2B
+       SS = (0x18 + 8)  | 3 = 0x23
+     But GDT only had 5 entries (gdt[0..4]), so GDT slot at offset 0x28 was the
+     64-bit TSS descriptor — not a valid code segment. SYSRETQ would #GP.
+
+Fix:
+     1. gdt.h: expanded gdt_block.gdt[5] -> gdt[6].
+     2. gdt.c: added gdt[5] (offset 0x28) as user 64-bit code segment (access=0xFA,
+        gran=0x20 = L=1). Selector 0x2B (0x28|RPL3). Same attributes as old gdt[3]/0x1B.
+        TSS shifted from 0x28 -> 0x30.
+     3. tss.c: tss_load(0x28) -> tss_load(0x30) (BSP).
+     4. smp.c: tss_load(0x28) -> tss_load(0x30) (APs).
+     5. syscall.c: added rdmsr/wrmsr in syscall_init() to set EFER.SCE (bit 0)
+        before writing STAR/LSTAR/SFMASK.
+     6. process.c: process_start iretq changed CS push from $0x1B -> $0x2B so the
+        initial user CS matches what sysretq will restore after the first syscall.
+
+     STAR layout after fix:
+       syscall:  CS=0x08 (kernel code), SS=0x10 (kernel data)
+       sysretq:  CS=0x2B (new GDT[5] user code), SS=0x23 (user data) ✓
+
+Files: src/boot/gdt.h
+       src/boot/gdt.c
+       src/boot/tss.c
+       src/drivers/smp/smp.c
+       src/kernel/proc/syscall.c
+       src/kernel/proc/process.c

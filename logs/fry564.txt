@@ -1,0 +1,50 @@
+========================================================================
+TaterTOS64v3 - fry564 - harden ACPI node_path bounds and null handling
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 00:12:17 UTC
+2026-03-05 18:12:17 CST
+
+CONTEXT
+-------
+- Review called out potential brittleness in `node_path()` depth handling and
+  path stack usage.
+
+WHY
+---
+- Depth==0 itself is safe in current loop form, but there was a real bounds
+  issue when `max == 0`: function unconditionally wrote NUL terminator
+  (`out[outp] = 0`), which could write out of bounds.
+- Making stack-bound logic explicit improves safety/readability for deep ACPI
+  namespace paths.
+
+CHANGES APPLIED
+---------------
+- File updated:
+  - `src/drivers/acpi_bus/acpi_bus.c`
+    - `node_path()` now early-returns on `!out || max == 0`.
+    - Handles `!node` by returning empty string safely.
+    - Uses explicit stack bound guard in traversal loop.
+    - Tightened output-bound checks for name components and separator writes.
+
+EFFECT
+------
+- Prevents out-of-bounds write on zero-sized output buffers.
+- Keeps path construction bounded and deterministic for deep namespace chains.
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Manual inspection with line references:
+   - `nl -ba src/drivers/acpi_bus/acpi_bus.c | sed -n '20,70p'`
+2) Diff check for scoped edit:
+   - `git diff -- src/drivers/acpi_bus/acpi_bus.c`
+3) RESULT:
+   - PASS (expected safeguards are present; targeted diff only)
+
+NOTES
+-----
+- No rebuild requested in this step; per plan rule 16, no SHA-256 recorded.
+
+========================================================================

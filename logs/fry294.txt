@@ -1,0 +1,10 @@
+[2026-02-22 08:10:31 UTC] Log MQES/admin queue size and admin queue physical addresses.
+
+Changes:
+- src/drivers/storage/nvme.c: print MQES/admin_q_size; print admin SQ/CQ physical addresses after allocation.
+
+Why:
+- Admin command still times out. These logs confirm the controller’s MQES and the queue physical addresses actually programmed into ASQ/ACQ.
+
+Tests (not run):
+- bash build_iso.sh

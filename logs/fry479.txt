@@ -1,0 +1,67 @@
+========================================================================
+TaterTOS64v3 - fry479 - Start Menu App Spawn Path Variant Fix
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 07:16:30 UTC
+
+USER-REPORTED SYMPTOM
+---------------------
+- Apps appear in the GUI start menu but fail to open when clicked.
+
+ROOT CAUSE
+----------
+- `src/user/gui/gui.c` had narrower app discovery and spawn paths than kernel
+  launch paths.
+- GUI only scanned/spawned from `/` and `/fry`.
+- Kernel launch already supports additional valid layouts (`/FRY`, `EFI/*/FRY`,
+  `EFI/BOOT/*`) for GUI/SHELL payload resolution.
+- In boots where userspace payloads resolve through those additional layouts,
+  menu entries can exist while spawn attempts from limited GUI paths fail.
+
+CODE CHANGES
+------------
+File:
+- src/user/gui/gui.c
+
+1) Discovery path expansion
+- Added `discover_apps_at()` helper and now scan:
+  - `/`
+  - `/fry`
+  - `/FRY`
+  - `/EFI/fry`
+  - `/EFI/FRY`
+  - `/EFI/BOOT`
+  - `/EFI/BOOT/fry`
+  - `/EFI/BOOT/FRY`
+
+2) Spawn path expansion
+- Added `spawn_app_with_variants(name, ext)` helper.
+- Start menu launches now try the same variant set above for both:
+  - `SHELL` as `.TOT`
+  - all other apps as `.FRY`
+
+BUILD / ARTIFACT VALIDATION
+---------------------------
+Commands:
+1) PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make gui kernel
+   - first direct make failed because libc objects were not yet built in that
+     partial target invocation.
+2) bash build_iso.sh
+   - performs clean + full rebuild + image generation.
+
+Result:
+- Full build succeeded.
+- ISO produced:
+  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- ISO exported:
+  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+EXPECTED BEHAVIOR AFTER BOOT
+----------------------------
+- Start menu app clicks should succeed across userspace payload layout variants
+  supported by kernel launch logic.
+- Behavior remains correct when payloads are present at root (`/`) as before.
+
+========================================================================

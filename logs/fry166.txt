@@ -1,0 +1,4 @@
+[2026-02-20 21:23:07 UTC] Step: Fix early serial output and add minimal IDT handler.
+Why: Early diagnostics weren’t visible and empty IDT still allowed triple faults.
+Change: Fixed serial_putc to preserve char, added IDT with halt handler for vectors 0..31.
+Files: src/boot/mb_entry.asm

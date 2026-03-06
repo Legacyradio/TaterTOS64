@@ -1,0 +1,45 @@
+========================================================================
+TaterTOS64v3 - fry497 — FAT32/NTFS correctness hardening
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 17:36:38 UTC
+
+WHY THIS LOG
+------------
+- Fix FAT32 and NTFS edge cases causing bogus LBA reads, size leaks, and
+  malformed metadata parsing.
+
+HASH / FRESHNESS (Rule 15)
+--------------------------
+Source ISO:
+- 2026-03-03 10:27:48.723952418 -0600  135553024 bytes
+- SHA256: a42aea46242e19d1b018ed66b01f6316e0d3c8abab5a48f3ab26e08ee39d0a28
+- Path: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+Target/export ISO:
+- 2026-03-03 10:27:48.905109600 -0600  135553024 bytes
+- SHA256: a42aea46242e19d1b018ed66b01f6316e0d3c8abab5a48f3ab26e08ee39d0a28
+- Path: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- Note: hashes match; export appears up to date.
+
+CHANGES
+-------
+FAT32:
+- Validate BPB signature/geometry and prevent data_sectors underflow.
+- Use 64-bit LBAs and guard against cluster<2; handle empty files safely.
+- Clamp reads to file size and allocate + persist first cluster on write.
+- Correct LFN assembly (sequence + checksum) and ignore volume labels in lookup.
+
+NTFS:
+- Harden fixup + attribute bounds checks to prevent OOB reads on corrupt records.
+- Distinguish sparse runs from legitimate LCN=0 with a sentinel.
+- Add index-entry bounds validation and skip bad INDX blocks.
+- Guard data-run decode inputs and nonresident read overflow cases.
+
+TESTING
+-------
+Not run (no rebuild requested).
+
+========================================================================

@@ -1,0 +1,29 @@
+fry425 — restore EC _REG/_INI/GPE handshake before probe
+================================================================
+Date: 2026-03-01 16:06:21 UTC
+
+WHAT CHANGED (why)
+================================================================
+- Restored real EC ACPI handshake in `ec_reg_init()` by invoking `_REG(3,1)` on the selected `PNP0C09` node before probing.
+- Bracketed `_REG` evaluation with `ec_set_reg_in_progress(1/0)` so AML EC-region accesses during `_REG` are suppressed (prevents premature raw EC I/O during handshake).
+- Added `_INI` invocation when present and dynamic `_GPE` evaluation+enable (with fallback to GPE 111 if `_GPE` is absent/unreadable).
+- Updated probe log strings to reflect that probing now happens after handshake, and removed stale "no _REG" failure text.
+
+FILES TOUCHED
+================================================================
+- src/kernel/acpi/extended.c
+
+TESTING
+================================================================
+PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/acpi/extended.o
+Result: PASS (warnings unchanged/pre-existing: unused static helpers in extended.c)
+make clean
+PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+Result: PASS
+Artifacts: `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`, `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+Notes: pre-existing warnings remained; export to `/mnt/c/Users/jjsako/Documents/tateriso` failed because mount is read-only.
+
+NEXT
+================================================================
+- Rebuild ISO and retest on Dell Precision 7530.
+- Confirm ACPI log shows `_REG(3,1)` invocation and check whether EC probe transitions from OBF timeout/STS_FF to success.

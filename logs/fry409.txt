@@ -1,0 +1,13 @@
+fry409 - Created fresh handoff with explicit rules block + current boot-fix status
+Timestamp: 2026-03-01 02:02:53 UTC
+
+CHANGES:
+- Added logs/handoff_fry409.txt containing:
+  - Full non-negotiable RULES block (verbatim list)
+  - Mandatory directive reminder
+  - Current state after rollback + PID candidate fix
+  - Build commands, artifact path, and Dell debug targets
+
+WHY:
+- User requested a handoff that reiterates rules and relevant current status
+  so next session has zero ambiguity.

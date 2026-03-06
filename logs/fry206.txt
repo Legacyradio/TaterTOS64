@@ -1,0 +1,3 @@
+2026-02-21 02:20:20 CST
+Change: switched early debug output in mb_handoff.c and _fry_start to single-byte markers (m/h/! and k/g/t/p/v/r).
+Why: string outputs looked corrupted; single-byte markers isolate control-flow without relying on rodata pointers so we can pinpoint where execution stops.

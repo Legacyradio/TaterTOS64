@@ -1,0 +1,35 @@
+2026-02-27 00:52:56 UTC
+Step: Harden VFS FAT32 candidate discovery when GPT/raw scoring yields no userspace match.
+Why: Real-hardware boot showed `DBG_VFS cand gpt=0 ... raw=0 ...` followed by `VFS NVME FAILED, NO RAMDISK`, so GUI/SHELL could not launch due to no mounted filesystem.
+
+Changes made:
+- src/kernel/fs/vfs.c
+  - Added `lba_in_range(...)` guard for safe probe bounds.
+  - Added MBR partition path via `find_best_mbr_fat32_part(...)`:
+    - reads MBR partition entries at LBA0
+    - skips empty/protective GPT entries
+    - probes FAT32 BPB at partition LBAs
+    - scores candidates with existing userspace-score logic
+  - Expanded raw FAT32 probe candidates to include superfloppy and legacy offsets:
+    - `0, 1, 2, 6, 32, 63, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536`
+  - Updated GPT/raw candidate ranking to accept first FAT32 candidate even when score is `0`
+    (`best_lba==0 || score > best_score`), instead of discarding all score-0 FAT32 layouts.
+  - `vfs_init(...)` now evaluates GPT + MBR + raw candidates and selects best score across all sources.
+  - Replaced hard fail on score-0 with fallback mount:
+    - old behavior: refused mount and returned error
+    - new behavior: logs fallback warning and mounts selected FAT32 candidate
+  - Extended debug output:
+    - `DBG_VFS cand` now includes GPT/MBR/raw triples
+    - `DBG_VFS picked` now reports `source=<gpt|mbr|raw>`
+
+Validation commands run:
+1) `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /usr/bin/make -C /home/jjsako/TaterTOS64v3 kernel`
+   - Exit: 0
+   - Non-fatal warnings:
+     - existing `-Wcast-function-type` in `vfs.c` readdir adapter
+     - existing linker RWX segment warning
+
+2) `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash /home/jjsako/TaterTOS64v3/build_iso.sh`
+   - Exit: 0
+   - ISO produced: `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+   - Non-fatal warning: Windows export copy failed (`/mnt/c/...` read-only)

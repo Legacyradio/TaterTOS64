@@ -1,0 +1,28 @@
+Handoff Follow-up - 2026-02-21
+
+Summary
+- Fixed SMP trampoline allocation by reserving a fixed low page and using it directly.
+
+Changes
+1) src/kernel/mm/pmm.c
+   - Reserve page at 0x8000 (SMP trampoline) after freeing usable pages.
+
+2) src/drivers/smp/smp.c
+   - Use fixed trampoline address 0x8000 instead of pmm_alloc_page_below().
+   - Removes "no low memory for trampoline" failure path.
+
+Why
+- AP startup code must live below 1MB. PMM was failing to allocate low memory.
+  A fixed, reserved low page avoids allocation failure and matches the plan.
+
+Test Commands
+PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh
+qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+  -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+  -cdrom ./out/tatertos64v3.iso \
+  -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+
+tail -n 50 logs/debugcon.log
+tail -n 50 logs/serial.log
+tail -n 100 logs/qemu.log

@@ -1,0 +1,18 @@
+2026-02-26 19:31:43 UTC
+Step: Updated build_iso.sh to enforce clean + verbose rebuild behavior by default.
+Why: User requested the same full-step rebuild behavior be enforced in the build script itself.
+
+Changes made:
+- build_iso.sh
+  - Added `set -x` for command trace output by default.
+  - Added `make -C "$ROOT_DIR" clean` before the main build target line.
+
+Validation commands run:
+- bash -n build_iso.sh
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Validation result:
+- Script now shows full traced steps and performs full recompilation from clean state.
+- Build completed through ISO creation.
+- Final Windows export copy failed in this environment only due mount permissions:
+  cp: cannot create regular file '/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso': Read-only file system

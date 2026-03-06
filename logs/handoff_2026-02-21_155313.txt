@@ -1,0 +1,91 @@
+Handoff Log - 2026-02-21 15:53:13 -0600
+
+Summary
+- Project: TaterTOS64v3
+- Goal: UEFI-only boot path per planv3; advance past pmm_init crash to vmm_init and beyond.
+
+Progress Made This Session
+Two bugs were diagnosed and fixed:
+
+1) pd_high mapping bug (fry242) — FIXED PRIOR SESSION, CONFIRMED WORKING
+   - pd_high[0] was mapping virt 0xffffffff80000000 → phys 0x000000 instead of phys 0x200000.
+   - Fixed: changed `(m * 0x200000)` to `((m+1) * 0x200000)` in efi_boot.asm pd_high table.
+   - Confirmed: debugcon shows "kgt" = gdt_init, idt_init, tss_init all completed. Kernel now runs.
+
+2) Windows ABI / System V ABI calling convention mismatch (fry243) — FIXED THIS SESSION
+   - Root cause: efi_loader.c is compiled by build_iso.sh with x86_64-w64-mingw32-gcc
+     (Windows/ms_abi). Windows ABI passes the first argument in RCX. The kernel
+     (_fry_start, System V ABI) expects the handoff pointer in RDI.
+   - efi_boot_start had no ABI translation — it called _fry_start directly without
+     moving RCX to RDI. Result: _fry_start received whatever garbage UEFI left in RDI.
+   - Evidence: at the pmm_init fault, R8 (= handoff->mmap_base) = 0x118 (280 — wrong),
+     R9 (= handoff->mmap_size) = 0xafafafaf6c617470 (heap garbage). The pmm_init first
+     loop ran ~44 million iterations with this garbage until the descriptor pointer RSI
+     reached 0x100000018 (4GB+24 = unmapped), causing #PF at CR2=0x100000030.
+   - Fix: added `mov rdi, rcx` in efi_boot_start before `call rax` (_fry_start).
+   - Verified in binary: offset 0x10001f = `48 89 cf` = mov %rcx,%rdi ✓
+
+Current State (after both fixes, ISO freshly built)
+- efi_boot_start now correctly translates Windows ABI arg1 (RCX=handoff) → SysV arg1 (RDI).
+- kernel.elf and tatertos64v3.iso are rebuilt with the fix.
+- ISO exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- QEMU has NOT been run yet with this new ISO — user must run it.
+
+Secondary Issue Noted (not yet fixed — may resolve after primary fix)
+- After the pmm_init #PF, the IDT dispatched to non-canonical address 000804ffffffff80
+  causing a #GP cascade. This may be a symptom of the corrupted kernel state (wrong handoff
+  → huge loop → CPU in unpredictable state when fault fires). If it persists after the
+  primary fix, investigate idt_init SIMD encoding of offset_high for vector 14.
+
+Known Good State (debugcon markers before this session's crash)
+  k = kernel entry (_fry_start)
+  g = gdt_init + idt_init done
+  t = tss_init done
+  (crash in pmm_init before 'p')
+
+Expected State After QEMU Run (if fix is correct)
+  k = kernel entry
+  g = gdt_init + idt_init
+  t = tss_init
+  p = pmm_init done         ← NEW
+  v = vmm_init done         ← NEW
+  S = after_vmm entry       ← NEW
+  P = kprint_init done      ← NEW
+  (then ACPI, IRQ, driver init follow)
+
+  serial.log should show: K_START, K_GDT_IDT, K_TSS, K_PMM, K_VMM, S, P, ...
+  (pre-vmm serial may still be silent; debugcon is reliable)
+
+Key File Changes This Session
+- src/boot/efi_boot.asm: added `mov rdi, rcx` + updated comment (fry243)
+- src/kernel/irq/irqdesc.c: early serial telemetry for exceptions < 32 (fry242, prev session)
+- src/boot/efi_boot.asm: pd_high[0] = 0x200083 fix (fry242, prev session)
+- logs/fry243.txt: action log for this session
+
+Action Logs
+- fry242.txt: pd_high fix + early serial telemetry (previous session)
+- fry243.txt: ABI translation fix (this session)
+- Next log: fry244.txt
+
+Rules Reminder (planv3.txt)
+- Do NOT start Phase 17 until boot is stable past vmm_init.
+- Log every step in fryN.txt with "why" for code changes.
+- UEFI-only boot path.
+- Branding: TaterTOS64v3.
+
+Proposed Next Move
+1) User runs QEMU with the new ISO.
+2) Export logs/debugcon.log and logs/serial.log and logs/qemu.log to WSL.
+3) Confirm debugcon shows kgtpvS or further.
+4) If new fault appears, read !EXC telemetry from serial.log (RIP/CR2/CR3) to identify next blocker.
+5) Fix next blocker, log in fry244.txt.
+
+Test Commands (for user to run)
+qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+  -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+  -cdrom ./out/tatertos64v3.iso \
+  -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+tail -n 50 logs/debugcon.log
+tail -n 50 logs/serial.log
+tail -n 100 logs/qemu.log

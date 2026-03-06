@@ -1,0 +1,106 @@
+fry456 — Roadmap expansion: Phases 18-28 added to planv3.txt
+Date: 2026-03-01
+Timestamp: $(date)
+
+WHAT:
+  Added 11 new phases to planv3.txt roadmap covering everything needed
+  to bring TaterTOS64v3 from current state to daily-driver capability.
+
+NEW PHASES ADDED:
+  Phase 18: Writable Filesystem
+    - FAT32 write support (create, write, delete, rename, truncate)
+    - NVMe write path + flush
+    - New syscalls: SYS_CREATE(30), SYS_DELETE(31), SYS_RENAME(32),
+      SYS_TRUNCATE(33), SYS_FSYNC(34)
+    - Shell commands: touch, rm, mv, mkdir, rmdir, write
+
+  Phase 19: TCP/IP Networking Stack
+    - Full IP layer with fragmentation/reassembly
+    - TCP (3-way handshake, sliding window, retransmit, congestion control)
+    - UDP, DNS resolver, DHCP client
+    - Socket syscalls: SYS_SOCKET(40) through SYS_DNS_RESOLVE(49)
+
+  Phase 20: Audio Subsystem
+    - Intel HDA controller driver (full register-level detail)
+    - Codec enumeration, verb commands, topology graph
+    - PCM playback with double-buffered BDL
+    - Audio syscalls: SYS_AUDIO_OPEN(50) through SYS_AUDIO_VOLUME(53)
+
+  Phase 21: GUI Toolkit and Font Rendering
+    - PSF2 font format loader + renderer
+    - Widget library: label, button, text input, checkbox, scrollbar,
+      listbox, dropdown
+    - Widget container with hit testing and focus management
+    - Clipboard via compositor IPC
+    - Multiple cursor shapes (arrow, text, hand, resize, wait)
+    - Window decorations (close, maximize, minimize, drag, resize)
+
+  Phase 22: Essential Applications
+    - Text editor (nano-like, full-screen, search, undo)
+    - File manager (graphical, list view, file operations)
+    - Terminal emulator (VT100/ANSI, scrollback, 256-color)
+    - Settings panel (display, input, network, audio, about)
+    - Image viewer (BMP/PPM)
+    - Calculator
+
+  Phase 23: Signals, Pipes, and Threads
+    - POSIX signals (SIGTERM, SIGKILL, SIGINT, etc.)
+    - Signal handlers, delivery, sigreturn
+    - Pipe implementation (4KB circular buffer)
+    - Shell redirection (|, >, <, >>)
+    - Kernel threads (up to 16 per process)
+    - Synchronization: mutex_lock/unlock
+    - Ctrl+C → SIGINT integration with compositor
+
+  Phase 24: USB Mass Storage and Extended USB
+    - USB Mass Storage BOT protocol (CBW/CSW)
+    - SCSI commands: INQUIRY, READ_CAPACITY, READ(10), WRITE(10)
+    - USB drive → VFS block device → FAT32 mount
+    - Hot-plug support
+    - Auto-mount on connect
+
+  Phase 25: Advanced Graphics
+    - Intel Gen9 GPU basic modesetting (hardware cursor, page flip)
+    - Vsync-aligned buffer swap (eliminates tearing)
+    - Damage tracking (dirty rectangles)
+    - Alpha blending / transparency
+    - Taskbar with clock, app launcher, running app buttons
+    - Z-order management, Alt+Tab
+
+  Phase 26: WiFi WPA2 and Full Networking
+    - WPA2-PSK (PBKDF2, 4-way handshake, CCMP/AES)
+    - Crypto primitives: SHA-1, HMAC, AES, CCMP, AES Key Wrap
+    - WiFi association, authentication, encrypted data transfer
+    - Network manager GUI app
+    - wget HTTP downloader
+
+  Phase 27: Multi-User and Security
+    - User accounts (UID/GID, password hashes)
+    - File permissions (rwx owner/other)
+    - Login screen (first app on boot)
+    - Process UID enforcement
+    - su (switch user) utility
+
+  Phase 28: Dynamic Linking and Package Management
+    - .frylib shared libraries (ELF64 ET_DYN)
+    - Dynamic linker (GOT/PLT, lazy binding)
+    - dlopen/dlsym/dlclose runtime loading
+    - .frypkg package format (tar + manifest)
+    - Package manager CLI (install, remove, list)
+
+ALSO ADDED:
+  - 11 new milestones (M31-M41) in the milestone checklist
+  - Build order dependencies for all 11 new phases
+  - [DONE] markers on 18 completed milestones:
+    M01-M10, M12-M14, M16-M17, M20-M22, M28-M29
+
+FILES CHANGED:
+  planv3.txt — appended ~800 lines of new phase specifications,
+               added milestones and dependencies, marked completions
+
+WHY:
+  Gap analysis showed planv3 ended at Phase 17.5 with no path to
+  daily-driver status. User requested all missing features be added
+  to the roadmap. These 11 phases cover: writable storage, networking,
+  audio, rich GUI, essential apps, IPC primitives, USB storage,
+  GPU acceleration, WiFi security, multi-user, and shared libraries.

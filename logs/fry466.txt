@@ -1,0 +1,56 @@
+fry466 — Mouse Navigation for File Manager
+============================================
+Date: 2026-03-02 23:23 UTC
+
+## Summary
+GUI compositor now forwards mouse left-clicks to all focused TaterWin app
+windows as TW_MSG_MOUSE_EVENT messages. File manager handles those clicks
+for sidebar place navigation and file list entry selection/opening.
+
+## Changes
+
+### src/user/gui/gui.c
+- Window body click handler (was focus-only): after bring_to_front(), if the
+  click lands inside the SHM content area (below title bar, within shm_w x
+  shm_h bounds), constructs tw_msg_mouse_t with window-local coordinates
+  (local_x = mx - (w->x+1), local_y = my - (w->y+TITLE_H)) and sends via
+  fry_proc_input() to the window's process.
+- This is universal — all TaterWin apps receive mouse events. Apps that don't
+  handle TW_MSG_MOUSE_EVENT silently discard the message in their input parser
+  (tw_msg_size already knows the size, so input_consume skips it cleanly).
+
+Why: GUI was keyboard-only for app interaction. Mouse clicks on window content
+never reached the app process — the compositor just focused the window.
+
+### src/user/apps/fileman.c
+- New function handle_mouse_click(int x, int y):
+  * Sidebar hit-test: if x < SIDEBAR_W and y in [TOPBAR_H+30+i*24-2, +18)
+    for place i → change_dir(places[i].path) + rebuild_places()
+  * File list hit-test: if x >= SIDEBAR_W+8 and y >= TOPBAR_H+8+24 (data area)
+    → row = (y - data_y) / ROW_H, idx = scroll_top + row → select + open_selected()
+- Added TW_MSG_MOUSE_EVENT case in process_input_stream(): parses tw_msg_mouse_t,
+  calls handle_mouse_click(mm.x, mm.y). Same pattern as KEY_EVENT and RESIZED handlers.
+
+Why: File manager sidebar places (NVMe partitions, Root, /fry, etc.) were only
+navigable by pressing number keys 1-9. File list only navigable by j/k/Enter.
+Mouse clicks now work for both areas.
+
+## No changes needed
+- taterwin.h: TW_MSG_MOUSE_EVENT=3 and tw_msg_mouse_t already defined
+- shell.c: tw_msg_size() already handles MOUSE_EVENT; unknown types are
+  silently consumed via input_consume(need)
+- sysinfo.c, uptime.c, ps.c: display-only apps, mouse events harmlessly discarded
+
+## Build
+make clean + build_iso.sh: zero errors, zero warnings from gui.c/fileman.c.
+ISO exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+## Test plan
+Boot ISO on Dell. Launch File Manager from start menu.
+1. Click NVMe partition in sidebar → should navigate to /nvme (or /nvme1 etc.)
+2. Click Root in sidebar → should navigate to /
+3. Click a directory in file list → should enter that directory
+4. Click a .FRY file in file list → should spawn that app
+5. Click a regular file → status bar should show file info (name + size)
+6. Open shell or sysinfo — click on their window body — should NOT crash
+   (mouse events silently discarded by those apps)

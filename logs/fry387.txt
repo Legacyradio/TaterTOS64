@@ -1,0 +1,26 @@
+fry387 — Restore _HID/_CID deep-resolution matching (hardware-agnostic)
+Timestamp: 2026-02-28 16:04:31 UTC
+
+Why:
+  The requested fix is to keep deep ACPI ID resolution in matching logic
+  (not on-screen diagnostics), so battery/backlight devices exposed via
+  indirect AML objects are still discoverable.
+
+Changes:
+  1) src/kernel/acpi/namespace.c
+     - Restored deep object handling in `hid_obj_matches()`:
+       a) `AML_OBJ_REFERENCE`: resolve referenced node/object and match recursively.
+       b) `AML_OBJ_BUFFER` (>=4 bytes): decode as EISA ID (native + byte-swapped).
+     - Existing `_CID` support remains enabled via `ns_hid_match()`.
+     - No model-specific checks added.
+
+Build/Test commands run (Rule 11 default rebuild mode):
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Result:
+  - Build succeeded.
+  - ISO produced: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  - NVMe image updated: /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+  - Non-fatal export warning persisted:
+    cp to /mnt/c/Users/jjsako/Documents/tateriso failed (read-only filesystem).

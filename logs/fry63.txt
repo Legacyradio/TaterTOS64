@@ -1,0 +1,3 @@
+STEP 63
+TIME: 2026-02-20 09:53:00
+ACTION: Updated userspace libc syscall wrappers and shell built-ins in src/user/libc/libc.c/.h and src/user/shell/shell.c to support open/read/close, readdir, stat, pwd/cd/cat/ls, because the shell must be functional per Phase 15.

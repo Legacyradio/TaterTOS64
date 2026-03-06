@@ -1,0 +1,54 @@
+========================================================================
+TaterTOS64v3 - fry557 - add NVMe I/O retry and queue recovery on submit failure
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 23:18:14 UTC
+2026-03-05 17:18:14 CST
+
+CONTEXT
+-------
+- Review flagged missing error recovery in `nvme_io_rw()`:
+  failed `submit_cmd()` returned immediately without retry or recovery.
+
+WHY
+---
+- Mid-transfer failures need bounded retry + recovery to avoid hard fail on
+  transient queue/interrupt issues.
+- Improves robustness when IO queue state or completion mode gets unhealthy.
+
+CHANGE APPLIED
+--------------
+- File updated: `src/drivers/storage/nvme.c`
+  - Added constants:
+    - `NVME_IO_QID`
+    - `NVME_IO_SUBMIT_RETRIES` (set to 3)
+  - Added `nvme_recover_io_queue()` helper:
+    - Falls back from IRQ completions to polling mode when recovery starts.
+    - Issues best-effort Admin commands to delete IO SQ/CQ for queue id 1.
+    - Recreates IO queue via existing `nvme_create_io_queues()` path.
+  - Updated `nvme_io_rw()` submit path:
+    - Added bounded retry loop for `submit_cmd(&io_q, ...)`.
+    - Emits retry-aware trace event (`submit_fail`, attempt count).
+    - Calls `nvme_recover_io_queue()` between attempts.
+    - Returns failure only after retries/recovery attempts are exhausted.
+
+EFFECT
+------
+- Adds concrete retry and queue-recovery behavior for failed IO submits.
+- Avoids immediate terminal failure on first transient submit timeout/failure.
+- Preserves existing command chunking and PRP handling flow.
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Kernel build validation:
+   - `PATH="/opt/cross/bin:$PATH" make -j"$(nproc)"`
+2) RESULT:
+   - PASS (build succeeded)
+
+NOTES
+-----
+- No hash recorded in this log (planv3 rule 16; no user-requested rebuild).
+
+========================================================================

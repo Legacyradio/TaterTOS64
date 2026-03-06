@@ -1,0 +1,103 @@
+fry444 — eSPI Slave Channel Diagnostic Reads (PC_CAP, VW_CAP, GenCfg decode)
+=============================================================================
+Date: 2026-03-01
+
+Rule-15 hash verification (before writing this log):
+  source ISO  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+    792dcc394008ffb0885a35342477f280e8d7ffafa5e91d04d1bfbe078a87812a
+  target ISO  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+    792dcc394008ffb0885a35342477f280e8d7ffafa5e91d04d1bfbe078a87812a
+  Result: Source and target match.
+
+CONTEXT
+-------
+Dell Precision 7530 hardware test of fry443 build showed:
+  - eSPI link healthy: PID 0x72, no status-bit errors after masking
+  - eSPI error clear succeeded (PC bit 12 cleared)
+  - EC STILL reads 0xFF on ports 0x62/0x66 and 0x6C/0x68
+  - All 7 recovery methods exhausted, EC unresponsive
+  - Root question: Is the eSPI Peripheral Channel actually enabled and
+    forwarding I/O cycles from the PCH to the EC?
+
+Previously we only read the slave's GenCfg register (0x0008) for
+frequency and I/O mode. We did NOT read the Peripheral Channel
+capability/config register (0x0010) or the Virtual Wire channel
+register (0x0020). These registers tell us whether the EC's
+Peripheral Channel is enabled/ready — critical for understanding
+why port I/O returns 0xFF.
+
+CODE CHANGES
+------------
+
+1) src/kernel/acpi/extended.c
+   A) New globals for slave channel diagnostics:
+      - g_espi_slave_pc_cap: raw Peripheral Channel Cap register (0x0010)
+      - g_espi_slave_vw_cap: raw Virtual Wire Cap register (0x0020)
+      - g_espi_slave_pc_en: PC Ready bit from slave (bit 16 of 0x0010)
+      - g_espi_slave_vw_en: VW Ready bit from slave (bit 16 of 0x0020)
+      - g_espi_gen_chan_sup: GenCfg bits [15:12] (PC/VW/OOB/FC support)
+      - g_espi_slave_read_ok: bitmask tracking which reads succeeded
+      WHY: Need to know if PC channel is supported AND ready on slave side.
+
+   B) New helper: espi_slave_read_indirect(sbreg, pid, addr, val_out)
+      - Extracted from the inline GenCfg read code in espi_diag_probe()
+      - Issues SLV_CFG_CTL indirect read, polls SCRS for completion
+      - Returns 1 on success, 0 on timeout
+      WHY: Avoids code duplication; need 3 slave reads now, not just 1.
+
+   C) espi_diag_probe() Step 4 rewritten:
+      - Uses espi_slave_read_indirect() for all 3 registers
+      - GenCfg (0x0008): now also decodes channel support bits [15:12]
+        and logs "ch_sup=PC1 VW1 OOB1 FC1"
+      - PC_CAP (0x0010): logs raw value, Ready bit, max payload/read sizes
+      - VW_CAP (0x0020): logs raw value, Ready bit, max VW count
+      WHY: If PC is not supported or not ready, that explains 0xFF on
+      EC I/O ports — the eSPI slave won't forward I/O cycles.
+
+   D) acpi_get_diag() extended:
+      - Fills new diag fields from globals
+      WHY: Expose slave channel state to userspace diagnostics.
+
+2) src/kernel/acpi/extended.h
+   - Added to fry_acpi_diag after _pad10:
+     espi_slave_pc_cap (uint32_t), espi_slave_vw_cap (uint32_t),
+     espi_slave_pc_en (uint8_t), espi_slave_vw_en (uint8_t),
+     espi_gen_chan_sup (uint8_t), espi_slave_read_ok (uint8_t)
+
+3) src/user/libc/libc.h
+   - Mirror of extended.h struct additions.
+
+4) src/user/shell/shell.c — acpibreak output:
+   - New block after eSPI clear section:
+     "slave ch_sup=PC1 VW1 OOB1 FC1 rdok=0x07"
+     "  PC_CAP=XXXXXXXX rdy=N  VW_CAP=XXXXXXXX rdy=N"
+   WHY: Shows if EC's Peripheral Channel is supported/ready.
+
+5) src/user/apps/sysinfo.c — sysinfo display:
+   - New line at y=304: "slave: PC1 VW1 OOB1 FC1  PC_rdy=N VW_rdy=N"
+   - Color: green if PC_rdy=1, red if PC_rdy=0
+   - Shifts query/policy lines down by 16px when slave line present
+   WHY: Visual indicator of PC channel health.
+
+EXPECTED DELL OUTPUT
+--------------------
+acpibreak will now show (after existing eSPI clear block):
+
+  slave ch_sup=PC[0|1] VW[0|1] OOB[0|1] FC[0|1] rdok=0x[01-07]
+    PC_CAP=XXXXXXXX rdy=[0|1]  VW_CAP=XXXXXXXX rdy=[0|1]
+
+Key diagnostic cases:
+  A) ch_sup PC=0 → Slave does not support Peripheral Channel at all.
+     EC is NOT accessible via I/O ports over eSPI. Different comm path needed.
+  B) ch_sup PC=1, rdy=0 → PC supported but NOT ready. Channel not enabled/
+     configured. May need host-side enable or _REG evaluation.
+  C) ch_sup PC=1, rdy=1 → PC is up. 0xFF reads mean the EC firmware itself
+     is not responding (firmware mode issue, not channel issue).
+  D) rdok=0x00 → All slave reads timed out. PID may be wrong or eSPI link
+     is not actually functional despite clean error registers.
+
+Build commands:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+Test: Boot ISO from USB on Dell Precision 7530, run `acpibreak` in shell.

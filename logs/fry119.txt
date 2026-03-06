@@ -1,0 +1,4 @@
+[2026-02-20 18:24:53 UTC] Step: Fix EFI UINT64 type definition in UEFI entry code.
+Why: Build failed in src/boot/efi_main.c because UINT64 was used without a typedef.
+Change: Added typedef uint64_t UINT64 alongside other EFI base types.
+Files: src/boot/efi_main.c

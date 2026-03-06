@@ -1,0 +1,38 @@
+========================================================================
+TaterTOS64v3 - fry493 — Report: /nvme entries no longer freeze
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 16:10:29 UTC
+
+USER REPORT / CONTEXT
+---------------------
+- "it does not freeze on any nvme entry."
+
+STATUS
+------
+- /nvme and all nvme entries are now confirmed non-freezing.
+
+CODE CHANGES
+------------
+- None (report only).
+
+BUILD / ARTIFACT VALIDATION
+---------------------------
+- No rebuild performed in this step.
+
+HASH / FRESHNESS (Rule 15)
+--------------------------
+Source ISO:
+- 2026-03-03 09:54:47.368772652 -0600  135548928 bytes
+- SHA256: 6e4d67bf53ce6c76f03392b3a1bf2ecf97162e5977b42d0736c5fe6f502daa6c
+- Path: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+Target/export ISO:
+- 2026-03-03 09:54:49.765270600 -0600  135548928 bytes
+- SHA256: 6e4d67bf53ce6c76f03392b3a1bf2ecf97162e5977b42d0736c5fe6f502daa6c
+- Path: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- Note: hashes match; export appears up to date.
+
+========================================================================

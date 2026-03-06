@@ -1,0 +1,96 @@
+========================================================================
+  TaterTOS64v3 — Session Handoff Log (2026-02-28)
+  Covers: fry391 (EC chicken-and-egg fix)
+========================================================================
+
+TIMESTAMP
+---------
+2026-02-28 ~19:03 UTC
+
+LAST FRY LOG
+------------
+logs/fry391.txt — full details of what changed and why.
+
+========================================================================
+RULES (from planv3.txt — MUST FOLLOW EXACTLY, NON-NEGOTIABLE)
+========================================================================
+1)  Follow the plan step by step. No shortcuts or cut corners.
+2)  No "minimal" implementations; do thorough, functional work.
+3)  No Linux or Windows code inside the OS.
+4)  Use Edit/Write tools for code edits (apply_patch equivalent).
+5)  Log every completed step in its own logs/fryN.txt with timestamps.
+6)  If you change code, include a brief "why" in the log.
+7)  Don't pause after saying you'll continue; just continue.
+8)  Branding is TaterTOS64v3 (never FryOS).
+9)  UEFI-only boot path.
+10) When testing, always include the necessary commands to run the test.
+11) Default rebuild mode is clean + verbose:
+      make clean
+      PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+12) All apps built and run must follow the TaterWin protocol.
+    (create window, map SHM, render to SHM, TW_MSG_UPDATE, fry_sleep
+    cooperative loop. Never use printf/gets_bounded for app display/input.)
+
+========================================================================
+SESSION SUMMARY
+========================================================================
+Fixed EC initialization deadlock on Dell Precision 7530. The EC was
+reporting FAIL because ec_reg_init() probed the EC BEFORE calling
+_REG(3,1). Dell ECs won't respond to direct port I/O until _REG
+announces a region handler. But _REG was only called after a successful
+probe — creating a chicken-and-egg deadlock where neither ever happens.
+
+PROBLEM
+-------
+Sysinfo showed: EC: FAIL ports=0x62/0x66
+Battery: STA=0x00000000 (because battery _STA reads EC registers)
+
+Old flow:
+  1. Discover ports (ECDT / _CRS / defaults)
+  2. ec_init_ports() → probe EC 5 times → ALL FAIL → return early
+  3. _REG(3,1) → NEVER REACHED
+
+FIX APPLIED
+-----------
+New flow:
+  1. Discover ports (ECDT / _CRS / defaults) — unchanged
+  2. ec_setup_ports() — sets ports, enables ACPI (SCI_EN), sets
+     g_ec_ok=1 optimistically (so ec_read/ec_write work during _REG)
+  3. EC _INI method called if it exists
+  4. _REG(3,1) called — tells AML that EC region handler is active
+  5. EC _GPE enabled via acpi_enable_gpe() — wakes EC from idle
+  6. ec_probe() — NOW probe with 5 retries + alternate port fallback
+
+Files changed:
+  src/kernel/acpi/ec.c         — added ec_setup_ports(), ec_probe()
+  src/kernel/acpi/ec.h         — exported new functions
+  src/kernel/acpi/extended.c   — restructured ec_reg_init(), added events.h
+
+BUILD STATUS
+------------
+Clean build + ISO export successful.
+ISO: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+NVMe image: shell.fry updated via mcopy.
+
+CURRENT STATE
+-------------
+- Target HW: Dell Precision 7530 (bare metal, no serial, no QEMU)
+- Only diagnostic output is on-screen via sysinfo app
+- Boot is stable: GUI launches, event loop running
+- NS nodes: 7072 (after fry390 AML parser fixes)
+- EC: FAIL (pending this fix — needs hardware test)
+- NVMe/GPT/FAT32: working
+- PS/2 keyboard + mouse: working
+- TaterWin SHM compositor: working
+- All apps use TaterWin protocol (Rule 12)
+
+NEXT ACTION
+-----------
+Boot the new ISO on Dell Precision 7530. Check sysinfo ACPI panel:
+  - EC: OK ports=0x62/0x66   → fix worked, battery should follow
+  - EC: FAIL ports=0x62/0x66 → still broken; next step: add on-screen
+    diagnostic rendering (probe failure reason visible on display since
+    there is NO serial output on bare metal)
+
+NEXT FRY LOG: fry392.txt
+========================================================================

@@ -1,0 +1,42 @@
+========================================================================
+TaterTOS64v3 - fry553 - clarify NVMe coherency comment as x86-64
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 22:56:02 UTC
+2026-03-05 16:56:02 CST
+
+CONTEXT
+-------
+- Follow-up noted wording ambiguity: prior comment said "x86", while this
+  kernel target is explicitly 64-bit.
+
+WHY
+---
+- Clarify architecture wording to avoid confusion and make intent explicit.
+
+CHANGE APPLIED
+--------------
+- File updated: `src/drivers/storage/nvme.c`
+  - Comment in `nvme_io_rw()` updated:
+    - From: `x86 NVMe DMA is cache-coherent...`
+    - To:   `x86-64 NVMe DMA is cache-coherent...`
+
+EFFECT
+------
+- No functional code-path change.
+- Documentation comment now precisely reflects the 64-bit target.
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Kernel build validation:
+   - `PATH="/opt/cross/bin:$PATH" make -j"$(nproc)"`
+2) RESULT:
+   - PASS (build succeeded)
+
+NOTES
+-----
+- No hash recorded in this log (planv3 rule 16; no user-requested rebuild).
+
+========================================================================

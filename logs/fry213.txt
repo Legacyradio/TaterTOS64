@@ -1,0 +1,3 @@
+2026-02-21 02:52 - Step: Trace alloc_table sequencing.
+Why: pmm_alloc_page_below succeeds at least once yet alloc_table still fails; need to see which allocation in the sequence triggers the failure.
+Change: src/kernel/mm/vmm.c alloc_table now prints 'a<hex>' on entry and 'A<hex>' after zeroing for each table allocation. Will remove after diagnosis.

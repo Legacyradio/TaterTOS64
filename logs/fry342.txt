@@ -1,0 +1,35 @@
+2026-02-26 20:57:00 UTC
+Step: Align v3 boot path to live-environment behavior and harden .FRY lookup.
+Why: Dell bare-metal boot was intermittently failing with GUI/SHELL open -101 despite media containing files.
+
+Changes made:
+- src/kernel/main.c
+  - Prefer boot ramdisk as primary VFS when handoff ramdisk is present (live-media style).
+  - Keep NVMe as fallback if ramdisk mount fails.
+  - Launch tries both root and /fry paths:
+    - /GUI.FRY then /fry/GUI.FRY
+    - /SHELL.FRY then /fry/SHELL.FRY
+  - Launch failure logs now print attempted path.
+
+- src/boot/efi_loader.c
+  - Ramdisk .FRY discovery now checks multiple path variants per app:
+    - \\fry\\NAME.FRY
+    - \\FRY\\NAME.FRY
+    - \\NAME.FRY
+  - Retains canonical ramdisk entry names (GUI.FRY, SHELL.FRY, ...).
+
+- build_iso.sh
+  - EFI image now embeds .FRY files at both root and /fry.
+  - Windows export copy converted to warning-only (build no longer fails if /mnt/c is read-only).
+
+Validation run:
+- PATH="/opt/cross/bin:$PATH" make -C /home/jjsako/TaterTOS64v3 kernel shell gui sysinfo uptime ps
+  Result: success (warnings only; no build errors).
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+  Result: EXIT 0, ISO produced at out/tatertos64v3.iso.
+- Verified efiboot.img layout includes:
+  - root: GUI.FRY, SHELL.FRY, SYSINFO.FRY, UPTIME.FRY, PS.FRY
+  - /fry: same files
+
+Notes:
+- ACPI message "no PCI root for _PRT" remains separate from launch-path changes and was not modified in this step.

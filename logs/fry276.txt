@@ -1,0 +1,10 @@
+[2026-02-22 06:39:42 UTC] Switch NVMe controller lookup to PCI device list.
+
+Changes:
+- src/drivers/storage/nvme.c: nvme_find_controller now scans pci_get_devices() instead of direct ECAM reads.
+
+Why:
+- Boot hangs right after "NVMe: scan start"; using the already-enumerated PCI list avoids raw ECAM access during storage init.
+
+Tests (not run):
+- bash build_iso.sh

@@ -1,0 +1,65 @@
+========================================================================
+TaterTOS64v3 - fry494 — Windows-style readdir metadata (fix NVMe sizes)
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 16:26:07 UTC
+
+USER REPORT / CONTEXT
+---------------------
+- NVMe partition entries all report size 0.
+- Requirement: handle directory enumeration like Windows (size metadata from readdir).
+
+WHY THESE CHANGES
+-----------------
+- Windows surfaces file sizes directly from directory enumeration metadata,
+  avoiding per-entry stat calls that can fail or stall.
+- Provide size/attr in readdir so File Manager can show accurate sizes without
+  per-entry stat and without zero-size fallbacks.
+
+CODE CHANGES
+------------
+1) VFS readdir now supports size/attr metadata via a shared callback signature.
+   - src/kernel/fs/vfs.h
+   - src/kernel/fs/vfs.c
+
+2) Filesystem readdir implementations now emit size + attr:
+   - FAT32: use directory entry size + attr.
+     - src/kernel/fs/fat32.h
+     - src/kernel/fs/fat32.c
+   - NTFS: use  real_size + FILE_ATTRIBUTE_DIRECTORY.
+     - src/kernel/fs/ntfs.h
+     - src/kernel/fs/ntfs.c
+   - ToTFS: read inode for size/type.
+     - src/kernel/fs/totfs.h
+     - src/kernel/fs/totfs.c
+   - Ramdisk: emit entry size + file attr.
+     - src/kernel/fs/vfs.c
+
+3) New syscall: SYS_READDIR_EX packs name + size + attr records.
+   - src/kernel/proc/syscall.c
+   - src/user/libc/libc.h
+   - src/user/libc/libc.c
+
+4) File Manager uses SYS_READDIR_EX and parses dirent records.
+   - src/user/apps/fileman.c
+
+STATUS
+------
+- Implementation complete; build not run in this log entry.
+
+HASH / FRESHNESS (Rule 15)
+--------------------------
+Source ISO:
+- 2026-03-03 09:54:47.368772652 -0600  135548928 bytes
+- SHA256: 6e4d67bf53ce6c76f03392b3a1bf2ecf97162e5977b42d0736c5fe6f502daa6c
+- Path: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+Target/export ISO:
+- 2026-03-03 09:54:49.765270600 -0600  135548928 bytes
+- SHA256: 6e4d67bf53ce6c76f03392b3a1bf2ecf97162e5977b42d0736c5fe6f502daa6c
+- Path: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- Note: hashes match; export appears up to date.
+
+========================================================================

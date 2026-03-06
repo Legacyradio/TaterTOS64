@@ -1,0 +1,39 @@
+fry455 — App-side double-buffering to fix window flashing
+Date: 2026-03-01
+Timestamp: $(date)
+
+PROBLEM:
+  All TaterWin apps (sysinfo, uptime, ps, shell) rendered directly to the
+  SHM buffer shared with the compositor. Each render cycle started with
+  gfx_fill() clearing the entire buffer to background color, then drew
+  content on top. The compositor (gui.c) reads SHM every frame (~60fps).
+  When the compositor read between the clear and the draw, it caught a
+  blank frame — visible as periodic flashing every few seconds.
+
+  This is a classic SHM race condition, NOT a video driver issue.
+
+ROOT CAUSE:
+  render() calls gfx_fill(ctx, 0, 0, w, h, bg_color) directly on SHM →
+  compositor gfx_blit reads SHM at same instant → blank frame displayed.
+  sysinfo/uptime/ps update every 1000ms so the flash was periodic.
+
+FIX — app-side double-buffering:
+  Each app now has a private `render_buf` (malloc'd, same size as SHM).
+  The gfx_ctx_t renders to render_buf (local memory only).
+  After all drawing is complete, a single memcpy(shm_ptr, render_buf, size)
+  publishes the finished frame to SHM atomically. The compositor never sees
+  a half-drawn buffer.
+
+  On window resize, render_buf is freed and reallocated to match new size.
+
+FILES CHANGED:
+  src/user/apps/sysinfo.c — added render_buf, render to it, memcpy to SHM
+  src/user/apps/uptime.c  — same pattern
+  src/user/apps/ps.c      — same pattern
+  src/user/shell/shell.c  — same pattern (render_and_update + handle_resize)
+
+WHY:
+  gfx_fill clear + multi-step draw directly on SHM = race with compositor.
+  Double-buffer makes the SHM write a single memcpy = no partial frames.
+
+BUILD: make clean && build_iso.sh — success, ISO exported to Windows.

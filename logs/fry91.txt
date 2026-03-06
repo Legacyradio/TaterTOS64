@@ -1,0 +1,3 @@
+STEP 91
+TIME: 2026-02-20 07:46:38
+ACTION: Implemented PS/2 controller init with IRQ enable in src/drivers/input/ps2_ctrl.c.

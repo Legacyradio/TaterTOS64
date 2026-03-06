@@ -1,0 +1,7 @@
+2026-02-21 00:37:29
+Change: Switched inline debug output to immediate outb constants (0x42/0x5A).
+Why: debugcon showed ')' instead of 'BZ'; using immediate outb avoids any register corruption affecting AL.
+Details:
+- main.c: replaced mov/out with direct outb imm8,imm8 for 'B' and 'Z'.
+Rule note: Temporary debug change; will be removed after diagnosis.
+Next: rebuild ISO, run QEMU with debugcon, confirm 'BZ' appears.

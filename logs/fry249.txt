@@ -1,0 +1,22 @@
+Handoff Follow-up - 2026-02-21
+
+Summary
+- Reviewed new run after IST stacks + SMP fix.
+
+Observed Results
+- debugcon: kgtubp (stops before vmm/after_vmm markers).
+- QEMU log: #GP loop at RIP 0007fdffffffff80, then #PF with CR2=ffffffff80200ff8 (guard page), then #DF.
+- Stack base/top: __kernel_stack_base=ffffffff80200000, __kernel_stack_top=ffffffff80240000.
+  CR2/RSP are within the guard page region, consistent with stack overflow.
+
+Note
+- Early serial output (K_PMM/VMM/!EXC) is going to COM1 (first -serial), which is stdio.
+  The serial.log file is COM2 (second -serial), so it does not capture !EXC.
+  For fault telemetry, swap QEMU serial order so file is first.
+
+Next Step
+- Rerun QEMU with -serial file first so !EXC prints land in serial.log.
+
+Suggested QEMU command (Windows)
+qemu-system-x86_64.exe ... -serial "file:C:\Users\jjsako\serial.log" -serial stdio ...
+

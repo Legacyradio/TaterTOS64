@@ -1,0 +1,17 @@
+fry364 — Bare-metal status note: charger crash + '?' glyph regressions resolved
+Timestamp: 2026-02-27 17:25:34 CST
+
+Why:
+  User requested explicit logging in the session logs that two prior regressions
+  are now fixed on bare metal.
+
+User-confirmed status:
+  - Charger-triggered crash is fixed.
+  - Random '?' symbol/glitch glyph output bug is fixed.
+
+Reference:
+  - Prior implementation details for these fixes are documented in logs/fry360.txt.
+
+Status update (2026-02-27 17:50:05 CST):
+  - Charger-triggered crash fix: SUCCESSFUL
+  - '?' glyph/glitch output fix: SUCCESSFUL

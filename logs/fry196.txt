@@ -1,0 +1,6 @@
+2026-02-21 01:21:14 CST
+Step: Rebuilt ISO with heap/RSP diagnostics.
+Why: Need updated ISO to observe new debug markers and RSP value.
+Result:
+- ISO built at /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Export to C:\Users\jjsako\Documents\tateriso failed from WSL (permission denied).

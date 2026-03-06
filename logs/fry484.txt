@@ -1,0 +1,42 @@
+========================================================================
+TaterTOS64v3 - fry484 — NTFS reintroduction step 1 (build re-enable)
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 09:18:52 UTC
+
+USER DIRECTION
+--------------
+- Add NTFS back slowly, one step at a time.
+- NTFS is for external/internal NTFS drives, not the live ramdisk.
+- Avoid touching/reporting the boot drive the OS is running from.
+
+STEP SUMMARY
+------------
+- Step 1: Re-enable NTFS driver compilation only.
+  (No runtime NTFS detection/mount yet.)
+
+CODE CHANGES
+------------
+1) Makefile
+   - Re-added src/kernel/fs/ntfs.o to KERNEL_OBJS.
+
+BUILD / ARTIFACT VALIDATION
+---------------------------
+- No rebuild performed in this step.
+
+HASH / FRESHNESS (Rule 15)
+--------------------------
+Source ISO:
+- 2026-03-03 02:42:24.891312411 -0600  135536640 bytes
+- SHA256: 31b07fa0ac303363ce83faeaa370deef5aa4b397c851d0727926bea597dea2f3
+- Path: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+Target/export ISO:
+- 2026-03-03 02:55:41.554127100 -0600  135536640 bytes
+- SHA256: 31b07fa0ac303363ce83faeaa370deef5aa4b397c851d0727926bea597dea2f3
+- Path: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- Note: hashes match; export appears up to date.
+
+========================================================================

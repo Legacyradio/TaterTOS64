@@ -1,0 +1,115 @@
+DATE: 2026-02-21
+TIME: (current session continuation)
+STEP: Calling convention ABI fix — EFI loader (ms_abi) → kernel (sysv)
+
+PROBLEM IDENTIFIED
+------------------
+Root cause of pmm_init crash at RIP=ffffffff80002cc4, CR2=0x100000030:
+
+The EFI loader (src/boot/efi_loader.c) is compiled by build_iso.sh with
+x86_64-w64-mingw32-gcc (Microsoft/Windows x64 ABI). In that ABI, the first
+function argument is passed in RCX, not RDI.
+
+efi_boot_start in efi_boot.asm called _fry_start via "call rax" without ever
+moving RCX to RDI. The kernel is compiled with x86_64-elf-gcc (System V ABI)
+and _fry_start expects its first argument (handoff pointer) in RDI.
+
+Result: _fry_start received garbage in RDI (whatever RDI happened to contain
+from the UEFI firmware), NOT the real handoff pointer. This garbage pointer
+was saved to RBX and passed to pmm_init as the handoff.
+
+Evidence from qemu.log register dump at the #PF fault:
+  RBX=000000007dcb2318 RDI=000000007dcb2318  ← garbage, non-page-aligned
+  R8 =0000000000000118  ← this is handoff->mmap_base = 280 (wrong!)
+  R9 =afafafaf6c617470  ← this is handoff->mmap_size = heap garbage
+  R10=0000000000000060  ← this is handoff->mmap_desc_size = 96
+
+  R8 + RCX = 0x118 + 0xffffff00 = 0x100000018 = RSI = CR2 - 0x18 ✓
+
+  The pmm_init first loop iterated with the garbage mmap_base (0x118) and
+  a huge mmap_size (0xafafafaf6c617470), running ~44 million iterations
+  until the descriptor pointer RSI reached 4GB+24 (0x100000018), causing
+  a #PF when reading NumberOfPages at RSI+0x18 = 0x100000030.
+
+Secondary cascade: after #PF, IDT handler fired but jumped to non-canonical
+address 000804ffffffff80 causing #GP chain. This is a symptom of the
+corrupted state (will re-evaluate after the primary fix takes effect).
+
+DISCOVERY METHOD
+----------------
+Key steps that led to the root cause:
+1. Disassembled pmm_init: confirmed R8 = handoff->mmap_base = 0x118 (wrong)
+2. Checked efi_loader.c compilation in build_iso.sh: x86_64-w64-mingw32-gcc
+3. Identified Windows ABI: first arg in RCX, not RDI
+4. Checked efi_boot_start: no RCX→RDI translation before call _fry_start
+5. Root cause confirmed: handoff was in RCX (from MinGW caller), kernel reads RDI
+
+CHANGE MADE
+-----------
+src/boot/efi_boot.asm — add ABI translation before calling _fry_start
+
+Old:
+    ; rdi = struct fry_handoff * (from UEFI loader)
+    efi_boot_start:
+        cli
+        ...
+        and rsp, -16
+        mov rax, _fry_start
+        call rax
+
+New:
+    ; ABI translation comment + mov rdi, rcx + call
+    efi_boot_start:
+        cli
+        ...
+        and rsp, -16
+        ; Translate Windows ABI arg1 (RCX = handoff) to SysV ABI arg1 (RDI).
+        mov rdi, rcx
+        mov rax, _fry_start
+        call rax
+
+Why: efi_loader.c is compiled with x86_64-w64-mingw32-gcc (Windows ABI).
+     Windows ABI first arg = RCX. Kernel (x86_64-elf-gcc, System V ABI)
+     expects first arg in RDI. Without this translation, _fry_start receives
+     garbage from RDI instead of the real handoff pointer.
+
+Verified in binary via objdump -d -j .boot kernel.elf:
+  10001f:  48 89 cf   mov %rcx,%rdi  ← correct instruction in place ✓
+
+BUILD RESULT
+------------
+PATH="/opt/cross/bin:/usr/bin:$PATH" /usr/bin/make all: SUCCESS
+./build_iso.sh: SUCCESS
+ISO exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+EXPECTED RESULT AFTER FIX
+--------------------------
+With the correct handoff pointer:
+  - handoff->mmap_base = real physical address of EFI mmap buffer (~0x7DC00000)
+  - handoff->mmap_size = real size in bytes (~1-5KB)
+  - handoff->mmap_desc_size = real desc size (48 or 96 bytes)
+
+pmm_init should complete successfully:
+  debugcon should show 'p' (after pmm_init)
+  followed by 'v' (after vmm_init)
+  followed by 'S' (after_vmm entry)
+  followed by more stage markers
+
+If new faults occur, the early serial telemetry added in fry242 will print
+"!EXC vec=..." lines to serial.log with RIP/CR2/CR3.
+
+Serial output should show K_START, K_GDT_IDT, K_TSS, K_PMM, K_VMM, S, ...
+(Note: serial UART output may still be missing pre-vmm due to timing;
+ debugcon remains the reliable early-boot marker channel.)
+
+TEST COMMAND (for user to run)
+--------------------------------
+./build_iso.sh  (already done)
+qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+  -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+  -cdrom ./out/tatertos64v3.iso \
+  -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+tail -n 50 logs/debugcon.log
+tail -n 50 logs/serial.log
+tail -n 100 logs/qemu.log

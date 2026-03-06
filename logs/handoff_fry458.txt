@@ -1,0 +1,88 @@
+========================================================================
+TaterTOS64v3 - Session Handoff Log (fry458)
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-02 15:12:12 UTC
+
+USER DIRECTION (LATEST)
+-----------------------
+- Bare metal only (no QEMU).
+- Goal: confidence check that current ISO should boot on target hardware.
+- Do not pursue NTFS kernel implementation in this step.
+
+HARDWARE LOCK (NON-NEGOTIABLE)
+------------------------------
+- Model: Dell Precision 7530
+- CPU: Intel Core i5-8300H (Coffee Lake-H)
+- Firmware: latest BIOS available for this exact model
+- UEFI-only boot path
+
+CURRENT ARTIFACT STATUS
+-----------------------
+ISO hashes were re-verified and match:
+- /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  e4d20e54057d9b91946b1d76178104539d8e357793ac31aad6f247453fc042d7
+- /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+  e4d20e54057d9b91946b1d76178104539d8e357793ac31aad6f247453fc042d7
+
+Sizes:
+- local ISO: 137875456 bytes
+- exported ISO: 137875456 bytes
+
+CURRENT BOOT/STORAGE BEHAVIOR (IMPORTANT)
+-----------------------------------------
+1) EFI loader builds a RAM disk from .FRY apps when available.
+   - Current packed apps: GUI.FRY, SHELL.FRY, SYSINFO.FRY, UPTIME.FRY, PS.FRY.
+2) Kernel VFS prefers ramdisk as primary root when ramdisk exists.
+3) ToTFS support exists for block-device partitions, but is not primary root
+   when ramdisk is present.
+4) NTFS is not implemented in-kernel.
+
+WHAT THIS MEANS FOR TESTING TODAY
+---------------------------------
+- Boot validation should focus on successful UEFI boot + GUI/app launch.
+- Root on this ISO path is effectively ramdisk-first behavior.
+- Persistent write validation is a separate path from initial boot confidence.
+
+BARE-METAL BOOT CHECKLIST
+-------------------------
+1) Flash /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso to USB.
+2) Boot Dell Precision 7530 in UEFI mode.
+3) Confirm GUI appears and system does not reboot-loop.
+4) Launch at least: Shell and Sysinfo.
+5) In Shell run quick read-path sanity:
+   - ls /
+   - ls /fry
+   - cat /SHELL.FRY (or another existing .FRY file path if needed)
+6) Record pass/fail and visible error text (photo/log notes acceptable).
+
+IF BOOT FAILS
+-------------
+Capture the earliest visible failure point:
+- before GUI draw
+- after GUI but app launch failure
+- immediate reboot/freeze
+Then continue from that failure stage only.
+
+COMMANDS TO REBUILD IF NEEDED (DEFAULT MODE)
+--------------------------------------------
+From /home/jjsako/TaterTOS64v3:
+- make clean
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+SESSION SCOPE
+-------------
+- No code changes were made in this handoff step.
+- This handoff only consolidates boot-readiness state and next validation steps.
+
+VALIDATION UPDATE
+-----------------
+2026-03-02 18:56:32 UTC
+
+- User-confirmed result: adding NVMe info to sysinfo is successful.
+- NVMe drive is detected and displayed correctly in the System Info app.
+- Status: SUCCESSFUL.
+
+========================================================================

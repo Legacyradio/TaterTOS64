@@ -1,0 +1,61 @@
+Handoff Log - 2026-02-21 12:04:54 -0600
+
+Summary
+- Project: TaterTOS64v3
+- Goal: UEFI-only boot path per planv3; advance past early kernel handoff fault.
+
+Progress Made Since Last Handoff
+- EFI loader path is consistently successful through handoff preparation:
+  - `TATER EFI: start`
+  - `TATER EFI: LI ok`
+  - `TATER EFI: SFS ok`
+  - `TATER EFI: volume ok`
+  - `TATER EFI: kernel ok`
+  - `TATER EFI: elf loaded`
+  - `TATER EFI: entry resolved`
+  - `TATER EFI: GOP ok`
+- Prior immediate post-handoff page fault signature changed, indicating deeper execution progress:
+  - Previous: early `#PF` with `CR2=0x0000000080001570` immediately after handoff.
+  - Current: later `#GP` at `RIP=ffffffff800a0002`, then follow-on `#PF` with `CR2=ffffffff7ffffffc`.
+- This confirms progression beyond the original low-map fault into later kernel execution state.
+
+How This Progress Was Achieved
+- Kept UEFI boot stub using low-4GiB identity mapping (`src/boot/efi_boot.asm`).
+- Normalized EFI loader memory constraints to match boot paging contract (4GiB), removing mixed 8GiB vs 4GiB assumptions:
+  - Added unified constants in `src/boot/efi_loader.c`:
+    - `TATER_BOOT_IDENTITY_LIMIT = 0x100000000ULL`
+    - `TATER_BOOT_IDENTITY_MAX_ADDR = limit - 1`
+  - Applied those limits to:
+    - kernel file staging reads
+    - handoff page allocation
+    - memory-map buffer allocation
+    - `handoff->boot_identity_limit`
+- Cleaned stale VMM comments in `src/kernel/mm/vmm.c` that incorrectly referenced 1GiB.
+
+Current Behavior (Latest Logs)
+- `serial.log`: stops after `TATER EFI: GOP ok` (no additional kernel serial banner visible yet).
+- `qemu.log` tail shows:
+  - `check_exception ... new 0xd`
+  - `IP=... ffffffff800a0002`
+  - then `check_exception ... new 0xe`
+  - `CR2=ffffffff7ffffffc`
+- `debugcon.log` present but 0 bytes in the latest run.
+
+Interpretation
+- The original handoff mapping blocker is no longer the first failure.
+- The new blocker is a kernel-side fault chain (`#GP` then `#PF`) after entering higher-half execution.
+- Phase 17 should not begin yet; boot stability is not achieved.
+
+Proposed Next Move
+1) Resolve symbol/line for `RIP=ffffffff800a0002` from the exact built `kernel.elf` used in this run.
+2) Add minimal early fault instrumentation in IDT/panic path to print vector, RIP, error code, CR2, and CR3 to serial before secondary fault.
+3) Re-run with current QEMU logging flags and compare first-fault context against previous run.
+4) Fix root cause in the faulting path (likely descriptor/state issue causing `#GP`, not early identity-map coverage).
+
+Suggested Test Commands (same environment)
+- `make clean all`
+- `./build_iso.sh`
+- `qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd -cdrom ./out/tatertos64v3.iso -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log`
+- `tail -n 200 logs/serial.log`
+- `tail -n 200 logs/qemu.log`
+

@@ -1,0 +1,117 @@
+========================================================================
+TaterTOS64v3 - fry576 - replace PMM bitmap with buddy allocator and remove recursive VMM teardown
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 01:28:21 UTC
+2026-03-05 19:28:21 CST
+
+CONTEXT
+-------
+- Review flagged two structural MM risks:
+  1) PMM was still a linear bitmap allocator, which scales poorly as RAM size
+     grows and had no correct way to free buddy-sized multi-page allocations.
+  2) `vmm_destroy_address_space()` recursively descended page tables, which can
+     grow kernel stack usage during process teardown.
+- Multi-page PMM callers in process, ELF, SHM, and NVMe were still freeing one
+  page at a time, which is incompatible with a true buddy backend.
+
+WHY
+---
+- A bitmap first-fit scan is O(n) over physical pages and becomes progressively
+  more brittle as memory size increases.
+- A real buddy allocator needs block-aware allocation/free semantics so a
+  7-page request can round up to an 8-page block without later being torn apart
+  as seven independent single-page frees.
+- Recursive page-table destruction is unnecessary in a fixed 4-level x86-64
+  hierarchy and risks stack growth during address-space teardown.
+
+CHANGES APPLIED
+---------------
+- Files updated:
+  - `src/kernel/mm/pmm.h`
+    - Added `pmm_free_pages(uint64_t phys, uint64_t count)` so block-head frees
+      are explicit in the PMM API.
+  - `src/kernel/mm/pmm.c`
+    - Replaced the bitmap allocator with a buddy allocator backend.
+    - Added per-page block metadata (`pmm_page_meta`), per-order free lists,
+      metadata relocation support, and constrained allocation logic for `_below`
+      / low-memory reservations.
+    - PMM metadata is now placed in usable low physical memory, excluded from
+      the released ranges, and rebound through the physmap after VMM startup.
+    - Conventional-memory descriptors are released into buddy-sized aligned
+      blocks and coalesced through the same buddy free path used at runtime,
+      instead of one bitmap bit per page.
+    - Early low pool reservation now comes from the buddy allocator in the
+      configured `[EARLY_POOL_MIN, EARLY_POOL_MAX)` window.
+    - `pmm_free_pages()` now frees/coalesces from the stored block-head order,
+      while `pmm_free_page()` becomes the 1-page wrapper.
+  - `src/kernel/mm/vmm.c`
+    - Replaced recursive `free_page_table()` teardown with fixed-depth helpers:
+      `vmm_destroy_pt()`, `vmm_destroy_pd()`, and `vmm_destroy_pdpt()`.
+    - Added `vmm_free_leaf_entry()` so 4K, 2M, and 1G leaves all honor
+      `VMM_FLAG_NOFREE` before returning physical memory to PMM.
+    - PML4 entries with the large bit set are now ignored instead of being
+      treated like valid child tables.
+  - `src/kernel/proc/process.c`
+    - Kernel stacks now free through `pmm_free_pages()`.
+  - `src/kernel/proc/elf.c`
+    - Temporary ELF buffers now free through `pmm_free_pages()`.
+  - `src/kernel/proc/syscall.c`
+    - SHM backing pages now free through `pmm_free_pages()`.
+  - `src/drivers/storage/nvme.c`
+    - Dynamic PRP-list allocations now free through `pmm_free_pages()`.
+    - The controller buffer slab allocated by `pmm_alloc_pages_below(7, ...)`
+      now frees from the base block instead of freeing seven pages separately.
+
+EFFECT
+------
+- PMM allocation no longer performs a page-by-page bitmap scan for every
+  allocation request.
+- Contiguous multi-page allocations now preserve buddy semantics on free, even
+  when the allocator rounded a request up to the next power-of-two block.
+- Early low-memory reservations and `_below` constraints continue to work with
+  the new allocator backend.
+- User address-space destruction no longer recursively descends the paging tree,
+  and large-leaf teardown now respects `VMM_FLAG_NOFREE`.
+
+VALIDATION (THIS SESSION)
+-------------------------
+1) Inspect PMM API + backend swap:
+   - `nl -ba src/kernel/mm/pmm.h | sed -n '1,40p'`
+   - `nl -ba src/kernel/mm/pmm.c | sed -n '1,220p'`
+   - `nl -ba src/kernel/mm/pmm.c | sed -n '319,703p'`
+2) Inspect fixed-depth VMM teardown:
+   - `nl -ba src/kernel/mm/vmm.c | sed -n '1,20p'`
+   - `nl -ba src/kernel/mm/vmm.c | sed -n '442,514p'`
+3) Inspect updated multi-page free callers:
+   - `nl -ba src/kernel/proc/process.c | sed -n '45,70p'`
+   - `nl -ba src/kernel/proc/elf.c | sed -n '124,143p'`
+   - `nl -ba src/kernel/proc/syscall.c | sed -n '318,326p'`
+   - `nl -ba src/drivers/storage/nvme.c | sed -n '462,472p'`
+   - `nl -ba src/drivers/storage/nvme.c | sed -n '864,892p'`
+4) Compile verification (full clean + verbose rebuild per plan rule 12):
+   - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make clean`
+   - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+5) RESULT:
+   - PASS (`src/kernel/mm/pmm.c` compiled successfully)
+   - PASS (`src/kernel/mm/vmm.c` compiled successfully)
+   - PASS (updated PMM callers compiled successfully)
+   - PASS (full rebuild exited 0; ISO produced at
+     `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`)
+
+NOTES
+-----
+- Buddy allocations now reserve full block size in PMM accounting, not only the
+  caller-requested page count. That is intentional and reflects actual physical
+  pages consumed by the allocator.
+- Existing non-fatal warnings remain elsewhere in the tree, including RWX LOAD
+  segment warnings at link time and unrelated unused-function warnings.
+- Windows export warning during build remains non-fatal:
+  `cp: cannot create regular file '/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso': Read-only file system`
+- No SHA-256 verification was recorded because this step only required rebuild
+  verification, and plan rule 16 says to verify hashes only when explicitly
+  requested.
+
+========================================================================

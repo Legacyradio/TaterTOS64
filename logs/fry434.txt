@@ -1,0 +1,54 @@
+fry434 - Add shell command to pinpoint EC/ACPI break stage
+=======================================================================
+Date: 2026-03-01 20:21:16 UTC
+
+HASH VERIFICATION (performed before this log per Rule 15)
+=======================================================================
+- Source build ISO:
+  29f62f67273590ab878f6f1d2551f563922593f05c156f57513ef2a4e52c17e1  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Target/export ISO:
+  9e481a5f3c76e49a2c571325bc6e0a8dda441765327721a56f143fe71e481a38  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+WHAT CHANGED (why)
+=======================================================================
+- `src/user/shell/shell.c`
+  - Added new shell command: `acpibreak`
+  - Added helper mappers:
+    - `ec_probe_step_name()`
+    - `ec_ports_source_name()`
+    - `ec_recovery_name()`
+  - Added `cmd_acpibreak()` diagnostic evaluator that prints:
+    - single likely break verdict (discovery/decode/eSPI/IBF/OBF/unknown)
+    - compact evidence lines (EC probe status, IOE/PCR summary, eSPI errors,
+      battery/backlight status)
+  - Registered command in `help` output.
+  - Why:
+    - Need an in-OS terminal command to identify likely EC/ACPI failure stage
+      without hunting through noisy boot output.
+
+TESTING
+=======================================================================
+Commands run:
+1) PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make -C /home/jjsako/TaterTOS64v3 shell
+2) make clean
+3) PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+4) sha256sum /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+5) sha256sum /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+Results:
+- 1) PASS (shell app compiles and packs)
+- 2) PASS
+- 3) PASS (new ISO built)
+- 4) PASS
+- 5) PASS (target ISO readable)
+
+NOTES / FOLLOW-UP
+=======================================================================
+- Temporary debug tooling policy:
+  - `acpibreak` is debug-only and must be removed after EC/ACPI root cause is
+    fixed and validated.
+  - This removal requirement should be enforced in a future fry log when issue
+    is closed.
+- BIOS revision/date not visible in this software-only step.
+- Export copy still fails in this environment due read-only mount, so source
+  and target hashes differ.

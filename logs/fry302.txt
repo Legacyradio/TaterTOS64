@@ -1,0 +1,4 @@
+[2026-02-22 08:51:00 UTC] Step: Support NVMe PRP2 for cross-page buffers.
+Why: GPT/FAT32 reads use stack buffers that may span two pages; without PRP2 the driver rejects the read, causing GPT header read failure.
+Change: If a read/write buffer crosses a page boundary, compute PRP2 from the next page's virtual address and include it in the command.
+Files: src/drivers/storage/nvme.c

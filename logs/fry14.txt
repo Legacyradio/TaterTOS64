@@ -1,0 +1,3 @@
+STEP 14
+TIME: 2026-02-20 09:21:40
+ACTION: Added vmm_get_kernel_pml4_phys in src/kernel/mm/vmm.c/.h to provide the kernel CR3 value for SMP AP startup; NOTE: physmap is not active during early page-table construction, so pmm_alloc_page_below(4GB) is used until CR3 is loaded, after which physmap is active. Plan: keep early allocations below 4GB in vmm_init, then switch kernel_pml4 to physmap and use full-range allocations once vmm_ready=1.

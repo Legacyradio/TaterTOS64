@@ -1,0 +1,148 @@
+fry420 — Skip _REG entirely: direct EC probe without AML _REG(3,1) call
+=========================================================================
+Date: 2026-03-01 ~08:30 UTC
+
+CONTEXT (29 ITERATIONS OF EC FAILURE):
+  fry391-fry419 all attempted to fix EC on Dell Precision 7530.
+  Every single iteration called _REG(3,1) in some form.
+  Every single iteration failed: EC reads 0xFF after _REG.
+
+EVIDENCE FROM fry419 BARE-METAL BOOT:
+  early=0x00     (EC alive at start of ec_reg_init)
+  postLPC=0x00   (EC alive after LPC decode config)
+  preREG=0x00    (EC alive right before _REG call)
+  sup=0          (*** _REG AML did ZERO EC I/O calls ***)
+  post-_REG: 0xFF (EC dead)
+  rcv=0          (all 5 recovery methods failed)
+
+ANALYSIS:
+  sup=0 is the critical finding.  It PROVES that _REG's AML bytecode
+  did NOT access any EmbeddedControl (space 0x03) fields during
+  evaluation.  The EC I/O suppression added in fry419 was solving
+  a problem that doesn't exist.
+
+  Yet the EC consistently dies between the preREG status read (0x00)
+  and the post-_REG status read (0xFF).  Since _REG didn't do EC I/O,
+  the AML interpreter evaluation itself must be the cause — either:
+    a) A bug in eval_path_obj_args causes unintended port I/O
+    b) _REG accesses a SystemIO region (not EmbeddedControl) that
+       interferes with EC hardware
+    c) AML interpreter corrupts memory during execution
+    d) _REG triggers a side effect (Notify, cascading method call)
+       that touches I/O ports
+
+  Crucially: the EC is ALIVE at preREG=0x00.  Direct port I/O
+  (ec_read_raw → outb(0x66, 0x80) + outb(0x62, addr) + inb(0x62))
+  does NOT require ECAV or _REG.  ECAV is an AML-level gate that
+  prevents other AML methods from using EC fields.  The kernel's
+  direct port I/O is independent of ECAV.
+
+  NO PREVIOUS ITERATION TRIED SKIPPING _REG.  fry391 moved _REG
+  before probe.  fry418 removed pre-_REG probe.  fry419 suppressed
+  EC I/O during _REG.  But every iteration still CALLED _REG.
+
+WHAT THIS BUILD DOES:
+  1) SKIPS the entire _REG block:
+     - No _INI call
+     - No _REG bytecode dump
+     - No ec_set_reg_in_progress
+     - No eval_path_obj_args(ec_node, "REG", ...)
+     - No ECAV verification
+     - No post-_REG _CRS re-check
+     g_ec_reg_called = 0 (explicitly)
+
+  2) KEEPS GPE enable (harmless, may help wake EC from idle)
+
+  3) KEEPS ec_setup_ports() (sets ports, calls ec_try_acpi_enable)
+
+  4) Adds diagnostic kprints:
+     - "SKIPPING _REG(3,1)" with preREG status
+     - EC status WITHOUT _REG (should match preREG if theory correct)
+     - EC status after GPE enable
+
+  5) Reduces pre-probe delay from ~200ms to ~50ms (no _REG to wait for)
+
+  6) Updates probe log messages: "EC probe (no _REG)" instead of
+     "EC recovery" since this is no longer recovery — it's the
+     primary probe path.
+
+  7) sysinfo.c: shows "REG=SKIP" instead of "REG=0" so it's
+     clearly intentional on the display.
+
+FILES CHANGED:
+  src/kernel/acpi/extended.c  — Replaced _REG block (lines 1795-1910)
+                                 with skip-_REG block. Kept GPE enable.
+                                 Updated delay and probe log messages.
+  src/user/apps/sysinfo.c     — REG=%s with "SKIP"/"1" instead of %u
+
+WHAT DID NOT CHANGE:
+  - ec.c: unchanged (suppression code still exists but never triggered)
+  - extended.h: unchanged (struct layout identical)
+  - libc.h: unchanged
+  - ec_setup_ports() still called (sets ports + ACPI enable)
+  - ec_probe() and all 5 recovery methods still exist and run
+  - LPC decode, PCR mirror — all unchanged
+
+BUILD:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+  Result: PASS — no new warnings in ec.c or extended.c
+  Pre-existing warnings: serial_read_char unused, eval_object ctx unused,
+    str_eq/obj_to_str unused, vfs cast, syscall a4/a5 unused, RWX segments
+
+ISO:
+  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  Exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+EXPECTED ON DELL BOOT:
+  Serial/console output (in order):
+    1) "ACPI: EC ports set to 0x62/0x66 (pre-REG)"
+    2) "ACPI: EC pre-_REG status: 0x00 at port 0x66"
+    3) "ACPI: EC alive pre-_REG (sts=0x00, skipping cmd probe)"
+    4) "ACPI: EC fry420: SKIPPING _REG(3,1) — EC alive at preREG=0x00..."
+    5) "ACPI: EC status WITHOUT _REG: 0x00 (preREG was 0x00)"
+    6) "ACPI: enabling EC GPE 111"
+    7) "ACPI: EC status after GPE enable: 0x00"
+    8) "ACPI: EC probe (no _REG): trying normal probe (method 1)"
+    9) "ACPI: EC probe #1 ... OK: read reg[0x00]=0xXX"  ← THE GOAL
+
+  Sysinfo panel:
+    EC: OK ports=0x62/0x66         ← instead of FAIL
+    node=1 REG=SKIP INI=0 GPE=1/111
+    preProbe=1 rcv=1 sup=0
+    Battery: non-zero values
+
+EXPECTED OUTCOMES:
+  BEST CASE (skip-_REG works):
+    - EC status stays 0x00 (never goes 0xFF because _REG never ran)
+    - Normal probe (method 1) succeeds immediately
+    - rcv=1
+    - EC: OK
+    - Battery: non-zero mV/rate/remain
+    - Proves _REG was the killer all along
+
+  BAD CASE (EC still dies without _REG):
+    - EC status goes 0xFF even without _REG
+    - Means something BEFORE _REG kills it (ec_try_acpi_enable? timing?)
+    - Next step: remove ec_try_acpi_enable from ec_setup_ports
+
+  WEIRD CASE (EC alive but probe fails):
+    - Status stays 0x00 but probe times out at OBF
+    - EC is listening but won't service READ commands without _REG
+    - Would prove the original fry391 theory was PARTIALLY right:
+      EC needs _REG to accept commands, but _REG kills it
+    - Next step: fix AML interpreter to not kill EC during _REG
+
+WHY:
+  29 iterations of patching around _REG (before it, during it, after it)
+  all failed.  sup=0 from fry419 proves _REG's AML doesn't do EC I/O.
+  The simplest experiment left: don't call _REG at all.  The EC is
+  confirmed alive at preREG=0x00 — just talk to it directly.
+
+TEST ON DELL:
+  Flash tatertos64v3.iso to USB, boot Dell Precision 7530.
+  Watch sysinfo for:
+    - REG=SKIP (confirms this build)
+    - EC: OK or FAIL
+    - preProbe=1 (EC alive before probe)
+    - rcv=N (which probe method worked, 0=none)

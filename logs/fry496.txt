@@ -1,0 +1,30 @@
+========================================================================
+TaterTOS64v3 - fry496 — Plan Rules Update (patch-only edits)
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 17:27:42 UTC
+
+WHY THIS LOG
+------------
+- User requested patch-only edits; update plan rule to forbid scripted edits.
+
+HASH / FRESHNESS (Rule 15)
+--------------------------
+Source ISO:
+- 2026-03-03 10:27:48.723952418 -0600  135553024 bytes
+- SHA256: a42aea46242e19d1b018ed66b01f6316e0d3c8abab5a48f3ab26e08ee39d0a28
+- Path: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+Target/export ISO:
+- 2026-03-03 10:27:48.905109600 -0600  135553024 bytes
+- SHA256: a42aea46242e19d1b018ed66b01f6316e0d3c8abab5a48f3ab26e08ee39d0a28
+- Path: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- Note: hashes match; export appears up to date.
+
+CHANGE
+------
+- Updated plan Rule 4 to require patch-based edits only and prohibit scripted edits.
+
+========================================================================

@@ -1,0 +1,4 @@
+[2026-02-20 19:21:39 UTC] Step: Auto-export ISO to Windows folder.
+Why: User requested ISO be copied to C:\Users\jjsako\Documents\tateriso every build.
+Change: build_iso.sh now copies ISO to /mnt/c/Users/jjsako/Documents/tateriso after build.
+Files: build_iso.sh

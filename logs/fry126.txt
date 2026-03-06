@@ -1,0 +1,4 @@
+[2026-02-20 18:27:36 UTC] Step: Export LAPIC init symbol in header.
+Why: Build failed due to implicit declaration of lapic_init in smp.c.
+Change: Added lapic_init prototype to lapic.h.
+Files: src/drivers/irqchip/lapic.h

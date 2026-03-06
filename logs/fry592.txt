@@ -1,0 +1,97 @@
+========================================================================
+TaterTOS64v3 - fry592 - fix BSP runqueue assumptions and verify rebuilt ISO hashes
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 02:49:52 CST
+
+CONTEXT
+-------
+- Bare-metal report for the current marker scheme was:
+  - 34 white squares before halt
+- From `logs/fry591.txt`, that narrowed the failure band to:
+  - first BSP timer tick observed
+  - first real context switch observed
+  - no confirmed first scheduled user process yet
+- `planv3.txt` rule 16 requires SHA-256 verification to be recorded after a
+  user-requested rebuild.
+
+HASH VERIFICATION
+-----------------
+1) Verified SHA-256 for the rebuilt ISO artifact:
+   - `sha256sum /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+   - Result:
+     - `e68c5633c32e6552e29e7cb51b685cd00356118ac266884fc7a397c7bdfed990`
+2) Verified SHA-256 for the current Windows-exported ISO:
+   - `sha256sum /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+   - Result:
+     - `e68c5633c32e6552e29e7cb51b685cd00356118ac266884fc7a397c7bdfed990`
+3) Verified byte-for-byte equality:
+   - `cmp -s /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso; echo $?`
+   - Result:
+     - `0`
+
+CONCLUSION FROM HASH CHECK
+--------------------------
+- The rebuilt `out/tatertos64v3.iso` and the Windows-exported
+  `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso` are identical.
+- Stale exported ISO ambiguity is cleared for this artifact hash:
+  - `e68c5633c32e6552e29e7cb51b685cd00356118ac266884fc7a397c7bdfed990`
+
+CHANGES APPLIED
+---------------
+- Files updated:
+  - `src/drivers/smp/smp.h`
+    - Declared `smp_bsp_index()`.
+  - `src/drivers/smp/smp.c`
+    - Added `smp_bsp_index()` helper to return the actual BSP logical index.
+  - `src/drivers/timer/lapic_timer.c`
+    - Changed BSP timer gating from hardcoded logical CPU 0 to the actual BSP.
+    - Why: MADT discovery order does not guarantee the BSP is stored at index 0.
+      On real hardware this could let the first scheduler tick/runqueue advance
+      on the wrong logical CPU assumption.
+  - `src/kernel/proc/sched.c`
+    - Changed BSP-only runqueue routing and BSP-only syscall stack bookkeeping
+      from hardcoded logical CPU 0 to `smp_bsp_index()`.
+    - Why: runnable boot userspace tasks and BSP scheduler state must track the
+      actual bootstrap processor, not a guessed logical slot.
+
+EXPECTED EFFECT
+---------------
+- The first boot userspace process should now be enqueued onto the actual BSP
+  runqueue even when the BSP is not enumerated as logical CPU 0.
+- The first LAPIC timer tick should drive the intended BSP scheduler queue.
+- `g_syscall_kstack_top` should stay aligned with the actual BSP task that gets
+  scheduled first.
+
+VALIDATION
+----------
+1) Rebuild command:
+   - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+2) Rebuild result:
+   - PASS
+   - Produced:
+     - `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+     - `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+3) Hash verification after rebuild:
+   - PASS
+   - Source ISO and Windows-exported ISO match exactly.
+
+NEXT HARDWARE CHECK
+-------------------
+- Boot the ISO with artifact hash
+  `e68c5633c32e6552e29e7cb51b685cd00356118ac266884fc7a397c7bdfed990`.
+- If the previous issue was caused by wrong-BSP queue routing, expected boot
+  progress should move past:
+  - 34 squares (`K_FIRST_SWITCH`)
+  - to at least 35 squares (`K_FIRST_USER`)
+
+NOTES
+-----
+- During the local rebuild flow, the automatic copy step back into `/mnt/c/...`
+  reported a read-only filesystem, but direct post-build verification confirms
+  the Windows-exported ISO content already matches the rebuilt artifact exactly.
+- No QEMU logs were used.
+
+========================================================================

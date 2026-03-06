@@ -1,0 +1,48 @@
+========================================================================
+TaterTOS64v3 - fry552 - remove full-buffer cache flushes from NVMe data path
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 22:55:16 UTC
+2026-03-05 16:55:16 CST
+
+CONTEXT
+-------
+- Review flagged that `nvme_io_rw()` performed full-range `clflush` on every
+  transfer buffer before submit and after reads.
+- This scales linearly with transfer size and is very expensive.
+
+WHY
+---
+- On x86 target hardware, NVMe DMA is cache-coherent; explicit full-buffer
+  cache flushes for payload buffers are not required.
+- Removing them avoids major per-I/O overhead while preserving behavior.
+
+CHANGE APPLIED
+--------------
+- File updated: `src/drivers/storage/nvme.c`
+  - Added a clarifying comment in `nvme_io_rw()` documenting coherent-DMA
+    assumption for payload buffers.
+  - Removed pre-submit payload flush:
+    - deleted `cache_sync_range(p, bytes);`
+  - Removed post-read payload flush:
+    - deleted `if (!is_write) cache_sync_range(p, bytes);`
+
+EFFECT
+------
+- Eliminates full-buffer `clflush` cost on each read/write operation.
+- Keeps NVMe command flow and PRP construction unchanged.
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Kernel build validation:
+   - `PATH="/opt/cross/bin:$PATH" make -j"$(nproc)"`
+2) RESULT:
+   - PASS (build succeeded)
+
+NOTES
+-----
+- No hash recorded in this log (planv3 rule 16; no user-requested rebuild).
+
+========================================================================

@@ -1,0 +1,54 @@
+========================================================================
+TaterTOS64v3 - fry568 - synchronize ACPI device slot reservation/state writes
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 00:20:17 UTC
+2026-03-05 18:20:17 CST
+
+CONTEXT
+-------
+- Review flagged race potential in `create_acpi_device()` due to shared static
+  arrays (`devs`, `names`) and `dev_count` with no synchronization.
+
+WHY
+---
+- Without a lock, concurrent callers can observe/stomp the same `dev_count`
+  slot and interleave writes to shared arrays.
+- Even if current call sites are typically single-threaded, hardening this path
+  avoids future regressions if enumeration context changes.
+
+CHANGES APPLIED
+---------------
+- File updated:
+  - `src/drivers/acpi_bus/acpi_bus.c`
+    - Added `spinlock.h` include.
+    - Added static `spinlock_t dev_lock` for device slot/state protection.
+    - Reworked `create_acpi_device()` to:
+      - build path into local buffer first,
+      - reserve unique `idx` under lock (`idx = dev_count++`),
+      - copy path into `names[idx]` and initialize `devs[idx]` under lock,
+      - release lock before `device_register()` and AML/HID evaluation.
+    - Replaced `names[dev_count]` usage with stable `names[idx]` references.
+    - Removed trailing unlocked `dev_count++`.
+
+EFFECT
+------
+- Prevents races on shared ACPI device registration state.
+- Ensures each caller gets a unique slot and consistent name/device pair.
+
+VALIDATION (THIS SESSION)
+-------------------------
+1) Inspect updated function region:
+   - `nl -ba src/drivers/acpi_bus/acpi_bus.c | sed -n '56,140p'`
+2) Verify scoped diff:
+   - `git diff -- src/drivers/acpi_bus/acpi_bus.c | sed -n '1,240p'`
+3) RESULT:
+   - PASS (lock, reserved index path, and stable index usage present)
+
+NOTES
+-----
+- No rebuild requested; per plan rule 16, no SHA-256 recorded.
+
+========================================================================

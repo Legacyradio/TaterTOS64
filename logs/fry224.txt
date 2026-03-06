@@ -1,0 +1,6 @@
+DATE: 2026-02-21
+TIME: 09:18:00 -0600
+DESC: Emit raw 8-byte RSDP signature to debugcon to verify pointer validity.
+WHY: STAGE 'r' not reached; need to see actual signature bytes at rsdp_phys.
+FILES:
+  - src/kernel/acpi/tables.c

@@ -1,0 +1,29 @@
+========================================================================
+TaterTOS64v3 - fry509 — Clean + verbose rebuild (no hashes per request)
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 18:17:45 CST
+
+WHY THIS LOG
+------------
+- Run full clean + verbose rebuild under planv3 Rule 12. Hash verification deferred per user request.
+
+COMMANDS
+--------
+make clean
+PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+BUILD OUTPUT NOTES
+------------------
+- Build completed; standard warnings remain (RWX LOAD segments in user ELFs, some unused static helpers).
+- ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Export to Windows path failed (read-only): /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- ToTFS image regenerated at /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+
+TESTING
+-------
+- Not run. Hash verification intentionally skipped (waiting for user).
+
+========================================================================

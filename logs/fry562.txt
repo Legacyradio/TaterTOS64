@@ -1,0 +1,32 @@
+========================================================================
+TaterTOS64v3 - fry562 - user-requested full clean rebuild + ISO build
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 23:32:29 UTC
+2026-03-05 17:32:29 CST
+
+CONTEXT
+-------
+- User requested full ISO build.
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Full clean rebuild + ISO pipeline:
+   - `make clean && PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+2) RESULT:
+   - PASS (clean rebuild + ISO build succeeded)
+   - ToTFS NVMe image: `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+   - ISO: `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+   - Export warning unchanged:
+     `cp: cannot create regular file '/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso': Read-only file system`
+
+SHA-256 (POST USER-REQUESTED REBUILD)
+-------------------------------------
+- `out/tatertos64v3.iso`:
+  `68818592678f31b3ebedecfd9f17f5847a72c2488697069c296cfed8eb992f6b`
+- `out/tater_nvme.img`:
+  `dcfdc7722f890308e53e33e0aafbc30e8cd9085916f76aa4c70107568b885257`
+
+========================================================================

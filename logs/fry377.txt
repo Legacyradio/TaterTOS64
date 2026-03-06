@@ -1,0 +1,61 @@
+fry377 — Shell converted to TaterWin SHM app
+Date: 2026-02-28
+
+Why:
+  The shell was the ONLY app not using TaterWin protocol. It used printf()
+  (writes raw text to stdout ring buffer) and gets_bounded() (busy-loops on
+  fry_read(0,...) returning 0 with no sleep). This caused a syscall storm
+  that crashed/froze the system on real hardware (Dell Precision 7530) when
+  opening SHELL from the start menu. All other apps (SYSINFO, UPTIME, PS)
+  use TaterWin SHM rendering + fry_sleep() and work perfectly.
+
+Changes:
+  src/user/shell/shell.c — complete rewrite (~310 lines)
+
+  Added:
+    1. TaterWin window setup (480x320 px, title "Shell"):
+       - Sends TW_MSG_CREATE_WINDOW, waits for TW_MSG_WINDOW_CREATED
+       - Maps SHM, initializes gfx_ctx_t (same pattern as sysinfo.c)
+       - Static fallback_pixels[480*320] if SHM fails
+
+    2. Terminal emulator (internal to shell.c):
+       - char screen[20][61] text buffer (20 rows x 60 cols, 8x16 font)
+       - cur_row/cur_col cursor tracking
+       - term_putc(): printable, \n, \r, \b, \t with line wrap + scroll
+       - term_puts(), term_printf(): string output wrappers
+       - term_render(): clears SHM, draws 20 rows via gfx_draw_text,
+         draws block cursor with inverse colors
+
+    3. Non-blocking input (replaces gets_bounded):
+       - fry_read(0, kbuf, 16) each frame — returns 0 if no key
+       - handle_key() builds input_line[] char-by-char across frames
+       - Enter: execute_command(), reset input, print new prompt
+       - Backspace: erase from input_line + term_putc('\b')
+
+    4. Cooperative main loop (~30fps):
+       - Read keyboard (non-blocking)
+       - term_render() → SHM
+       - TW_MSG_UPDATE via stdout
+       - fry_sleep(33)
+
+    5. All commands ported to term_printf/term_puts:
+       - cat reads file fd, outputs via term_puts (not fry_write)
+       - clear: term_init() (resets screen buffer + cursor)
+       - exit/quit: fry_exit(0)
+       - Spawn: render_and_update() before fry_wait()
+
+  Removed:
+    - draw_taskbar(): dead VT100 escape code function
+    - gets_bounded() usage: replaced by non-blocking per-frame input
+    - All printf() calls: replaced by term_printf()
+    - All fry_write(1,...) for display output
+    - ANSI escape sequences for clear
+
+  No kernel or libc changes needed.
+
+Build:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+  Result: exit 0, no shell.c warnings
+  ISO: out/tatertos64v3.iso
+  NVMe: out/tater_nvme.img (updated)

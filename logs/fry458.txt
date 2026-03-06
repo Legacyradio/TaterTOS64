@@ -1,0 +1,100 @@
+fry458 — NTFS Read-Only Support + NVMe Secondary Mount
+=======================================================
+Date: 2026-03-02
+
+Summary:
+  Added read-only NTFS filesystem driver and NVMe secondary mount support.
+  When booting from ISO ramdisk, the kernel now detects NVMe drives and
+  mounts the first supported filesystem (ToTFS, NTFS, or FAT32) at /nvme.
+  This enables browsing Windows NTFS partitions on Dell Precision 7530
+  alongside the ramdisk-based TaterTOS64v3 boot.
+
+Changes:
+
+1. planv3.txt — Added NTFS roadmap
+   - Phase 18a: Read-only NTFS (detect, parse MFT, read files/dirs)
+   - Phase 18b: NTFS write support (future, blocked on 18a validation)
+   - Milestones defined for each sub-phase
+   Why: establishes the roadmap for NTFS support in the plan
+
+2. src/kernel/fs/ntfs.h — New file: NTFS on-disk structs + driver API
+   - ntfs_boot_sector (BPB, OEM ID, bytes/sector, MFT LCN, cluster config)
+   - ntfs_mft_entry (FILE record header, fixup array, flags)
+   - ntfs_attr_header, ntfs_attr_resident, ntfs_attr_nonresident
+   - ntfs_filename_attr (parent ref, UTF-16LE name, namespace)
+   - ntfs_index_root, ntfs_index_node_header, ntfs_index_entry, ntfs_index_block
+   - ntfs_data_run (decoded run: LCN + length)
+   - ntfs_fs (mount state), ntfs_file_priv (128 bytes exact for vfs_file.private)
+   - NTFS_BASIC_DATA_GUID for GPT partition detection
+   - Driver API: probe, mount, read_mft_entry, find_attr, decode_data_runs,
+     read_data, resolve_path, VFS wrappers (open/read/close/readdir/stat)
+   Why: defines all structures needed for NTFS parsing
+
+3. src/kernel/fs/ntfs.c — New file: read-only NTFS driver (~780 lines)
+   - ntfs_probe(): read sector 0, check OEM ID "NTFS    " + 0x55AA
+   - ntfs_mount(): parse boot sector, compute cluster_size, MFT start,
+     MFT record size (handles negative clusters_per_mft_record)
+   - ntfs_read_mft_entry(): read MFT record by index, apply fixup array
+   - ntfs_apply_fixup(): replace last-2-bytes of each sector with fixup values
+   - ntfs_find_attr(): walk attribute chain in MFT record by type
+   - ntfs_decode_data_runs(): decode compressed LCN/length pairs (delta encoding)
+   - ntfs_read_resident()/ntfs_read_nonresident(): read file data from attributes
+   - ntfs_walk_index_entries(): parse directory index B-tree entries
+   - ntfs_lookup_index_root()/ntfs_lookup_index_alloc(): search directories
+   - ntfs_dir_lookup(): find filename in directory (case-insensitive)
+   - ntfs_resolve_path(): walk path components from MFT entry 5 (root dir)
+   - ntfs_readdir_impl(): enumerate directory, UTF-16LE → ASCII conversion
+   - ntfs_get_file_info(): get size + is_dir from MFT entry
+   - VFS wrappers: open (pre-caches data runs), read, close, readdir, stat
+   - Write/create/mkdir/unlink all return -1 (read-only)
+   Why: full read-only NTFS support for browsing Windows partitions
+
+4. src/kernel/fs/vfs.c — Added secondary mount + NTFS detection
+   - #include "ntfs.h"
+   - Static globals: g_ntfs_secondary, ntfs_ops
+   - find_ntfs_gpt_part(): scan GPT for Microsoft Basic Data GUID
+     (EBD0A0A2-B9E5-4433-87C0-68B6B72699C7), confirm with ntfs_probe()
+   - ntfs_write_stub/create_stub/mkdir_stub/unlink_stub: read-only stubs
+   - vfs_mount_secondary(bd, mountpoint): tries ToTFS → NTFS → FAT32,
+     mounts first match at given mountpoint, does NOT clear g_mounts
+   Why: enables NVMe filesystem detection alongside ramdisk
+
+5. src/kernel/fs/vfs.h — Added declaration
+   - int vfs_mount_secondary(struct block_device *bd, const char *mountpoint);
+   Why: public API for main.c to call
+
+6. src/kernel/main.c — Mount NVMe alongside ramdisk
+   - After vfs_init_ramdisk() succeeds AND nvme_bd exists:
+     calls vfs_mount_secondary(nvme_bd, "/nvme")
+   - Logs success/failure to serial
+   Why: auto-detects NVMe at boot without breaking ramdisk boot path
+
+7. Makefile — Added ntfs.o
+   - src/kernel/fs/ntfs.o added to KERNEL_OBJS (after totfs.o)
+   Why: compiles the new NTFS driver
+
+Build verification:
+  - make clean && PATH="/opt/cross/bin:$PATH" make kernel — compiles clean
+    (no new warnings from ntfs.c or vfs.c)
+  - Full build_iso.sh — ISO + NVMe image created successfully
+  - ISO exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+  - NVMe image verified: totcopy --list / shows all .FRY files
+
+Expected Dell behavior:
+  - Boot from USB ISO → ramdisk mounts at /
+  - NVMe detected → GPT scanned → Dell's NTFS partition found
+  - NTFS mounted read-only at /nvme
+  - "ls /nvme" from shell should list Windows files
+  - If NVMe has ToTFS instead (from previous TaterTOS builds), that mounts first
+
+QEMU test command:
+  (from Windows) qemu-system-x86_64 -bios OVMF.fd -m 512 \
+    -cdrom \\wsl.localhost\Ubuntu\home\jjsako\TaterTOS64v3\out\tatertos64v3.iso \
+    -drive file=\\wsl.localhost\Ubuntu\home\jjsako\TaterTOS64v3\out\tater_nvme.img,if=none,id=nvm1 \
+    -device nvme,serial=TATER_NVME_01,drive=nvm1 \
+    -serial file:serial.log -debugcon file:debugcon.log
+  Expected serial output:
+    "init: mounting NVMe secondary at /nvme"
+    "VFS: ToTFS mounted at /nvme (LBA ...)" (for ToTFS NVMe image)
+  On Dell with Windows NTFS partition:
+    "VFS: NTFS mounted at /nvme (LBA ...)"

@@ -1,0 +1,49 @@
+========================================================================
+TaterTOS64v3 - fry523 — Harden shell vfsdbg dirent parsing bounds checks
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-04 01:53:11 CST
+
+WHY THIS LOG
+------------
+- User requested finding and fixing a bug in TaterTOS64v3.
+- A concrete correctness bug was found in shell `vfsdbg` directory parsing.
+
+BUG
+---
+- File: `src/user/shell/shell.c`
+- Function: `vfs_readdir_brief`
+- Issue: dirent records from `fry_readdir_ex` were parsed without validating
+  full record bounds (`off + rec_len <= n`) and name payload bounds
+  (`name_len + 1 <= rec_len - sizeof(struct fry_dirent)`).
+- Risk: malformed/truncated directory records could cause out-of-bounds reads
+  while printing debug listing.
+
+FIX APPLIED
+-----------
+- Added strict bounds checks before reading variable-length dirent name:
+  - break if `off + rec_len > n`
+  - compute `payload = rec_len - sizeof(struct fry_dirent)`
+  - skip record when `name_len + 1 > payload`
+- This preserves existing behavior while preventing unsafe record access.
+
+FILES CHANGED
+-------------
+- src/user/shell/shell.c
+
+BUILD / VERIFY COMMAND
+----------------------
+- `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make clean all`
+
+BUILD RESULT
+------------
+- PASS (exit code 0)
+- Existing warnings still present (pre-existing in tree), no new build errors.
+
+NOTES
+-----
+- Working tree already had unrelated user changes before this fix; none were reverted.
+
+========================================================================

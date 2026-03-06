@@ -1,0 +1,7 @@
+2026-02-21 00:18:58
+Change: Forced a visible stop after K_BEFORE_PRINT to prove we are executing the updated binary.
+Why: Output appeared unchanged; we need an unmistakable, deterministic stop point.
+Details:
+- main.c: added K_STOP_HERE marker and an infinite HLT loop immediately after K_BEFORE_PRINT.
+Rule note: Temporary debug change; will be removed after confirmation.
+Next: rebuild ISO, run QEMU with debugcon, confirm K_STOP_HERE appears and system halts.

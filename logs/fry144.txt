@@ -1,0 +1,4 @@
+[2026-02-20 19:25:21 UTC] Step: Show EFI image formatting errors.
+Why: build_iso.sh failed after make with no EFI image error output.
+Change: Removed suppression for mformat/mmd/mcopy so failures are visible.
+Files: build_iso.sh

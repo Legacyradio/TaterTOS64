@@ -1,0 +1,8 @@
+2026-02-20 22:39:59
+Change: Added debug port (0xE9) output for early boot markers alongside COM1.
+Why: serial.log still lacks early markers, so we need a second low-level channel to confirm how far _mb_start/_fry_start progresses.
+Details:
+- mb_entry.asm: mirrors 'A'/'L' to port 0xE9.
+- early_serial.h: added early_debug_putc/puts.
+- mb_handoff.c + main.c: mirror all early markers to 0xE9.
+Next: rebuild ISO and run QEMU with -debugcon file to capture 0xE9 output.

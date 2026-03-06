@@ -1,0 +1,3 @@
+STEP 76
+TIME: 2026-02-20 09:52:22
+ACTION: Added NVMe write support and block_device write hook in src/drivers/storage/nvme.c and part.h, because FAT32 write paths require writable block devices.

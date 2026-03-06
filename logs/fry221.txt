@@ -1,0 +1,3 @@
+2026-02-21 03:16 - Step: Add ACPI table init stage markers.
+Why: crash happens inside acpi_tables_init; need precise boundary (RSDP parse vs SDT vs entry scan).
+Change: tables.c emits stage markers (R/r/c/X/x/S/s/E/e/L/l) to both debugcon and serial for live visibility.

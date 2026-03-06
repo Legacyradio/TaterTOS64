@@ -1,0 +1,59 @@
+HANDOFF LOG — APP LAUNCH FOLLOW-UP
+Timestamp: 2026-02-27 17:27:45 CST
+
+Primary rule source:
+- /home/jjsako/TaterTOS64v3/planv3.txt
+- RULES section: lines 17-31 (header: "RULES (must follow exactly)")
+
+Directive (mandatory):
+- These rules are 100% non-negotiable.
+- Every rule must be followed exactly, on every step, with no exceptions.
+- No shortcuts. No bypasses. No partial compliance.
+
+Operational requirement for next agent/session:
+1) Read /home/jjsako/TaterTOS64v3/planv3.txt lines 17-31 before making changes.
+2) Enforce all rules exactly while editing, testing, and logging.
+3) Log each completed step in logs/fryN.txt with timestamp and why.
+
+Context:
+- User reported that app launch still required repeated attempts on bare metal
+  even after prior SHM/double-free fixes.
+- User also confirmed two regressions are now fixed on bare metal:
+  1) charger-triggered crash fixed
+  2) '?' glyph/glitch output bug fixed
+
+Work completed this session:
+1) Root-cause fix for repeated app-launch attempts:
+   - File: src/kernel/proc/sched.c
+   - Change: sched_add() now enqueues new runnable processes on CPU0 (BSP) only.
+   - Why: lapic timer scheduling tick currently runs only on BSP path, so AP-queued
+     tasks could stall and windows remain at "Starting app...".
+
+2) Session logs written:
+   - logs/fry363.txt (app launch stall fix + build result)
+   - logs/fry364.txt (user-confirmed bare-metal status for charger/'?' regressions)
+
+Build/test run (rule-compliant):
+- make clean
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+- Result: success (exit 0)
+- ISO: out/tatertos64v3.iso
+- Note: export to /mnt/c/Users/jjsako/Documents/tateriso failed due to read-only FS
+
+Current verification state:
+- Code-level fix for repeated app-launch stalls is in place.
+- Fresh ISO built after fix.
+- Bare-metal validation of app launch behavior: successful.
+
+Next step for next session:
+- None required for this fix set; marked complete/successful.
+
+Status update (2026-02-27 17:50:05 CST):
+- App-launch stall fix status: SUCCESSFUL
+- Charger-triggered crash fix status: SUCCESSFUL
+- '?' glyph/glitch output fix status: SUCCESSFUL
+
+Status update (2026-02-27 18:01:47 CST):
+- NVMe init + GPT/FAT32 + VFS mount path status: SUCCESSFUL (user-confirmed)
+- Filesystem-backed launch path status: SUCCESSFUL (user-confirmed)
+- Supersedes older failing serial snapshots from earlier iterations.

@@ -1,0 +1,76 @@
+fry335 - 2026-02-25 - GPT HEADER READ FAILED: three root causes identified and fixed
+
+=== SYMPTOM ===
+Serial: NVMe READY (NSID=1, LBA_BYTES=512, SECTORS=500118192) but GPT: HEADER READ FAILED.
+
+=== ROOT CAUSE 1 (critical) - virt_to_phys upper-bound missing in nvme.c ===
+VMM layout (vmm.h):
+  VMM_PHYSMAP_BASE = 0xFFFF800000000000
+  KERNEL_VMA_BASE  = 0xFFFFFFFF80000000
+
+The old check:
+  if (addr >= VMM_PHYSMAP_BASE) return addr - VMM_PHYSMAP_BASE;
+
+A kernel stack address like 0xFFFFFFFF80001000 satisfies addr >= VMM_PHYSMAP_BASE
+because 0xFFFFFFFF80000000 > 0xFFFF800000000000.
+Subtraction gives: 0xFFFFFFFF80001000 - 0xFFFF800000000000 = 0x7FFF80001000 (~128 TB).
+NVMe DMA writes to this nonexistent physical address. Read completion either
+times out (poll_cq spins 20M times) or returns error status. gpt_read_header_at
+gets garbage/zeros in buf -> header_sane() fails signature check -> GPT fails.
+
+All NVMe internal buffers (identify_buf, io_sq, io_cq, etc.) avoid this because
+they are allocated via pmm_alloc_page_below + vmm_phys_to_virt, so their virtual
+addresses are in physmap range and the subtraction yields the correct physical addr.
+
+Fix (nvme.c:108):
+  Old: if (addr >= VMM_PHYSMAP_BASE) return addr - VMM_PHYSMAP_BASE;
+  New: if (addr >= VMM_PHYSMAP_BASE && addr < KERNEL_VMA_BASE) return addr - VMM_PHYSMAP_BASE;
+
+Why: physmap spans [VMM_PHYSMAP_BASE, KERNEL_VMA_BASE). Kernel .text/.data/.stack
+live at KERNEL_VMA_BASE+ and must go through vmm_virt_to_phys (page table walk).
+
+=== ROOT CAUSE 2 - VMD scratch register: all-F check missing in vmd.c ===
+DID=0x1911 at 0:8.0 is the Intel GNA (Gaussian/Neural Accelerator), NOT a VMD
+controller. Reading MEMBAR0+0x6C0 on a non-VMD device returns 0xFFFFFFFF per slot.
+Both halves = 0xFFFFFFFF -> cfgbar = 0xFFFFFFFFFFFFFFFF.
+
+Old check: if (!cfgbar) continue;   <- only filters 0, not all-ones
+0xFFFFFFFFFFFFFFFF is truthy -> vmd_setup_cfgbar proceeds -> g_ready=1 with garbage
+CFGBAR. This is harmless only because nvme_init_from_cfg on standard ECAM succeeds
+first, but it would cause a fault if the VMD path were ever exercised.
+
+Fix (vmd.c:181):
+  Old: if (!cfgbar) continue;
+  New: if (!cfgbar || cfgbar == 0xFFFFFFFFFFFFFFFFULL) continue;
+
+=== ROOT CAUSE 3 - VMD class=01:04 BAR0 32-bit silently skipped in vmd.c ===
+VMD at 0:23.0 (DID=0x282A) shows BAR0 type bits [2:1]=00 (32-bit) instead of 0x04
+(64-bit). Original code immediately skips with no fallback. If BIOS assigned a valid
+sub-4GB address with 32-bit type encoding, we'd miss the real VMD CFGBAR entirely.
+
+Fix (vmd.c:120-131): Added else-if branch:
+  if (BAR0 is 64-bit)  -> cfgbar = BAR1:BAR0
+  else if (BAR0 is 32-bit memory BAR with non-zero address) -> cfgbar = BAR0
+  else -> log "not usable" and skip
+
+=== FILES CHANGED ===
+src/drivers/storage/nvme.c  - virt_to_phys() upper bound
+src/drivers/storage/vmd.c   - 32-bit BAR0 fallback + all-F CFGBAR rejection
+
+=== BUILD ===
+PATH="/opt/cross/bin:$PATH" /usr/bin/make all
+Both nvme.o and vmd.o compiled without warnings. kernel.elf updated.
+(frypack.py step failed due to missing python3 in WSL env - userland packing only,
+does not affect kernel.elf correctness.)
+
+=== EXPECTED RESULT ===
+With fix 1 applied: virt_to_phys correctly calls vmm_virt_to_phys() for stack
+buffers -> NVMe DMA targets the correct physical page -> GPT signature check passes
+-> GPT: entries=N entry_size=128 should appear instead of GPT: HEADER READ FAILED.
+
+=== TEST COMMANDS ===
+Run ISO on real HW. Expected serial output change:
+  BEFORE: GPT: HEADER READ FAILED
+  AFTER:  GPT: entries=<N> entry_size=128
+          GPT: idx=0 start=<lba> size=<lba> type=<guid>
+          ...

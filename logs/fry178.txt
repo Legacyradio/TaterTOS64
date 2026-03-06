@@ -1,0 +1,7 @@
+2026-02-20 23:21:02
+Change: Added a pre-kprint marker and temporarily disabled kprint() to test if it triggers the crash.
+Why: K_AFTER_PRINT never appears even after rebuild; we need to isolate whether kprint itself is causing the fault.
+Details:
+- main.c: added K_BEFORE_PRINT marker; commented out kprint("TaterTOS64v3 starting\n").
+Rule note: This is temporary and will be reverted after diagnosis.
+Next: rebuild ISO, run QEMU with debugcon, report last marker seen.

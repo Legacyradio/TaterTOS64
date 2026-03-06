@@ -1,0 +1,4 @@
+[2026-02-22 08:34:23 UTC] Step: Fix NVMe Create IO Queue CDW10 field layout.
+Why: QID and QSIZE were swapped, so queues were created with the wrong ID and I/O doorbells targeted a non-existent queue, causing timeouts.
+Change: Encode CDW10 as QID in bits 15:0 and QSIZE in bits 31:16 for IO CQ/SQ creation.
+Files: src/drivers/storage/nvme.c

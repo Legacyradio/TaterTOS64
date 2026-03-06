@@ -1,0 +1,3 @@
+STEP 69
+TIME: 2026-02-20 09:52:22
+ACTION: Implemented full VFS layer in src/kernel/fs/vfs.c/.h with mount table, open/read/write/readdir/stat, and FAT32 integration, because the plan requires a real VFS abstraction rather than a single-file stub.

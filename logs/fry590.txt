@@ -1,0 +1,82 @@
+========================================================================
+TaterTOS64v3 - fry590 - extend post-user scheduling markers into init/gui
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 09:05:00 CST
+
+CONTEXT
+-------
+- Bare-metal report reached 34 white squares.
+- Per fry589, 34 squares means the first user process was scheduled, so the
+  failure is no longer in EFI handoff, timer delivery, or scheduler context
+  switching.
+- That still left a blind spot between:
+  - user task scheduled but faults before first syscall
+  - `INIT.FRY` actually runs but never reaches GUI spawn
+  - GUI gets spawned but never reaches framebuffer setup
+
+WHY
+---
+- 34 squares was enough to clear the kernel scheduler, but not enough to say
+  whether the machine was dying at user entry, inside init, or inside GUI
+  startup/display bring-up.
+- The next hardware boot needs deterministic framebuffer markers for those
+  boundaries so diagnosis can continue without relying on stale QEMU logs.
+
+CHANGES APPLIED
+---------------
+- File updated:
+  - `src/kernel/proc/syscall.c`
+    - Added one-shot boot framebuffer markers plus serial lines for:
+      - stage 35 / `K_FIRST_USER_SYSCALL`
+        - first syscall from any non-kernel process
+      - stage 36 / `K_INIT_SYSCALL`
+        - first syscall from `INIT.FRY`
+      - stage 37 / `K_INIT_GUI_SPAWN`
+        - successful GUI spawn request issued by `INIT.FRY`
+      - stage 38 / `K_GUI_FB`
+        - first framebuffer syscall from `GUI.FRY`
+
+UPDATED INTERPRETATION (POST-FRY590)
+------------------------------------
+- 34 squares:
+  - first user process got scheduled
+  - no user syscall observed yet
+  - likely failure between user entry and first syscall boundary
+- 35 squares:
+  - some user process executed a syscall
+  - `INIT.FRY` not yet confirmed
+- 36 squares:
+  - `INIT.FRY` reached userspace and executed at least one syscall
+  - next suspect is init's GUI spawn path
+- 37 squares:
+  - init successfully spawned `GUI.FRY`
+  - next suspect is GUI startup / framebuffer mapping / compositor loop
+- 38 squares:
+  - GUI reached framebuffer setup syscall path
+  - if display is still wrong after this point, focus on compositor draw/update,
+    TaterWin protocol flow, or visible refresh behavior rather than launch
+
+VALIDATION (THIS SESSION)
+-------------------------
+1) Full rebuild / repack:
+   - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+   - Result:
+     - PASS
+     - ISO produced at `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+     - NVMe image produced at `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+2) Notes from build:
+   - Existing non-fatal warnings remain in other files.
+   - Windows export to `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+     still failed in this environment because `/mnt/c` is read-only.
+
+NOTES
+-----
+- A parallel `make kernel` attempt overlapped with `build_iso.sh` cleanup and
+  is not considered a valid standalone signal for this session.
+- The authoritative validation result for this change is the successful
+  `build_iso.sh` rebuild above.
+
+========================================================================

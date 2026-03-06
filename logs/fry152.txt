@@ -1,0 +1,4 @@
+[2026-02-20 19:55:12 UTC] Step: Populate ESP with kernel and startup script.
+Why: UEFI shell only sees the ESP image (FS0), so BOOTX64.EFI couldn’t find /boot/kernel.elf and startup.nsh was missing.
+Change: Copy kernel.elf, grub.cfg, and startup.nsh into efiboot.img along with BOOTX64.EFI.
+Files: build_iso.sh

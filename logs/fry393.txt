@@ -1,0 +1,57 @@
+fry393 — Enable LPC/eSPI EC decode (00:1f.0 IOE bit 13) + expose IOE telemetry
+Timestamp: 2026-02-28 20:25:55 UTC (2026-02-28 14:25:55 CST)
+
+PROBLEM:
+  On Dell Precision 7530, EC probing could return STS_FF at ports 0x62/0x66.
+  That indicates the ports are not decoded by the PCH LPC/eSPI bridge.
+  If 00:1f.0 IOE bit 13 (MC_LPC2_EN for 0x62/0x66) is clear, EC I/O reads
+  can float to 0xFF even with correct AML/_REG sequencing.
+
+CHANGES:
+
+1) src/kernel/acpi/extended.c
+   - Added IOE tracking globals:
+     g_lpc_ioe_before, g_lpc_ioe_after (0xFFFF sentinel on read failure).
+   - Added ec_enable_lpc_decode():
+     - Reads 00:1f.0 config dword 0x80 (segment 0, root bus from _BBN if present).
+     - Uses upper 16 bits as IOE register at offset 0x82.
+     - Forces bit 13 (MC_LPC2_EN, decode 0x62/0x66).
+     - Reads back and stores before/after values for diagnostics.
+   - Calls ec_enable_lpc_decode() in ec_reg_init() before ec_setup_ports().
+   - acpi_get_diag() now fills lpc_ioe_before/lpc_ioe_after.
+
+2) src/kernel/acpi/extended.h
+   - Appended to fry_acpi_diag:
+     uint16_t lpc_ioe_before;
+     uint16_t lpc_ioe_after;
+
+3) src/user/libc/libc.h
+   - Added matching fry_acpi_diag fields for syscall ABI parity.
+
+4) src/user/apps/sysinfo.c
+   - Added ACPI diagnostic line:
+     "LPC IOE: 0xXXXX -> 0xXXXX"
+   - Shifted battery/backlight lines down by 16px to avoid overlap.
+
+WHY:
+  EC init ordering fixes (_INI/_REG/GPE/probe) are necessary but may still
+  fail if chipset decode for 0x62/0x66 is disabled. Enabling IOE bit 13 and
+  surfacing before/after values in sysinfo gives both the fix and clear
+  on-screen proof of decode state on bare metal.
+
+FILES CHANGED:
+  src/kernel/acpi/extended.c
+  src/kernel/acpi/extended.h
+  src/user/libc/libc.h
+  src/user/apps/sysinfo.c
+
+TEST COMMANDS:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+TEST RESULT:
+  PASS. build_iso.sh exited 0.
+  ISO produced: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  Non-fatal environment warning:
+    cp to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso failed
+    with "Read-only file system" in this environment.

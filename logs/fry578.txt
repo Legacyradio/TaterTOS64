@@ -1,0 +1,109 @@
+========================================================================
+TaterTOS64v3 - fry578 - instrument VMM bring-up and confirm first alloc_table failure
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 01:44:50 UTC
+2026-03-05 19:44:50 CST
+
+CONTEXT
+-------
+- After fry577, a fresh current-build QEMU boot reproduced the imported stall:
+  serial stopped at `K_PMM`, and debugcon ended with `kgtBp!`.
+- Needed tighter stage telemetry inside `vmm_init()` and around
+  `pmm_relocate_bitmap()` to distinguish:
+  - first page-table allocation failure
+  - identity-map exhaustion
+  - physmap bootstrap exhaustion
+  - relocation failure after VMM init returns
+
+WHY
+---
+- Existing `!` only said `alloc_table()` failed somewhere during early VMM.
+- The failure window was still too wide to tell whether the first PML4 table,
+  identity-map expansion, physmap bootstrap, or PMM metadata relocation was at
+  fault.
+
+CHANGES APPLIED
+---------------
+- Files updated:
+  - `src/kernel/mm/vmm.c`
+    - Added `vmm_stage()` helper at lines 31-35.
+    - Added serial + debugcon stage markers through `vmm_init()`:
+      - `VMM_00_ENTER` before the first `alloc_table()` call
+      - `VMM_01_PML4` after the first table allocation
+      - `VMM_02_IDENT`
+      - `VMM_03_PHYSMAP`
+      - `VMM_04_KERNEL`
+      - `VMM_05_STACK`
+      - additional later markers retained for post-fix bring-up
+  - `src/kernel/main.c`
+    - Added `K_PMM_RELOCATE_BEGIN` / `K_PMM_RELOCATE_END` around
+      `pmm_relocate_bitmap()` so the relocate boundary is explicit in serial and
+      debugcon once VMM init returns.
+
+KEY REFERENCES
+--------------
+- `src/kernel/mm/vmm.c`
+  - `vmm_stage()` helper: lines 31-35
+  - `alloc_table()` fail marker `!`: lines 66-80
+  - instrumented `vmm_init()`: lines 303-379
+- `src/kernel/main.c`
+  - relocate-boundary markers: lines 433-437
+
+VALIDATION (THIS SESSION)
+-------------------------
+1) Full clean + verbose rebuild per plan rule 12:
+   - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make clean`
+   - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+2) Result:
+   - PASS (`src/kernel/mm/vmm.c` compiled successfully)
+   - PASS (`src/kernel/main.c` compiled successfully)
+   - PASS (full rebuild exited 0; ISO produced at
+     `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`)
+3) Instrumented QEMU rerun:
+   - runtime dir:
+     - `logs/runtime_qemu_vmmmarkers_20260305_194338`
+   - command:
+     - `timeout 45s qemu-system-x86_64 -m 4G -machine q35,accel=tcg -cpu qemu64`
+     - `-boot order=d -net none -display none -no-reboot -no-shutdown`
+     - `-drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd`
+     - `-drive if=pflash,format=raw,file=logs/runtime_qemu_vmmmarkers_20260305_194338/OVMF_VARS.fd`
+     - `-cdrom ./out/tatertos64v3.iso`
+     - `-serial file:logs/runtime_qemu_vmmmarkers_20260305_194338/serial.log`
+     - `-debugcon file:logs/runtime_qemu_vmmmarkers_20260305_194338/debugcon.log`
+     - `-d int,cpu_reset -D logs/runtime_qemu_vmmmarkers_20260305_194338/qemu.log`
+4) Runtime result:
+   - rc=`124` (timeout)
+   - serial now reaches `VMM_00_ENTER`
+   - serial does NOT reach `VMM_01_PML4`
+   - debugcon changed from `kgtBp!` to `kgtBp0!`
+   - no `K_PMM_RELOCATE_BEGIN` or `K_PMM_RELOCATE_END` printed
+   - no `#PF`, `#GP`, `#DF`, `cpu_reset`, or triple-fault markers in `qemu.log`
+
+CONCLUSION
+----------
+- The boot now proves the exact failure point:
+  - `vmm_init()` is entered
+  - the very first `alloc_table()` call fails before `VMM_01_PML4`
+- Since early `alloc_table()` uses `pmm_alloc_early_low()`, the immediate issue
+  is the low-memory early page-table pool path, not later identity mapping,
+  physmap bootstrap mapping, CR3 switch, or PMM metadata relocation.
+
+ARTIFACTS
+---------
+- `logs/runtime_qemu_vmmmarkers_20260305_194338/serial.log`
+- `logs/runtime_qemu_vmmmarkers_20260305_194338/debugcon.log`
+- `logs/runtime_qemu_vmmmarkers_20260305_194338/qemu.log`
+
+NOTES
+-----
+- The embedded `K_BUILD 2026-03-04-fry531-rollback` banner remains stale, but
+  the ISO used for this rerun was the freshly rebuilt current image from this
+  session.
+- Non-fatal existing warnings remain elsewhere in the tree.
+- Windows ISO export warning remains non-fatal:
+  `cp: cannot create regular file '/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso': Read-only file system`
+
+========================================================================

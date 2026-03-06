@@ -1,0 +1,3 @@
+STEP 71
+TIME: 2026-02-20 01:42:34
+ACTION: Implemented serial input path for SYS_READ (kread_serial in kprint.c, wired in syscall dispatch).

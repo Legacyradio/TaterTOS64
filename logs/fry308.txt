@@ -1,0 +1,23 @@
+[2026-02-22 21:00:00 UTC] Step: Fix #PF in lapic_eoi when interrupt fires with user process CR3 loaded.
+Why: After fry307 the shell launched (init: shell pid=5). sched_tick does
+     `mov next->cr3, %cr3` then context_switch(). If any interrupt (e.g. INT 0x2b,
+     the BSP LAPIC timer at vec=0x40) fires AFTER the CR3 load but before iretq
+     to userspace, common_isr runs with the shell's page table (CR3=0x7000).
+     lapic_eoi writes to LAPIC EOI register at 0xFEE000B0, which is identity-mapped
+     only in the kernel's page table (low half, not shared with user page tables).
+     Result: #PF (vec=0e, err=0002) -> #DF (vec=08) -> machine reboot.
+
+Fix: Save current CR3 to irq_saved_cr3 (global) at common_isr entry, switch to
+     irq_kernel_cr3 (= kernel PML4 phys), call irq_dispatch, restore saved CR3.
+     irq_cr3_init(vmm_get_kernel_pml4_phys()) is called from main.c after
+     irq_desc_init() and before sti, so irq_kernel_cr3 is always valid when
+     interrupts fire.
+
+     A global (irq_saved_cr3) is used instead of the stack so that RSP alignment
+     is not disturbed: after 15 GP reg pushes RSP is 16-byte aligned (required
+     by SysV AMD64 ABI before `call`); inserting `sub $8, %rsp` would break this.
+     APs run with IF=0 so only BSP handles interrupts — the single global is safe.
+
+Files: src/kernel/irq/irqdesc.c
+       src/kernel/irq/irqdesc.h
+       src/kernel/main.c

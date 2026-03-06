@@ -1,0 +1,43 @@
+========================================================================
+TaterTOS64v3 - fry517 — Sanity rebuild after NVMe/VFS diagnostics
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 21:26:47 CST
+
+WHY THIS LOG
+------------
+- User requested a sanity rebuild log for this interaction using fry517 numbering.
+
+ACTION
+------
+- Ran full rebuild + image packaging:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+- Captured full command output to:
+  logs/build_20260303_212618.log
+
+RESULT
+------
+- Rebuild: success
+- ISO: out/tatertos64v3.iso
+- NVMe image: out/tater_nvme.img
+- EFI image: out/efiboot.img
+
+ARTIFACT MTIME
+--------------
+- 2026-03-03 21:26:33 -0600  out/tatertos64v3.iso
+- 2026-03-03 21:26:32 -0600  out/tater_nvme.img
+- 2026-03-03 21:26:32 -0600  out/efiboot.img
+
+SHA256
+------
+- out/tatertos64v3.iso : 4ecd238f98a3cbddd99e038f949b4373642ca2671251e142bce924eff6556404
+- out/tater_nvme.img   : 988f0a0b2d8449fad02745d75857dd7f7bb3620fa600a0c676001bf98f733b48
+- out/efiboot.img      : a3e6c718e166a740f40cd49e01505e30b5c5c306203676da87bf3d16a7f0df86
+
+NOTES
+-----
+- Automatic Windows export inside build_iso.sh still failed because /mnt/c is mounted read-only.
+
+========================================================================

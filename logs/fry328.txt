@@ -1,0 +1,79 @@
+fry328 — 2026-02-25 CST
+Topic: NVMe not found (Intel VMD) + ramdisk fallback broken
+
+=== Boot results after fry327 fix ===
+- ACPI enumeration: COMPLETE (PSDC hang fixed, all devices printed)
+- SMP: 7/8 CPUs online (CPU4 failed to start — non-critical)
+- HPET: enabled at 24 MHz
+- PS/2 kbd/mouse: working
+- NVMe: CONTROLLER NOT FOUND → GUI/shell launch failed
+- Ramdisk fallback: also failed → both paths to filesystem unavailable
+
+=== Root Cause 1: NVMe hidden behind Intel VMD ===
+The Dell Precision 7530 has Intel VMD (Volume Management Device) enabled in
+BIOS by default. VMD hides downstream PCIe devices (including the NVMe SSD)
+from the normal PCI bus. vmd_init() was a stub (// TODO).
+
+nvme_find_controller() scans pci_get_devices() for class=01:08:02 — but
+the NVMe never appears there because its PCI root port is behind VMD and
+invisible to standard ECAM scanning.
+
+Fix: Implemented real VMD driver in src/drivers/storage/vmd.c:
+  1. Scan pci_info[] for Intel (0x8086) device with class=08 subclass=80
+     (System Peripheral – Other), which is how Intel VMD is classified.
+  2. Read BAR0+BAR1 as the 64-bit MEMBAR1 physical address (VMD's ECAM).
+  3. Call vmm_ensure_physmap() to extend the physmap to cover the ECAM.
+  4. Walk MEMBAR1 as standard ECAM (buses 0-31 = 32 MB total).
+  5. Any NVMe (class=01:08:02) found is injected into the PCI table via
+     pci_inject_device() using virtual bus 0xC0+vbus to avoid collision.
+
+New function pci_inject_device() added to pci_core.c / pci.h:
+  - Same logic as pci_add_device() but takes explicit bar0/bar1/command
+    instead of reading them from ECAM (needed for VMD-virtual devices).
+  - Names devices "vmd:BB:SS.F" to distinguish from normal "pci:" entries.
+
+=== Root Cause 2: Ramdisk fallback returning base=0 ===
+handoff->ramdisk_base was 0, meaning the EFI loader did NOT build a ramdisk.
+The EFI loader scans \fry\ on the device filesystem from li->DeviceHandle.
+On the Dell UEFI, the loaded-image device handle may not expose the FAT32
+EFI partition via EFI_SIMPLE_FILE_SYSTEM_PROTOCOL. When no files are found,
+fry_found==0 → ramdisk_base stays 0.
+
+Fixes applied to src/boot/efi_loader.c:
+  1. Added efi_serial_init() + efi_serial_putc/puts() — COM1 serial output
+     from the EFI loader itself (before kernel runs). Now visible in serial
+     log as "EFI: fry pass1 found=N" and "EFI: ramdisk built" (or not).
+  2. Added fallback SFS scan: if fry_found==0 after primary device, call
+     LocateHandleBuffer(ByProtocol, gSimpleFileSystemProtocolGuid) to
+     enumerate ALL EFI_SIMPLE_FILE_SYSTEM_PROTOCOL handles and try each one
+     until .fry files are found.
+  3. Changed fry_paths[] from static const CHAR16 * (pointer array) to
+     static CHAR16[][20] (inline character arrays) — more robust in PE/COFF.
+  4. Added kprint in main.c to log handoff->ramdisk_base and ramdisk_size
+     at boot, so we see definitively what the EFI loader passed.
+
+=== Files Changed ===
+- src/drivers/storage/vmd.c         — full VMD implementation (was stub)
+- src/drivers/pci/pci_core.c        — added pci_inject_device()
+- src/drivers/pci/pci.h             — added pci_inject_device() prototype
+- src/kernel/main.c                 — ramdisk diagnostic kprint
+- src/boot/efi_loader.c             — serial output + SFS fallback scan
+
+=== Build ===
+make kernel  → OK (only pre-existing RWX linker warning)
+bash build_iso.sh → OK → exported to /mnt/c/Users/jjsako/Documents/tateriso/
+
+=== Expected After Fix ===
+Serial log should show:
+  "EFI: fry pass1 found=5" or "EFI: found on alt SFS handle"
+  "EFI: ramdisk built"
+  ... kernel boot ...
+  "init: ramdisk base=0xXXXXXXXX size=YYYY"
+  "VMD: device bus0:X.0 did=0xXXXX"
+  "VMD: MEMBAR1=0xXXXXXXXX"
+  "VMD bus0:0.0 vid=... NVMe found"
+  "PCI(VMD) 192:0.0 vid=... class=01:08:02"
+  ... NVMe init proceeds normally ...
+  "init: user pid=1"   ← GUI/shell launched
+
+=== Next Log: fry329.txt ===

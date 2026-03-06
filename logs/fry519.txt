@@ -1,0 +1,23 @@
+TIMESTAMP
+---------
+2026-03-03 23:36 CST
+
+WHAT CHANGED
+------------
+- Muted ToTFS autodiscovery/mounts via ENABLE_TOTFS=0 guard; FAT32/NTFS paths unchanged.
+- Added mount debug syscall (SYS_MOUNTS_DEBUG) and shell command `vfsdbg` now prints per-mount LBA, sector size, block size.
+- Added LBA de-dup guard in vfs secondary mounts to prevent aliasing the same partition under multiple /nvme* mountpoints.
+- Kept ToTFS sector-size sanity check (4096 divisible).
+
+BUILD
+-----
+- Command: PATH="/opt/cross/bin:$PATH" bash build_iso.sh
+- Result: success (warnings only: RWX segments, unused functions, fileman signed compare).
+- ISO: out/tatertos64v3.iso (updated)
+- NVMe image: out/tater_nvme.img
+- EFI image: out/efiboot.img
+- Export to /mnt/c/Users/jjsako/Documents/tateriso failed (read-only mount).
+
+NEXT STEPS
+----------
+- Boot new ISO; use `vfsdbg` and `vfsdbg /nvme` (or /nvme1) to capture mount LBAs/types when labels flip.

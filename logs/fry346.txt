@@ -1,0 +1,13 @@
+2026-02-26 22:44:31 UTC
+Step: Persist user communication style preference in project memory file.
+Why: User explicitly requested this preference be remembered across reboot/session changes.
+
+Changes made:
+- CODEX_BRIEFING.md
+  - Added explicit user interaction preference:
+    - blunt/sassy tone preferred
+    - swearing/cursing acceptable and encouraged by user
+  - Advanced "Next fry log" pointer to `fry347.txt`.
+
+Validation:
+- Documentation update only; no build/test command required for this step.

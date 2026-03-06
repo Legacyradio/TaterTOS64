@@ -1,0 +1,18 @@
+fry376 — Rebuild verification after fry375 syscall reentrancy hardening
+Timestamp: 2026-02-28
+
+Why:
+  Validate successful clean rebuild after reverting syscall-body IRQ enabling.
+
+Commands run:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+Result:
+  - Build succeeded (exit 0).
+  - Updated artifacts:
+      out/tatertos64v3.iso
+      out/tater_nvme.img
+  - Windows export copy remained non-fatal read-only failure.
+
+Next log: fry377.txt

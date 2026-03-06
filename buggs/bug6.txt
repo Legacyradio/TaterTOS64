@@ -1,0 +1,62 @@
+========================================================================
+TaterTOS64v3 - bug6 — SYS_WRITE(stderr) used %s instead of length-bounded bytes
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-04 11:18:17 CST
+
+WHY THIS LOG
+------------
+- Reported medium-severity syscall bug: `SYS_WRITE` for fd=2 treated user
+  buffers as C strings.
+- This ignored the explicit byte length (`a3`) and relied on NUL termination.
+
+BUG
+---
+- File/path:
+  - `src/kernel/proc/syscall.c` (`SYS_WRITE`, fd=2 branch)
+- Root issue:
+  - stderr path called `kprint_serial_only("%s", buf)`.
+  - `%s` consumed bytes until first NUL instead of respecting requested length.
+- Impact:
+  - information truncation on embedded NUL bytes.
+  - potential out-of-bounds read if user buffer is non-NUL-terminated within
+    mapped memory region expected by `%s` formatting.
+
+FIX APPLIED
+-----------
+1) Added raw serial byte writer
+- File: `src/kernel/kprint.c`
+- New helper:
+  - `kprint_serial_write(const char *buf, uint64_t len)`
+- Behavior:
+  - writes exact `len` bytes to serial under existing print lock.
+
+2) Switched stderr syscall path to bounded write
+- File: `src/kernel/proc/syscall.c`
+- fd=2 branch now calls:
+  - `kprint_serial_write(buf, a3)`
+- Return value remains byte-count (`a3`) semantics.
+
+WHY THIS FIX
+------------
+- Aligns stderr behavior with `write(fd, buf, len)` contract.
+- Removes C-string interpretation for untrusted user buffers.
+- Prevents accidental over-read/truncation behavior.
+
+FILES CHANGED
+-------------
+- src/kernel/kprint.c
+- src/kernel/proc/syscall.c
+
+BUILD / VERIFY COMMAND
+----------------------
+- `PATH="/opt/cross/bin:$PATH" make kernel`
+
+BUILD RESULT
+------------
+- PASS (kernel linked successfully)
+- Only pre-existing warnings observed.
+
+========================================================================

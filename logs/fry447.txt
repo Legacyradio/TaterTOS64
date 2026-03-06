@@ -1,0 +1,37 @@
+fry447 - ISO export command provided + hash-verified export execution
+=====================================================================
+Date: 2026-03-02
+Timestamp (UTC): 2026-03-02 02:16:51 UTC
+
+HASH VERIFICATION (performed before this log per Rule 15)
+=====================================================================
+- Source build ISO:
+  493032779f87c6c620f97c54d02300838321f5537576032feee33dbf03fa6061  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Target/export ISO:
+  493032779f87c6c620f97c54d02300838321f5537576032feee33dbf03fa6061  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- Result:
+  Source and target hashes match.
+
+WHAT WAS REQUESTED
+=====================================================================
+User asked for the ISO export command and to log the step following
+planv3.txt logging rules.
+
+EXACT EXPORT COMMAND (from build_iso.sh)
+=====================================================================
+WIN_EXPORT="/mnt/c/Users/jjsako/Documents/tateriso"
+mkdir -p "$WIN_EXPORT"
+cp "$OUT_DIR/tatertos64v3.iso" "$WIN_EXPORT/tatertos64v3.iso"
+
+EXECUTED COMMAND (this run)
+=====================================================================
+cp "/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso" "/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso"
+
+WHY
+=====================================================================
+Ensures the latest local build artifact is copied to the Windows export
+location and removes stale-ISO ambiguity with SHA-256 proof.
+
+CODE CHANGES
+=====================================================================
+None.

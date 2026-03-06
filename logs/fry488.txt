@@ -1,0 +1,41 @@
+========================================================================
+TaterTOS64v3 - fry488 — Report: ls /nvme still hard-freezes system
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 15:14:24 UTC
+
+USER REPORT / CONTEXT
+---------------------
+- Dell Precision 7530: typing `ls /nvme` and pressing Enter still locks the system.
+- Uptime clicker/timer stops; mouse freezes; system is fully unresponsive.
+- Forced power-off required (press and hold power button).
+- This should not be required because full power-off and restart events exist.
+
+STATUS
+------
+- The hard-freeze persists after fry487's NTFS batching changes.
+- /nvme1 mountpoint still not present (unchanged).
+
+CODE CHANGES
+------------
+- None (report only).
+
+BUILD / ARTIFACT VALIDATION
+---------------------------
+- No rebuild performed in this step.
+
+HASH / FRESHNESS (Rule 15)
+--------------------------
+Source ISO:
+- 2026-03-03 02:42:24.891312411 -0600  135536640 bytes
+- SHA256: 31b07fa0ac303363ce83faeaa370deef5aa4b397c851d0727926bea597dea2f3
+- Path: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+Target/export ISO:
+- 2026-03-03 08:50:59.607644000 -0600  135536640 bytes
+- SHA256: 31b07fa0ac303363ce83faeaa370deef5aa4b397c851d0727926bea597dea2f3
+- Path: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+========================================================================

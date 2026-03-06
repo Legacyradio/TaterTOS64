@@ -1,0 +1,82 @@
+fry399 — Fix PID_DMI (0x88 → 0xEF), SMP stack alloc, EC init restructure
+Timestamp: 2026-02-28 23:15:00 UTC
+
+PROBLEM:
+  Three interrelated issues on Dell Precision 7530:
+
+  1) PCR[DMI] sideband mirror was writing to WRONG address.
+     PID_DMI was set to 0x88 (undefined/unrelated sideband port) instead of
+     0xEF (DMI port on ALL Intel PCHs Skylake through Raptor Lake).
+     Result: ec_mirror_pcr_ioe() wrote to phys 0xFD882774 (unknown PID 0x88 space)
+     instead of 0xFDEF2774 (actual DMI sideband IOE register).
+     The IOE EC decode bit was never set in the sideband, so the eSPI controller
+     didn't forward I/O cycles to the EC even though PCI config IOE was correct.
+     Diagnostic evidence: PCR IOE read-back 0x030F→0x030F (unchanged = wrong target).
+
+  2) SMP stack allocation failed for CPUs 2-7. The heap is a bump allocator
+     (~1MB, no free). ACPI namespace parsing (7072 nodes) + NVMe/VMD init exhausted
+     it before SMP could allocate 192KB (6 APs × 32KB) for AP stacks.
+
+  3) EC was alive at early boot (early_sts=0x00) but dead by probe time (sts=0xFF).
+     Missing pre-_REG status tracking made it impossible to narrow down exactly
+     which init step killed the EC decode path.
+
+CHANGES:
+1) src/kernel/acpi/extended.c
+   - Fixed PID_DMI from 0x88 to 0xEF (correct for ALL modern Intel PCHs).
+     Reference: coreboot src/soc/intel/cannonlake/include/soc/pcr_ids.h.
+   - Added mfence after PCR sideband write to ensure commit before read-back.
+   - Added detailed PCR target logging (SBREG_BAR, PID, phys addr).
+   - Added EC status read immediately after PCR mirror (catch if mirror itself
+     disrupts EC).
+   - Added pre-_REG EC status probe (g_ec_pre_reg_sts) — reads port 0x66 right
+     before _REG(3,1) to detect if _REG is what kills EC responsiveness.
+   - Added post-_REG status log.
+   - Added second probe attempt with extended delay (~500ms) if first probe fails.
+   - Exported pcr_pid and ec_pre_reg_sts via acpi_get_diag().
+
+2) src/kernel/acpi/extended.h
+   - Extended fry_acpi_diag with pcr_pid (uint8_t) and ec_pre_reg_sts (uint8_t).
+   - Adjusted padding for alignment.
+
+3) src/user/libc/libc.h
+   - Mirrored fry_acpi_diag extension for userspace ABI sync.
+
+4) src/user/apps/sysinfo.c
+   - Added PCR PID display: "PCR PID=0xEF IOE: ... mir=..."
+   - Added early/preREG/p2sb diagnostic line: "early=... preREG=... p2sb=..."
+   - Shifted battery/backlight sections down by 16px.
+   - Increased window height from 480 to 500.
+
+5) src/drivers/smp/smp.c
+   - Changed alloc_stack() from kmalloc() to pmm_alloc_pages() + vmm_phys_to_virt().
+     This avoids exhausting the bump-allocator heap and uses physical memory
+     directly for stack allocation (page-aligned anyway).
+
+WHY:
+  PID_DMI=0x88 was the root cause of the battery saga (fry391-fry398). The PCR
+  sideband mirror never actually wrote to the DMI IOE register, so EC I/O decode
+  was never enabled in the hardware decode logic even though PCI config showed
+  it as enabled. With PID_DMI=0xEF, the mirror should write to the correct
+  register (0xFDEF2774) and the EC should become responsive.
+
+  SMP stacks now come from PMM which has abundant physical pages, avoiding
+  heap exhaustion from the 7000+ AML namespace allocations.
+
+CROSS-DEVICE COMPATIBILITY:
+  - PID_DMI=0xEF is correct for ALL Intel PCHs from 100-series (Skylake) through
+    700-series (Raptor Lake). No Intel PCH uses PID_DMI=0x88.
+  - PCR mirror path remains gated by vendor==0x8086 && class==0x06 && subclass==0x01.
+  - AMD systems skip the entire PCR path (vendor check).
+  - Non-Intel P2SB: pcr_get_sbreg_bar() checks vendor==0x8086 before touching P2SB.
+  - SMP stack fix is platform-independent (PMM works on all hardware).
+
+TEST COMMANDS:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+TEST RESULT:
+  PASS (build exit code 0)
+  ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  ISO exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+  NVMe image: /home/jjsako/TaterTOS64v3/out/tater_nvme.img

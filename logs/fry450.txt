@@ -1,0 +1,58 @@
+fry450 - Shell redraw jitter fix (remove scroll-time auto-resize churn)
+========================================================================
+Date: 2026-03-02
+Timestamp (UTC): 2026-03-02 02:53:00 UTC
+
+HASH VERIFICATION (Rule 15)
+========================================================================
+- Source build ISO:
+  d9647bb0e1de9095359925095de62c351b3dca952919652fbd859ce1dbbb1d5a  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Target/export ISO:
+  d9647bb0e1de9095359925095de62c351b3dca952919652fbd859ce1dbbb1d5a  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- Result:
+  Source and target hashes match.
+
+WHAT WAS REPORTED
+========================================================================
+- Redraw jitter in shell window at all sizes.
+- Scrollbar appeared to "crawl", but user clarified the bar itself was not
+  functionally moving; symptom looked like redraw instability.
+
+ROOT CAUSE
+========================================================================
+- Shell `term_scroll()` was issuing automatic resize requests while output was
+  active. This can create repeated SHM surface swaps and visual churn,
+  especially when resize handling lags behind output activity.
+
+FIXES APPLIED
+========================================================================
+File: /home/jjsako/TaterTOS64v3/src/user/shell/shell.c
+
+1) Removed scroll-time auto-grow resize path from `term_scroll()`.
+   - Deleted `GROW_ROWS` / `RESIZE_COOLDOWN_MS` constants and related state.
+   - Deleted `request_resize()` and its call from scroll path.
+Why:
+   - Prevents repeated resize/SHM churn that manifests as redraw jitter.
+   - Keeps resizing event-driven via `TW_MSG_RESIZED` (protocol path) instead
+     of implicit growth during text scroll.
+
+2) Tightened redraw trigger for Ctrl+U/Ctrl+D scrollback keys.
+   - `needs_redraw` is set only when `scroll_offset` actually changes.
+Why:
+   - Avoids unnecessary update bursts from no-op scroll commands.
+
+3) Updated top comment to reflect current behavior (resize-aware rendering).
+Why:
+   - Keeps source description aligned with implementation.
+
+BUILD / EXPORT
+========================================================================
+Command executed:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make clean all && ./build_iso.sh
+
+Result:
+- Build succeeded.
+- ISO regenerated at:
+  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Exported to:
+  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso

@@ -1,0 +1,4 @@
+[2026-02-20 19:27:38 UTC] Step: Include efiboot.img in ISO tree for El Torito.
+Why: xorriso failed because -e referenced a path not present inside the ISO tree.
+Change: Copy efiboot.img into ISO_DIR/EFI/efiboot.img and reference that for -e.
+Files: build_iso.sh

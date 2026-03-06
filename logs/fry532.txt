@@ -1,0 +1,70 @@
+========================================================================
+TaterTOS64v3 - fry532 — Restore automatic secondary /nvme mount in live mode
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-05 03:54:18 UTC
+
+CONTEXT
+-------
+- User reported shell behavior on Dell:
+  - `ls /nvme` succeeded only after `nvmefix /nvme`
+  - initial `vfsdbg` showed `secondary=(none)` despite NVMe detected
+- Transcript proved secondary mount recovery worked when manually triggered,
+  but was not happening automatically during boot.
+
+ROOT CAUSE
+----------
+- In live/ramdisk boot flow, kernel intentionally skipped NVMe secondary auto-mount:
+  `init: live mode, skip NVMe secondary auto-mount`
+- This left `/nvme` unpublished until a later explicit recovery trigger (`nvmefix` / `ls /nvme`).
+
+CHANGES APPLIED
+---------------
+1) `src/kernel/main.c`
+   - Added background kernel worker:
+     - `nvme_secondary_mount_thread(void *arg)`
+     - mounts `/nvme` via `vfs_mount_secondary(...)`
+     - logs success/failure clearly.
+
+2) `src/kernel/main.c` ramdisk path
+   - Replaced hard skip policy with deferred background mount policy:
+     - old: skip NVMe secondary auto-mount entirely
+     - new: set `mount_secondary_bg=1` and defer mount to post-`sti` thread.
+
+3) `src/kernel/main.c` post-`sti`
+   - Spawned `nvme_mount` kernel thread after interrupts are enabled.
+   - Added inline fallback mount if thread creation fails.
+
+EXPECTED IMPACT
+---------------
+- Boot remains responsiveness-first (root stays ramdisk).
+- Secondary `/nvme` now auto-populates without manual `nvmefix`.
+- `vfsdbg` should show secondary mount shortly after boot, not `(none)`.
+
+BUILD / PACKAGE STATUS
+----------------------
+- `make kernel`: PASS
+- `make clean all && ./build_iso.sh`: PASS
+- ISO exported to Windows path: PASS
+
+ARTIFACTS
+---------
+- Source ISO:
+  `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+- Export ISO:
+  `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+- SHA256 (both):
+  `060b700ed00b33c72dca9ad62e61b55a4b12581730cc26d7283ea1a34c5848e1`
+
+DELL VALIDATION CHECKLIST
+-------------------------
+1) Boot new ISO.
+2) Run `vfsdbg` immediately after shell appears.
+   - Expect `secondary=/nvme` (or `/nvme1`) without running `nvmefix`.
+3) Run `ls /nvme`.
+   - Expect success without prior manual fix command.
+4) Optional: run `nvmefix /nvme` to verify idempotent behavior.
+
+========================================================================

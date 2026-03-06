@@ -1,0 +1,11 @@
+[2026-02-22 07:23:28 UTC] Mark NVMe MMIO uncacheable + use explicit 32-bit MMIO reads.
+
+Changes:
+- src/kernel/mm/vmm.c: vmm_map_mmio_2m now sets PCD/PWT flags for MMIO.
+- src/drivers/storage/nvme.c: add one-line "NVMe: mmio mapped"; read CAP/VS/CSTS via nvme_mmio_read32 instead of struct 64-bit loads.
+
+Why:
+- MMIO should be mapped uncacheable and accessed with defined 32-bit widths to avoid hangs on some devices. This is standard PCIe/NVMe bring-up behavior and should improve stability on QEMU and real hardware.
+
+Tests (not run):
+- bash build_iso.sh

@@ -1,0 +1,30 @@
+Step fry266 - 2026-02-22
+
+Summary
+- SMP fully working. All 3 APs (CPU1/2/3) online after fry264+fry265 fixes.
+- Zero AP faults in qemu.log.
+- LAPIC timer calibration fails on APs (separate issue, not a fault/crash).
+
+Serial log confirmation (qemu run at 22:46, ISO built at 22:45)
+  SMP: detected 4 CPU(s)
+  LAPIC timer: calibrate failed
+  SMP: CPU1 online (APIC 1)
+  LAPIC timer: calibrate failed
+  SMP: CPU2 online (APIC 2)
+  LAPIC timer: calibrate failed
+  SMP: CPU3 online (APIC 3)
+  HPET: enabled freq=100000000 Hz
+
+Fix summary (fry264 + fry265)
+  fry264: trampoline.o was stale — rebuilt with indirect far jump
+          AP now exits real mode → PM → LM → ap_entry correctly.
+  fry265: CR4.OSFXSR + OSXMMEXCPT not set for AP — compiler used SSE2 in idt_init().
+          Added (1<<9)|(1<<10) to CR4 setup in pm_entry.
+
+Known issue: LAPIC timer calibrate failed on APs
+  lapic_timer_init() fails to calibrate on each AP. This is a separate issue.
+  Does not prevent APs from coming online. Investigate next.
+
+Next steps
+  1. Fix LAPIC timer calibration on APs (lapic_timer_init).
+  2. Verify Phase 11-15 stability (NVMe/VFS/Userspace/Shell).

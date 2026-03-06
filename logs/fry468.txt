@@ -1,0 +1,75 @@
+fry468 - Dynamic Filesystem Reporting by Current Path
+=====================================================
+Date: 2026-03-03
+Timestamp (UTC): 2026-03-03 00:52:16 UTC
+
+SUMMARY
+=====================================================
+Implemented hardware-agnostic filesystem reporting for File Manager status bar.
+Status now reports filesystem type for the current directory path (`cwd`) by
+asking the kernel which mount backs that path, instead of using a fixed
+"secondary" filesystem slot.
+
+CHANGES
+=====================================================
+1) Kernel VFS: added path-based filesystem query
+- Added `struct vfs_path_fs_info` in `src/kernel/fs/vfs.h`
+- Added `int vfs_get_path_fs_info(const char *path, struct vfs_path_fs_info *out)`
+  in `src/kernel/fs/vfs.c`
+- Uses existing mount resolution to return:
+  - mountpoint backing `path`
+  - fs type for that mount (ramdisk/FAT32/ToTFS/NTFS)
+
+2) Syscall layer: new syscall for path FS info
+- Added `SYS_PATH_FS_INFO = 33` in `src/kernel/proc/syscall.c`
+- Added handler that:
+  - copies user path string
+  - calls `vfs_get_path_fs_info()`
+  - copies result to userspace struct
+
+3) Userspace libc: wrapper for new syscall
+- Added `struct fry_path_fs_info` and
+  `long fry_path_fs_info(const char *path, struct fry_path_fs_info *out);`
+  in `src/user/libc/libc.h`
+- Added syscall wrapper in `src/user/libc/libc.c`
+
+4) File Manager UI: status bar now path-dynamic
+- `src/user/apps/fileman.c` now calls `fry_path_fs_info(cwd, &pfs)`
+- Replaced fixed display:
+  - old: `root:<type> secondary:<type> nvme:<yes/no>`
+  - new: `cwd:<type>@<mount> root:<type> nvme:<yes/no>`
+
+5) Minor storage-info stabilization
+- `vfs_get_storage_info()` now prefers `/nvme` for secondary summary when present
+  (fallback remains first non-root mount).
+
+FILES CHANGED
+=====================================================
+- src/kernel/fs/vfs.h
+- src/kernel/fs/vfs.c
+- src/kernel/proc/syscall.c
+- src/user/libc/libc.h
+- src/user/libc/libc.c
+- src/user/apps/fileman.c
+
+BUILD / REBUILD RESULTS
+=====================================================
+Commands run:
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make kernel
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make fileman
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+Results:
+- `make kernel`: success
+- `make fileman`: success
+- `build_iso.sh`: success
+
+Artifacts:
+- /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- /home/jjsako/TaterTOS64v3/out/efiboot.img
+- /home/jjsako/TaterTOS64v3/out/fs.img
+- /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+
+Note:
+- Export copy to `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+  failed due to read-only destination in this environment.

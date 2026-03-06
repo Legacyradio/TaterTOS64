@@ -1,0 +1,12 @@
+[2026-02-22 06:48:35 UTC] Use cached PCI BARs to avoid ECAM read hang in NVMe init.
+
+Changes:
+- src/drivers/pci/pci.h: store bar0/bar1 in pci_device_info.
+- src/drivers/pci/pci_core.c: read BAR0/BAR1 during PCI enumeration.
+- src/drivers/storage/nvme.c: nvme_find_controller returns pci_device_info; use cached bar0/bar1 instead of pci_ecam_read32.
+
+Why:
+- Boot hangs after NVMe scan when reading BARs; caching BARs during enumeration reuses already-safe config reads and avoids the hang point.
+
+Tests (not run):
+- bash build_iso.sh

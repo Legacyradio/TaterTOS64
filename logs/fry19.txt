@@ -1,0 +1,3 @@
+STEP 19
+TIME: 2026-02-20 08:38:37
+ACTION: Updated MCFG parsing to access table memory via physmap (vmm_phys_to_virt) in src/kernel/acpi/mcfg.c.

@@ -1,0 +1,6 @@
+DATE: 2026-02-21
+TIME: 10:09:00 -0600
+DESC: Remove vmm_map of RSDP page; rely on physmap to avoid early page-table allocation failure.
+WHY: debugcon still hits '!' in vmm_map during acpi_tables_init.
+FILES:
+  - src/kernel/acpi/tables.c

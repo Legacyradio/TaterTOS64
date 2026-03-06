@@ -1,0 +1,6 @@
+DATE: 2026-02-21
+TIME: 09:36:00 -0600
+DESC: Add early debugcon marker 'Z' at _fry_start entry to confirm running kernel matches build.
+WHY: debugcon output unchanged despite fresh ISO; need definitive kernel identity check.
+FILES:
+  - src/kernel/main.c

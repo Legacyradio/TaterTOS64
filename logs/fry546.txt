@@ -1,0 +1,52 @@
+========================================================================
+TaterTOS64v3 - fry546 - split storage square markers into VMD/NVMe checkpoints
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 21:31:42 UTC
+2026-03-05 15:31:42 CST
+
+CONTEXT
+-------
+- User report: newest fry log (fry545) indicates 24 squares.
+- In fry545 mapping, 24 squares means stall somewhere in Phase 11 storage
+  between USB completion and storage completion.
+
+WHY
+---
+- Stage 24->25 was too coarse to separate VMD vs NVMe hangs on bare metal.
+- Added deterministic top-row markers around storage sub-steps.
+
+CHANGE APPLIED
+--------------
+- Updated `src/kernel/main.c` only.
+- Storage stage split:
+  - stage 25: entered storage phase (before `vmd_init()`)
+  - stage 26: `vmd_init()` returned
+  - stage 27: `nvme_init()` returned (storage done)
+- Shifted later markers to keep monotonic stage order:
+  - stage 28: network done (was 26)
+  - stage 29: VFS diagnostics done (was 27)
+  - stage 30: process/userspace launch attempts done (was 28)
+  - stage 31: AML background thread setup done (was 29)
+
+UPDATED INTERPRETATION (POST-FRY546)
+------------------------------------
+- 24 squares: before storage phase marker (pre-stage 25).
+- 25 squares: stuck in/after `vmd_init()` before stage 26.
+- 26 squares: stuck in/after `nvme_init()` before stage 27.
+- 27 squares: storage completed; stall is later.
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Build validation:
+   - `/bin/bash -lc 'PATH="/opt/cross/bin:$PATH" make -j"$(nproc)"'`
+2) RESULT:
+   - PASS (kernel build succeeded)
+
+NOTES
+-----
+- No hash recorded in this log (planv3 rule 16).
+
+========================================================================

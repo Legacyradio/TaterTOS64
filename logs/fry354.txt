@@ -1,0 +1,57 @@
+fry354 — TaterWin IPC: SHM backbuffers + per-process stdin routing
+2026-02-27 07:24 CST
+
+Continued from Gemini CLI session (hit rate limit during gui.c/sysinfo.c phase).
+Gemini completed: PROC_INBUF, SYS_PROC_INPUT, fry_proc_input libc wrapper, taterwin.h.
+This fry completes: gui.c TaterWin compositor + sysinfo.c TaterWin client.
+
+=== CHANGES ===
+
+src/user/gui/gui.c (full rewrite):
+  - window_t gains: shm_id (-1=no TW), shm_ptr, shm_w/h, done flag,
+    msgbuf[256]/msglen byte accumulator, textbuf[1024]/textlen text ring
+  - process_window_output(): parses fry_proc_output bytes for TW_MAGIC:
+      TW_MSG_CREATE_WINDOW → fry_shm_alloc(w*h*4), fry_shm_map(id),
+        resize window chrome to SHM dims, send tw_msg_win_created_t back
+        to app via fry_proc_input (app then maps its own copy of the SHM)
+      TW_MSG_UPDATE → consumed; blit happens every frame if shm_ptr set
+      plain text bytes → appended to textbuf for draw_window_text()
+  - draw_window_text(): scrolling multiline text renderer (12px line height)
+  - draw_window(): blit shm_ctx via gfx_blit() if shm_ptr set, else text
+  - Main loop: keyboard forwarded to focused window via fry_proc_input
+  - done flag prevents repeated strcat of "[DONE]" on dead-process polls
+  Why: GUI becomes a compositor; TW apps share SHM pixel buffers
+
+src/user/apps/sysinfo.c (full rewrite):
+  - TaterWin client: fry_write(1, tw_msg_create_win_t) → request window
+  - Waits for tw_msg_win_created_t via fry_read(0,...), up to 3s (300 tries)
+  - fry_shm_map(resp.shm_id) → maps shared physical pages into own VA space
+  - render(): clears SHM, draws uptime/procs/backlight/battery with gfx_*
+  - Loop: render() → fry_write(1, TW_MSG_UPDATE) → fry_sleep(1000)
+  - Static fallback_pixels[] used if SHM alloc fails (window stays black)
+  Why: first real TaterWin app; live-updating graphical info panel
+
+=== BUILD (rule 11: clean + verbose) ===
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+  Result: clean, zero errors, ISO exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+=== TEST COMMANDS (rule 10) ===
+  qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+    -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+    -cdrom ./out/tatertos64v3.iso \
+    -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+
+  Check logs after boot:
+    tail -n 50 logs/serial.log
+    tail -n 50 logs/debugcon.log
+    tail -n 100 logs/qemu.log
+
+  Expected behaviour:
+    - Click SYSINFO → 400×222 window with graphical panel; updates each second
+    - Click SHELL   → 600×400 window with green text output; keyboard routes
+      through GUI to shell's inbuf, echoed back via gets_bounded loop
+    - Drag windows works; process exit marks title "[DONE]" once
+
+=== NEXT LOG: fry355.txt ===

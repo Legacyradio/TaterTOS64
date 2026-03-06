@@ -1,0 +1,7 @@
+DATE: 2026-02-21
+TIME: 11:03:00 -0600
+DESC: Use Multiboot ACPI RSDP pointer as physical (no virt_to_phys). Remove boot_identity_limit marker.
+WHY: rsdp_phys may be wrong; mapping changes didn't move crash. Keep debug minimal.
+FILES:
+  - src/boot/mb_handoff.c
+  - src/kernel/acpi/tables.c

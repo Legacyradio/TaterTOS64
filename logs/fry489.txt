@@ -1,0 +1,59 @@
+========================================================================
+TaterTOS64v3 - fry489 — NTFS readdir + NVMe trace instrumentation
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 15:26:26 UTC
+
+USER REPORT / CONTEXT
+---------------------
+- Dell Precision 7530: `ls /nvme` still hard-freezes the system.
+- Need instrumentation around NTFS readdir + NVMe reads to pinpoint call site.
+
+WHY THESE CHANGES
+-----------------
+- Add bounded, correlated trace output around NTFS directory enumeration and
+  device reads, plus NVMe I/O submits, to identify the last completed step
+  before the freeze.
+- Fix NTFS create-stub signature mismatch so the kernel rebuild completes.
+
+CODE CHANGES
+------------
+1) src/kernel/fs/ntfs.c
+   - Added NTFS_TRACE instrumentation (start/stop, markers, bounded budget).
+   - Traced NTFS readdir path, MFT reads, index root/allocation, cluster reads,
+     nonresident run decode, and device read calls.
+   - Armed NVME_TRACE during NTFS readdir to correlate storage I/O.
+
+2) src/drivers/storage/nvme.c
+   - Added NVME_TRACE budgeted logging and a public nvme_trace_set() hook.
+   - Logged read/write submissions and submit failures.
+
+3) src/kernel/fs/vfs.c
+   - Fixed ntfs_create_stub signature to match vfs ops (uint16_t attr).
+
+BUILD / EXECUTION RECORD
+------------------------
+Commands executed:
+1) make clean
+2) PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Results:
+- Build succeeded; warnings unchanged.
+- ISO produced: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Export to /mnt/c failed (read-only filesystem).
+
+HASH / FRESHNESS (Rule 15)
+--------------------------
+Source ISO:
+- 2026-03-03 09:27:08.272201210 -0600  135548928 bytes
+- SHA256: ab6bc9c86f96a07e45f348c7e4c07f2a139d39c5fed01a38f7ad3586c595c20e
+- Path: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+Target/export ISO:
+- 2026-03-03 09:27:10.409801400 -0600  135548928 bytes
+- SHA256: ab6bc9c86f96a07e45f348c7e4c07f2a139d39c5fed01a38f7ad3586c595c20e
+- Path: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+========================================================================

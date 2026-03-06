@@ -1,0 +1,22 @@
+HANDOFF — RULES ARE NON-NEGOTIABLE
+Timestamp: 2026-02-27 16:54:56 CST
+
+Primary rule source:
+  /home/jjsako/TaterTOS64v3/planv3.txt
+  RULES section: lines 17-31 (header: "RULES (must follow exactly)")
+
+Directive (mandatory):
+  These rules are 100% non-negotiable.
+  Every rule must be followed exactly, on every step, with no exceptions.
+  No shortcuts. No bypasses. No partial compliance.
+
+Operational requirement for next agent/session:
+  1) Read /home/jjsako/TaterTOS64v3/planv3.txt lines 17-31 before making changes.
+  2) Enforce all rules exactly while editing, testing, and logging.
+  3) Log each completed step in logs/fryN.txt with timestamp and why.
+
+Session summary pointer:
+  See logs/fry360.txt, logs/fry361.txt, and logs/fry362.txt for detailed changes and outcomes.
+
+Status update (2026-02-27 17:51:35 CST):
+  - Referenced fix set status (fry360/fry361/fry362): SUCCESSFUL

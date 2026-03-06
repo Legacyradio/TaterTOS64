@@ -1,0 +1,83 @@
+========================================================================
+  TaterTOS64v3 - Session Handoff Log (2026-02-28)
+  Covers: fry393 + fry394
+========================================================================
+
+TIMESTAMP
+---------
+2026-02-28 20:35:44 UTC
+
+LAST FRY LOG
+------------
+logs/fry394.txt
+
+========================================================================
+RULES (STRICTLY, ABSOLUTELY NON-NEGOTIABLE - MUST FOLLOW EXACTLY)
+========================================================================
+1) Follow the plan step by step. No shortcuts or cut corners.
+2) No "minimal" implementations; do thorough, functional work.
+3) No Linux or Windows code inside the OS.
+4) Use apply_patch for code edits.
+5) Log every completed step in its own logs/fryN.txt with timestamps.
+6) If you change code, include a brief "why" in the log.
+7) Don't pause after saying you'll continue; just continue.
+8) Branding is TaterTOS64v3 (never FryOS).
+9) UEFI-only boot path.
+10) When testing, always include the necessary commands to run the test.
+11) Default rebuild mode is clean + verbose:
+    make clean
+    PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+12) All apps built and run must follow the TaterWin protocol.
+
+========================================================================
+WHAT CHANGED THIS SESSION
+========================================================================
+1) fry393:
+   - Added Intel PCH LPC/eSPI decode enable for EC ports 0x62/0x66
+     using 00:1f.0 IOE bit 13.
+   - Added EC decode telemetry fields to ACPI diag:
+     lpc_ioe_before, lpc_ioe_after.
+   - Plumbed fields through kernel/user structs and sysinfo display.
+
+2) fry394:
+   - Hardened compatibility to avoid unsafe writes on non-target hardware.
+   - IOE write is now gated by strict checks before touching 00:1f.0:
+     device present, vendor=0x8086, class/subclass=0x06/0x01.
+   - On mismatch/absence, write is skipped and diag stays at 0xFFFF sentinels.
+
+FILES TO REVIEW
+---------------
+- src/kernel/acpi/extended.c
+- src/kernel/acpi/extended.h
+- src/user/libc/libc.h
+- src/user/apps/sysinfo.c
+- logs/fry393.txt
+- logs/fry394.txt
+
+BUILD / TEST STATUS
+-------------------
+Commands run:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Result:
+  PASS (build_iso.sh exit code 0)
+  ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  NVMe image: /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+  Note: copy to /mnt/c/... failed in this environment (read-only FS).
+
+CURRENT STATE
+-------------
+- EC path now has both decode enable and safety gating.
+- Sysinfo now shows LPC IOE before/after values for on-screen bare-metal proof.
+- Ready for Dell Precision 7530 boot validation.
+
+NEXT ACTION
+-----------
+Boot updated ISO on Dell 7530 and verify in sysinfo ACPI panel:
+1) "LPC IOE: 0xXXXX -> 0xXXXX" shows bit-13 enable on supported Intel bridge.
+2) EC probe state transitions from STS_FF/timeout toward OK.
+3) If EC still fails, use displayed probe step + status to choose next fix.
+
+NEXT FRY LOG: fry395.txt
+========================================================================

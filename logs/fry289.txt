@@ -1,0 +1,10 @@
+[2026-02-22 07:41:33 UTC] Allocate NVMe buffers/queues from low memory.
+
+Changes:
+- src/drivers/storage/nvme.c: use pmm_alloc_page_below(4GB) for identify buffer and admin/io queues.
+
+Why:
+- NVMe init reached MMIO, but failed "no memory for queues". Allocating from low memory avoids exhaustion or unmapped high pages in early bring-up.
+
+Tests (not run):
+- bash build_iso.sh

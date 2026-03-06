@@ -1,0 +1,207 @@
+Handoff Log - 2026-02-21 22:00:00 -0600
+
+=== CURRENT STATE ===
+Boot is STABLE. Zero CPU faults. Kernel runs through all init phases.
+Last action log: fry256. Next log: fry257.
+
+Serial confirms (last run):
+  K_START → K_GDT_IDT → K_TSS → K_PMM → K_VMM
+  TaterTOS64v3 starting
+  ACPI: RSDP / RSDT / FACP / APIC / HPET / MCFG all parsed
+  MADT: LAPICs=2 IOAPICs=1 ISOs=5
+  FADT: SCI=9 PM1a_CNT=0x604
+  AML: namespace populated
+  platform: dummy device probed
+  PCI: bus 0 and bus 128 enumerated
+  SMP: detected 2 CPU(s) — "no low memory for trampoline"
+  HPET: enabled
+  (kernel continues into USB/NVMe/network/VFS/process/shell/hlt — no further serial after HPET)
+
+debugcon: kgtubpvSCS0123PTK_ACPI_TABLES...mFK_ACPI_FADT...fGK_ACPI_MCFG...g
+(all init chars present up through MCFG; after that no more early_debug_putc calls)
+
+qemu.log: 0 exception entries in last run.
+
+=== WHAT WAS FIXED THIS SESSION (fry253–fry256) ===
+fry253:
+  1. kernel_linker.ld: .rodata/.data/.bss AT() lacked ALIGN → 0x1b byte string shift on serial. Fixed with ALIGNOF().
+  2. src/boot/stack_switch.asm: `mov dx, 0xE9` corrupted RDX (handoff ptr). Fixed: save RDX to R8 first.
+
+fry254:
+  1. kernel_linker.ld: .stack AT() aligned to 0x1000, but boot pd_high[1] maps stack VMA → phys 0x400000.
+     After vmm_init write_cr3, stack VMA remapped to zeroed LMA → ret read 0 → jumped to 0xa0002 → #GP loop.
+     Fixed: .stack AT(ALIGN(..., 0x200000)) → LMA = 0x400000, matches pd_high[1].
+  2. src/kernel/irq/irqdesc.c: pre-init kprint call in unhandled exception path produced garbled output.
+     Fixed: replaced with early_serial_puts/puthex64.
+
+fry255:
+  ACPI parsers (madt/fadt/mcfg/hpet_tbl) all called vmm_phys_to_virt on result of acpi_find_table.
+  But table_registry[] already stores physmap VMAs → double conversion → non-canonical → #GP.
+  Fixed in all 4 files: cast h directly, no second vmm_phys_to_virt.
+
+fry256: Boot stability milestone logged.
+
+=== REMAINING ISSUES (ordered by priority) ===
+
+1. kprint format specifiers — EASY, HIGH IMPACT
+   kprint does not handle %llx, %llu, %x, %u — outputs literal "lx", "lu", "4x", etc.
+   File to fix: src/kernel/kprint.c (or wherever kprint is implemented — find it).
+   All ACPI/PCI/SMP output is garbled without this. Fix this first.
+
+2. SMP trampoline — MEDIUM
+   "SMP: no low memory for trampoline" printed in serial.
+   AP startup code (16-bit real mode entry) must be placed below 1MB.
+   File: src/drivers/smp/smp.c
+   PMM marks low memory as used (kernel occupies 0x100000-0x2c6000).
+   Solution: reserve a page below 0x100000 (e.g. 0x8000) in pmm_init for trampoline,
+   or use a fixed low phys address already below the boot region.
+
+3. NVMe/VMD detection — MEDIUM
+   After smp_init, the chain: nvme_init → nvme_get_block_device → fat32_init → vfs_init → process_init
+   → sched_init → syscall_init → process_launch("/SHELL.FRY").
+   In QEMU we have a SATA drive (not NVMe), so nvme likely returns null block device.
+   Either: add AHCI/SATA driver, or configure QEMU with NVMe (-device nvme,...).
+   File: src/drivers/storage/nvme.c
+
+4. Shell binary — MEDIUM
+   process_launch("/SHELL.FRY") needs a FAT32-formatted disk with SHELL.FRY at root.
+   QEMU test setup must include a disk image with this file.
+
+5. Phase 17.5 (GUI/Userland) — BLOCKED until 1-4 above
+   Needs: Phase 15 (shell) + Phase 16 (ACPI stable)
+
+=== KEY FILE LOCATIONS ===
+src/kernel/irq/irqdesc.c      — exception dispatch + common_isr
+src/kernel/mm/vmm.c           — VMM (physmap, kernel mapping)
+src/kernel/mm/pmm.c           — PMM (bitmap allocator)
+src/kernel/acpi/tables.c      — ACPI table registry (stores physmap VMAs)
+src/kernel/acpi/madt.c        — MADT parser
+src/kernel/acpi/fadt.c        — FADT parser
+src/kernel/acpi/mcfg.c        — MCFG parser
+src/kernel/acpi/hpet_tbl.c    — HPET table parser
+src/boot/stack_switch.asm     — stack switch before after_vmm (uses R8 to save RDX)
+kernel_linker.ld              — .stack AT(ALIGN(...,0x200000)), .rodata AT(ALIGN(...,ALIGNOF))
+src/kernel/main.c             — _fry_start + after_vmm (all init phases)
+src/drivers/smp/smp.c         — SMP trampoline (failing low memory)
+
+=== TEST COMMANDS ===
+PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh
+qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+  -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+  -cdrom ./out/tatertos64v3.iso \
+  -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+
+head -n 80 logs/serial.log | cat -v | grep -v '^\^\[' | grep -v '^$'
+cat logs/debugcon.log
+grep "v=0[0-9a-f]\b\|cpu_reset" logs/qemu.log | head -20
+
+=== MANDATORY SESSION ORDER — DO NOT SKIP OR REORDER ===
+Rule: One session = one task below, completed fully before moving to the next.
+Do not begin a step until the previous step's test commands confirm success in logs.
+Do not start Phase 17.5 until Step 4 is confirmed working.
+
+────────────────────────────────────────────────────────────────────────────────
+STEP 1 — Fix kprint formatter
+────────────────────────────────────────────────────────────────────────────────
+Why first: Every diagnostic from this point forward is garbled (%x shows "4x",
+%llx shows "lx", %u shows "u"). Without readable output, debugging Steps 2-4
+is guesswork. This is the lowest-risk, highest-leverage fix.
+
+Plan:
+  - Find kprint implementation (grep for "kprint" in src/).
+  - Audit format specifier handling: %d, %u, %x, %X, %lx, %llx, %llu, %s, %c.
+  - Add any missing cases. Use uint64_t internally for all integer formatting.
+  - Do NOT rewrite the whole function — add missing specifiers only.
+  - Rebuild, run, confirm ACPI/PCI/SMP output shows real numbers not "4x"/"lx".
+  - Log: fry257.txt
+
+Success criteria:
+  Serial shows "ACPI: RSDP phys=0x7fXXXXXX rev=2" (real hex values, not "0xlx").
+  PCI lines show real vendor/device IDs.
+  SMP shows real CPU count.
+
+────────────────────────────────────────────────────────────────────────────────
+STEP 2 — Fix SMP trampoline low memory
+────────────────────────────────────────────────────────────────────────────────
+Why second: Once kprint is readable we can see real SMP output. Two CPUs are
+detected but APs never start because trampoline code has nowhere to live.
+
+Plan:
+  - Read src/drivers/smp/smp.c. Find where "no low memory for trampoline" fires.
+  - Trampoline needs a 4KB-aligned page below 0x100000 (e.g. 0x8000–0x8FFF).
+  - The region 0x8000–0x9FFF is conventional free RAM in QEMU — not used by
+    BIOS IVT (0x0–0x3FF), BDA (0x400–0x4FF), or our boot code (0x100000+).
+  - Strategy: reserve that page in pmm_init (mark as used so PMM won't hand it
+    out), then in smp_init write the trampoline there at a known fixed address.
+  - Alternatively: allocate from PMM early before pmm_init marks everything used.
+  - Copy 16-bit AP startup stub to chosen physical address.
+  - Send INIT/SIPI/SIPI to each AP LAPIC.
+  - Confirm APs check in (e.g. atomic counter incremented by each AP).
+  - Log: fry258.txt
+
+Success criteria:
+  Serial shows "SMP: AP 1 online" (or equivalent) — no "no low memory" message.
+  debugcon shows no triple faults from APs.
+
+────────────────────────────────────────────────────────────────────────────────
+STEP 3 — NVMe storage chain: get a block device visible
+────────────────────────────────────────────────────────────────────────────────
+Why third: process_launch("/SHELL.FRY") calls vfs_init(nvme_get_block_device()).
+If nvme_get_block_device() returns NULL, VFS never mounts and no shell launches.
+
+Plan:
+  - Read src/drivers/storage/nvme.c. Understand what it does and what PCI IDs
+    it looks for.
+  - Check QEMU launch command: current setup uses SATA (-cdrom), not NVMe.
+  - Add an NVMe disk to the QEMU command:
+      -device nvme,drive=nvme0,serial=fry0
+      -drive id=nvme0,file=./out/disk.img,format=raw,if=none
+  - Create a small FAT32 disk image (disk.img) with SHELL.FRY at root.
+    Use mkfs.fat on the host or build a pre-made image via build_iso.sh.
+  - Alternatively: if nvme.c scans PCI for NVMe controllers (class 0x01/0x08/0x02),
+    confirm PCI enumeration finds it and nvme_init registers a block device.
+  - Confirm nvme_get_block_device() returns non-NULL.
+  - Log: fry259.txt
+
+Success criteria:
+  Serial shows NVMe device detected and initialized (drive size, namespace info).
+  nvme_get_block_device() returns a valid pointer (fat32_init proceeds past NULL check).
+
+────────────────────────────────────────────────────────────────────────────────
+STEP 4 — Get shell launching: FAT32 mount + process_launch("/SHELL.FRY")
+────────────────────────────────────────────────────────────────────────────────
+Why fourth: This is the final prerequisite for Phase 17.5. A running shell
+means Phase 15 is complete and userspace is functional.
+
+Plan:
+  - With NVMe block device from Step 3, read src/kernel/fs/fat32.c (or wherever
+    FAT32 is implemented). Confirm fat32_init mounts the volume.
+  - Read src/kernel/fs/vfs.c. Confirm vfs_init registers the mount and opens files.
+  - Read src/kernel/process/process.c. Confirm process_init sets up scheduler.
+  - Read process_launch(): it should open "/SHELL.FRY", load the .fry binary,
+    set up a process context, and hand to scheduler.
+  - Create a minimal SHELL.FRY binary (even a stub that just prints and halts)
+    and place it in disk.img at root.
+  - Run, confirm shell prompt or at minimum "shell launched" message on serial.
+  - Log: fry260.txt
+
+Success criteria:
+  Serial shows FAT32 mounted, VFS open succeeded, process created.
+  Shell binary runs — even a stub that prints one line is success for this step.
+
+────────────────────────────────────────────────────────────────────────────────
+STEP 5 — BEGIN Phase 17.5: GUI/Userland
+────────────────────────────────────────────────────────────────────────────────
+Only start this after Steps 1-4 are confirmed working in logs.
+
+Phase 17.5 scope per planv3.txt:
+  - Framebuffer graphics layer: blit, fill, font rendering, sprites
+  - Input event queue: keyboard + mouse unified into single event stream
+  - Window manager + compositor: rect clipping, Z-order, dirty regions
+  - GUI shell: taskbar, app launcher, basic widgets
+
+Plan will be written at the start of that session after reading planv3.txt
+Phase 17.5 section in full and reviewing the existing gop_fb.c / input code.
+Log: fry261.txt onwards.
+────────────────────────────────────────────────────────────────────────────────

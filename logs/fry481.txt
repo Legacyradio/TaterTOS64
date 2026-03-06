@@ -1,0 +1,70 @@
+========================================================================
+TaterTOS64v3 - fry481 - Rollback to fry475 state (revert fry476-480)
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 08:10:43 UTC
+
+USER-REPORTED SYMPTOM
+---------------------
+- Apps no longer open (start menu clicks fail). User requested rollback to
+  state from 5 fry logs ago (fry475).
+
+WHY THIS CHANGE
+---------------
+- Restore known-good behavior from fry475 by reverting changes introduced in
+  fry476–fry480 that touched GUI app discovery/spawn, File Manager stat logic,
+  NTFS caching/ATTRIBUTE_LIST resolution, and secondary mount probing.
+
+CODE CHANGES (ROLLBACK)
+-----------------------
+1) src/user/gui/gui.c
+   - Reverted start-menu discovery and spawn to only scan `/` and `/fry`.
+   - Removed full-path storage for app entries; launch uses name+variant only.
+
+2) src/user/apps/fileman.c
+   - Removed stat budget + deferred stat logic.
+   - Restored simple stat-per-entry behavior (size=0 on stat failure).
+   - Removed "size unknown"/unresolved stat UI paths.
+
+3) src/kernel/fs/ntfs.h
+   - Removed directory cache structures and fields.
+
+4) src/kernel/fs/ntfs.c
+   - Removed directory cache helpers and cache fast paths.
+   - Removed ATTRIBUTE_LIST-aware $DATA resolution; reverted to direct $DATA.
+
+5) src/kernel/fs/vfs.c
+   - Removed secondary root probe gating for ToTFS/NTFS/FAT32.
+   - Restored GUID-constrained NTFS secondary candidate selection.
+
+BUILD / VALIDATION
+------------------
+Commands executed:
+1) make clean
+2) PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Result:
+- Build succeeded (warnings unchanged).
+- ISO produced: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Export to /mnt/c failed (read-only filesystem in this environment).
+
+HASH / FRESHNESS (Rule 15)
+--------------------------
+Source ISO:
+- SHA256: b29be02db95e1a149e4ddd982392ab4026542e2ae9b0f03a15d2cef15e56225e
+- Path: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+Target/export ISO (exists, older):
+- SHA256: 7e52506e3dce9825114a6534abc5058936377ba610749a63a74298afd3645e7b
+- Path: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- Note: export write blocked by read-only mount; target hash is stale.
+
+EXPECTED BEHAVIOR AFTER BOOT
+-----------------------------
+- Start menu app clicks should launch again (rollback to fry475 behavior).
+- File Manager will show size 0B on stat failure (pre-fry476 behavior).
+- Secondary mounts behave as before fry477/478 (no root probe gating).
+
+========================================================================

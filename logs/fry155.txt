@@ -1,0 +1,4 @@
+[2026-02-20 20:03:28 UTC] Step: Force GRUB console output and safe video modes.
+Why: GRUB reported no suitable video mode and no console available.
+Change: grub.cfg now sets terminal_output console and a safe gfxmode list.
+Files: build_iso.sh

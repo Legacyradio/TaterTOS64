@@ -1,0 +1,3 @@
+2026-02-21 02:24:36 CST
+Change: add single-byte debug markers inside vmm_init (1-7) and halt on alloc_table failure with '!'.
+Why: we are still crashing inside vmm_init; these markers will pinpoint the exact step without relying on string output.

@@ -1,0 +1,5 @@
+DATE: 2026-02-22 20:36 CST
+CHANGE: Replaced partial 8x16 font with a complete 5x7 ASCII font expanded to 8x16 at draw time, including lowercase mapping and '?' fallback.
+WHY: Make GUI terminal text readable; prior font only defined a few glyphs, causing scattered output.
+FILES:
+- src/kernel/kprint.c

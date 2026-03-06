@@ -1,0 +1,73 @@
+fry438 — eSPI status-bit masking fix (stop treating enable/default bits as errors)
+Date: 2026-03-01
+
+Timestamps (UTC):
+  Hash verification: 2026-03-01 22:10:24 UTC
+  Log written: 2026-03-01 22:10:35 UTC
+
+Goal:
+  Apply a net-new fix not already attempted in fry391-fry437:
+  classify and clear only documented eSPI status bits (W1C/status),
+  instead of using raw non-zero register values as "error present".
+
+Rule-15 hash verification (before writing this log):
+  source ISO  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+    54edde480987e49ad5c42776285dea6991224d682312dd8c16e4a41b7c204edf
+  target ISO  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+    cb4d855dad8d081e1a7f9de0bd29312b00e59d0eddb821ef118cc3df7a1e5210
+  Result:
+    Source and target differ; target/export is stale in this environment.
+
+Code changes:
+
+1) src/kernel/acpi/extended.c
+   A) Added explicit eSPI status masks and helpers:
+      - ESPI_*_STATUS_MASK constants
+      - espi_status_mask_for_off()
+      - espi_status_bits()
+      WHY:
+        Raw register values include enable/default bits that can stay set
+        by design; those must not be treated as active faults.
+
+   B) Reworked espi_clear_errors():
+      - Detects "error present" from masked status bits only.
+      - Writes only status bits for W1C clear (not full raw register values).
+      - Evaluates g_espi_clear_ok on status bits only.
+      - Logs both raw and masked status snapshots per pass/final.
+      WHY:
+        Prevents false "clear failed" results when only non-status bits remain.
+
+   C) Updated espi_diag_probe() clear + summary logic:
+      - Uses status-bit masks for optional clear writes.
+      - Uses status-bit masks for warning/impairment messages.
+      WHY:
+        Keeps diagnostics aligned with actual fault status semantics.
+
+2) src/user/shell/shell.c
+   - acpibreak now computes masked status bits for pc/vw/fc/ln.
+   - Break-stage verdict now keys on status bits (not raw non-zero).
+   - Output now prints both raw and status bit views and includes FC.
+   WHY:
+     Avoids false eSPI-error verdicts from persistent enable/default bits.
+
+3) src/user/apps/sysinfo.c
+   - eSPI error coloring now keys on masked status bits.
+   - eSPI error line now shows raw pc/vw/fc/ln values for context.
+   WHY:
+     Prevents orange "error" state when only non-fault bits are set.
+
+Build and test commands (rule-10/rule-11 compliant):
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Build result:
+  - Success (exit code 0).
+  - Existing non-fatal warnings remain baseline.
+  - Export copy to /mnt/c/... remains blocked by read-only filesystem.
+
+Hardware/BIOS note (rule 13):
+  Bare-metal target BIOS info captured from user test system:
+    SMBIOSBIOSVersion: 1.42.0
+    Vendor string: "DELL - 1072009"
+  BIOS release date was not provided in this capture and should be logged
+  on next on-device session where it is visible.

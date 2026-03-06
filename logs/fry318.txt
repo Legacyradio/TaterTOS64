@@ -1,0 +1,67 @@
+[2026-02-22 23:50 UTC] Step: Fix GUI flicker using mouse cursor backbuffer.
+
+Root cause of flicker:
+  draw_ui() called fb_fill(entire screen, bg) every 16ms, blanking the whole
+  framebuffer before redrawing. The display controller sees the screen go dark
+  between every frame → visible strobe/flicker.
+
+  The previous fry318 draft attempted a zone-tracking approach (zone_colour(),
+  erase_cursor() with conditional zone redraws), but that was overly complex
+  and still did unnecessary work.
+
+Fix — cursor sprite backbuffer:
+  The correct professional technique for a software cursor is to save the
+  raw framebuffer pixels that the crosshair will overwrite, then write them
+  back exactly on erase. This avoids any zone tracking or zone redraws.
+
+  Crosshair at (mx, my) with CUR_R=4:
+    horizontal arm: (mx-4..mx+4, my)              → 9 pixels
+    vertical arm:   (mx, my-4..my-1, my+1..my+4)  → 8 pixels (centre shared)
+    Total: 17 raw uint32_t values saved in cursor_bg[]
+
+  cursor_bg_save(f, mx, my):  reads 17 pixels from f->fb into cursor_bg[]
+  cursor_bg_restore(f):        writes 17 pixels back to f->fb, sets mx=-999999
+  cursor_draw(f, mx, my):      calls save, then writes 0x00FFFFFF (white,
+                                format-neutral for both RGBX and BGRX) along
+                                the crosshair arms
+
+  zone_colour() and the old complex erase_cursor() are removed entirely.
+
+Frame logic (smart partial redraw):
+  - If nothing changed: skip all drawing, sleep 16ms, continue.
+  - Otherwise:
+      1. cursor_bg_restore()      ← erase cursor (17 pixel writes)
+      2. full_draw()              ← only on first frame or post-app-exit
+         OR redraw_app_row()      ← only if hover changed (1-2 rows)
+         OR redraw_bottom_bar()   ← only if keyboard input changed
+      3. cursor_draw()            ← save new background, draw cursor
+
+  Result: the framebuffer is never blanked. Only changed zones are touched.
+  Cursor move: 17 restore + 17 save + 17 draw = 51 pixel writes total.
+  The plan anticipated fb_flush() for double-buffering; this backbuffer
+  approach achieves the same effect with minimal memory (17 words).
+
+Why:
+  The backbuffer approach is simpler, more correct, and more professional
+  than zone tracking. Saving raw pixel values handles text, bars, and
+  background transparently without knowing what was drawn there.
+
+Files changed:
+  src/user/gui/gui.c
+    - Removed zone_colour(), old erase_cursor(), old draw_cursor()
+    - Added cursor_bg[], cursor_bg_mx/my globals (17 pixels + 2 coords)
+    - Added cursor_bg_save(), cursor_bg_restore(), cursor_draw()
+    - Simplified main loop: restore → partial-redraw → draw on any change
+    - Skip-all path when nothing changes (zero framebuffer writes)
+
+Build:
+  make clean all && ./build_iso.sh -> OK (warnings only, zero errors)
+  ISO: out/tatertos64v3.iso
+  Exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+Expected after fix:
+  - No screen blanking between frames.
+  - Cursor moves smoothly with no flicker.
+  - Hover highlight changes only repaint the two affected app rows.
+  - Keyboard input only repaints the bottom bar.
+  - Full repaint only on startup or after an app exits.

@@ -1,0 +1,53 @@
+fry427 — treat _REG/_INI void methods as successful invocation
+================================================================
+Date: 2026-03-01 16:43:19 UTC
+
+RULES (from planv3.txt — must follow exactly)
+================================================================
+1) Follow the plan step by step. No shortcuts or cut corners.
+2) No "minimal" implementations; do thorough, functional work.
+3) No Linux or Windows code inside the OS.
+4) Use apply_patch for code edits.
+5) Log every completed step in its own logs/fryN.txt with timestamps.
+6) If you change code, include a brief "why" in the log.
+7) Don't pause after saying you'll continue; just continue.
+8) Branding is TaterTOS64v3 (never FryOS).
+9) UEFI-only boot path.
+10) When testing, always include the necessary commands to run the test.
+11) Default rebuild mode is clean + verbose:
+    make clean
+    PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+12) All apps built and run must follow the TaterWin protocol.
+13) Hardware lock for bare-metal validation: Dell Precision 7530, Intel Core i5-8300H (Coffee Lake-H), BIOS updated to latest available revision. Log BIOS revision/date whenever visible.
+14) All fixes must end in hardware-agnostic behavior and architecture. Dell Precision 7530 is the primary dev/validation machine only; any hardware-specific quirks must be isolated behind runtime detection and must never become global assumptions.
+
+WHAT CHANGED (why)
+================================================================
+- In `src/kernel/acpi/extended.c`, added `invoke_path_method()` to call ACPI methods while treating no-return methods as successful invocations.
+- Switched EC handshake calls from return-object-based checks to method-invocation checks:
+  - `_REG(3,1)` now logs success even when it returns no AML object (void method).
+  - `_INI` now does the same.
+- Added explicit log variants for returned vs void methods so boot logs distinguish both paths.
+- Corrected `_GPE` fallback diagnostics: when `_GPE` is missing/unreadable and fallback `111` is used, `g_ec_gpe_found` now remains `0` instead of being incorrectly set to `1`.
+
+RATIONALE
+================================================================
+- Prior logic marked `_REG` and `_INI` as failed if `aml_eval_with_args()` returned `NULL`.
+- In ACPI, control methods often return no object; `NULL` can still mean the method executed.
+- This produced false "_REG invocation failed" output in Dell boot logs and obscured real EC/eSPI issues.
+
+FILES TOUCHED
+================================================================
+- src/kernel/acpi/extended.c
+
+TESTING
+================================================================
+PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/acpi/extended.o
+Result: PASS
+Notes: pre-existing warnings unchanged (`str_eq` and `obj_to_str` unused in extended.c).
+
+NEXT
+================================================================
+- Rebuild ISO and retest on Dell Precision 7530.
+- Confirm logs now show `_REG(3,1) invoked ... (void return)` or `(ret type=...)` instead of immediate invocation failure.
+- If EC still fails, continue eSPI-side triage (current logs show persistent link/peripheral errors).

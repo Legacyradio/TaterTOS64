@@ -1,0 +1,42 @@
+fry405 - Remove QEMU-specific nuclear sweep gating; keep nuclear option as explicit policy toggle
+Timestamp: 2026-03-01 01:44:39 UTC
+
+CONTEXT:
+  User reported they do not use QEMU for boot validation and requested removal
+  of hypervisor-specific behavior added in prior step.
+
+CHANGES:
+1) src/kernel/acpi/extended.c
+   - Replaced policy macro:
+       from: SBREG_NUCLEAR_ALLOW_BARE_METAL
+       to:   SBREG_NUCLEAR_SWEEP_ENABLE
+   - Removed cpuid_count() helper entirely.
+   - Removed hypervisor (CPUID.1:ECX[31]) gating logic from
+     pcr_nuclear_sweep_allowed().
+   - pcr_nuclear_sweep_allowed() now returns only policy value:
+       SBREG_NUCLEAR_SWEEP_ENABLE != 0
+   - Updated skip diagnostic line to:
+       "ACPI: SBREG brute-force sweep skipped (disabled by policy)"
+
+WHY:
+  This keeps the nuclear fallback code available while removing QEMU/VM-specific
+  decision logic. Behavior is now explicit and deterministic: nuclear sweep only
+  runs when policy constant is enabled by code change.
+
+CURRENT POLICY:
+  SBREG_NUCLEAR_SWEEP_ENABLE = 0 (disabled)
+
+BUILD / VALIDATION:
+Commands run:
+  PATH=/opt/cross/bin:/home/jjsako/.local/bin:/home/jjsako/.codex/tmp/arg0/codex-arg0aexC5B:/home/jjsako/.nvm/versions/node/v22.22.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/path:/home/jjsako/.local/bin:/home/jjsako/.nvm/versions/node/v22.22.0/bin:/usr/lib/jvm/java-17-openjdk-amd64/bin:/home/jjsako/Android/Sdk/cmdline-tools/latest/bin:/home/jjsako/Android/Sdk/platform-tools:/home/jjsako/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/usr/lib/wsl/lib:/mnt/c/Program Files/WindowsApps/CanonicalGroupLimited.Ubuntu_2404.1.68.0_x64__79rhkp1fndgsc:/mnt/c/Windows/system32:/mnt/c/Windows:/mnt/c/Windows/System32/Wbem:/mnt/c/Windows/System32/WindowsPowerShell/v1.0/:/mnt/c/Windows/System32/OpenSSH/:/mnt/c/Program Files/usbipd-win/:/mnt/c/Users/jjsako/AppData/Local/Microsoft/WindowsApps:/snap/bin make src/kernel/acpi/extended.o
+  PATH=/opt/cross/bin:/home/jjsako/.local/bin:/home/jjsako/.codex/tmp/arg0/codex-arg0aexC5B:/home/jjsako/.nvm/versions/node/v22.22.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/path:/home/jjsako/.local/bin:/home/jjsako/.nvm/versions/node/v22.22.0/bin:/usr/lib/jvm/java-17-openjdk-amd64/bin:/home/jjsako/Android/Sdk/cmdline-tools/latest/bin:/home/jjsako/Android/Sdk/platform-tools:/home/jjsako/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/usr/lib/wsl/lib:/mnt/c/Program Files/WindowsApps/CanonicalGroupLimited.Ubuntu_2404.1.68.0_x64__79rhkp1fndgsc:/mnt/c/Windows/system32:/mnt/c/Windows:/mnt/c/Windows/System32/Wbem:/mnt/c/Windows/System32/WindowsPowerShell/v1.0/:/mnt/c/Windows/System32/OpenSSH/:/mnt/c/Program Files/usbipd-win/:/mnt/c/Users/jjsako/AppData/Local/Microsoft/WindowsApps:/snap/bin make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:/home/jjsako/.local/bin:/home/jjsako/.codex/tmp/arg0/codex-arg0aexC5B:/home/jjsako/.nvm/versions/node/v22.22.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/path:/home/jjsako/.local/bin:/home/jjsako/.nvm/versions/node/v22.22.0/bin:/usr/lib/jvm/java-17-openjdk-amd64/bin:/home/jjsako/Android/Sdk/cmdline-tools/latest/bin:/home/jjsako/Android/Sdk/platform-tools:/home/jjsako/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/usr/lib/wsl/lib:/mnt/c/Program Files/WindowsApps/CanonicalGroupLimited.Ubuntu_2404.1.68.0_x64__79rhkp1fndgsc:/mnt/c/Windows/system32:/mnt/c/Windows:/mnt/c/Windows/System32/Wbem:/mnt/c/Windows/System32/WindowsPowerShell/v1.0/:/mnt/c/Windows/System32/OpenSSH/:/mnt/c/Program Files/usbipd-win/:/mnt/c/Users/jjsako/AppData/Local/Microsoft/WindowsApps:/snap/bin" /bin/bash build_iso.sh
+
+Result:
+  PASS - object build and full ISO build succeeded.
+  ISO:
+    /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+NOTES:
+  - Existing warnings are non-fatal and pre-existing.
+  - Export to /mnt/c failed in this environment due to read-only FS.

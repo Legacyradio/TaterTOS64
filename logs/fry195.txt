@@ -1,0 +1,5 @@
+2026-02-21 01:20:57 CST
+Step: Fix heap.c include path for early_serial.h.
+Why: Build failed due to incorrect relative path after adding heap diagnostics.
+Change:
+- Updated include to ../../boot/early_serial.h.

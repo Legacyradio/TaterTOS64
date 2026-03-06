@@ -1,0 +1,11 @@
+fry410 - Corrected handoff rule-11 formatting to preserve literal $PATH
+Timestamp: 2026-03-01 02:03:22 UTC
+
+CHANGES:
+- Rewrote logs/handoff_fry409.txt so RULE #11 is exact and literal:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+- Simplified BUILD/TEST section to the same canonical rule-11 commands.
+
+WHY:
+- The previous handoff had shell-expanded PATH text in the rules block,
+  which was not faithful to the canonical non-negotiable rule format.

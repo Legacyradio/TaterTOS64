@@ -1,0 +1,205 @@
+========================================================================
+TaterTOS64v3 - fry534 — session log (real commands + outputs)
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 04:41:10 UTC
+2026-03-04 22:41:10 CST
+
+SCOPE
+-----
+- Remove extra launch-debug kprints and keep only launch-failure print.
+- Add 8-second pause before userspace launch.
+- Run full clean rebuild + ISO packaging.
+
+STEP 1 — CODE STATE VERIFICATION (COMMAND OUTPUT)
+-----------------------------------------------
+$ rg -n "kprint\(|process_launch|BOOT_LAUNCH_PAUSE_MS|hpet_sleep_ms\(" src/kernel/proc/process.c src/kernel/main.c src/kernel/fs/vfs.c
+src/kernel/fs/vfs.c:8:void kprint(const char *fmt, ...);
+src/kernel/fs/vfs.c:186:    kprint("VFS: ramdisk mounted (%u files)\n", (unsigned)g_rd_hdr->count);
+src/kernel/fs/vfs.c:228:        kprint("VFS: ramdisk FAT32 mounted (%llu sectors)\n",
+src/kernel/fs/vfs.c:241:        kprint("VFS: ramdisk bad magic %08x\n", (unsigned)g_rd_hdr->magic);
+src/kernel/fs/vfs.c:598:        kprint("VFS: no block device\n");
+src/kernel/fs/vfs.c:606:        kprint("VFS: ToTFS partition found at LBA %llu\n", (unsigned long long)totfs_lba);
+src/kernel/fs/vfs.c:618:            kprint("VFS: ToTFS mounted at LBA %llu\n", (unsigned long long)totfs_lba);
+src/kernel/fs/vfs.c:639:                    kprint("VFS: ToTFS mounted at raw LBA %llu\n",
+src/kernel/fs/vfs.c:656:    kprint("ERROR: DBG_VFS cand gpt=%d lba=%llu score=%u mbr=%d lba=%llu score=%u raw=%d lba=%llu score=%u\n",
+src/kernel/fs/vfs.c:679:        kprint("ERROR: DBG_VFS no userspace FAT32 candidate\n");
+src/kernel/fs/vfs.c:683:        kprint("ERROR: DBG_VFS score=0 fallback mount source=%s lba=%llu\n", source, part_lba);
+src/kernel/fs/vfs.c:695:    kprint("ERROR: DBG_VFS picked source=%s lba=%llu userspace_score=%u\n", source, part_lba, score);
+src/kernel/fs/vfs.c:696:    kprint("VFS: FAT32 mounted at LBA %llu\n", part_lba);
+src/kernel/fs/vfs.c:1181:    kprint("VFS: ToTFS mounted at %s (LBA %llu)\n", mountpoint, (unsigned long long)lba);
+src/kernel/fs/vfs.c:1193:        kprint("VFS: FAT32 probe failed at %s (LBA %llu)\n",
+src/kernel/fs/vfs.c:1203:        kprint("VFS: FAT32 path verify failed at %s (LBA %llu)\n",
+src/kernel/fs/vfs.c:1208:    kprint("VFS: FAT32 mounted at %s (LBA %llu)\n", mountpoint, (unsigned long long)lba);
+src/kernel/fs/vfs.c:1235:        kprint("VFS: NTFS probe failed at %s (LBA %llu)\n",
+src/kernel/fs/vfs.c:1245:        kprint("VFS: NTFS path verify failed at %s (LBA %llu)\n",
+src/kernel/fs/vfs.c:1250:    kprint("VFS: NTFS mounted at %s (LBA %llu)\n", mountpoint, (unsigned long long)lba);
+src/kernel/fs/vfs.c:1283:        kprint("VFS: mount limit reached for %s (%u)\n",
+src/kernel/fs/vfs.c:1289:        kprint("VFS: no GPT detected for secondary mount at %s\n", mountpoint);
+src/kernel/fs/vfs.c:1332:        kprint("VFS: boot-media-like FAT32 seen at %s with non-FAT32 alternatives; keeping FAT32 candidates\n",
+src/kernel/fs/vfs.c:1340:        kprint("VFS: boot-media-like FAT32 seen at %s, keeping FAT32 (no alternate FS)\n",
+src/kernel/fs/vfs.c:1344:        kprint("VFS: no supported secondary partitions found at %s\n", mountpoint);
+src/kernel/fs/vfs.c:1393:        kprint("VFS: secondary candidates found but mount failed at %s\n", mountpoint);
+src/kernel/fs/vfs.c:1397:        kprint("VFS: mounted %u secondary partitions (%s, %s1...)\n",
+src/kernel/main.c:24:void kprint(const char *fmt, ...);
+src/kernel/main.c:68:void hpet_sleep_ms(uint64_t ms);
+src/kernel/main.c:71:int process_launch(const char *path);
+src/kernel/main.c:84:#define BOOT_LAUNCH_PAUSE_MS 8000ULL
+src/kernel/main.c:94:    kprint("init: nvme secondary mount (deferred)\n");
+src/kernel/main.c:96:        kprint("init: nvme secondary mounted at /nvme\n");
+src/kernel/main.c:98:        kprint("init: nvme secondary mount failed (no supported FS)\n");
+src/kernel/main.c:105:    kprint("DBG_VFS entry=%s\n", name);
+src/kernel/main.c:117:    kprint("TaterTOS64v3 starting\n");
+src/kernel/main.c:118:    kprint("build: %s\n", TATER_BUILD_TAG);
+src/kernel/main.c:180:    kprint("init: ps2\n");
+src/kernel/main.c:186:    kprint("init: gop\n");
+src/kernel/main.c:190:    kprint("init: usb\n");
+src/kernel/main.c:197:    kprint("init: storage\n");
+src/kernel/main.c:198:    kprint("storage: vmd init\n");
+src/kernel/main.c:200:    kprint("storage: nvme init\n");
+src/kernel/main.c:202:    kprint("storage: done\n");
+src/kernel/main.c:205:    kprint("init: net\n");
+src/kernel/main.c:212:    kprint("init: vfs\n");
+src/kernel/main.c:213:    kprint("init: ramdisk base=0x%llx size=%llu\n",
+src/kernel/main.c:233:            kprint("init: vfs ramdisk primary\n");
+src/kernel/main.c:243:                    kprint("init: live mode, defer NVMe secondary auto-mount until pre-sti\n");
+src/kernel/main.c:246:                kprint("init: vfs ramdisk failed\n");
+src/kernel/main.c:252:                kprint("init: vfs nvme failed, no ramdisk\n");
+src/kernel/main.c:255:            kprint("init: vfs no device\n");
+src/kernel/main.c:258:        kprint("DBG_VFS source=%s have_rd=%d rd_base=0x%llx rd_size=%llu nvme=%d\n",
+src/kernel/main.c:275:            kprint("DBG_VFS stat gui_root=%d gui_dir=%d gui_dir_uc=%d gui_efi=%d sh_root=%d sh_dir=%d sh_dir_uc=%d sh_efi=%d\n",
+src/kernel/main.c:288:        kprint("init: proc\n");
+src/kernel/main.c:292:        hpet_sleep_ms(BOOT_LAUNCH_PAUSE_MS);
+src/kernel/main.c:295:        kprint("init: launch\n");
+src/kernel/main.c:304:        launch_rc = process_launch(launch_path);
+src/kernel/main.c:307:            launch_rc = process_launch(launch_path);
+src/kernel/main.c:333:                launch_rc = process_launch(launch_path);
+src/kernel/main.c:336:                kprint("ERROR: GUI launch failed path=%s code=%d\n",
+src/kernel/main.c:341:                    launch_rc = process_launch(launch_path);
+src/kernel/main.c:346:            kprint("ERROR: SHELL launch failed path=%s code=%d\n",
+src/kernel/main.c:350:            kprint("init: user pid=%d\n", launch_rc);
+src/kernel/main.c:369:    kprint("init: aml_ext (background)\n");
+src/kernel/main.c:376:            kprint("init: aml_ext thread failed, running inline\n");
+src/kernel/proc/process.c:10:void kprint(const char *fmt, ...);
+src/kernel/proc/process.c:221:                    kprint("proc_free: blocked unsafe self-free on active stack pid=%u\n", pid);
+src/kernel/proc/process.c:228:                    kprint("proc_free: blocked unsafe self-free on active CR3 pid=%u\n", pid);
+src/kernel/proc/process.c:267:int process_launch(const char *path) {
+src/kernel/proc/process.c:274:        kprint("PROC: launch fail path=%s elf_rc=%d\n", path ? path : "(null)", elf_rc);
+
+WHY
+---
+- Kept only the launch-failure kprint in process_launch so failed app starts are visible without flooding boot logs.
+- Added an 8000ms pre-launch pause to give storage/mount state time to settle before GUI/app launch.
+
+STEP 2 — FULL REBUILD (THIS SESSION)
+-------------------------------------
+$ /bin/bash -lc 'PATH="/opt/cross/bin:/home/jjsako/.local/bin:/home/jjsako/.local/bin:/home/jjsako/.codex/tmp/arg0/codex-arg0J33ZNQ:/home/jjsako/.nvm/versions/node/v22.22.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/path:/home/jjsako/.local/bin:/home/jjsako/.nvm/versions/node/v22.22.0/bin:/usr/lib/jvm/java-17-openjdk-amd64/bin:/home/jjsako/Android/Sdk/cmdline-tools/latest/bin:/home/jjsako/Android/Sdk/platform-tools:/home/jjsako/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/usr/lib/wsl/lib:/mnt/c/Program Files/WindowsApps/CanonicalGroupLimited.Ubuntu_2404.1.68.0_x64__79rhkp1fndgsc:/mnt/c/Windows/system32:/mnt/c/Windows:/mnt/c/Windows/System32/Wbem:/mnt/c/Windows/System32/WindowsPowerShell/v1.0/:/mnt/c/Windows/System32/OpenSSH/:/mnt/c/Program Files/usbipd-win/:/mnt/c/Users/jjsako/AppData/Local/Microsoft/WindowsApps:/snap/bin" make clean all && ./build_iso.sh'
+RESULT: PASS (exit code 0)
+KEY OUTPUT LINES:
+- ISO output: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- ISO exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+BUILD ARTIFACT MTIME
+--------------------
+2026-03-04 22:38:24.505828931 -0600 /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+2026-03-04 22:38:26.203585000 -0600 /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+STEP 3 — HASH VERIFICATION (USER-REQUESTED REBUILD)
+---------------------------------------------------
+$ sha256sum /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+f96b92e33d55430bf9591c669f36b6dbc71180c2ce45c634cccf52e2d44da60a  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+STEP 4 — EXACT LINE CHECKS
+--------------------------
+$ nl -ba src/kernel/main.c | sed -n '70,110p;287,296p'
+    70	void gop_fb_init(void);
+    71	int process_launch(const char *path);
+    72	int process_last_launch_error(void);
+    73	void stack_switch_and_call(uint64_t new_rsp, void (*fn)(struct fry_handoff *), struct fry_handoff *arg);
+    74	
+    75	/* For background aml_extended_init thread */
+    76	#include "proc/process.h"
+    77	void sched_add(uint32_t pid);
+    78	
+    79	__attribute__((aligned(16), section(".stack")))
+    80	uint8_t kernel_stack[262144];
+    81	
+    82	#define TATER_BUILD_TAG __DATE__ " " __TIME__
+    83	#define TATER_BUILD_ID  "2026-03-04-dell-nvme-scan"
+    84	#define BOOT_LAUNCH_PAUSE_MS 8000ULL
+    85	
+    86	static void aml_extended_init_thread(void *arg) {
+    87	    (void)arg;
+    88	    aml_extended_init();
+    89	}
+    90	
+    91	static void nvme_secondary_mount_deferred(void *arg) {
+    92	    struct block_device *bd = (struct block_device *)arg;
+    93	    if (!bd) return;
+    94	    kprint("init: nvme secondary mount (deferred)\n");
+    95	    if (vfs_mount_secondary(bd, "/nvme") == 0) {
+    96	        kprint("init: nvme secondary mounted at /nvme\n");
+    97	    } else {
+    98	        kprint("init: nvme secondary mount failed (no supported FS)\n");
+    99	    }
+   100	}
+   101	
+   102	static int dbg_vfs_emit_name(const char *name, void *ctx) {
+   103	    (void)ctx;
+   104	    if (!name || !*name) return 0;
+   105	    kprint("DBG_VFS entry=%s\n", name);
+   106	    return 0;
+   107	}
+   108	
+   109	static void after_vmm(struct fry_handoff *handoff) {
+   110	    (void)handoff;
+   287	        // Phase 14: Process + userspace
+   288	        kprint("init: proc\n");
+   289	        process_init();
+   290	        sched_init();
+   291	        syscall_init();
+   292	        hpet_sleep_ms(BOOT_LAUNCH_PAUSE_MS);
+   293	
+   294	        // Phase 15: User GUI shell
+   295	        kprint("init: launch\n");
+   296	        const char *launch_path = 0;
+
+$ nl -ba src/kernel/proc/process.c | sed -n '267,276p'
+   267	int process_launch(const char *path) {
+   268	    struct fry_process *p = 0;
+   269	    uint64_t cr3 = 0, entry = 0, user_rsp = 0;
+   270	    g_process_last_launch_error = 0;
+   271	    int elf_rc = elf_load_fry(path, &cr3, &entry, &user_rsp);
+   272	    if (elf_rc != 0) {
+   273	        g_process_last_launch_error = elf_rc;
+   274	        kprint("PROC: launch fail path=%s elf_rc=%d\n", path ? path : "(null)", elf_rc);
+   275	        return -1;
+   276	    }
+
+EXPECTED RESULTS ON DELL (FOR THIS BUILD)
+-----------------------------------------
+- Boot should pause ~8 seconds after `init: proc` and before `init: launch`.
+- Start-menu app launches should no longer look like ignored clicks; failed launches now emit:
+  `PROC: launch fail path=<...> elf_rc=<code>`
+- If NVMe/secondary mount is the blocker, `vfsdbg` should make that visible and app launch failure
+  should now be diagnosable from the single retained launch-failure print.
+
+MOVE FORWARD (USING REPORTED SYMPTOM + THIS SESSION OUTPUT)
+-----------------------------------------------------------
+1) Boot this ISO on Dell:
+   `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+2) Reproduce: click Start -> `SHELL`, `SYSINFO`, `FILEMAN`.
+3) Capture exact console output around the launch attempt:
+   - any `PROC: launch fail path=... elf_rc=...`
+   - any `ERROR: GUI launch failed ...` / `ERROR: SHELL launch failed ...`
+4) Run `vfsdbg` immediately after failed clicks and record output.
+5) If no `PROC: launch fail` appears despite failed clicks, next patch target is GUI taskbar/start
+   event-to-launch path instrumentation only (no extra VFS spam).
+
+STATUS
+------
+- Session work logged with concrete commands and outputs (no placeholder text).
+- Added explicit expected behavior and forward validation steps tied to the reported issue.
+========================================================================

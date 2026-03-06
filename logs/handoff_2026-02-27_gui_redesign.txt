@@ -1,0 +1,56 @@
+HANDOFF — 2026-02-27 — GUI Redesign (fry358)
+==============================================
+
+SESSION SUMMARY
+  Implemented full GUI redesign per plan: Puppy Linux layout + Garuda aesthetics.
+  Build: CLEAN — zero errors, warnings only (pre-existing unused params / RWX segment).
+  ISO exported: C:\Users\jjsako\Documents\tateriso\tatertos64v3.iso
+  Next fry log: fry359.txt
+
+WHAT WAS DONE (fry358)
+  1. gfx.h — added gfx_gradient_h, gfx_fill_rounded declarations
+  2. gfx.c — added a-z lowercase + symbols to font8x16[]; implemented
+             gfx_gradient_h (horizontal lerp) and gfx_fill_rounded (rect + corner blank)
+  3. syscall.c — SYS_KILL=26: proc_free(pid)+sched_yield(); guards pid>1 and pid!=self
+  4. libc.h — fry_kill(long pid) declaration
+  5. libc.c — SYS_KILL=26 enum entry + fry_kill() syscall1 wrapper
+  6. gui.c — FULL REWRITE:
+     - window_t slots never moved (fixes shm_ptr corruption)
+     - z_order[] separate array; bring_to_front() rewrites it (no struct copy)
+     - MAX_WINDOWS raised 8→16
+     - Taskbar: bottom 36px, violet top border, TATER> start button,
+       per-window task buttons, uptime clock (COL_ACCENT2 teal)
+     - Start menu: popup above TATER> button, 4 app rows, Reboot/Shutdown
+     - Window chrome: 28px title bar gradient, violet left accent on active,
+       [−][□][×] colored circle buttons (amber/teal/red)
+     - Maximize: saves/restores x/y/w/h, fills desktop_h area
+     - Minimize: minimized=1, taskbar button restores + brings to front
+     - Close: fry_kill(pid) + z_order rebuild + slot freed
+     - Hit test order: start menu → title buttons → title drag → body focus
+     - Desktop: gfx_gradient_v 0x0D1117 → 0x080C14
+
+MEMORY NOTE CORRECTED
+  Target HW: Dell Precision 7530, Intel i5 Coffee Lake — real hardware only.
+  Old memory had i7-8750H and QEMU reference — both wrong, both fixed.
+
+KNOWN STATUS BEFORE THIS SESSION (fry357)
+  - Mouse desync fix: sync-before-store in ps2_mouse_irq
+  - dy = -dy restored (universal PS/2 convention)
+  - Boot stable, NVMe/GPT/FAT32 working, all .FRY files on NVMe + ISO 9660
+
+WHAT TO TEST ON DELL
+  - Taskbar visible at bottom with TATER> button
+  - Start menu opens/closes, launches Shell/Sysinfo/Uptime/PS
+  - Windows have [−][□][×] buttons that work
+  - 8+ windows open without lockup or corruption
+  - Dragging works
+  - Minimize hides window, taskbar button restores
+  - Close kills process and removes from taskbar
+  - Maximize fills desktop area, restore works
+  - Uptime clock ticks in teal at right of taskbar
+
+NEXT FRY: fry359.txt
+
+Status update (2026-02-27 17:51:35 CST):
+  - GUI redesign fix set status: SUCCESSFUL
+  - Associated window lifecycle and UI stability updates: SUCCESSFUL

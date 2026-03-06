@@ -1,0 +1,9 @@
+DATE: 2026-02-22 20:36 CST
+CHANGE: Rebuilt kernel + ISO after font/GUI terminal readability fix.
+WHY: Provide updated ISO for QEMU verification of readable GUI terminal output.
+COMMAND:
+PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh
+RESULT:
+- Build succeeded (warnings only).
+- ISO produced: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- ISO exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso

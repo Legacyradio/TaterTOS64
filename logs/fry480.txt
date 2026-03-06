@@ -1,0 +1,58 @@
+========================================================================
+TaterTOS64v3 - fry480 - Start Menu Launch Uses Discovered Full Paths
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 07:46:56 UTC
+
+USER-REPORTED SYMPTOM
+---------------------
+- Start menu app clicks stopped launching apps after recent fry changes.
+
+ROOT CAUSE
+----------
+- GUI start menu reconstructed launch paths from name+variant search, which can
+  desync from the exact path that was discovered via readdir().
+- When VFS/directory layout differs from the GUI's path-guessing rules, spawn
+  can fail even though the entry exists in the menu.
+
+CODE CHANGES
+------------
+File: src/user/gui/gui.c
+
+1) Store discovered full paths for each menu entry.
+   Why: Launch should use the exact path that readdir() reported, not a guess.
+
+2) Start menu click now spawns by stored path, with variant fallback.
+   Why: Ensures menu entries remain launchable across layout/case variants.
+
+BUILD / ARTIFACT VALIDATION
+---------------------------
+Commands:
+1) make clean
+2) PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Result:
+- Build succeeded; warnings unchanged.
+- ISO produced:
+  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Export to /mnt/c failed (read-only filesystem in this environment).
+
+HASH / FRESHNESS (Rule 15)
+--------------------------
+Source ISO:
+- SHA256: 7e52506e3dce9825114a6534abc5058936377ba610749a63a74298afd3645e7b
+- Path: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+Target/export ISO (exists, older):
+- SHA256: 20fb69f01209b32aff3ce03f6cdaf191f187d57846a49205f8de6bc13cf0d0d6
+- Path: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- Note: export write blocked by read-only mount; target hash is stale.
+
+EXPECTED BEHAVIOR AFTER BOOT
+----------------------------
+- Start menu app clicks should launch using the exact discovered file path.
+- If a discovered path fails, fallback variant spawn still attempts recovery.
+
+========================================================================

@@ -1,0 +1,54 @@
+fry329 - 2026-02-25 17:09 CST
+
+PROBLEM: VMD NVMe not found in ECAM (32 buses scanned)
+  Log showed: VMD: MEMBAR1=0X404A10F000 then NO NVME FOUND IN ECAM
+
+ROOT CAUSE: Intel VMD DID=0x1911 BAR layout:
+  MEMBAR0 = BAR0+BAR1 (offsets 0x10,0x14) = VMD control registers
+  MEMBAR1 = BAR2+BAR3 (offsets 0x18,0x1C) = PCIe ECAM config space  <-- NEEDED
+  MEMBAR2 = BAR4+BAR5 (offsets 0x20,0x24) = MSI-X routing table
+  Code was reading BAR0+BAR1 (MEMBAR0 = control registers) as the ECAM base.
+  The printed "MEMBAR1=0x404A10F000" was actually MEMBAR0.
+  The real ECAM (MEMBAR1) is at BAR2+BAR3 - a different physical address.
+  Scanning the control-register region found no PCIe devices (all 0xFFFF).
+
+SECONDARY: ECAM region was mapped write-back (no VMM_FLAG_CACHE_DISABLE).
+  PCI config space MMIO must be uncacheable.
+
+FIXES:
+
+1. src/kernel/mm/vmm.c - Added vmm_ensure_physmap_uc():
+   Identical to vmm_ensure_physmap() but uses VMM_FLAG_CACHE_DISABLE |
+   VMM_FLAG_WRITE_THROUGH instead of plain WB. Does NOT update physmap_max
+   since MMIO is not RAM.
+
+2. src/kernel/mm/vmm.h - Declared vmm_ensure_physmap_uc().
+
+3. src/drivers/storage/vmd.c:
+   - vmd_ensure_mapped(): now calls vmm_ensure_physmap_uc() for UC mapping.
+   - vmd_init(): reads BAR2+BAR3 (pci_ecam_read32 at offsets 0x18, 0x1C)
+     for the ECAM base instead of devs[i].bar0/bar1 (BAR0+BAR1 = MEMBAR0).
+   - Prints both MEMBAR0(ctrl) and MEMBAR1(ecam) for diagnostics.
+   - Updated file header comment to document the 3-BAR VMD layout.
+
+BUILD: PATH="/opt/cross/bin:/usr/bin:$PATH" bash build_iso.sh
+  - vmm.c, vmd.c recompiled clean (only harmless RWX warning from linker)
+  - ISO: out/tatertos64v3.iso
+  - Exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+EXPECTED NEXT BOOT:
+  VMD: MEMBAR0(ctrl)=0x404A10F000 MEMBAR1(ecam)=0x<different_addr>
+  VMD bus0:X.0 vid=.... (NVMe shows up)
+  VMD: NVMe! bar0=... bar1=... cmd=...
+  STORAGE: NVME INIT
+  NVME: CONTROLLER FOUND
+  GPT/FAT32 mount → GUI + SHELL boot
+
+NOTE ON RAMDISK=0:
+  RAMDISK BASE=0X0 SIZE=0 persists because the Dell UEFI serial log didn't
+  capture EFI loader output (COM1 starts before kernel). The \fry\ files ARE
+  present in efiboot.img (verified with mdir). Once NVMe is working via VMD
+  fix above, the ramdisk fallback is not needed for Dell boot.
+  If NVMe still fails after this fix, investigate ramdisk separately.
+
+NEXT FRY LOG: fry330.txt

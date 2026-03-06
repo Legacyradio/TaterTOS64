@@ -1,0 +1,3 @@
+2026-02-21 02:25:44 CST
+Change: fix include path for early_serial.h in vmm.c to ../../boot/early_serial.h.
+Why: build failed because the previous relative path was incorrect from src/kernel/mm.

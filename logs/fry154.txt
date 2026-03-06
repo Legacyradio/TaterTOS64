@@ -1,0 +1,5 @@
+[2026-02-20 20:03:00 UTC] Step: Boot observation (UEFI GRUB).
+Why: Document current boot state before adjusting GRUB config.
+Observation: BOOTX64.EFI launches, but GRUB reports "WARNING: no console will be available to OS" and "error: no suitable video mode found".
+Next: Adjust grub.cfg to force console output and safe gfxmode.
+Files: (no code changes)

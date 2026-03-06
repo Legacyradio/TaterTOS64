@@ -1,0 +1,59 @@
+========================================================================
+TaterTOS64v3 - fry563 - harden physmap coverage loops for VMD/ACPI ranges
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 00:09:00 UTC
+2026-03-05 18:09:00 CST
+
+CONTEXT
+-------
+- Review flagged brittle physmap coverage logic using `+ 1` and `phys + len` in
+  range-mapping loops, with risk of first/last page ambiguity depending on
+  helper semantics.
+
+WHY
+---
+- `vmm_ensure_physmap[_uc](phys_end)` maps the 2 MiB chunk containing
+  `phys_end - 1` (end-exclusive contract).
+- Using `phys + off + 1` plus final `phys + len` can work, but is fragile and
+  easy to reason about incorrectly at boundaries.
+
+CHANGES APPLIED
+---------------
+- Files updated:
+  - `src/drivers/storage/vmd.c`
+    - Reworked `vmd_ensure_mapped(phys, len)` to compute explicit first/last
+      covered 2 MiB chunks for `[phys, phys + len - 1]`.
+    - Maps each chunk via end-exclusive calls (`base + 2 MiB`) and adds
+      overflow guards.
+  - `src/kernel/acpi/tables.c`
+    - Reworked `acpi_ensure_mapped(phys, len)` with the same explicit chunk
+      coverage pattern and overflow-safe end computation.
+
+EFFECT
+------
+- Removes ambiguous off-by-one behavior in both VMD CFGBAR and ACPI SDT mapping
+  paths.
+- Guarantees first and last covered chunks are mapped for non-zero range
+  lengths, matching helper contract directly.
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Pattern sweep for old brittle form in `src/`:
+   - `rg` checks for `off + 1` and trailing `phys + len` range-loop variants
+2) RESULT:
+   - PASS (no remaining matching range-loop patterns found)
+
+3) Build attempt:
+   - `make -j4`
+4) RESULT:
+   - BLOCKED in this environment: `x86_64-elf-gcc: No such file or directory`
+
+NOTES
+-----
+- Repository had pre-existing unrelated modifications before this change; only
+  targeted mapping-loop hardening was applied.
+
+========================================================================

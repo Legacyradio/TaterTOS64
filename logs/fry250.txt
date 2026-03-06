@@ -1,0 +1,30 @@
+Handoff Follow-up - 2026-02-21
+
+Summary
+- Aligned LMA of .stack and .iststack to 4KB to avoid mis-mapped physical pages.
+
+Evidence
+- nm showed __ist_stacks_lma_start not page-aligned (0x2c5dc5), which breaks page mapping
+  because vmm_map_range drops low 12 bits of phys address.
+
+Changes
+1) kernel_linker.ld
+   - .stack LMA aligned to 0x1000.
+   - .iststack LMA aligned to 0x1000.
+   - __kernel_lma_end aligned to 0x1000.
+
+Why
+- IST and stack pages must be page-aligned for correct mapping. Misalignment prevents IST
+  from working and can cause #PF/#DF loops.
+
+Test Commands
+PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh
+qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+  -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+  -cdrom ./out/tatertos64v3.iso \
+  -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+
+tail -n 50 logs/debugcon.log
+tail -n 50 logs/serial.log
+tail -n 100 logs/qemu.log

@@ -1,0 +1,4 @@
+[2026-02-22 08:23:29 UTC] Step: Write NVMe ASQ/ACQ via 32-bit MMIO writes.
+Why: 64-bit struct stores to MMIO registers can be mis-encoded/unaligned; if ASQ/ACQ are not set correctly the controller never sees admin commands.
+Change: Use nvme_mmio_write32 for CC disable/enable and ASQ/ACQ/AQA programming.
+Files: src/drivers/storage/nvme.c

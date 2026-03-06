@@ -1,0 +1,4 @@
+[2026-02-20 18:44:41 UTC] Step: Require proper FAT32 formatting for fs.img.
+Why: mcopy reported non-DOS media, meaning fs.img was not formatted when mkfs.fat was missing.
+Change: Added mformat fallback and hard error if neither mkfs.fat nor mformat is available.
+Files: build_iso.sh

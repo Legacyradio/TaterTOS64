@@ -1,0 +1,58 @@
+========================================================================
+TaterTOS64v3 - fry570 - harden NTFS LCN decoding with checked uint64 math
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 00:28:15 UTC
+2026-03-05 18:28:15 CST
+
+CONTEXT
+-------
+- Review flagged risk of LCN truncation/incorrect addressing in NTFS for large
+  volumes.
+
+WHY
+---
+- Audit confirmed MFT byte offsets in this driver are already 64-bit
+  (`entry_off`, `mft_base_lba`, `lba_delta` all `uint64_t`).
+- The decoder path still used signed `int64_t` accumulation (`prev_lcn +=
+  lcn_delta`), which can overflow in edge cases and is less robust than
+  explicit checked `uint64_t` arithmetic.
+
+CHANGES APPLIED
+---------------
+- File updated:
+  - `src/kernel/fs/ntfs.c`
+    - Added helper `ntfs_lcn_apply_delta(uint64_t *cur_lcn, int64_t delta)`
+      with checked add/subtract and safe handling of `INT64_MIN` absolute value.
+    - In `ntfs_decode_data_runs()`:
+      - changed `prev_lcn` from `int64_t` to `uint64_t`.
+      - changed delta decode to build `raw_delta` as `uint64_t`, sign-extend via
+        unsigned mask, then cast once to `int64_t`.
+      - replaced unchecked `prev_lcn += lcn_delta` with checked helper call.
+      - stores decoded run LCN directly from `uint64_t prev_lcn`.
+
+EFFECT
+------
+- Keeps LCN handling fully 64-bit and removes signed-overflow-prone accumulation
+  logic in run decoding.
+- Preserves existing behavior on valid streams while rejecting malformed/overflow
+  delta transitions.
+
+VALIDATION (THIS SESSION)
+-------------------------
+1) Audit LCN + MFT offset types and call sites:
+   - `rg -n "prev_lcn|lcn_delta|entry_off|mft_lcn|\(uint32_t\).*lcn|\(unsigned\).*lcn" src/kernel/fs/ntfs.c`
+2) Inspect updated decode block:
+   - `nl -ba src/kernel/fs/ntfs.c | sed -n '690,790p'`
+3) Verify scoped diff:
+   - `git diff -- src/kernel/fs/ntfs.c | sed -n '1,220p'`
+4) RESULT:
+   - PASS (LCN decode path now uses checked uint64 accumulation)
+
+NOTES
+-----
+- No rebuild requested; per plan rule 16, no SHA-256 recorded.
+
+========================================================================

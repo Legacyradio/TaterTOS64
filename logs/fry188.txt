@@ -1,0 +1,7 @@
+2026-02-21 00:35:11
+Change: Removed K_BEFORE_PRINT function call and replaced with inline 0xE9 output (B,Z).
+Why: K_BEFORE_PRINT shows up but inline 'Z' does not, implying the function call itself may corrupt the stack. Inline outb avoids a call and confirms control reaches this point.
+Details:
+- main.c: replaced early_debug_puts("K_BEFORE_PRINT") with inline outb 'B' then 'Z'.
+Rule note: Temporary debug change; will be removed after diagnosis.
+Next: rebuild ISO, run QEMU with debugcon, confirm whether 'BZ' appears.

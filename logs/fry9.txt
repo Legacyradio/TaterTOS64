@@ -1,0 +1,3 @@
+STEP 9
+TIME: 2026-02-20 00:46:49
+ACTION: Renamed project directory from /home/jjsako/FryOS to /home/jjsako/TaterTOS64v3 per project naming.

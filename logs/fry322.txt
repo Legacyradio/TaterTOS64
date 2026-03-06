@@ -1,0 +1,95 @@
+fry322.txt — 2026-02-23 10:39 CST
+TaterTOS64v3 session log
+
+=== ISSUES REPORTED ===
+1. "none of the apps come up in their own window"
+2. "run shell command makes the machine fall flat and restart" (hardware reset / triple fault)
+
+=== BUG 1: Triple Fault on Shell Launch ===
+Root cause:
+  common_isr used a GLOBAL variable irq_saved_cr3 to save/restore the user
+  process CR3.  When LAPIC timer fires during process A's user-mode execution,
+  common_isr saves A's CR3 to the global. If sched_tick() -> context_switch()
+  runs inside irq_dispatch(), we resume on process B's kernel stack. When
+  B's irq_dispatch returns, common_isr reads irq_saved_cr3 which still holds
+  A's CR3 -> wrong page table loaded by iretq -> immediate #PF/#GP -> triple
+  fault -> hardware reset.
+
+Fix (src/kernel/irq/irqdesc.c):
+  Replaced global irq_saved_cr3 with callee-saved register %r15.
+  %r15 was already being pushed/popped by common_isr. By saving CR3 there:
+  - irq_dispatch's C prologue saves %r15 onto its own stack frame
+  - context_switch saves/restores %r15 per-stack
+  - Each process's kernel stack independently holds its own saved CR3
+  - No race condition; no global state to corrupt
+
+  Before:
+    mov %cr3, %rax
+    mov %rax, irq_saved_cr3(%rip)
+    ...
+    mov irq_saved_cr3(%rip), %rax
+    mov %rax, %cr3
+
+  After:
+    mov %cr3, %r15                    // r15 = saved user CR3
+    mov irq_kernel_cr3(%rip), %rax
+    test %rax, %rax
+    jz .Lcommon_isr_no_cr3
+    mov %rax, %cr3
+  .Lcommon_isr_no_cr3:
+    call irq_dispatch
+    mov %r15, %cr3                    // restore user CR3 from r15
+
+=== BUG 2: No App Windows ===
+Root cause:
+  All user apps write output via SYS_WRITE(fd=1) -> kprint_write -> serial only.
+  No window management existed; GUI had no way to capture or display app output.
+
+Fix: Per-process stdout ring buffer + GUI output window
+
+  src/kernel/proc/process.h:
+    Added PROC_OUTBUF=512 macro.
+    Added to struct fry_process:
+      uint8_t  outbuf[PROC_OUTBUF];
+      uint32_t outbuf_head;
+      uint32_t outbuf_tail;
+    Memory cost: 256 x 520 bytes ~130KB in BSS (acceptable).
+
+  src/kernel/proc/syscall.c:
+    SYS_WRITE(fd=1): after kprint_write, also appends bytes to cur->outbuf
+    ring buffer (producer side, drop on full).
+    Added SYS_PROC_OUTPUT=21 case:
+      - Takes pid, user buf, len
+      - Finds target process in procs[]
+      - Drains bytes from outbuf into user buffer
+      - Returns >0 bytes read, 0 if alive/empty, -2 if PROC_DEAD+empty
+
+  src/user/libc/libc.c + libc.h:
+    Added SYS_PROC_OUTPUT=21 to enum.
+    Added fry_proc_output(uint32_t pid, void *buf, size_t len).
+
+  src/user/gui/gui.c:
+    Added constants: WIN_X=224, WIN_MAX_ROWS=40, WIN_MAX_COLS=100
+    Added state: active_pid, active_name, win_lines[][], win_nlines,
+                 win_cur_col, win_dirty, ansi_state
+    Added win_append(char c): ANSI escape stripper + line appender
+      - Strips \x1b[...X sequences (handles draw_taskbar and cmd_clear codes)
+      - Wraps at WIN_MAX_COLS, scrolls at WIN_MAX_ROWS
+    Added redraw_win(struct fb_ctx *f): draws title bar + text body
+      - Blue title = app running, gray title = app done
+    Modified launch_app(): saves returned PID to active_pid, resets window
+    Modified main loop:
+      - Polls fry_proc_output each frame when active_pid != 0
+      - Clears active_pid when -2L (dead+empty) returned
+      - GUI keyboard suppressed while active_pid != 0 (SHELL gets PS/2 input)
+      - win_dirty triggers partial redraw
+
+=== BUILD ===
+Two clean builds completed, zero errors.
+ISO: out/tatertos64v3.iso
+Exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+=== NEXT ===
+- Test on QEMU: verify no triple fault on shell launch
+- Verify app output appears in GUI content window
+- M16/M17 sign-off per planv3

@@ -1,0 +1,8 @@
+2026-02-20 15:34:47
+Change: Fixed early long-mode mapping and IRQ masking to address the page fault at virtual ffffffff80000000.
+Why: QEMU log shows a #PF at RIP ffffffff80000000 (CR2 same) followed by a double fault, meaning the high-half kernel entry is not mapped; timer IRQs (INT 0x20) were firing before a safe handler.
+Details:
+- mb_entry.asm: added CLI at entry, masked PIC (0x21/0xA1), split PDPT/PD for low identity and high-half mapping.
+- High-half now uses PDPT index 0x1FE and maps to physical 0x00200000.. to match the kernel LMA.
+- kernel_linker.ld: separated BOOT_LMA (1MB) and KERNEL_LMA (2MB), .text AT(KERNEL_LMA), added __kernel_lma_base.
+Next: rebuild ISO and re-run QEMU to verify serial markers and absence of #PF at ffffffff80000000.

@@ -1,0 +1,3 @@
+STEP 99
+TIME: 2026-02-20 10:26:36
+ACTION: Expanded AML execution to handle Store, If/Else blocks, locals/args, logical ops (LAnd/LOr/LNot/LEqual/LLess/LGreater), and arithmetic/bitwise ops (Add/Sub/And/Or/Not), enabling proper control-flow and data flow for _OSC/_PRT evaluation before moving beyond Phase 16.

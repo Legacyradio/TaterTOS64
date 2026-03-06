@@ -1,0 +1,4 @@
+[2026-02-23 01:20:09 UTC] Step: Map LAPIC MMIO via physmap for all address spaces.
+Why: After shell launch, interrupts could run while CR3 points at a user address space, and lapic_get_id accessed the LAPIC ID register at 0xFEE00020. The LAPIC was identity-mapped only in the kernel page table, causing a #PF/#DF when CR3=process.
+Change: Use vmm_ensure_physmap + vmm_phys_to_virt for LAPIC base in lapic_init and lapic_timer_init so the MMIO region is in the higher-half physmap shared by all CR3s.
+Files: src/drivers/irqchip/lapic.c, src/drivers/timer/lapic_timer.c

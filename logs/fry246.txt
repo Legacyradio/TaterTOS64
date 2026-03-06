@@ -1,0 +1,28 @@
+Handoff Follow-up - 2026-02-21
+
+Summary
+- Reviewed new QEMU run logs after .stack section + guard page.
+
+Observed Results
+- debugcon: kgtubp (stops before vmm/after_vmm markers).
+- serial: prints "K_PMM" then "VMM" then "PANIC: %s" on stdio, but serial.log does not capture the panic line.
+- qemu.log: #GP loop at RIP 0007fdffffffff80, then #PF (vec 0x0e) with CR2=ffffffff80200ff8, then #DF.
+
+Interpretation
+- Guard page is now firing (#PF at address in the stack region) instead of silent IDT corruption.
+- Main stack is still getting exhausted; now it reliably trips the guard page.
+
+Next Candidate Fix
+- Option 2: set IST stacks for #PF/#DF to dedicated emergency stacks to avoid cascading faults.
+
+Test Commands (for next run)
+PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh
+qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+  -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+  -cdrom ./out/tatertos64v3.iso \
+  -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+
+tail -n 50 logs/debugcon.log
+tail -n 50 logs/serial.log
+tail -n 100 logs/qemu.log

@@ -1,0 +1,67 @@
+========================================================================
+TaterTOS64v3 - fry543 - split 9-square boundary into stage 10/11/12 markers
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 20:17:26 UTC
+2026-03-05 14:17:26 CST
+
+CONTEXT
+-------
+- User reported: "right now i get 9 squares" on hardware.
+- Existing fry542 interpretation narrowed failure to stack switch window, but did
+  not split pre-switch serial/debug breadcrumbs from the call boundary.
+
+WHY
+---
+- With only stage 9 visible, we could not tell whether the stall is in:
+  1) `early_serial_puts("K_VMM")`,
+  2) `early_debug_putc('v')`, or
+  3) `stack_switch_and_call(...)` / first `after_vmm` instructions.
+- Added explicit framebuffer split points and an immediate `after_vmm` serial/
+  debug breadcrumb.
+
+CHANGE APPLIED
+--------------
+- Updated `src/kernel/main.c`:
+  - In `_fry_start(struct fry_handoff *handoff)`:
+    - Kept stage 9 after `pmm_relocate_bitmap()`.
+    - Added stage 10 immediately before `early_serial_puts("K_VMM\n")`.
+    - Added stage 11 immediately after `early_serial_puts("K_VMM\n")`.
+    - Added stage 12 immediately after `early_debug_putc('v')` and before
+      `stack_switch_and_call(...)`.
+  - In `after_vmm(struct fry_handoff *handoff)`:
+    - Added immediate breadcrumb `early_serial_puts("K_AFTER_VMM_ENTRY\n")`.
+    - Added immediate breadcrumb `early_debug_putc('a')`.
+
+UPDATED INTERPRETATION GUIDE
+----------------------------
+- 9 squares: stall before stage 10 (most likely around `early_serial_puts("K_VMM")`
+  setup boundary or earlier).
+- 10 squares: reached pre-`K_VMM` boundary, stall in/after `early_serial_puts("K_VMM")`.
+- 11 squares: passed `K_VMM` serial print, stall in/after `early_debug_putc('v')`.
+- 12 squares: reached immediate pre-`stack_switch_and_call` boundary; stall likely
+  inside stack switch shim or at/just after `after_vmm` entry.
+- If serial is captured and includes `K_AFTER_VMM_ENTRY`, the call target was entered.
+
+FILES
+-----
+- `src/kernel/main.c`
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Rebuild + ISO pipeline:
+   - `/bin/bash -lc 'PATH="/opt/cross/bin:$PATH" make -j"$(nproc)" && ./build_iso.sh'`
+2) RESULT:
+   - PASS
+   - ISO: `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+   - Export warning unchanged (Windows mount read-only):
+     `/mnt/c/Users/jjsako/Documents/tateriso`
+
+HASH
+----
+- SHA-256 (out/tatertos64v3.iso):
+  `7d943d794b34d29e9ec6d6f1c2bc5ba178cc0f9d4b8aa5dab49fcd2845e65ec2`
+
+========================================================================

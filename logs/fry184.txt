@@ -1,0 +1,7 @@
+2026-02-21 00:07:05
+Change: Temporarily skipped kprint_init to confirm the crash boundary.
+Why: Debug markers never enter kprint_init; we need to verify if the crash occurs on the call into kprint_init itself.
+Details:
+- main.c: commented out kprint_init and added K_SKIP_KPRINT marker.
+Rule note: Temporary debug change; will be reverted after diagnosis.
+Next: rebuild ISO, run QEMU with debugcon, report last marker seen.

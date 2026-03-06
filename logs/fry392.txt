@@ -1,0 +1,69 @@
+fry392 — EC on-screen diagnostics + post-_REG improvements
+Timestamp: 2026-02-28
+
+PROBLEM:
+  fry391 reordered EC init to: setup ports → _INI → _REG(3,1) → GPE → probe.
+  But EC still shows FAIL on Dell Precision 7530.
+  No serial output on bare metal → can't see which probe step is failing.
+
+CHANGES:
+
+1. src/kernel/acpi/ec.c — probe diagnostic tracking
+   - Added globals: g_ec_probe_step (which step failed), g_ec_probe_status
+     (raw status byte), g_ec_probe_attempts (attempt count)
+   - Step constants: EC_STEP_NOT_PROBED(0), EC_STEP_STS_FF(1), EC_STEP_IBF_PRE(2),
+     EC_STEP_IBF_POST(3), EC_STEP_OBF_TIMEOUT(4), EC_STEP_OK(5)
+   - ec_probe_verbose() now updates these globals on each failure/success
+   - Added ec_get_probe_diag(step, status, attempts) getter
+   - Added ec_reset_fail_count() to clear consec_fail counter
+
+   WHY: Need to see exactly WHERE the EC probe fails on bare metal since
+   Dell has no serial. Only diagnostic output is the sysinfo TaterWin app.
+
+2. src/kernel/acpi/ec.h — exported ec_get_probe_diag(), ec_reset_fail_count()
+
+3. src/kernel/acpi/extended.c — EC init improvements + tracking
+   - Added globals: g_ec_node_found, g_ec_reg_called, g_ec_ini_found,
+     g_ec_gpe_found, g_ec_gpe_num — track which init steps executed
+   - ec_reg_init() now records which steps succeeded
+   - Added ec_reset_fail_count() call BEFORE ec_probe() — clears any
+     consecutive failure count that accumulated during _REG evaluation
+     (AML code in _REG may have attempted EC field accesses that timed out
+     before the EC was ready, hitting the 4-failure disable threshold)
+   - Added ~100ms busy-wait delay after _REG before probe — gives EC
+     firmware time to process region handler notification
+   - acpi_get_diag() fills in all new diagnostic fields
+
+   WHY: (1) _REG AML evaluation may internally trigger ec_read/ec_write
+   which fail and increment consec_fail → after 4 failures g_ec_ok=0,
+   which doesn't affect direct probe but indicates the EC is being
+   disabled prematurely. Resetting before probe ensures clean state.
+   (2) Some ECs need time after _REG to become responsive.
+
+4. src/kernel/acpi/extended.h — added 8 new EC diagnostic fields to
+   fry_acpi_diag struct (appended at end, no layout change for existing fields):
+   ec_probe_step, ec_probe_status, ec_probe_attempts, ec_node_found,
+   ec_reg_called, ec_ini_found, ec_gpe_found, ec_gpe_num
+
+5. src/user/libc/libc.h — matching fry_acpi_diag struct update
+
+6. src/user/apps/sysinfo.c — display EC probe diagnostics on screen
+   - WIN_H increased from 340 to 380
+   - Added 2 new diagnostic lines after EC status:
+     "  probe: OBF_TMO sts=0x20 try=5"  ← which step failed + raw status + attempts
+     "  node=1 REG=1 INI=0 GPE=1/6"     ← which init steps executed
+   - Battery and backlight sections shifted down 32px
+
+   WHY: Only way to debug EC on Dell bare metal without serial output.
+
+FILES CHANGED:
+  src/kernel/acpi/ec.c         — probe diag globals + getters
+  src/kernel/acpi/ec.h         — exported new functions
+  src/kernel/acpi/extended.c   — init tracking + delay + reset + diag fill
+  src/kernel/acpi/extended.h   — fry_acpi_diag struct expanded
+  src/user/libc/libc.h         — matching struct
+  src/user/apps/sysinfo.c      — on-screen EC diagnostics
+
+BUILD: clean + build_iso.sh — kernel compiles clean, ISO exported.
+NVMe: all .fry files updated.
+ISO: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso

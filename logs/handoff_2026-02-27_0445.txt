@@ -1,0 +1,46 @@
+Handoff Log - 2026-02-27 04:45 UTC
+
+=== CURRENT STATE ===
+Foundation for a modern Windowing System is laid. We moved from a static, hardcoded debug GUI to a dynamic, memory-backed desktop environment.
+
+Major Breakthroughs:
+1. Dynamic Memory (Userland Heap):
+   - Implemented SYS_SBRK (syscall 22).
+   - Added malloc/free/calloc/realloc to LibC.
+   - User processes can now allocate memory dynamically (heap starts at 1TB mark).
+
+2. Shared Memory (SHM):
+   - Implemented SYS_SHM_ALLOC (23) and SYS_SHM_MAP (24).
+   - Foundation for high-performance buffer passing between apps and the compositor.
+
+3. libgfx & 8x16 Font:
+   - Created a standalone graphics library.
+   - Replaced 5x7 calculator font with professional 8x16 bitmap font.
+   - Added vertical gradient support and double buffering.
+
+4. TaterTOS64v3 Premium GUI:
+   - Completely rewritten gui.c.
+   - Modern "VS-Code" dark theme (0x181818).
+   - Floating windows with shadows and accented title bars.
+   - Sidebar with application launch tracking.
+   - Smooth arrow cursor (hardware-independent).
+
+=== VERIFICATION ===
+- Build: PATH="/opt/cross/bin:$PATH" bash build_iso.sh -> SUCCESS.
+- ISO: out/tatertos64v3.iso (exported to Documents/tateriso).
+- Memory: GUI successfully allocates large backbuffer via malloc().
+
+=== BARE METAL NOTES (Dell 7530) ===
+- The GUI uses double buffering (memcpy to VRAM). On the 7530, if the screen flickers, we may need to optimize the blit loop with SSE/AVX.
+- Mouse polling is stable but sensitivity is linked to the 16ms sleep cycle (~60fps).
+
+=== NEXT STEPS ===
+- Implement Window Dragging/Z-Order management.
+- Formalize the TaterWin IPC protocol using the new SHM syscalls.
+- Port apps (SHELL, SYSINFO) to use libgfx directly instead of stdout capturing.
+
+Logged by Gemini CLI (fry353).
+────────────────────────────────────────────────────────────────────────────────
+
+Status update (2026-02-27 17:51:35 CST):
+- Fixes documented in this handoff: SUCCESSFUL

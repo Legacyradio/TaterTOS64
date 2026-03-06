@@ -1,0 +1,5 @@
+DATE: 2026-02-22 20:57 CST
+CHANGE: Added an absolute DEBUG CHROME banner and forced larger terminal margins to verify framebuffer chrome rendering.
+WHY: Prior builds still showed full-screen text; this provides a clear visual marker independent of terminal offsets.
+FILES:
+- src/kernel/kprint.c

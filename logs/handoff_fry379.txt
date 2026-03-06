@@ -1,0 +1,62 @@
+========================================================================
+  TaterTOS64v3 — Session Handoff Log (2026-02-28)
+  Covers: fry379 — Embedded Controller (EC) & ACPI Integration
+========================================================================
+
+SESSION SUMMARY
+---------------
+Implemented a full Embedded Controller (EC) driver and integrated it 
+into the ACPI AML evaluator to fix the "zeros" issue for battery and 
+backlight status on real hardware (specifically Dell Precision 7530).
+
+------------------------------------------------------------------------
+FIX: fry379 — Embedded Controller (EC) Support
+------------------------------------------------------------------------
+
+SYMPTOMS:
+  - System Info panel showed "Battery: 0 mV", "Backlight: 0%".
+  - ACPI _BST and _BQC methods were likely failing or returning zero
+    because the OpRegion space "EmbeddedControl" (0x03) was not handled.
+
+ROOT CAUSE:
+  - The kernel lacked an EC driver to communicate via ports 0x62/0x66.
+  - The AML evaluator (src/kernel/acpi/aml_ops.c) only handled SystemMemory 
+    (0x00) and SystemIO (0x01). Any attempt to read/write EC fields 
+    returned 0.
+  - No _REG method was called for the EC device to notify firmware that 
+    the OS was ready to handle the EmbeddedControl OpRegion.
+
+FIX IMPLEMENTED:
+  1. New EC Driver (src/kernel/acpi/ec.c / ec.h):
+     - Implements standard ACPI EC protocol (Wait IBF, Write CMD, Write ADDR, 
+       Wait OBF, Read DATA).
+     - Supports default ports 0x62/0x66 and Dell-specific fallback 0x68/0x6C.
+     - Includes ec_try_acpi_enable() to toggle ACPI mode via SMI_CMD 
+       (using FADT info).
+
+  2. AML OpRegion Integration (src/kernel/acpi/aml_ops.c):
+     - Updated read_region8() and write_region8() to support space 0x03.
+     - Now routes field access to ec_read() and ec_write().
+
+  3. EC Initialization (src/kernel/acpi/extended.c):
+     - Added ec_reg_init() which:
+       a) Calls ec_init() to probe and enable the EC.
+       b) Finds the EC device (HID: PNP0C09).
+       c) Calls its _REG method (Arg0=3, Arg1=1) to activate the handler 
+          in firmware.
+
+  4. Build Integration:
+     - Added src/kernel/acpi/ec.o to KERNEL_OBJS in Makefile.
+
+BUILD: export PATH=/opt/cross/bin:$PATH && ./build_iso.sh
+ISO: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+------------------------------------------------------------------------
+NEXT STEPS
+------------------------------------------------------------------------
+  - Verify battery and backlight values on the Dell Precision 7530.
+  - Check if backlight hotkeys (Fn+F11/F12) trigger ACPI notifications 
+    now that the EC is active (notification logic already exists in 
+    src/kernel/acpi/notify.c).
+  - Next fry log: fry380.txt
+========================================================================

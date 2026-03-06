@@ -1,0 +1,3 @@
+2026-02-26 02:35:48 UTC
+Step: Fix ACPI _HID integer matching and add FAT32 raw-LBA fallback when GPT is unreadable.
+Why: _PRT/battery/backlight detection and VFS mount were failing when HID was EISA-encoded or GPT was missing/unreadable.

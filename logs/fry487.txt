@@ -1,0 +1,57 @@
+========================================================================
+TaterTOS64v3 - fry487 — NTFS: batch device reads to avoid /nvme stalls
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 14:48:05 UTC
+
+USER REPORT / CONTEXT
+---------------------
+- On Dell Precision 7530, `ls /nvme` hard-freezes the system.
+- User confirmed the uptime clicker stops dead (system not just slow).
+- /nvme1 path is not present.
+
+RULES REMINDER
+--------------
+- Rules are non-negotiable. See the latest handoff rules block.
+
+UNCOMPLETED STEPS / BLOCKERS
+----------------------------
+- Rebuild and Dell validation of NTFS secondary mounts remain blocked until
+  the hard-freeze on `ls /nvme` is resolved.
+
+WHY THESE CHANGES
+-----------------
+- NTFS device reads were issuing one-sector NVMe commands for every small
+  fragment, which can explode into thousands of synchronous commands when
+  listing a directory and trigger a system hang on hardware.
+- Batch aligned reads into multi-sector requests to reduce NVMe command
+  volume and shorten worst-case directory enumeration hangs.
+
+CODE CHANGES
+------------
+1) src/kernel/fs/ntfs.c
+   - Reworked `ntfs_dev_read_bytes` to:
+     - Handle unaligned head/tail with single-sector reads.
+     - Issue bulk aligned reads up to 1MB per request.
+     - Avoid repeated per-sector NVMe commands for contiguous ranges.
+
+BUILD / ARTIFACT VALIDATION
+---------------------------
+- No rebuild performed in this step.
+
+HASH / FRESHNESS (Rule 15)
+--------------------------
+Source ISO:
+- 2026-03-03 02:42:24.891312411 -0600  135536640 bytes
+- SHA256: 31b07fa0ac303363ce83faeaa370deef5aa4b397c851d0727926bea597dea2f3
+- Path: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+Target/export ISO:
+- 2026-03-03 02:42:24.891312500 -0600  135536640 bytes
+- SHA256: 31b07fa0ac303363ce83faeaa370deef5aa4b397c851d0727926bea597dea2f3
+- Path: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- Note: hashes match; export appears up to date.
+
+========================================================================

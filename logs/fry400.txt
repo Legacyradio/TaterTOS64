@@ -1,0 +1,80 @@
+fry400 — P2SB blind-write unhide + byte-level ECAM + sysinfo 32-bit PCR IOE
+Timestamp: 2026-02-28 23:45:00 UTC
+
+PROBLEM:
+  P2SB unhide at PCI 00:1f.1 was not working. When the BIOS hides the P2SB
+  device, ALL config space reads return 0xFFFFFFFF — including the hide
+  register at offset 0xE0. The code was reading offset 0xE0 first and checking
+  `hide != 0xFFFFFFFF` before writing, which always failed on hidden devices.
+  Result: g_p2sb_was_hidden stayed 0, P2SB was never unhidden, and the code
+  fell back to SBREG_BAR_DEFAULT without ever reading the actual P2SB BAR.
+
+  Additionally, sysinfo displayed PCR IOE masked to 16 bits (`& 0xFFFFu`),
+  making it impossible to distinguish 0x0000FFFF (valid, all decode enabled)
+  from 0xFFFFFFFF (error/unmapped read).
+
+ROOT CAUSE:
+  The P2SB hide mechanism on Intel PCHs (Skylake through Raptor Lake) works
+  by making ALL config reads return 0xFFFF. But the hide register at offset
+  0xE1 IS still writable even when hidden — that's the designed escape hatch.
+  Linux (drivers/platform/x86/p2sb.c) and coreboot both use a blind write
+  of 0 to offset 0xE1 without reading first.
+
+CHANGES:
+1) src/drivers/pci/pci_ecam.c
+   - Added pci_ecam_read8() and pci_ecam_write8() for byte-level ECAM access.
+     ECAM maps all 4096 bytes of config space linearly, so byte access is done
+     by computing dword-aligned base + byte offset within the dword.
+
+2) src/drivers/pci/pci.h
+   - Declared pci_ecam_read8() and pci_ecam_write8().
+
+3) src/kernel/acpi/extended.c — pcr_get_sbreg_bar()
+   - Replaced read-then-check-then-write with BLIND WRITE approach:
+     When VendorID reads 0xFFFFFFFF, immediately write 0 to offset 0xE1
+     (P2SBC register, bit 0 = HIDE) without reading it first.
+   - Added mfence after unhide write.
+   - Read back VendorID to confirm unhide worked.
+   - If unhide succeeded: read BAR0+BAR1, then re-hide (write 1 to 0xE1).
+   - If unhide failed: fall back to SBREG_BAR_DEFAULT.
+   - Added comprehensive kprint diagnostics at every step:
+     * P2SB VendorID before/after unhide
+     * BAR0/BAR1 values
+     * SBREG_BAR result
+   - Re-hide uses byte write (0x01 to 0xE1) instead of 32-bit write.
+
+4) src/user/apps/sysinfo.c
+   - Changed PCR IOE display from 0x%04x to 0x%08x (full 32-bit values).
+     Now we can distinguish 0x0000FFFF (valid) from 0xFFFFFFFF (error).
+
+WHY:
+  The P2SB BAR tells us the actual SBREG base address, which may differ from
+  the 0xFD000000 default on some platforms. More importantly, confirming the
+  unhide works validates that ECAM writes to 00:1f.1 are actually reaching
+  the hardware. If the blind write succeeds and VendorID becomes readable,
+  we know the ECAM path to the P2SB is functional. If it fails, we know the
+  ECAM write path itself has a problem (e.g., ECAM not mapped UC for writes).
+
+EXPECTED DIAGNOSTIC OUTPUT:
+  Success case (P2SB unhidden, BAR read):
+    PCR PID=0xef IOE: 0x00003F0F -> 0x00003F0F mir=1
+    early=0x00 preREG=0x00 p2sb=1
+
+  Partial success (unhide works, IOE was already correct):
+    PCR PID=0xef IOE: 0x0000XXXX -> 0x0000XXXX mir=1
+    p2sb=1
+
+  Failure (ECAM write doesn't reach P2SB):
+    PCR PID=0xef IOE: 0xFFFFFFFF -> 0xFFFFFFFF mir=1
+    p2sb=0
+    → If this happens, ECAM writes may need UC mapping for P2SB config space.
+
+TEST COMMANDS:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+TEST RESULT:
+  PASS (build exit code 0)
+  ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  ISO exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+  NVMe: sysinfo.fry updated on out/tater_nvme.img

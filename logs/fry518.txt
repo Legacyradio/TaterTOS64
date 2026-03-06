@@ -1,0 +1,37 @@
+TIMESTAMP
+---------
+2026-03-03 22:10:25 CST
+
+WHY THIS LOG
+------------
+- User requested fry518 record after adding a 5s boot pause so kprint output stays visible before GUI clears the screen.
+
+ACTION
+------
+- Added BOOT_PAUSE_MS=5000 and hpet_sleep_ms call just before GUI launch in src/kernel/main.c.
+- Rebuilt full images with PATH="/opt/cross/bin:$PATH" ./build_iso.sh (same harmless RWX and unused-function warnings).
+- Collected artifact mtimes and SHA256 digests.
+
+RESULT
+------
+- Rebuild: success
+- ISO: out/tatertos64v3.iso
+- NVMe image: out/tater_nvme.img
+- EFI image: out/efiboot.img
+
+ARTIFACT MTIME
+--------------
+- 2026-03-03 22:10:42 -0600  out/tatertos64v3.iso
+- 2026-03-03 22:10:41 -0600  out/tater_nvme.img
+- 2026-03-03 22:10:41 -0600  out/efiboot.img
+
+SHA256
+------
+- out/tatertos64v3.iso : 10f5e010f16feb21186c0178a5788a807776100e566e451cdf03b54e48e852b5
+- out/tater_nvme.img   : 53f867fc91028a84db2b0a6412fcc131655ab8f897e2d808cd6b16eed285df86
+- out/efiboot.img      : f8f4518357f9ebfcb020e89ac02b212209d81e1ca3ae499cd11934ada950960c
+
+NOTES
+-----
+- Boot pause uses HPET to delay 5 seconds between "init: launch" and userspace start; adjust BOOT_PAUSE_MS in src/kernel/main.c if you want a different delay.
+- Windows export inside build_iso.sh still fails because /mnt/c is mounted read-only.

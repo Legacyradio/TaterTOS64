@@ -1,0 +1,40 @@
+Handoff: GUI shell windowless-text regression + syscall IRQ window hardening
+Timestamp: 2026-02-27 19:32:52 CST
+
+Context:
+- User reported Shell app text was appearing interwoven on desktop (not isolated to window),
+  including initial shell banner/prompt text.
+- User also reported lockup risk when launching Shell from GUI on bare metal.
+
+Implemented:
+1) GUI-mode stdout routing fix
+   - File: src/kernel/proc/syscall.c
+   - SYS_WRITE(fd=1) no longer mirrors non-TaterWin user stdout to framebuffer
+     while GUI process is running.
+   - Output remains captured in per-process outbuf for GUI window consumption.
+   - Console fallback remains active when GUI is not running.
+
+2) Hot-path efficiency improvement
+   - File: src/kernel/proc/syscall.c
+   - Added cached GUI process hint (slot/pid) to avoid full process-table scans
+     on every stdout write in normal steady state.
+
+3) Syscall execution hardening
+   - File: src/kernel/proc/syscall.c (syscall_entry asm)
+   - Enabled IRQs during syscall_dispatch (`sti`) and masked IRQs only during
+     return-state restore (`cli` + sysret path).
+   - Keeps stack-switch safety while reducing long-syscall stall/deadlock risk.
+
+Build/Test executed:
+- make clean
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+Result:
+- Build success (exit 0)
+- Artifacts updated:
+  - out/tatertos64v3.iso
+  - out/tater_nvme.img
+- Windows copy export still fails due to read-only mount on /mnt/c (non-fatal).
+
+Related detailed step log:
+- logs/fry367.txt

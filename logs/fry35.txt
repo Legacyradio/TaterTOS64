@@ -1,0 +1,3 @@
+STEP 35
+TIME: 2026-02-20 01:19:59
+ACTION: Wired Phase 4 AML/event/power init in src/kernel/main.c.

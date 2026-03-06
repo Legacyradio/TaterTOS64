@@ -1,0 +1,4 @@
+[2026-02-23 01:47:43 UTC] Step: Map HPET MMIO via physmap for all address spaces.
+Why: After shell launch, timer interrupts can run while CR3 points at a user address space; HPET base at 0xFED00000 was only identity-mapped in the kernel page table, causing #PF/#DF and reboot loops.
+Change: Use vmm_ensure_physmap + vmm_phys_to_virt for HPET base in hpet_init.
+Files: src/drivers/timer/hpet.c

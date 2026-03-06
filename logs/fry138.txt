@@ -1,0 +1,4 @@
+[2026-02-20 19:11:36 UTC] Step: Add Multiboot2 header for GRUB UEFI boot.
+Why: UEFI GRUB could not load kernel because kernel.elf lacked Multiboot2 header.
+Change: Added multiboot2.asm header, linked into kernel, and ensured .multiboot section is kept.
+Files: src/boot/multiboot2.asm, Makefile, kernel_linker.ld

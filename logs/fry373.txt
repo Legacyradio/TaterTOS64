@@ -1,0 +1,20 @@
+fry373 — Revert AP-timer shortcut (rule compliance)
+Timestamp: 2026-02-28
+
+Why:
+  Prior change in fry371 disabled AP LAPIC timer init as a stability workaround.
+  User correctly flagged this as a shortcut-style workaround that conflicts with
+  planv3 non-negotiable rule #1 ("no shortcuts"). Reverted to stay compliant.
+
+Change:
+  File: src/drivers/smp/smp.c
+  - Restored lapic_timer_init() call in ap_entry().
+
+Build/Test commands (rule 10 + rule 11):
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+Status:
+  Pending rebuild after revert.
+
+Next log: fry374.txt

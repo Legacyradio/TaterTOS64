@@ -1,0 +1,264 @@
+fry445 - EC/eSPI Research Log & Dell Precision 7530 Documentation Findings
+==========================================================================
+Date: 2026-03-01
+Type: Research / Documentation gathering
+Status: In progress (paused to avoid rate limit)
+
+## Dell Hardware Debug Output (from real Dell Precision 7530)
+
+### Serial Log:
+```
+ACPI: ECDT NOT FOUND (LEN=0)
+ACPI: ESPI_CLEAR_ERRORS[0]: PID CAND=0XC7 CFG_VAL=FFFFFFFF INVALID
+ACPI: ESPI_CLEAR_ERRORS[0]: PID CAND=0X72 CFG_VAL=0000000D SCORE=13
+ACPI: ESPI_CLEAR_ERRORS[0]: PID CAND=0X6E CFG_VAL=00000000 INVALID
+ACPI: ESPI_CLEAR_ERRORS[0]: PID=0X72 BEFORE: PC=00001200 VW=00000000 FC=00040080 LN=0060FF00
+ACPI: ESPI_CLEAR_ERRORS[0]: STATUS BITS: PC=00001000 VW=00000000 FC=00000000 LN=00000000
+ACPI: ESPI_CLEAR_ERRORS[0]: PASS=1 AFTER: PC=00000200 VW=00000000 FC=00040080 LN=0060FF00
+ACPI: ESPI_CLEAR_ERRORS[0]: PASS=1 STATUS: PC=00000000 VW=00000000 FC=00000000 LN=00000000
+ACPI: ESPI_CLEAR_ERRORS[0]: FINAL: PC=00000200 VW=00000000 FC=00040080 LN=0060FF00
+ACPI: ESPI_CLEAR_ERRORS[0]: FINAL STATUS: PC=00000000 VW=00000000 FC=00000000 LN=00000000
+ACPI: EC PROBE FAILED ALL CANDIDATES (LAST=0X6C/0X68 STEP=STS_FF STS=0XFF)
+ACPI: EC PROBE FAILED ALL CANDIDATES (LAST=0X6C/0X68 STEP=STS_FF STS=0XFF)
+ACPI: EC PROBE FAILED ALL CANDIDATES (LAST=0X6C/0X68 STEP=STS_FF STS=0XFF)
+ACPI: ESPI_CLEAR_ERRORS[1]: PID CAND=0XC7 CFG_VAL=FFFFFFFF INVALID
+ACPI: ESPI_CLEAR_ERRORS[1]: PID CAND=0X72 CFG_VAL=0000000D SCORE=13
+ACPI: ESPI_CLEAR_ERRORS[1]: PID CAND=0X6E CFG_VAL=00000000 INVALID
+ACPI: ESPI_CLEAR_ERRORS[1]: PID=0X72 BEFORE: PC=00001200 VW=00000000 FC=00040080 LN=0060FF00
+ACPI: ESPI_CLEAR_ERRORS[1]: STATUS BITS: PC=00001000 VW=00000000 FC=00000000 LN=00000000
+ACPI: ESPI_CLEAR_ERRORS[1]: PASS=1 AFTER: PC=00000200 VW=00000000 FC=00040080 LN=0060FF00
+ACPI: ESPI_CLEAR_ERRORS[1]: PASS=1 STATUS: PC=00000000 VW=00000000 FC=00000000 LN=00000000
+ACPI: ESPI_CLEAR_ERRORS[1]: FINAL: PC=00000200 VW=00000000 FC=00040080 LN=0060FF00
+ACPI: ESPI_CLEAR_ERRORS[1]: FINAL STATUS: PC=00000000 VW=00000000 FC=00000000 LN=00000000
+ACPI: EC CAND[0] SRC=CRS PROBE=FAIL (ALL METHODS EXHAUSTED)
+ACPI: EC PROBE FAILED ALL CANDIDATES (LAST=0X6C/0X68 STEP=STS_FF STS=0XFF)
+ACPI: EC PROBE FAILED ALL CANDIDATES (LAST=0X6C/0X68 STEP=STS_FF STS=0XFF)
+(repeats with additional ESPI_CLEAR_ERRORS[1] cycles)
+```
+
+### Shell `acpibreak` output:
+```
+acpibreak: break: eSPI errors cleared but EC still unresponsive
+  ec=FAIL step=STS_FF sts=0xff tries=5 src=_CRS recov=none
+  ioe=0x3f0f->0x3f0f pcr[0x80]=0x0000030f->0x0000030f mir=0
+  espi en=1 pcrpid=0x72 raw pc=00000200 vw=00000000 fc=00040080 ln=0060ff00
+        status pc=00000000 vw=00000000 fc=00000000 ln=00000000
+  espi_clr run=0x03 found=1 ok=1
+    pre:  pc=00001200 vw=00000000 fc=00040080 ln=0060ff00
+    post: pc=00000200 vw=00000000 fc=00040080 ln=0060ff00
+  slave ch_sup=PC1 VW0 OOB0 FC0 rdok=0x07
+    PC_CAP=00001117 rdy=0 VW_CAP=00001117 rdy=0
+  query disp=0 drop=0 storm=0 frz=0 cands=2
+  policy tmo=100000 ret=5 mfail=4 flg=0x07
+  batt found=2 sta=0x00000000  bl found=1 sta=0xffffffff
+```
+
+## Key Diagnostic Analysis
+
+### THE SMOKING GUN: `rdy=0`
+- PC_CAP=0x00001117, bit 16 (ready) = 0 -> Peripheral Channel NOT READY
+- VW_CAP=0x00001117, bit 16 (ready) = 0 -> Virtual Wire Channel NOT READY
+- This means the EC slave has NOT asserted channel readiness on eSPI
+- Without PC ready, I/O cycles to 0x62/0x66 are NOT tunneled -> floating bus -> 0xFF
+
+### eSPI Error Register Analysis:
+- PCERR before clear: 0x00001200, status bits: 0x00001000 (bit 12 = NFES non-fatal error)
+- After W1C clear: 0x00000200 (errors cleared, bit 9 = some enable/default bit)
+- VWERR: 0x00000000 (clean)
+- FCERR: 0x00040080 (flash channel errors present but not status bits)
+- LNKERR: 0x0060FF00 (link errors present but not status bits)
+- All STATUS bits read 0x00000000 after clear -> errors cleared successfully
+
+### What's Working:
+- eSPI bus IS enabled (espi en=1)
+- PCR PID 0x72 IS correct for Cannon Lake/Coffee Lake PCH
+- eSPI error clearing IS working (W1C succeeds)
+- Slave register reads ARE working (rdok=0x07 = genCfg+pcCap+vwCap all read OK)
+- LPC IOE bits ARE set (0x3f0f includes bits 10+11 for 0x60/64 and 0x62/66)
+
+### What's NOT Working:
+- EC slave has rdy=0 on both PC and VW channels
+- EC ports 0x62/0x66 and 0x68/0x6C all read 0xFF (floating bus)
+- Battery _STA returns 0x00000000 (not present/functional - likely because EC is dead)
+- Backlight _STA returns 0xFFFFFFFF (probably hardcoded or doesn't need EC)
+
+## Hardware Identification Research
+
+### Motherboard: DAP10 LA-F591P Rev:1.0(A00) (Compal design)
+### Chipset: Intel CM246 (Coffee Lake, 8th gen)
+### PCH eSPI PID: 0x72 (Cannon Lake family, confirmed working)
+
+### EC Chip: Almost certainly Microchip (formerly SMSC) MEC series
+- Dell laptops historically use SMSC/Microchip MECxxxx ECs
+- MEC1521 is the known eSPI-capable EC used in Framework laptops
+- MEC1633 listed on eBay specifically as "for laptop" BGA IC
+- Dell uses encrypted EC firmware with fused keys (anti-repair measure)
+- Exact model for Precision 7530 not publicly confirmed
+  (would need schematic/boardview of LA-F591P to identify)
+
+## Critical Finding: Zephyr RTOS eSPI Driver (Microchip XEC)
+
+The Zephyr project has an open-source eSPI slave driver for Microchip XEC
+(same silicon family as MEC152x). Source: espi_mchp_xec_v2.c
+
+### Channel Ready Assertion Sequence (from EC firmware side):
+1. Host de-asserts ESPI_nRESET -> espi_rst_isr() fires
+2. OOB/Flash channels re-initialized, bus interrupts re-enabled
+3. Host de-asserts PLT_RST (Platform Reset) via Virtual Wire
+4. vw_pltrst_handler() fires -> calls setup_espi_io_config()
+   - Configures I/O BAR: regs->IOHBAR[IOB_IOC] = (host_addr << 16) | HOST_VALID
+   - This maps host addresses like 0x62/0x66 to EC internal registers
+5. Host sends SET_CONFIGURATION to enable Peripheral Channel
+6. espi_pc_isr() detects MCHP_ESPI_PC_STS_EN_CHG (channel enable change)
+7. espi_pc_isr() calls setup_espi_io_config() again
+8. espi_pc_isr() writes regs->PCRDY = 1  *** THIS ASSERTS READY ***
+9. Similar flow for VW: espi_vw_chan_en_isr() sets regs->VWRDY = 1
+
+### Key Insight: The EC firmware must explicitly write PCRDY=1
+- The ready bit is NOT automatic hardware
+- It's asserted by EC firmware in response to host channel enable
+- If EC firmware never runs this code path, rdy stays 0 forever
+- This explains why we see rdy=0: the EC firmware hasn't completed
+  its channel initialization sequence
+
+### Possible Root Causes for rdy=0:
+A. EC firmware is in a pre-boot state waiting for something from UEFI
+   that we never sent (because we took over from UEFI)
+B. PLT_RST virtual wire was never properly de-asserted by our OS
+C. The host (PCH) never sent SET_CONFIGURATION to enable the PC channel
+D. EC firmware crashed or is in a reset loop
+E. Dell's EC firmware has proprietary initialization beyond standard eSPI
+
+## Dell-Specific Issues Found
+
+### BIOS Version Problems:
+- BIOS 1.12.1 caused ACPI errors on Linux (Dell community reports)
+- Users had to revert to BIOS 1.11 to fix ACPI/EC issues
+- Dell BIOS updates include "Embedded Controller Engine Firmware" updates
+- EC firmware is tightly coupled with BIOS version
+
+### Dell EC Firmware Encryption:
+- Dell ships laptops with ECs that have ENCRYPTED firmware
+- Decryption keys are FUSED inside the EC chip
+- Cannot replace EC chip without matching keys (right-to-repair issue)
+- This means we cannot reflash or modify EC firmware
+
+### Dell Community Reports (Precision 7530):
+- Multiple users report ACPI BIOS errors on Linux
+- Issues traced to BIOS firmware, not Linux kernel
+- EC firmware updates bundled with BIOS updates
+- "EC Firmware Update Programming Tool" exists (driver ID: wnxxt)
+
+## Relevant Documentation Sources
+
+### Intel:
+- eSPI Base Specification Rev 1.6: https://cdrdv2-public.intel.com/841685/841685_ESPI_IBS_TS_Rev_1_6.pdf
+- 600 Series PCH eSPI chapter: https://edc.intel.com/content/www/us/en/design/ipla/software-development-platforms/client/platforms/alder-lake-desktop/intel-600-series-chipset-family-platform-controller-hub-pch-datasheet-volume/004/enhanced-serial-peripheral-interface-espi/
+- Intel ecfw-zephyr (reference EC firmware): https://intel.github.io/ecfw-zephyr/reference/smc/index.html
+
+### Microchip (formerly SMSC):
+- MEC152x Datasheet: https://ww1.microchip.com/downloads/en/DeviceDoc/MEC152x-Data-Sheet-DS00003427F.pdf
+- MEC172x Datasheet: https://ww1.microchip.com/downloads/en/DeviceDoc/MEC172x-Data-Sheet-DS00003583D.pdf
+- MEC1521 Product Page: https://www.microchip.com/en-us/product/mec1521
+- eSPI Technology Page: https://www.microchip.com/en-us/solutions/data-centers-and-computing/computing-solutions/technologies/espi
+
+### Zephyr RTOS (open-source eSPI slave driver):
+- eSPI MCHP XEC v2 driver: https://github.com/zephyrproject-rtos/zephyr/blob/main/drivers/espi/espi_mchp_xec_v2.c
+- eSPI MCHP XEC v1 driver: https://github.com/zephyrproject-rtos/zephyr/blob/main/drivers/espi/espi_mchp_xec.c
+- eSPI documentation: https://docs.zephyrproject.org/latest/hardware/peripherals/espi.html
+- Channel status issue #24464: https://github.com/zephyrproject-rtos/zephyr/issues/24464
+
+### Dell:
+- Technical Guidebook (Japan): https://japancatalog.dell.com/c/wp-content/uploads/Precision_7530_Technical_Guide_Book.pdf (ECONNREFUSED)
+- Service Manual: https://www.dell.com/support/manuals/en-us/precision-15-7530-laptop/precision_7530_sm
+- BIOS Downloads: https://www.dell.com/support/home/en-us/product-support/product/precision-15-7530-laptop/drivers
+- Dell Factory Mode via SMSC JTAG: https://blog.piernov.org/dell-factory-mode-through-smsc-mecxxxx-jtag/
+- Badcaps schematic request: https://www.badcaps.net/forum/troubleshooting-hardware-devices-and-electronics-theory/troubleshooting-laptops-tablets-and-mobile-devices/schematic-requests-only/3214875-dell-precision-7530-dap10-la-f591p-schematic-and-broadview
+
+### Linux Kernel:
+- ACPI EC driver: https://github.com/torvalds/linux/blob/master/drivers/acpi/ec.c
+- EC Hacking article: https://hackaday.com/2022/06/07/ec-hacking-your-laptop-has-a-microcontroller/
+- ACPI EC Spec 6.5: https://uefi.org/specs/ACPI/6.5/12_Embedded_Controller_Interface_Specification.html
+
+### Microsoft:
+- ACPI driver (Acpi.sys): https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/acpi-driver
+  - Windows loads Acpi.sys at base of device tree during startup
+  - Creates filter DOs for integrated devices, PDOs for others
+  - EC operation region handler transfers bytes between EC and Acpi.sys
+  - Control methods (AML) evaluated by Acpi.sys for EC access
+
+## Next Steps (TODO when resuming)
+
+### HIGH PRIORITY - Things to try in code:
+
+1. **Send PLT_RST de-assertion via eSPI Virtual Wire**
+   - The Zephyr driver shows that EC firmware waits for PLT_RST
+     de-assertion before configuring I/O BARs
+   - We may need to write to the PCH's eSPI master VW registers
+     to send PLT_RST=1 (de-asserted) to the EC
+   - PCR offset for master-to-slave VW needs to be determined
+   - This is the MOST LIKELY fix based on the Zephyr driver analysis
+
+2. **Send SET_CONFIGURATION to enable Peripheral Channel on slave**
+   - Use SLV_CFG_CTL/DATA registers (PCR offset 0x4000/0x4004)
+   - Write to slave's General Config (0x0008) to enable PC channel
+   - Then write to PC_CAP (0x0010) to set channel enable bit
+   - The EC firmware should then assert PCRDY in response
+
+3. **Read Linux kernel ec.c for how it handles dead EC**
+   - Was about to fetch this when paused
+   - Specifically: how does Linux detect 0xFF status and what does it do?
+   - Any Dell DMI quirks in the EC driver?
+
+4. **Try reading MEC152x datasheet Section 9 (eSPI)**
+   - PDF was too compressed for WebFetch to parse
+   - Need the actual register definitions for PCRDY, VWRDY, I/O BAR
+   - Could try downloading and reading locally
+
+5. **Check if UEFI left PLT_RST asserted**
+   - Read the PCH's eSPI master VW status registers
+   - If PLT_RST is still asserted (low), EC won't enable I/O
+   - Need to find the PCR offset for VW master registers
+
+### MEDIUM PRIORITY:
+
+6. **Investigate FC (Flash Channel) error 0x00040080**
+   - Flash channel has non-zero register value
+   - Bit 18 and bit 7 set - what do these mean?
+   - May indicate flash sharing issues
+
+7. **Investigate LN (Link) error 0x0060FF00**
+   - Link error register has substantial non-zero value
+   - Bits 21-22 and bits 8-15 all set
+   - Could indicate link-level problems
+
+8. **Try ACPI _REG method evaluation**
+   - ACPI spec says OS should call _REG(EmbeddedControl, 1) to tell
+     EC's namespace that the EC operation region is now available
+   - This might trigger Dell's AML code to do additional EC setup
+
+### LOW PRIORITY:
+
+9. **Get LA-F591P schematic/boardview**
+   - Would definitively identify EC chip model
+   - Available on repair forums (may require registration)
+
+10. **Check Dell BIOS version on the test machine**
+    - Known issues with BIOS 1.12.x on this model
+    - May need specific BIOS version for EC to work properly with custom OS
+
+## Summary
+
+The root cause is almost certainly that TaterTOS64v3 is not completing the
+eSPI channel initialization handshake that the EC firmware expects. The
+Zephyr driver analysis shows the EC waits for:
+  1. ESPI_nRESET de-assertion
+  2. PLT_RST de-assertion (Virtual Wire)
+  3. Host SET_CONFIGURATION enabling Peripheral Channel
+  4. Only THEN does EC firmware write PCRDY=1
+
+We are likely missing step 2 or 3 (or both). UEFI firmware normally handles
+this during POST, but when we take over, the EC may have been reset or may
+need these signals re-sent. The most promising approach is to send the
+PLT_RST VW de-assertion and then SET_CONFIGURATION for PC channel enable
+via the PCH's eSPI master registers.

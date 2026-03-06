@@ -1,0 +1,75 @@
+========================================================================
+TaterTOS64v3 - fry544 - split 12-square boundary across stack switch and after_vmm entry
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 20:48:56 UTC
+2026-03-05 14:48:56 CST
+
+CONTEXT
+-------
+- User confirmed hardware now shows 12 top-row stage squares.
+- With fry543, 12 means execution reaches immediate pre-`stack_switch_and_call(...)`
+  boundary, but does not localize whether failure is in stack switch, call target
+  entry, early serial, or `kprint_init`.
+
+WHY
+---
+- Needed one-boundary granularity after stage 12 so the next hardware photo/log
+  identifies the exact failing transition.
+
+CHANGE APPLIED
+--------------
+- Updated `src/kernel/main.c`:
+  - In `_fry_start(struct fry_handoff *handoff)`:
+    - Added `early_serial_puts("K_STACK_SWITCH_CALL\n")` immediately before
+      `stack_switch_and_call(...)`.
+    - Added `early_debug_putc('w')` at the same boundary.
+  - In `after_vmm(struct fry_handoff *handoff)`:
+    - Added stage 13 marker at function entry (`early_fb_stage(handoff, 13)`).
+    - Added stage 14 marker immediately after `early_serial_puts("K_AFTER_VMM_ENTRY\n")`.
+    - Added stage 15 marker immediately after `kprint_init(handoff)`.
+- Updated `src/boot/stack_switch.asm`:
+  - Existing debugcon markers: `S` (entry), `C` (before call), `R` (unexpected return).
+  - Added `N` marker after loading/alignment of new RSP and before `call rsi`.
+
+UPDATED INTERPRETATION GUIDE
+----------------------------
+- 12 squares: stall before entering `after_vmm` (stack switch/call boundary).
+- 13 squares: `after_vmm` entry executed; stall in/after `K_AFTER_VMM_ENTRY` serial print.
+- 14 squares: passed early serial entry print; stall before/inside `kprint_init`.
+- 15 squares: passed `kprint_init`; failure is later in `after_vmm` body.
+
+SERIAL / DEBUGCON CHECKS
+------------------------
+- Serial breadcrumbs to watch:
+  1) `K_STACK_SWITCH_CALL`
+  2) `K_AFTER_VMM_ENTRY`
+- Debugcon (`0xE9`) breadcrumbs in stack shim:
+  - `S` -> entered shim
+  - `N` -> new stack active/aligned
+  - `C` -> immediately before target call
+  - `R` -> unexpected return from target
+
+FILES
+-----
+- `src/kernel/main.c`
+- `src/boot/stack_switch.asm`
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Rebuild + ISO pipeline:
+   - `/bin/bash -lc 'PATH="/opt/cross/bin:$PATH" make -j"$(nproc)" && ./build_iso.sh'`
+2) RESULT:
+   - PASS
+   - ISO: `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+   - Export warning unchanged (Windows mount read-only):
+     `/mnt/c/Users/jjsako/Documents/tateriso`
+
+HASH
+----
+- SHA-256 (out/tatertos64v3.iso):
+  `8165b3e17ecb83de6dfc9c74a402fef1a8c9e503e3d94c9496891939c977b2cc`
+
+========================================================================

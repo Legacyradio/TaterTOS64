@@ -1,0 +1,25 @@
+fry384 — Field report capture: battery unavailable, dimmer 0
+Timestamp: 2026-02-28 15:30:00 UTC
+
+Report received:
+  - Battery now shows "unavailable".
+  - Dimmer/backlight still reports 0.
+  - User suspects 0 may be real (BIOS brightness was set low), not necessarily a software bug.
+
+Recent context (from fry380/fry383):
+  - EC/ACPI hardening was added to avoid timeout stalls and zero-overwrite behavior.
+  - `acpi_battery_get()` now returns error when no battery device is detected.
+  - Backlight init now tries to avoid choosing 0 when `_BQC` is 0 and `_BCL` has non-zero options.
+
+Code-path notes relevant to this report:
+  - "Battery: unavailable" in sysinfo is shown when `fry_getbattery()` fails.
+  - Kernel returns that failure when `g_batt_count == 0` (no present `PNP0C0A` battery found).
+  - Backlight value shown by sysinfo is cached `acpi_backlight_get()` and can remain 0 if:
+    1) no backlight device was discovered, or
+    2) discovered device still resolves to 0.
+
+Next diagnostic target on real hardware serial log:
+  - `ACPI: no battery`
+  - `ACPI: battery _BIF count=...`
+  - `ACPI: no backlight device`
+  - `ACPI: backlight levels=... current=...`

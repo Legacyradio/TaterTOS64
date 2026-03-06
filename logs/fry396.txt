@@ -1,0 +1,52 @@
+fry396 — EC candidate selection hardening + post-_REG _CRS retry + safe port-order fallback
+Timestamp: 2026-02-28 21:32:55 UTC
+
+PROBLEM:
+  Real hardware still reports:
+    EC: FAIL ports=0x62/0x66
+    probe: STS_FF sts=0xff try=5
+    EC src: default
+  with battery/backlight diagnostics showing namespace is populated.
+  This indicates EC setup can still select the wrong PNP0C09 node/ports on
+  firmware with multiple EC-like devices or delayed _CRS availability.
+
+CHANGES:
+1) src/kernel/acpi/extended.c
+   - Added robust EC candidate scan across all PNP0C09 nodes (up to 8):
+     - Evaluates candidate features: present/_STA, _CRS ports, _REG, _GPE, _INI.
+     - Scores and selects the best candidate instead of first-match behavior.
+     - Logs all candidate paths and score components for bare-metal diagnosis.
+   - Added EC _CRS port-pair selection heuristics:
+     - Prefer explicit 0x62/0x66 if present.
+     - Otherwise prefer IO pairs separated by +4 (data/cmd).
+     - Fallback to first descriptors/single-port +4 rule.
+   - Reworked EC port source selection:
+     - Prefer selected-node _CRS ports.
+     - Else use ECDT candidate ports.
+     - Else default 0x62/0x66.
+   - Added post-_REG _CRS re-evaluation:
+     - Some firmware exposes usable _CRS only after _INI/_REG.
+     - If post-_REG _CRS yields better ports, ec_setup_ports is re-run before probe.
+
+2) src/kernel/acpi/ec.c
+   - Added safe swapped-order probe fallback for legacy low IO pairs:
+     - After primary failure, tries swapped data/cmd ordering for +4 legacy pairs.
+     - Keeps existing alternate 0x68/0x6C path; also tries its swapped ordering.
+   - Preserves existing multi-device safety constraints (no broad unsafe probing).
+
+WHY:
+  The previous flow used a single ns_find_device("PNP0C09") result and could
+  miss better EC nodes/ports. This hardening keeps behavior generic across
+  machines while improving detection on systems where EC port discovery is
+  delayed or ambiguous.
+
+TEST COMMANDS:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+TEST RESULT:
+  PASS (both commands exit code 0)
+  ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  Non-fatal environment warning:
+    cp to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso failed
+    (read-only filesystem in this environment)

@@ -1,0 +1,4 @@
+[2026-02-20 21:10:11 UTC] Step: Add Multiboot2 entry stub to enter long mode and call _fry_start.
+Why: GRUB enters in 32-bit mode; kernel is 64-bit and was triple-faulting without a mode switch stub.
+Change: Added mb_entry 32-bit stub with temp GDT, PAE, minimal PML4/PDPT/PD, long mode enable, and call to _fry_start with multiboot info pointer. Updated linker to place .boot at low LMA and set entry to mb_entry.
+Files: src/boot/mb_entry.asm, Makefile, kernel_linker.ld

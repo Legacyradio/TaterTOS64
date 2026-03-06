@@ -1,0 +1,30 @@
+2026-02-26 03:33:45 UTC
+Step: Hardened NVMe read path and GPT/FAT32 mount detection to fix VFS mount failures that block GUI/SHELL launch.
+Why: Boot logs showed NVMe ready but GPT header reads failed, which prevented FAT32 mount and user process launch.
+
+Changes:
+- src/drivers/storage/nvme.c
+  - Fixed PRP building to translate each page via virt->phys instead of assuming physically contiguous pages.
+  - Synced PRP list cache lines before submission for multi-page transfers.
+  - Exported `total_sectors` in `struct block_device`.
+- src/kernel/fs/part.h
+  - Added `total_sectors` to `struct block_device`.
+- src/kernel/fs/part.c
+  - GPT header read now tries:
+    1) primary header at LBA 1,
+    2) backup header at last LBA (when size is known),
+    3) bounded scan of early LBAs for shifted GPT headers.
+  - Added GPT header sanity checks and partition entry bounds checks.
+- src/kernel/fs/vfs.c
+  - GPT partition scan now picks an entry only if it actually probes as FAT32 BPB.
+  - Raw FAT32 fallback expanded to common offsets (2048, 4096, 8192, 16384, 32768, 65536, 0).
+- src/kernel/fs/fat32.c
+  - Fixed fallback state tracking so LBA 0 is not incorrectly treated as "not found".
+  - Expanded raw FAT32 fallback offsets to match VFS.
+
+Build/Test commands run:
+- PATH="/opt/cross/bin:/usr/bin:/bin:$PATH" make -C /home/jjsako/TaterTOS64v3 -j4
+
+Result:
+- Build succeeded.
+- Next validation: boot on target hardware and verify GPT/FAT32 mount path reaches `VFS: FAT32 mounted ...`, then GUI/SHELL launch.

@@ -1,0 +1,10 @@
+[2026-02-22 07:02:32 UTC] Allocate page tables below 4GB when VMM is live.
+
+Changes:
+- src/kernel/mm/vmm.c: alloc_table now uses pmm_alloc_page_below(4GB) when vmm_ready.
+
+Why:
+- vmm_ensure_physmap maps high MMIO (0xC000000000). If new page tables come from above the current physmap, phys_to_virt hits unmapped memory and hangs. Forcing tables into low 4GB keeps them mapped.
+
+Tests (not run):
+- bash build_iso.sh

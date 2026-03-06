@@ -1,0 +1,10 @@
+[2026-02-22 07:28:30 UTC] Add two-line MMIO mapping breadcrumb in vmm_map_mmio_2m.
+
+Changes:
+- src/kernel/mm/vmm.c: log before/after vmm_map_2m in vmm_map_mmio_2m.
+
+Why:
+- We still hang right after printing BAR; this confirms whether the hang is inside vmm_map_2m or after it, with minimal logging.
+
+Tests (not run):
+- bash build_iso.sh

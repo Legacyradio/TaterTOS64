@@ -1,0 +1,23 @@
+Step fry267 - 2026-02-22
+
+Summary
+- Clarification: Phase numbering gap (12 → 17.5) is a renaming artifact, not missing work.
+
+Why the gap exists
+  planv3.txt was revised and phases renumbered during the project.
+  Old numbering:
+    Phase 13 - VFS + Filesystem
+    Phase 14 - Process + Userspace
+    Phase 15 - User Shell
+    Phase 16 - Extended AML + ACPI Device Features
+    Phase 17.5 - GUI/Userland
+
+  New numbering (current planv3.txt):
+    Phase 9  - Storage + VFS          (was Phase 13)
+    Phase 10 - Userspace              (was Phase 14 + 15)
+    Phase 11 - Build System
+    Phase 12 - Extended AML Coverage  (was Phase 16)
+    Phase 17.5 - GUI/Userland         (kept original number — never renumbered)
+
+  Result: phases 9–12 are complete, 17.5 is the immediate next phase.
+  There are no skipped or missing phases between 12 and 17.5.

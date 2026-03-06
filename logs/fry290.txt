@@ -1,0 +1,10 @@
+[2026-02-22 07:48:32 UTC] Log PMM free pages (total and below 4GB).
+
+Changes:
+- src/kernel/mm/pmm.c: add PMM free page counters after reserves; log total free and free below 4GB.
+
+Why:
+- NVMe queue allocation failed; we need a clear, single-line diagnostic of available pages (especially low memory) without adding debug spam.
+
+Tests (not run):
+- bash build_iso.sh

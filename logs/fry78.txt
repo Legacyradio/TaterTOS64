@@ -1,0 +1,3 @@
+STEP 78
+TIME: 2026-02-20 09:43:55
+ACTION: Rebuilt process management in src/kernel/proc/process.c/.h with per-process kernel stacks, user entry via iretq, kernel thread support, fd tables, and integration with the scheduler, because proper Phase 14 process control requires these fields and lifecycle functions.

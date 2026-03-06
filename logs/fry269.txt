@@ -1,0 +1,59 @@
+Step fry269 - 2026-02-22
+
+Summary
+- Fixed HPET counter struct offset bug (counter was at 0x0E8, should be 0x0F0).
+- This was causing hpet_sleep_ms() and lapic_timer_calibrate() to hang.
+
+Root Cause
+  struct hpet_regs in hpet.c was missing one reserved 8-byte field at offset
+  0x018. The HPET spec layout:
+    0x000: GCAP_ID       (cap_id)
+    0x008: reserved      (rsvd0)
+    0x010: GEN_CONF      (config)
+    0x018: reserved      ← MISSING from struct
+    0x020: GINTR_STA     (isr)
+    0x028-0x0EF: reserved (25 * 8 = 200 bytes)
+    0x0F0: MAIN_CTR      (counter)
+
+  Without the missing rsvd1 at 0x018, every field after config was shifted
+  8 bytes low:
+    isr     landed at 0x018 (reserved in hardware — reads garbage)
+    rsvd1[] landed at 0x020 (was reserved block)
+    counter landed at 0x0E8 (wrong — reserved MMIO in QEMU returns 0)
+
+  hpet_read_counter() always returned 0. This caused:
+  - hpet_sleep_ms(): while ((0 - 0) < ticks) → infinite loop / hang
+  - lapic_timer_calibrate(): start=0, target=1000000,
+    while (0 < 1000000) → infinite loop / hang
+
+Hidden history
+  This bug existed since HPET was first written but was invisible because:
+  - APs never reached hpet_read_counter() (freq=0 early exit before fry268)
+  - BSP's lapic_timer_calibrate() hung silently at end of boot — user closed
+    QEMU before noticing (log ended at "HPET: enabled freq=100000000 Hz")
+  After fry268 (hpet_sleep_ms in smp_init), the hang became obvious
+  immediately after "SMP: detected 4 CPU(s)".
+
+Fix
+  src/drivers/timer/hpet.c, struct hpet_regs:
+  Added uint64_t rsvd1 at offset 0x018.
+  Renamed old rsvd1[25] to rsvd2[25] (starts at 0x028, ends at 0x0EF).
+  Counter now correctly at offset 0x0F0.
+
+Build
+  PATH="/usr/bin:/opt/cross/bin:$PATH" make all && ./build_iso.sh
+  ISO exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+Expected Result
+  Boot no longer hangs after "SMP: detected 4 CPU(s)".
+  Each AP should print "LAPIC timer: N ticks/ms" before "CPUx online".
+  BSP should also print "LAPIC timer: N ticks/ms" after SMP completes.
+
+Test Commands
+qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+  -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+  -cdrom ./out/tatertos64v3.iso \
+  -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+
+tail -n 30 logs/serial.log

@@ -1,0 +1,4 @@
+[2026-02-20 18:36:52 UTC] Step: Add file size field and API declaration to VFS.
+Why: elf loader expects vfs_size(), so VFS needs to store file size per open.
+Change: Added size field to struct vfs_file and declared vfs_size in vfs.h.
+Files: src/kernel/fs/vfs.h

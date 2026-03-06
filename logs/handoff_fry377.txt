@@ -1,0 +1,39 @@
+HANDOFF LOG — fry377 (Shell TaterWin conversion)
+Date: 2026-02-28
+Reason: Rebooting Dell Precision 7530 to test on real hardware
+
+== What was done this session ==
+fry377: Rewrote shell.c from printf/gets_bounded text-mode app to TaterWin
+SHM graphical terminal. This was the root cause of the shell crash on bare
+metal — gets_bounded busy-loops with no fry_sleep, causing a syscall storm.
+
+== What to test on Dell ==
+1. Boot from USB ISO (out/tatertos64v3.iso) or NVMe (out/tater_nvme.img)
+2. Open SHELL from start menu → should show 480x320 window with:
+   "TaterTOS64v3 shell" banner and "tater> " prompt with block cursor
+3. Type commands: help, ls, pwd, echo hello, clear
+4. Test backspace works (erases chars)
+5. Test cat on a file if any exist on the filesystem
+6. Test spawning other apps from shell (e.g. "sysinfo" or "sysinfo.fry")
+7. Open SYSINFO, UPTIME, PS from start menu — must still work (no regression)
+8. No crash, no freeze, no syscall storm
+
+== New rule added ==
+Rule 11: All user apps MUST use TaterWin SHM protocol. No printf/gets_bounded
+for app display/input. No exceptions.
+
+== Build state ==
+- Last build: clean + build_iso.sh, exit 0, no shell.c warnings
+- ISO: out/tatertos64v3.iso (also exported to C:\Users\jjsako\Documents\tateriso\)
+- NVMe: out/tater_nvme.img (updated with new shell.fry)
+- Next fry log: fry378.txt
+
+== Files changed ==
+- src/user/shell/shell.c — complete rewrite (only file modified, no kernel/libc changes)
+
+== Known limitations ==
+- Shell window freezes visually while fry_wait() blocks on a spawned child
+  (render_and_update() is called before blocking, so last state is visible)
+- Backspace doesn't work across line-wrap boundaries (cursor stays at col 0)
+- vsnprintf doesn't support width/padding specifiers (%02u etc) — avoid in shell
+- Terminal is 60x20 chars; long output scrolls but earlier lines are lost

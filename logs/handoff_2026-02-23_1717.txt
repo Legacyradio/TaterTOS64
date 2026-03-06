@@ -1,0 +1,104 @@
+Date: 2026-02-23 17:17 CST
+Owner: Claude
+
+Summary
+  M30 complete: TaterTOS64v3 now boots standalone from USB ISO with no
+  separate NVMe image required. User confirmed USB boot working on real
+  hardware. ISO exported to Windows at build time.
+
+What Changed (code)
+
+1) src/boot/efi_handoff.h
+   Added to struct fry_handoff:
+     uint64_t ramdisk_base;  // physical address of ramdisk (< 4GB)
+     uint64_t ramdisk_size;  // total byte size
+   Added new types shared between EFI loader and kernel:
+     #define RAMDISK_MAGIC    0x4B534452UL  ('RDSK')
+     #define RAMDISK_MAXFILES 16
+     struct ramdisk_entry { char name[32]; uint64_t offset; uint64_t size; }
+     struct ramdisk_header { uint32_t magic; uint32_t count;
+                             struct ramdisk_entry entries[16]; }
+   Why: efi_handoff.h is compiled by both mingw (PE/COFF for UEFI loader)
+   and x86_64-elf-gcc (kernel). Defining structs here guarantees identical
+   layout on both compilers with no packing needed.
+
+2) src/boot/efi_loader.c
+   Inserted after handoff->rsdp_phys is set, before GetMemoryMap:
+   - Attempts to open and read \fry\GUI.FRY, \fry\SHELL.FRY,
+     \fry\SYSINFO.FRY, \fry\UPTIME.FRY, \fry\PS.FRY from the EFI
+     partition (same volume the loader itself lives on, accessed via
+     root = sfs->OpenVolume()).
+   - Uses existing read_file() helper (same one that loads kernel.elf).
+   - If any files found: allocates one contiguous EFI page block below
+     4GB (AllocateMaxAddress, TATER_BOOT_IDENTITY_MAX_ADDR), writes
+     ramdisk_header + packed file data, stores physical address in
+     handoff->ramdisk_base and handoff->ramdisk_size.
+   - If no files found: prints "no ramdisk (NVMe only)" — not fatal.
+   Why: EFI file I/O is only possible before ExitBootServices. The
+   ramdisk must be built here and passed to the kernel via handoff.
+   All allocations happen before GetMemoryMap so the final memory map
+   snapshot is accurate.
+
+3) src/kernel/fs/vfs.c
+   Added full ramdisk VFS backend:
+     rd_nameeq()     case-insensitive ASCII strcmp
+     rd_open()       scan ramdisk_header entries by name, set pos=0
+     rd_read()       memcpy from (g_rd_base + entry.offset + pos), advance pos
+     rd_write()      returns -1 (read-only)
+     rd_close()      no-op
+     rd_readdir()    calls cb() for each entry name
+     rd_stat()       returns entry size, attr=0x20 (archive/regular file)
+   Added vfs_init_ramdisk(uint64_t phys_base, uint64_t size):
+     Maps phys_base to virtual via TATER_PHYSMAP (0xFFFF800000000000).
+     Validates RAMDISK_MAGIC. Mounts "/" with rd_ops.
+   Why: VFS ops interface was already a clean abstraction. New backend
+   plugs in with zero changes to open/read/stat/readdir call sites.
+
+4) src/kernel/fs/vfs.h
+   Added: int vfs_init_ramdisk(uint64_t phys_base, uint64_t size);
+
+5) src/kernel/main.c
+   Added declaration of vfs_init_ramdisk.
+   Changed Phase 13 VFS init from unconditional vfs_init(nvme_bd) to:
+     struct block_device *nvme_bd = nvme_get_block_device();
+     if (nvme_bd)                          → vfs_init(nvme_bd)
+     else if (handoff->ramdisk_base != 0)  → vfs_init_ramdisk(...)
+     else                                  → kprint("vfs no device")
+   Why: NVMe always takes priority. Ramdisk is fallback only. This means
+   QEMU + NVMe image still works exactly as before. On USB boot or QEMU
+   without -device nvme, ramdisk provides the .fry files.
+
+6) build_iso.sh
+   After building efiboot.img (EFI partition image), added:
+     mmd -i "$EFI_IMG" ::/fry
+     mcopy .fry files → ::/fry/GUI.FRY, SHELL.FRY, SYSINFO.FRY,
+                          UPTIME.FRY, PS.FRY
+   Why: efi_loader reads them from \fry\ on the EFI partition at boot.
+   The EFI partition (efiboot.img) is embedded in the ISO via xorriso
+   El Torito, so writing to USB with dd or Rufus carries the files.
+
+Confirmed working
+  USB boot: user confirmed ISO boots standalone from USB flash drive.
+  NVMe path: unchanged, still works in QEMU with -device nvme.
+
+What is NOT yet confirmed
+  NVMe on real Dell 7530 hardware: VMD driver (vmd_init) exists and is
+  called before nvme_init(). VMD unwraps Intel RST NVMe controller by
+  enumerating the VMD PCI domain and remapping BARs to expose underlying
+  NVMe devices. This worked in QEMU with the NVMe image but has NOT been
+  tested on the actual 7530 NVMe drive yet. Could work first try or may
+  need a register-level tweak.
+
+Build artifacts
+  ISO: out/tatertos64v3.iso
+  Exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+  Session log: logs/fry323.txt
+  Next fry log: fry324.txt
+
+Remaining work (see planv3.txt milestones)
+  M18/M19  USB HID (real hardware)
+  M23      e1000 QEMU network test
+  M24      WiFi 9260 firmware (real hardware)
+  M25      Thermal _TMP AML eval
+  NVMe     Real hardware VMD/RST test (untracked milestone)
+  GUI polish, boot splash, shell QoL, installer

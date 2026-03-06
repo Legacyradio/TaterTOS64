@@ -1,0 +1,71 @@
+========================================================================
+  TaterTOS64v3 - Session Handoff Log (handoff_fry413)
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-01 03:03:12 UTC
+
+RULES (must follow exactly)
+=====================================================================
+1) Follow the plan step by step. No shortcuts or cut corners.
+2) No “minimal” implementations; do thorough, functional work.
+3) No Linux or Windows code inside the OS.
+4) Use apply_patch for code edits.
+5) Log every completed step in its own logs/fryN.txt with timestamps.
+6) If you change code, include a brief “why” in the log.
+7) Don’t pause after saying you’ll continue; just continue.
+8) Branding is TaterTOS64v3 (never FryOS).
+9) UEFI-only boot path.
+10) When testing, always include the necessary commands to run the test.
+11) Default rebuild mode is clean + verbose:
+    make clean
+    PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+12) All apps built and run must follow the TaterWin protocol.
+
+WHAT WAS FIXED THIS SESSION
+---------------------------
+1) Bare-metal ACPI EC fallback robustness in `src/kernel/acpi/extended.c`
+   - Replaced strict yes/no PCR plausibility filtering with score-based
+     candidate selection for SBREG BAR + PID.
+   - Added alternate IOD hint usage from LPC register 0x88 low word.
+   - Result: Dell-valid register patterns are less likely to be discarded
+     when P2SB unhide fails and fallback probing is required.
+
+2) DBG_VFS/UFS noise cleanup in ramdisk path
+   - `src/kernel/fs/vfs.c`: `rd_readdir()` now rejects non-root paths for
+     flat ramdisk layout instead of replaying root entries repeatedly.
+   - `src/kernel/main.c`: changed debug prefix text from
+     `ERROR: DBG_VFS ...` to `DBG_VFS ...` for diagnostics.
+
+WHY THESE CHANGES
+-----------------
+- User-reported logs showed repeated debug entry spam and EC probe failures on
+  Dell bare metal. Previous fallback heuristics could reject plausible PCR
+  candidates too aggressively. The scoring-based path is more tolerant while
+  still rejecting all-FF/all-00 invalid reads.
+
+BUILD / TEST STATUS
+-------------------
+Commands run:
+- make clean
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/acpi/extended.o src/kernel/fs/vfs.o src/kernel/main.o
+
+Result:
+- PASS (build succeeded)
+- ISO artifact: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Note: export copy to /mnt/c failed in this environment (read-only FS).
+
+NEXT REQUIRED BARE-METAL CHECK
+------------------------------
+Boot the updated ISO on Dell Precision 7530 and capture:
+- ACPI lines around:
+  - `SBREG probe[...] ... score=...`
+  - `PCR PID probe[...] ... score=...`
+  - `PCR PID selected ...`
+  - `EC probe ...`
+- DBG_VFS lines to verify:
+  - no repeated root entries for `/fry`, `/EFI/...` readdir probes.
+
+========================================================================

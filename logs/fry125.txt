@@ -1,0 +1,4 @@
+[2026-02-20 18:27:07 UTC] Step: Fix ACPI bus driver type usage.
+Why: Build failed because struct fry_driver was undefined in acpi_bus.c.
+Change: Included driver.h for fry_driver definition.
+Files: src/drivers/acpi_bus/acpi_bus.c

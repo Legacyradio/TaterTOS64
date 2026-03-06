@@ -1,0 +1,91 @@
+========================================================================
+  TaterTOS64v3 — Session Handoff Log (2026-02-28)
+  Covers: fry390 (Claude Opus turn)
+========================================================================
+
+TIMESTAMP
+---------
+2026-02-28 ~18:00 UTC
+
+SESSION SUMMARY
+---------------
+Fixed three critical AML parser bugs that caused the namespace tree to be
+incomplete on all hardware. Added If/Else/While block handling. Added
+namespace node count to on-screen diagnostics.
+
+PROBLEM
+-------
+ACPI diagnostics on Dell Precision 7530 showed:
+  EC: FAIL, Batt found=0, BL found=0
+Both battery and backlight discovery use ns_walk() — if BOTH are found=0,
+the namespace tree itself must be incomplete. Investigation found:
+
+ROOT CAUSE: OpRegion/Mutex/Event parsers assumed PkgLength where the ACPI
+spec defines none. Each OpRegion (very common — dozens per DSDT) caused
+parse_block to skip forward by a garbage length (hundreds to thousands of
+bytes), obliterating subsequent Device/Method/Name declarations. Additional
+issue: If/Else/While blocks (which may contain Device declarations) were
+not handled, causing devices inside conditionals to be invisible.
+
+FIXES APPLIED
+-------------
+1) parse_opregion(): Removed bogus parse_pkg_length(). OpRegion per ACPI
+   spec is: NameString + RegionSpace(byte) + Offset(TermArg) + Len(TermArg).
+   No PkgLength. Now parses flat and returns end position.
+
+2) parse_mutex(): Removed bogus parse_pkg_length(). Mutex per ACPI spec is:
+   NameString + SyncFlags(byte). No PkgLength.
+
+3) parse_event(): Removed bogus parse_pkg_length(). Event per ACPI spec is:
+   NameString only. No PkgLength.
+
+4) parse_block() for OpRegion/Mutex/Event: Changed from reading phantom
+   PkgLength to using return value from parser function (p = parse_xxx()).
+
+5) parse_block() added If (0xA0), Else (0xA1), While (0xA2): These DO
+   have PkgLength. Reads PkgLength, recursively calls parse_block on body
+   to discover nested Device/Method/Name declarations.
+
+6) namespace.c: Added ns_node_count() — walks tree and counts nodes.
+
+7) extended.h + extended.c + libc.h + sysinfo.c: Added ns_nodes field to
+   ACPI diagnostics struct and display. Shows on-screen how many namespace
+   nodes were parsed.
+
+SCOPE: These are ACPI spec compliance fixes. Affect ALL hardware, not
+Dell-specific. Any machine with OpRegion/Mutex/Event/If blocks in its
+DSDT/SSDTs was previously getting an incomplete namespace.
+
+BUILD / TEST (RULE 11)
+----------------------
+make clean
+PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+RESULT
+------
+- Build succeeded, zero errors
+- ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+NEXT ACTION ON HARDWARE
+-----------------------
+Boot this ISO on Dell Precision 7530. Read the ACPI Diagnostics panel in
+the sysinfo window. Report:
+
+  NS nodes: ???   (expect hundreds; was probably tens/low before fix)
+  EC:   OK or FAIL?
+  Batt: found=?  STA=0x????????  path=?
+  BL:   found=?  STA=0x????????  path=?
+        bcl=? sup=? raw=? pct=?
+
+INTERPRETATION
+--------------
+- NS nodes high (500+) + Batt/BL found > 0: Fix worked. Proceed to
+  troubleshoot EC and battery/backlight data retrieval.
+- NS nodes high but Batt/BL still 0: Devices use non-standard HID or
+  are in an unhandled AML structure.
+- NS nodes still low: Additional parser bugs remain (unknown opcodes
+  causing desync at block level).
+
+NEXT FRY LOG: fry391.txt
+========================================================================

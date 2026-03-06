@@ -1,0 +1,3 @@
+STEP 42
+TIME: 2026-02-20 09:39:31
+ACTION: Added spin_lock_irqsave/spin_unlock_irqrestore in src/drivers/smp/spinlock.c/.h to prevent kprint re-entrancy deadlocks under interrupts, because lock acquisition must be IRQ-safe on SMP.

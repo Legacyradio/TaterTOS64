@@ -1,0 +1,5 @@
+2026-02-20 22:45:05
+Change: Added a permanent debug-marker rule to planv3.txt.
+Why: You requested that temporary debug output be explicitly governed by the ruleset.
+Details:
+- planv3.txt: added WORK RULES section stating debug markers are temporary and must be removed after isolating faults.

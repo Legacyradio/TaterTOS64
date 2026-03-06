@@ -1,0 +1,3 @@
+STEP 20
+TIME: 2026-02-20 08:40:45
+ACTION: Updated src/kernel/acpi/hpet_tbl.c to translate the ACPI HPET table pointer via vmm_phys_to_virt before reading fields, because ACPI tables are stored in physical memory and must be accessed through the physmap once VMM is active.

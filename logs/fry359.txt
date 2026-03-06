@@ -1,0 +1,71 @@
+fry359 — Window lifecycle + app execution fixes
+Timestamp: 2026-02-27 16:05:38 CST
+
+Why:
+  Two user-visible regressions needed hard fixes:
+  1) After repeated open/close cycles, new app windows eventually stopped launching.
+  2) App windows appeared but looked dead/black and did not show active behavior.
+
+Changes:
+  src/kernel/proc/process.h
+    + Added kernel stack ownership fields:
+      - kernel_stack_phys
+      - kernel_stack_pages
+
+  src/kernel/proc/process.c
+    + Replaced per-process kernel stack allocation from kmalloc() with PMM pages.
+      - alloc_kernel_stack(): pmm_alloc_pages(4), stack top from vmm_phys_to_virt()
+      - free_kernel_stack(): pmm_free_page() for each stack page
+    + Hardened proc_free():
+      - Ignores PROC_DEAD/PROC_UNUSED targets (prevents double teardown)
+      - Avoids destroying kernel CR3 for kernel tasks
+      - Frees kernel stack pages and clears stack/cr3 metadata
+    + On stack allocation failure in process_create_user/kernel:
+      - marks process slot PROC_DEAD before returning failure
+
+  src/kernel/proc/elf.c
+    + Removed launcher dependency on kmalloc/kfree for FRY/ELF staging buffer.
+    + Added temporary page-buffer allocation via PMM:
+      - temp_alloc_pages()
+      - temp_free_pages()
+    + All error/success paths now release staging pages.
+    + Prevents cumulative kernel heap exhaustion from repeated app launches.
+
+  src/kernel/proc/syscall.c
+    + Added SYS_SHM_FREE = 27.
+      - Frees SHM region backing pages and clears region metadata.
+    + SYS_KILL now no-ops successfully for already-dead process targets.
+
+  src/user/libc/libc.h
+    + Added fry_shm_free(int shm_id) declaration.
+
+  src/user/libc/libc.c
+    + Added SYS_SHM_FREE = 27 userspace number.
+    + Added fry_shm_free() syscall wrapper.
+
+  src/user/gui/gui.c
+    + remove_window():
+      - skips kill for already-done windows
+      - calls fry_shm_free() for owned SHM region on close
+    + draw_window_text():
+      - now renders final unterminated line (fixes blank shell prompt cases)
+    + launch_app():
+      - seeds per-window text with "Starting app..." for visible startup state
+    + process_window_output():
+      - emits visible text diagnostics when SHM alloc/map fails
+
+  src/user/apps/uptime.c
+    + Converted from stdout-only CLI output to TaterWin SHM-rendered app.
+    + Creates its own window and repaints every second.
+
+  src/user/apps/ps.c
+    + Converted from stdout-only CLI output to TaterWin SHM-rendered app.
+    + Creates its own window and refreshes process metrics every second.
+
+Build/Test run:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+Result:
+  - Build succeeded (exit 0)
+  - Output ISO: out/tatertos64v3.iso

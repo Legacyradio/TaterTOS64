@@ -1,0 +1,4 @@
+[2026-02-23 01:14:08 UTC] Step: Prevent context_switch from being inlined.
+Why: GCC inlined context_switch into sched_tick, so the asm 'ret' popped a local variable instead of a return address, causing a kernel #UD loop at RIP=0xFFFFFFFF8023FF7C.
+Change: Added __attribute__((noinline)) to context_switch so sched_tick emits a real call/ret pair.
+Files: src/kernel/proc/sched.c

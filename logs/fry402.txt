@@ -1,0 +1,49 @@
+fry402 — PCH-aware SBREG_BAR fallback probe when P2SB unhide is firmware-locked
+Timestamp: 2026-03-01 00:55:04 UTC
+
+PROBLEM:
+  Real Dell Precision 7530 diagnostics show:
+    - P2SB byte unhide failed
+    - P2SB dword unhide failed
+    - PCR PID=0xEF IOE: 0xFFFFFFFF -> 0xFFFFFFFF
+    - p2sb=0
+  This indicates the 00:1f.1 CF8 unhide path is being blocked by firmware,
+  so SBREG_BAR cannot be read from P2SB BAR and sideband reads stay unmapped.
+
+CHANGES:
+1) src/kernel/acpi/extended.c
+   - Added PCH-aware SBREG fallback probe support:
+     - New candidate bases: 0xFD000000, 0xFE000000, 0xFC000000, 0xFB000000.
+     - New helper pcr_get_fallback_bars() with PCH/LPC-aware ordering
+       (explicit handling for device 0xA30E observed on Precision 7530).
+   - Added pcr_read_dmi_lpc_regs() to read PCR[DMI] LPCIOE/LPCIOD from a
+     candidate base through UC physmap.
+   - Added pcr_dmi_regs_look_plausible() heuristic to reject obvious bad
+     reads (all-FF/all-00 and impossible EC/KBC decode combinations).
+   - Added pcr_probe_fallback_sbreg_bar() to probe and select the first
+     plausible SBREG base when P2SB unhide is locked.
+   - Updated pcr_get_sbreg_bar() signature to accept IOE/IOD hints and call
+     fallback probe on:
+       a) CF8 unhide failure path
+       b) invalid BAR read path
+   - Updated ec_mirror_pcr_ioe() to pass IOE/IOD hints into pcr_get_sbreg_bar().
+
+WHY:
+  On this hardware, the P2SB front door appears locked by firmware. Instead
+  of hard failing to SBREG default and reading 0xFFFFFFFF forever, the kernel
+  now performs a constrained, PCH-aware fallback probe to recover a usable
+  SBREG base and continue sideband mirror writes.
+
+EXPECTED NEW DIAGNOSTICS:
+  During ACPI init, look for:
+    ACPI: SBREG probe[0] bar=0x........ IOE=0x........ IOD=0x........
+    ACPI: SBREG probe selected bar=0x........
+  If P2SB remains locked, you should also see:
+    ACPI: P2SB locked via CF8, using probed SBREG_BAR 0x........
+
+TEST COMMANDS:
+  PATH=/opt/cross/bin:$PATH make -C /home/jjsako/TaterTOS64v3 src/kernel/acpi/extended.o
+  PATH=/opt/cross/bin:$PATH make -C /home/jjsako/TaterTOS64v3
+
+TEST RESULT:
+  PASS (both commands exit code 0)

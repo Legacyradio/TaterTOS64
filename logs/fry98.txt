@@ -1,0 +1,3 @@
+STEP 98
+TIME: 2026-02-20 10:20:45
+ACTION: Implemented Phase 16 extended ACPI features: added AML arg evaluation support for method calls, built ACPI extended init (_PRT routing to PCI GSI, _OSC call, battery polling, thermal polling, backlight init/control), and exposed new syscalls for backlight and battery status. Wired extended ACPI init and added build integration.

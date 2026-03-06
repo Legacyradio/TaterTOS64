@@ -1,0 +1,4 @@
+[2026-02-20 19:36:51 UTC] Step: Add startup.nsh to auto-launch GRUB from UEFI shell.
+Why: OVMF keeps dropping to the UEFI shell; startup.nsh can chain to \EFI\BOOT\BOOTX64.EFI.
+Change: build_iso.sh now writes startup.nsh in ISO root to auto-run GRUB.
+Files: build_iso.sh

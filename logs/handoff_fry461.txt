@@ -1,0 +1,89 @@
+========================================================================
+TaterTOS64v3 - Session Handoff Log (fry461)
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-02 20:42:01 UTC
+
+USER DIRECTION (LATEST)
+-----------------------
+- Investigate desktop-wide glitching after GUI/file manager addition.
+- Use second-to-last fry log as reference.
+- Implement fix and log the changes.
+- Ensure GUI/file-manager naming matches intent.
+
+REFERENCE LOG CHECK
+-------------------
+- Second-to-last `*fry*.txt` log by timestamp:
+  /home/jjsako/TaterTOS64v3/logs/handoff_fry458.txt
+- Follow-up feature add log:
+  /home/jjsako/TaterTOS64v3/logs/handoff_fry460.txt
+
+ROOT CAUSE FOUND
+----------------
+Primary issue causing "desktop freaks out/glitch refresh" behavior:
+1) Start menu app discovery was including GUI.FRY as a normal launchable app.
+   Launching that entry spawned a second desktop compositor instance.
+   Result: two GUI processes contend for framebuffer updates, causing
+   desktop-wide visual instability/flicker.
+
+Secondary stability issue fixed in same pass:
+2) fileman.c freed previous SHM IDs on resize from userspace.
+   SHM lifecycle is owned by GUI window manager path; app-side free could
+   invalidate buffers unexpectedly.
+
+Additional hardening in this pass:
+3) File Manager initial client size reduced from 920x560 to 760x460 to avoid
+   oversized startup requests on lower-resolution GOP setups.
+
+IMPLEMENTED CHANGES
+-------------------
+1) GUI start menu discovery/launch safeguards
+   File: src/user/gui/gui.c
+   - In app discovery, if an entry resolves to "GUI", remap menu name to
+     "FILEMAN" so GUI compositor is not launchable as a user app.
+   - Added FILEMAN to fallback menu set when directory listing is unavailable.
+   - In launcher path, guard against "GUI" by remapping to "FILEMAN".
+
+2) File Manager SHM handling + naming
+   File: src/user/apps/fileman.c
+   - Removed app-side `fry_shm_free(g_shm_id)` during resize handling.
+   - Changed initial size:
+     * INIT_W: 920 -> 760
+     * INIT_H: 560 -> 460
+   - Renamed visible/app title text:
+     * "File Explorer" -> "File Manager"
+
+BUILD + PACKAGING RESULTS
+-------------------------
+Commands run from /home/jjsako/TaterTOS64v3:
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make fileman gui
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Outcome:
+- Build succeeded.
+- ISO rebuilt successfully.
+- Export copy to Windows mount still failed due read-only filesystem (non-fatal).
+
+CURRENT ARTIFACT STATUS
+-----------------------
+- ISO path:
+  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- SHA256:
+  920d1053e287daf61bc41732bac02ee7baf4cd05d72a038810befc9a92e819f1
+- Size:
+  135532544 bytes
+
+FILES MODIFIED THIS SESSION
+---------------------------
+- src/user/gui/gui.c
+- src/user/apps/fileman.c
+
+VALIDATION FOCUS (NEXT BOOT)
+----------------------------
+1) Start menu should no longer present GUI compositor as a launch target.
+2) Open File Manager repeatedly; desktop should remain stable (no global flicker).
+3) Verify File Manager window title reads "File Manager".
+
+========================================================================

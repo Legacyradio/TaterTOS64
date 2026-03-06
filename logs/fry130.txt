@@ -1,0 +1,4 @@
+[2026-02-20 18:40:11 UTC] Step: Implement FAT32 init and GPT-based partition selection.
+Why: Kernel link failed on fat32_init; plan requires FAT32 to validate and mount from GPT.
+Change: Added FAT32 boot sector validation, ESP GUID lookup with fallback scan, and fat32_init to verify mount and log BPB info.
+Files: src/kernel/fs/fat32.h, src/kernel/fs/fat32.c

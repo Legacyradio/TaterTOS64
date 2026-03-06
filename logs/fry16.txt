@@ -1,0 +1,3 @@
+STEP 16
+TIME: 2026-02-20 08:32:28
+ACTION: Implemented ACPI table discovery and registry (src/kernel/acpi/tables.c and tables.h); ACPI table pointers now use physmap translation so high physical addresses are valid after paging.

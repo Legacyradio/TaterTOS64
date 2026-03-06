@@ -1,0 +1,119 @@
+fry443 — EC Rebuild: Modeled from F96-CE_4.iso Behavior
+========================================================
+Date: 2026-03-01 17:31
+Gates: G443-G455
+
+SUMMARY
+-------
+Complete EC subsystem rebuild modeled from behavioral analysis of
+Fossapup64 9.6 kernel (F96-CE_4.iso). No code copied from any
+external OS -- all TaterTOS-native implementation (Rule 3/Gate Rule 6).
+
+GATE DETAILS
+------------
+
+G443 -- EC Policy Struct (ec.h, ec.c)
+  - Added ec_policy_t struct with 12 tunable knobs:
+    ibf_obf_timeout(100K), probe_retries(5), retry_delay(2M),
+    max_consec_fail(4), acpi_enable_wait(5M), force_enable_wait(50M),
+    burst_disable_wait(1M), obf_drain_max(256), sci_query_drain_max(16),
+    try_alternate_ports(1), try_swapped_ports(1), suppress_reg_io(1)
+  - API: ec_policy_get(), ec_policy_set(), ec_policy_defaults()
+  - Static global g_ec_policy with defaults matching prior hardcoded values
+  Why: F96 kernel has 8+ runtime-tunable parameters; TaterTOS had all
+  hardcoded. Policy struct enables runtime tuning without recompile.
+
+G444 -- Policy-Driven Waits/Transactions (ec.c)
+  - All wait loops now read from g_ec_policy instead of #define constants
+  - ec_drain_obf(), ec_wait_ibf_clear(), ec_wait_obf_set() use policy
+  - ec_probe_with_retries(), ec_note_io_fail() use policy
+  - ec_try_acpi_enable(), ec_force_acpi_enable(), ec_burst_disable() use policy
+  - ec_probe() alternate/swapped ports gated by policy flags
+  - ec_read()/ec_write() _REG suppression gated by policy.suppress_reg_io
+  Why: All behavior now tunable at runtime; zero behavior change with defaults.
+
+G445 -- Diag ABI: Policy Exposure (extended.h, extended.c, libc.h)
+  - Added to fry_acpi_diag: ec_policy_timeout, ec_policy_retries,
+    ec_policy_max_fail, ec_policy_flags, ec_queries_dispatched,
+    ec_queries_dropped, ec_storm_count, ec_cand_count,
+    ec_best_cand_source, ec_events_frozen
+  Why: sysinfo/shell can now display active policy and event health.
+
+G446 -- Unified EC Candidate Model (extended.c)
+  - Added source (0=fallback, 1=ECDT, 2=CRS) and gpe_num to ec_candidate
+  - ECDT injected as candidate with source=1 and GPE from ECDT table
+  - Default fallback candidate (0x62/0x66, score=10) if no ECDT/PNP0C09
+  - Candidates sorted by score descending before iteration
+  Why: F96 kernel has EC lifecycle with candidate tracking.
+
+G447 -- ECDT Candidate Pipeline (extended.c)
+  - Hardened ECDT parsing per ACPI spec 5.2.16:
+    GAS field validation, GPE_BIT extraction (offset 64),
+    EC_ID string extraction (offset 65+), explicit reject logging
+  Why: Old code only checked address range.
+
+G448 -- DSDT/_CRS Candidate Pipeline (resources.c)
+  - Added DWord Address Space (large 0x07) I/O extraction
+  - Added QWord Address Space (large 0x0A) I/O extraction
+  Why: Some hardware _CRS uses DWord/QWord descriptors for EC ports.
+
+G449 -- Per-Candidate Bring-Up State Machine (extended.c, ec.c)
+  - Restructured ec_reg_init() into per-candidate loop:
+    For each candidate (sorted by score):
+    1. ec_setup_ports(data, cmd)
+    2. _REG(3,1) if node has it
+    3. _INI if present
+    4. Enable _GPE + install EC GPE handler (NEW)
+    5. Direct probe
+    6. Recovery methods 2-7 if probe fails
+    7. If all fail -> next candidate
+  - EC GPE handler: reads status, checks SCI_EVT, sends QR_EC,
+    enqueues query value for worker dispatch
+  Why: F96 kernel iterates candidates with full lifecycle per candidate.
+
+G450 -- Per-Candidate Recovery Scoring (extended.c)
+  - score += 100 on probe success, += 10 if status != 0xFF
+  Why: Best result tracked across all candidates.
+
+G451 -- EC Query/Event Queue (ec.c, ec.h)
+  - Ring buffer ec_query_queue[32]
+  - ec_query_worker_entry thread: dequeue -> build _Qxx name -> aml_eval()
+  - Counters: ec_queries_dispatched, ec_queries_dropped
+  Why: F96 kernel has kec_query worker; TaterTOS had no query dispatch.
+
+G452 -- Storm Guard + Freeze/Resume (ec.c, ec.h)
+  - Storm detection: >8 queries per tick -> suppress + count
+  - ec_freeze_events() / ec_unfreeze_events()
+  Why: F96 kernel has ec_storm_threshold suppression.
+
+G453 -- CRS Parser Hardening (resources.c)
+  - Added Word Address Space (large 0x08) I/O extraction
+  Why: Complete descriptor type matrix coverage.
+
+G454 -- User Diagnostics Finalization (sysinfo.c, shell.c)
+  - sysinfo: "query: disp=N drop=N storm=N frz=N cands=N"
+             "policy: tmo=N ret=N mfail=N flg=XX"
+  - shell acpibreak: same two lines added
+  Why: User can see EC event health and active policy on screen.
+
+G455 -- Full Validation Build
+  - make clean + build_iso.sh: SUCCESS
+  - ISO: out/tatertos64v3.iso exported to Windows
+  - NVMe: out/tater_nvme.img (SHELL/GUI/SYSINFO/UPTIME/PS)
+
+FILES CHANGED
+-------------
+src/kernel/acpi/ec.h         -- ec_policy_t, query/storm/freeze API
+src/kernel/acpi/ec.c         -- policy, waits, GPE handler, query queue,
+                                worker thread, storm guard, freeze
+src/kernel/acpi/extended.h   -- new diag fields
+src/kernel/acpi/extended.c   -- per-candidate state machine, ECDT hardening,
+                                candidate model, diag fill
+src/kernel/acpi/resources.c  -- DWord/Word/QWord address space IO extraction
+src/user/libc/libc.h         -- mirrored new diag fields
+src/user/apps/sysinfo.c      -- query/policy display lines
+src/user/shell/shell.c       -- acpibreak query/policy output
+
+Build commands:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh

@@ -1,0 +1,73 @@
+========================================================================
+TaterTOS64v3 - bug5 — VFS mount lifetime UAF via dangling vfs_file->mount
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-04 11:18:17 CST
+
+WHY THIS LOG
+------------
+- Reported high-severity VFS lifetime bug: mount objects could be freed while
+  open files still held raw mount pointers.
+- This created a use-after-free hazard in subsequent file operations.
+
+BUG
+---
+- Files/paths reported:
+  - `src/kernel/fs/vfs.h:37`
+  - `src/kernel/fs/vfs.c:331`
+  - `src/kernel/fs/vfs.c:383`
+  - `src/kernel/fs/vfs.c:570`
+- Root issue:
+  - `vfs_file->mount` stored a raw pointer to `struct vfs_mount`.
+  - `vfs_umount()` immediately freed mount/fs_data.
+  - Open files could continue calling read/write/close through freed mount state.
+- Impact:
+  - remount/unmount races could leave dangling `vfs_file->mount`, causing
+    memory corruption, crashes, or undefined behavior on later I/O.
+
+FIX APPLIED
+-----------
+1) Added mount lifetime state
+- File: `src/kernel/fs/vfs.h`
+- `struct vfs_mount` now tracks:
+  - `open_refs`
+  - `active`
+
+2) Deferred destroy on unmount
+- File: `src/kernel/fs/vfs.c`
+- `vfs_umount()` now:
+  - detaches mount from active list
+  - marks it inactive
+  - frees only when no open references remain
+
+3) Ref-hold on open / ref-release on close
+- File: `src/kernel/fs/vfs.c`
+- `vfs_open()` increments mount ref before calling backend `open`.
+- On open failure, ref is dropped.
+- `vfs_close()` now closes via saved mount pointer, then drops ref;
+  deferred dispose runs when refs hit zero.
+
+WHY THIS FIX
+------------
+- Prevents mount/fs backend structures from being freed while in-flight file
+  handles still depend on them.
+- Keeps behavior deterministic across unmount/remount while preserving existing
+  VFS call patterns.
+
+FILES CHANGED
+-------------
+- src/kernel/fs/vfs.h
+- src/kernel/fs/vfs.c
+
+BUILD / VERIFY COMMAND
+----------------------
+- `PATH="/opt/cross/bin:$PATH" make kernel`
+
+BUILD RESULT
+------------
+- PASS (kernel linked successfully)
+- Only pre-existing warnings observed.
+
+========================================================================

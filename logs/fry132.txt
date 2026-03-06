@@ -1,0 +1,4 @@
+[2026-02-20 18:42:18 UTC] Step: Fix SMP trampoline relocations.
+Why: Linker failed with R_X86_64_16/32 relocations because 16-bit code used absolute labels in a high-half kernel.
+Change: Replaced absolute label immediates with offsets relative to smp_trampoline.
+Files: src/drivers/smp/trampoline.asm

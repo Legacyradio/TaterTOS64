@@ -1,0 +1,27 @@
+Date: 2026-02-23 02:25
+Owner: Codex
+
+Change Summary
+- Improved PS/2 keyboard handling with shift mapping and basic extended scancode ignore.
+- Added limited PS/2 scancode debug logging (first 16 IRQs).
+- Added PS/2 mouse jitter filter, clamp, and simple smoothing.
+
+Details
+1) PS/2 keyboard (shift + debug)
+- File: src/drivers/input/ps2_kbd.c
+- Added shift-aware scancode maps.
+- Track shift press/release (0x2A/0x36, 0xAA/0xB6).
+- Ignore 0xE0 extended prefix for now.
+- Added scancode debug print for first 16 IRQs.
+
+2) PS/2 mouse smoothing
+- File: src/drivers/input/ps2_mouse.c
+- Clamp deltas to [-32, 32] and drop tiny jitter.
+- Apply simple 3/4 smoothing filter to reduce erratic cursor movement.
+
+Testing Commands (per planv3)
+PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh
+# Then sync ISO/NVMe and run QEMU with logs cleared, per your PowerShell script.
+
+Notes
+- Debug scancode print is limited to 16 entries; remove once input confirmed.

@@ -1,0 +1,7 @@
+2026-02-20 23:16:02
+Change: Added a single post-kprint marker to bracket the crash boundary.
+Why: ACPI markers are not reached; we need to confirm whether we crash immediately after kprint or just before ACPI init.
+Details:
+- main.c: added debugcon marker K_AFTER_PRINT immediately after kprint.
+Rule note: This is temporary and will be removed once the failing stage is confirmed.
+Next: rebuild ISO, run QEMU with debugcon, report last marker seen.

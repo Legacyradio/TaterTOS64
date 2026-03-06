@@ -1,0 +1,3 @@
+STEP 54
+TIME: 2026-02-20 09:43:55
+ACTION: Implemented full scheduler and process model in src/kernel/proc/sched.c/.h and process.c/.h (run queues, context switch, sleep/wake, per-CPU current, kernel/user processes), because Phase 14 requires real multitasking rather than stubs.

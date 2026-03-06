@@ -1,0 +1,3 @@
+STEP 34
+TIME: 2026-02-20 09:11:05
+ACTION: Implemented ACPI power enable/shutdown behavior in src/kernel/acpi/power.c by enabling SCI via SMI command and issuing S5 sleep type to PM1 control using AML-evaluated \\_S5, because power-off must be functional rather than stubbed.

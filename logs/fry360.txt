@@ -1,0 +1,61 @@
+fry360 — SHM lifetime fix + TaterWin binary stdout filtering + ACPI stability hardening
+Timestamp: 2026-02-27 CST
+
+Why:
+  User-reported regressions after fry359:
+  1) App windows often stayed at "Starting app..." and only came alive after many relaunches.
+  2) Random/glitchy '?' style symbols appeared in app windows/console output.
+  3) Charger unplug/replug path caused hard fault.
+
+Root causes addressed:
+  A) Shared-memory pages were being freed twice:
+     - once during process address-space teardown (vmm_destroy_address_space)
+     - again via SYS_SHM_FREE on GUI window close.
+     This corrupted PMM state and caused unstable launch/runtime behavior.
+
+  B) TaterWin protocol messages were written via SYS_WRITE(fd=1) to global text output,
+     so binary protocol bytes were rendered as garbage glyphs.
+
+  C) ACPI GPE AML execution was happening directly in SCI IRQ context,
+     which is unsafe for heavy AML evaluation and contributed to charger-event instability.
+
+Changes:
+  src/kernel/mm/vmm.h
+    + Added VMM_FLAG_NOFREE (software PTE flag).
+
+  src/kernel/mm/vmm.c
+    + vmm_destroy/free_page_table now skip pmm_free_page() for user leaf PTEs
+      marked with VMM_FLAG_NOFREE.
+
+  src/kernel/proc/syscall.c
+    + Added TaterWin message detector (magic/type parse).
+    + SYS_WRITE(fd=1): suppresses kprint/console rendering for TaterWin binary frames
+      while still preserving per-process stdout ring capture for GUI routing.
+    + SYS_FB_MAP and SYS_SHM_MAP now map pages with VMM_FLAG_NOFREE so
+      address-space teardown does not free non-owned physical pages.
+
+  src/kernel/acpi/events.c
+    + Removed AML GPE method execution from SCI IRQ path (unhandled GPEs no longer
+      execute AML in interrupt context).
+
+  src/kernel/acpi/extended.c
+    + Battery polling thread interval changed 30s -> 5s (faster status refresh without
+      relying on IRQ-time AML execution).
+    + acpi_backlight_get() now returns cached brightness (no AML eval on every userspace poll).
+
+  src/kernel/acpi/aml_types.c
+    + Increased AML object arena from 128 KiB -> 4 MiB.
+    + Added spinlock protection around arena allocator to prevent concurrent allocator races.
+
+Build/Test run:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+Result:
+  - Build succeeded (exit 0)
+  - Output ISO: out/tatertos64v3.iso
+
+Status update (2026-02-27 17:50:05 CST):
+  - Fix A (SHM double-free/lifetime): SUCCESSFUL
+  - Fix B (TaterWin binary glyph corruption): SUCCESSFUL
+  - Fix C (charger-event ACPI instability hardening): SUCCESSFUL

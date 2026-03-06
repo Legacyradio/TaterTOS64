@@ -1,0 +1,6 @@
+DATE: 2026-02-21
+TIME: 09:56:00 -0600
+DESC: Limit early identity map to handoff->boot_identity_limit instead of hard-coded 4GB.
+WHY: ACPI RSDP mapping triggers vmm_map table allocation failure ('!'); reduce early page table pressure.
+FILES:
+  - src/kernel/mm/vmm.c

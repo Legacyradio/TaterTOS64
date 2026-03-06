@@ -1,0 +1,3 @@
+STEP 18
+TIME: 2026-02-20 09:11:05
+ACTION: Expanded FADT info in src/kernel/acpi/fadt.c/.h to include SMI command and ACPI enable/disable values, because ACPI power initialization needs these fields to enable SCI per the plan.

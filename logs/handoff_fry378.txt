@@ -1,0 +1,117 @@
+========================================================================
+  TaterTOS64v3 — Session Handoff Log (2026-02-28)
+  Covers: fry378 + status notes
+========================================================================
+
+SESSION SUMMARY
+---------------
+Investigated two display bugs visible on real hardware (Dell Precision
+7530) from user-provided screenshots, fixed the root cause, and built
+a new ISO.
+
+------------------------------------------------------------------------
+FIX: fry378 — Userspace vsnprintf width/flag parsing
+------------------------------------------------------------------------
+
+SYMPTOMS (from Dell screenshots):
+  1. System Info panel: "Uptime: 2u:2u:2u" instead of "00:01:23"
+  2. GUI taskbar clock: "0:211d:211d" instead of "0:01:23"
+     (the "211d" was "2lld" — lowercase L renders as uppercase L in
+     the 5x7 font, which the user transcribed as "1")
+  3. Backlight: 0%, Battery: all zeros (separate issue, see below)
+
+ROOT CAUSE:
+  src/user/libc/libc.c vsnprintf() had NO support for format flags
+  or width specifiers. The function parsed: %[l|ll]<specifier>
+  When it hit "%02u", the '0' after '%' didn't match 'l' and didn't
+  match any format char (s/c/d/u/x/X/p/%). It fell through silently.
+  The loop then output '0', '2', 'u' as literal characters. The
+  va_arg for that value was never consumed.
+
+  Same for "%02lld" → '0' didn't match 'l', fell through, output
+  literal "02lld" (displayed as "02LLD", transcribed as "0211D").
+
+  Kernel kprint (vkformat_buf in kprint.c) already had proper
+  width/flag/length-modifier support. This was userspace-only.
+
+FIX:
+  Rewrote vsnprintf() in src/user/libc/libc.c to parse in order:
+    1. Flags: '0' (zero-pad), '-' (left-align) — loop after '%'
+    2. Width: decimal digits
+    3. Length modifiers: 'l' / 'll' — AFTER width (was before)
+    4. Format character: s/c/d/u/x/X/p/%
+
+  Added append_padded() helper for right-aligned zero/space padding.
+  Left-align supported for strings and numbers.
+  Negative numbers with zero-pad correctly emit '-' before zeros.
+
+CALLERS FIXED:
+  - sysinfo.c:26   "%02u:%02u:%02u"       → correct zero-padded time
+  - gui.c:401      "%lld:%02lld:%02lld"    → correct zero-padded time
+  - uptime.c:57    "%02u:%02u:%02u"        → correct zero-padded time
+  - sysinfo.c:29,33,38,41 "%u"/"%u%%"      → still work (width=0)
+
+BUILD: make clean + build_iso.sh → success
+ISO: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+------------------------------------------------------------------------
+CONFIRMED: Shell interaction fix (fry358-b) — WORKING
+------------------------------------------------------------------------
+
+The shell interactive typing issues reported in fry358-b are confirmed
+fixed by the user on real hardware. The three bugs were:
+
+  Bug 1: draw_taskbar() emitted raw VT100 escape sequences that
+         gfx_draw_text() rendered as literal "[s [999:1H..." text.
+         Fix: removed draw_taskbar() from shell main loop.
+
+  Bug 2: gets_bounded() had no local echo — typed chars were invisible.
+         Fix: added fry_write(1, &c, 1) echo + backspace handling.
+
+  Bug 3: GUI process_window_output() only processed when msgbuf >= 8
+         bytes (TW header size). Single echo bytes accumulated silently
+         causing 8-char display lag.
+         Fix: flush sub-8-byte remnants as plain text after TW parse.
+
+Note: fry377 later rewrote shell.c entirely as a TaterWin SHM app,
+eliminating printf/gets_bounded entirely. The fry358-b fixes were
+the intermediate solution that got the shell working before the
+full TaterWin conversion.
+
+------------------------------------------------------------------------
+KNOWN ISSUE: Battery & Backlight showing zeros
+------------------------------------------------------------------------
+
+Sysinfo panel displays:
+  Backlight: 0%
+  Battery:   0 mV  rate=0
+             remain=0  state=0
+
+This is NOT a formatting bug (the %u specifiers work fine). The ACPI
+subsystem is returning actual zeros from the Dell Precision 7530.
+
+Possible causes:
+  - Dell may require Embedded Controller (EC) queries for battery data
+    that the current ACPI AML evaluator doesn't fully handle
+  - _BST package evaluation may be returning a zeroed package if an
+    EC read times out or returns unexpected data
+  - Backlight _BCM/_BQC may need vendor-specific initialization or
+    the ACPI device path may not match Dell's actual display device
+  - fry360 changed battery polling to 5s interval and cached brightness
+    via acpi_backlight_get() — the cache may never get a non-zero value
+
+This needs investigation in a future fry step. Check:
+  - acpi_battery_get() in src/kernel/acpi/extended.c
+  - EC (Embedded Controller) read support in AML evaluator
+  - Whether _BST is actually being found and evaluated on the Dell
+
+------------------------------------------------------------------------
+NEXT STEPS
+------------------------------------------------------------------------
+  - Flash ISO to USB, boot on Dell, verify:
+      * Sysinfo uptime shows "HH:MM:SS" (not "2u:2u:2u")
+      * GUI clock shows "H:MM:SS" (not "0:211d:211d")
+      * Shell window opens and accepts typed input
+  - Investigate battery/backlight zeros (EC/ACPI)
+  - Next fry log: fry379.txt
+========================================================================

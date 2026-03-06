@@ -1,0 +1,3 @@
+STEP 32
+TIME: 2026-02-20 09:08:16
+ACTION: Updated AML executor in src/kernel/acpi/aml_exec.c to resolve NameString term args relative to the current method scope, because AML name resolution must honor parent/scope prefixes and not always default to root.

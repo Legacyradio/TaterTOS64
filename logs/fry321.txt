@@ -1,0 +1,33 @@
+[2026-02-23 02:45 UTC] Step: Enable PS/2 scancode translation; remove temporary debug.
+
+Symptom:
+  Keyboard appeared to hang or fail after typing (e.g., "run shell").
+  Serial showed scancodes like 0x13/0x93/0x16 without a clear Enter (0x1C).
+
+Root cause:
+  PS/2 controller translation was disabled in ps2_ctrl_init().
+  That yields Set-2 scancodes, but the driver uses a Set-1 keymap.
+  Result: wrong keycodes and missing Enter/Backspace mappings.
+
+Fix:
+  Enable translation bit in controller config so scancodes are converted
+  to Set-1 (matching the current keymap).
+
+Also:
+  Removed the temporary "PS2: sc=.." debug print (per planv3 rules).
+
+Files changed:
+  src/drivers/input/ps2_ctrl.c
+    - cfg |= (1 << 4)  // enable translation
+  src/drivers/input/ps2_kbd.c
+    - remove temporary scancode debug print
+
+Build:
+  PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh
+  ISO: out/tatertos64v3.iso
+  Exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+Expected after fix:
+  - Set-1 scancodes delivered.
+  - Enter (0x1C) and Backspace (0x0E) work correctly.
+  - "run shell" should spawn without input stall.

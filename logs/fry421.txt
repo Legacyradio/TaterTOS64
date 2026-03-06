@@ -1,0 +1,159 @@
+fry421 — Immediate raw EC probe + strip all suspects from init path
+=========================================================================
+Date: 2026-03-01 ~09:15 UTC
+
+CONTEXT (from fry420 BAD CASE):
+  fry420 skipped _REG entirely.  Result on Dell:
+    early=0x00  postLPC=0x00  preREG=0x00  (EC alive throughout)
+    probe: STS_FF sts=0xff try=5  rcv=0  (EC dead at probe time)
+  This was the BAD CASE: EC dies even without _REG.
+  Between preREG (alive at 0x00) and probe (dead at 0xFF), fry420 did:
+    1) eval_path_obj("GPE") — AML interpreter call
+    2) acpi_enable_gpe(111) — hardware I/O to GPE enable register
+    3) 50ms busy-wait delay
+    4) ec_reset_state() — drain OBF + 5ms delay
+  All four are suspects.
+
+WHAT THIS BUILD DOES:
+
+  1) IMMEDIATE RAW EC PROBE (PHASE 0)
+     - At the very start of ec_reg_init, BEFORE any initialization
+       (no LPC decode config, no ACPI_ENABLE SMI, no namespace scan,
+        no AML evaluation, no GPE enable)
+     - Just raw port I/O: inb(0x66) for status, then if alive:
+       outb(0x66, 0x80) [READ cmd] → outb(0x62, 0x00) [addr] → inb(0x62) [data]
+     - Inline I/O loops (100K iterations each for IBF/OBF waits)
+     - If immediate probe succeeds:
+       → ec_setup_ports(0x62, 0x66) for g_ec_ok=1
+       → Scan namespace for EC node count (display only)
+       → Hardcode GPE=111 (from 30+ Dell boots, no AML eval)
+       → RETURN — skip ALL other init (LPC, _REG, GPE, probe)
+     - If fails: store step (STS_FF/IBF_PRE/IBF_POST/OBF_TMO) and continue
+
+     WHY: 31 iterations of init-then-probe all failed.  This tests whether
+     the EC can service commands with ZERO preparation.
+
+  2) STRIP ALL SUSPECTS FROM INIT PATH
+     If immediate probe failed, continue with existing flow BUT:
+     - SKIP eval_path_obj("GPE") — no AML interpreter call at all
+       (hardcode GPE=111 from previous boots instead)
+     - SKIP acpi_enable_gpe(111) — no hardware I/O to GPE registers
+     - SKIP 50ms busy-wait delay
+     - SKIP ec_reset_state() before first probe — no drain, no delay
+     - Go STRAIGHT from preREG status check to ec_probe()
+
+     WHY: fry420 showed EC alive at preREG=0x00 but dead at probe.
+     The four operations between them are the only suspects.
+     Removing all four tests whether the probe works without them.
+
+  3) POST-SETUP STATUS CHECKPOINT
+     - New checkpoint: g_ec_post_setup_sts = inb(0x66) right after
+       ec_setup_ports() (which calls ec_try_acpi_enable).
+     - Distinguishes ec_setup_ports as a suspect separately from
+       the preREG checkpoint.
+
+     WHY: ec_try_acpi_enable sends ACPI_ENABLE to SMI_CMD if SCI_EN
+     is not set.  If SCI_EN is already set (likely on Dell UEFI),
+     it's a no-op.  But if it did fire, we'd see post_setup_sts
+     diverge from post_lpc_sts.
+
+  4) NEW DIAGNOSTIC GLOBALS (surfaced in sysinfo)
+     - g_ec_imm_step: immediate probe result
+       0=not_tried 1=STS_FF 2=IBF_PRE 3=IBF_POST 4=OBF_TMO 5=OK
+     - g_ec_imm_val: reg[0] value if step==5
+     - g_ec_imm_post_sts: port 0x66 after immediate probe attempt
+     - g_ec_post_setup_sts: port 0x66 after ec_setup_ports
+
+  5) SYSINFO DISPLAY CHANGES
+     - Line 336 now shows: IMM=<step> v=0x<val> post=0x<sts> setup=0x<sts>
+       (color: green if IMM=OK, orange otherwise)
+     - Line 352 now shows: e=0x<early> lpc=0x<postLPC> reg=0x<preREG> rcv=<N> sup=<N>
+
+FILES CHANGED:
+  src/kernel/acpi/extended.c:
+    - Added g_ec_imm_step/val/post_sts, g_ec_post_setup_sts globals
+    - Added PHASE 0 immediate raw probe block at top of ec_reg_init
+    - Added post-setup checkpoint after ec_setup_ports call
+    - Replaced fry420 skip block: removed eval_path_obj("GPE"),
+      acpi_enable_gpe(), 50ms delay, ec_reset_state() before probe
+    - First probe now goes directly to ec_probe() without reset_state
+    - Filled new fields in acpi_get_diag()
+  src/kernel/acpi/extended.h:
+    - Added ec_imm_step, ec_imm_val, ec_imm_post_sts, ec_post_setup_sts
+      to struct fry_acpi_diag
+  src/user/libc/libc.h:
+    - Added same 4 fields to user-side struct fry_acpi_diag
+  src/user/apps/sysinfo.c:
+    - Updated display: immediate probe result line + checkpoint trace line
+
+WHAT DID NOT CHANGE:
+  - ec.c: unchanged
+  - Recovery methods 2-5 (burst, SCI drain, force ACPI enable): still exist
+  - LPC decode enable: still runs (needed for port routing)
+  - ec_setup_ports + ec_try_acpi_enable: still runs
+  - Namespace scan for PNP0C09: still runs in fallback path
+
+BUILD:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+  Result: PASS — no new warnings in ec.c, extended.c, or sysinfo.c
+  Pre-existing warnings: serial_read_char, eval_object ctx, str_eq/obj_to_str,
+    vfs cast, syscall a4/a5, RWX segments, efi_loader gop_mask unused
+
+ISO:
+  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  Exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+EXPECTED ON DELL BOOT:
+
+  BEST CASE (immediate probe works):
+    Serial: "EC fry421 IMM: OK! reg[0]=0xXX"
+    Serial: "EC fry421: IMMEDIATE PROBE OK — skipping all init"
+    Sysinfo:
+      EC: OK  ports=0x62/0x66
+      IMM=OK v=0xXX post=0x00 setup=0x00
+    Battery: non-zero mV/rate/remain
+    Proves: EC is alive and serviceable BEFORE any ACPI init.
+    All 31 iterations of init code were unnecessary AND harmful.
+
+  SECOND BEST (immediate fails, stripped probe works):
+    Serial: "EC fry421 IMM: OBF timeout" (or IBF stuck)
+    Serial: "EC probe (fry421): direct probe, no reset_state"
+    Serial: "EC probe #1 OK: read reg[0x00]=0xXX"
+    Sysinfo:
+      EC: OK  ports=0x62/0x66
+      IMM=OBF v=0x00 post=0x00 setup=0x00
+      rcv=1
+    Proves: LPC decode + ACPI enable needed, but the four stripped
+    suspects (GPE eval, GPE enable, delay, reset_state) were harmful.
+
+  BAD CASE (both fail):
+    Serial: "EC fry421 IMM: OBF timeout"
+    Serial: "EC probe #1 ... status=0xFF"
+    Sysinfo:
+      EC: FAIL ports=0x62/0x66
+      IMM=OBF (or IBF_PRE/IBF_POST) v=0x00 post=0x<??> setup=0x<??>
+      rcv=0
+    Implies: EC hardware won't service READ commands regardless of
+    init state.  Status 0x00 may be a floating bus read (no device),
+    not a real EC status.
+    Next step: verify EC is actually behind 0x62/0x66 — check DSDT
+    for EC operation region addresses, try ECDT ports if different.
+
+  WEIRD CASE (immediate probe kills EC):
+    Serial: "EC fry421 IMM: OBF timeout"
+    Serial: "EC fry421 IMM post-sts=0xFF"
+    Sysinfo:
+      IMM=OBF post=0xFF
+    Implies: sending READ command (outb 0x80 to 0x66) itself kills
+    the EC.  The EC state machine can't handle commands at boot.
+    Next step: try ACPI_ENABLE SMI first (just the SMI, nothing else),
+    then immediate probe.
+
+TEST ON DELL:
+  Flash tatertos64v3.iso to USB, boot Dell Precision 7530.
+  Watch sysinfo for:
+    - IMM= line (immediate probe result)
+    - EC: OK or FAIL
+    - e=/lpc=/reg= checkpoint trace
+    - Battery values (non-zero = EC is working)

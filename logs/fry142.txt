@@ -1,0 +1,4 @@
+[2026-02-20 19:24:19 UTC] Step: Show xorriso errors during ISO build.
+Why: build_iso.sh failed after make with no error output.
+Change: Removed xorriso output redirection so errors are visible.
+Files: build_iso.sh

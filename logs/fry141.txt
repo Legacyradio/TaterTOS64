@@ -1,0 +1,4 @@
+[2026-02-20 19:24:02 UTC] Step: Mark ISO El Torito entry as UEFI platform.
+Why: OVMF still dropped to shell; El Torito entry needed platform=efi for UEFI boot.
+Change: Added -eltorito-platform efi to xorriso ISO generation.
+Files: build_iso.sh

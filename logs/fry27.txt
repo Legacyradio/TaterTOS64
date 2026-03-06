@@ -1,0 +1,3 @@
+STEP 27
+TIME: 2026-02-20 08:49:36
+ACTION: Expanded IOAPIC support in src/drivers/irqchip/ioapic.c to read ID/VER registers, compute GSI range, mask all redirection entries on init, add mask/unmask helpers, and log MADT ID mismatches, because robust IOAPIC routing needs full hardware enumeration and safe default masking before routing.

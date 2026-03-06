@@ -1,0 +1,62 @@
+2026-02-26 23:12:30 UTC
+Step: Harden .FRY discovery and launch path fallback for real-world EFI layouts.
+Why: Reported boot errors showed VFS mounting a FAT volume with no userland payload:
+- ERROR: DBG_VFS source=BLOCK have_rd=0 ...
+- ERROR: DBG_VFS picked_lba=2048 userspace_score=0
+- ERROR: DBG_VFS entry=EFI / entry=SYSTEM VOLUME
+- GUI/SHELL launch open failures (-101) on /FRY/*.FRY
+
+Changes made:
+- src/boot/efi_loader.c
+  - Expanded ramdisk .FRY search variants from 3 to 8 paths per app.
+  - Added EFI-subdir variants:
+    - \EFI\fry\NAME.FRY
+    - \EFI\FRY\NAME.FRY
+    - \EFI\BOOT\NAME.FRY
+    - \EFI\BOOT\fry\NAME.FRY
+    - \EFI\BOOT\FRY\NAME.FRY
+  - Kept existing root + /fry variants.
+
+- src/kernel/fs/vfs.c
+  - Added helper `fat32_any_path_exists(...)`.
+  - Expanded `fat32_userspace_score(...)` path coverage to include:
+    - root: /GUI.FRY, /SHELL.FRY
+    - /fry and /FRY
+    - /EFI/fry and /EFI/FRY
+    - /EFI/BOOT plus /EFI/BOOT/{fry,FRY}
+  - This reduces false "score=0" outcomes on valid userland partitions.
+
+- src/kernel/main.c
+  - Expanded boot diagnostics:
+    - extra `vfs_stat` probes for /FRY and /EFI/FRY variants
+    - extra `vfs_readdir` probes for /FRY, /EFI, /EFI/FRY, /EFI/BOOT, /EFI/BOOT/FRY
+  - Expanded launch path fallback lists for GUI/SHELL to include:
+    - /FRY/*
+    - /EFI/fry/*
+    - /EFI/FRY/*
+    - /EFI/BOOT/*
+    - /EFI/BOOT/{fry,FRY}/*
+
+- Build fingerprint update
+  - src/kernel/main.c: `TATER_BUILD_ID` -> `2026-02-26-vfsprobe2`
+  - src/boot/efi_loader.c: `TATER_BUILD_ID` -> `2026-02-26-vfsprobe2`
+  - EFI screen marker string updated to the same build ID.
+
+Validation commands run:
+1) make clean && PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+   - Exit: 0
+   - ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+   - NVMe image updated: /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+   - Non-fatal warning: Windows export copy failed due read-only /mnt/c
+
+2) strings kernel.elf | rg "K_BUILD|vfsprobe2|DBG_VFS"
+   - Contains: `K_BUILD 2026-02-26-vfsprobe2`
+
+3) strings out/isodir/EFI/BOOT/BOOTX64.EFI | rg "EFI: build|vfsprobe2|ramdisk built"
+   - Contains: `EFI: build 2026-02-26-vfsprobe2`
+
+4) strings out/tatertos64v3.iso | rg "vfsprobe2|K_BUILD|EFI: build"
+   - Contains both kernel + EFI build markers.
+
+5) mdir -i out/efiboot.img :: and mdir -i out/efiboot.img ::/fry
+   - Confirmed .FRY payload files present at root and /fry in efiboot image.

@@ -1,0 +1,9 @@
+[2026-03-03 13:18:12 CST]
+SHA256 source ISO: 8d821dd12704471bb724a90d458a1d712c9eedbe0f7b4637b5a6820b0af9620e  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+SHA256 target ISO: 8d821dd12704471bb724a90d458a1d712c9eedbe0f7b4637b5a6820b0af9620e  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+Change: add NTFS fs_type detection and on-demand /nvme mount recovery in VFS lookup.
+Why: keep NTFS mounts visible and auto-recover /nvme when it drops so readdir/apps don’t fail after partition switching.
+
+Files:
+/home/jjsako/TaterTOS64v3/src/kernel/fs/vfs.c

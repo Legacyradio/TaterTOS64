@@ -1,0 +1,53 @@
+========================================================================
+TaterTOS64v3 - fry566 - harden ACPI HID path builder bounds handling
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 00:16:30 UTC
+2026-03-05 18:16:30 CST
+
+CONTEXT
+-------
+- Review flagged potential overflow/brittleness in `_HID` path construction in
+  `create_acpi_device()`.
+
+WHY
+---
+- Original loop checked `names[dev_count][i]` before verifying destination
+  capacity, relying on upstream null-termination invariants.
+- Reordering to bounds-first and adding explicit source/destination caps makes
+  this robust even if upstream behavior changes.
+
+CHANGES APPLIED
+---------------
+- File updated:
+  - `src/drivers/acpi_bus/acpi_bus.c`
+    - Added explicit capacities for HID path assembly:
+      - `suffix_bytes = 6` (`"._HID" + NUL`)
+      - `dst_cap = sizeof(hid_path) - suffix_bytes`
+      - `src_cap = sizeof(names[dev_count]) - 1`
+    - Updated copy loop to bounds-first form:
+      `while (i < dst_cap && i < src_cap && names[dev_count][i])`
+
+EFFECT
+------
+- Prevents any possible out-of-bounds source read in the copy condition.
+- Preserves guaranteed room for appending `._HID` and trailing NUL.
+
+VALIDATION (THIS SESSION)
+-------------------------
+1) Inspect updated function region:
+   - `nl -ba src/drivers/acpi_bus/acpi_bus.c | sed -n '80,108p'`
+2) Verify scoped diff:
+   - `git diff -- src/drivers/acpi_bus/acpi_bus.c | sed -n '1,140p'`
+3) RESULT:
+   - PASS (bounds-first guards and suffix room are present)
+
+NOTES
+-----
+- No rebuild requested; per plan rule 16, no SHA-256 recorded.
+- ACPI path escaping concern is not applicable here: names are ACPI NameSeg
+  components emitted by `node_path()` in canonical dotted form.
+
+========================================================================

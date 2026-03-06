@@ -1,0 +1,6 @@
+2026-02-20 19:52:59
+Change: Allow PMM bitmap placement within usable regions that overlap kernel/boot by carving a safe subrange.
+Why: The prior overlap check could reject the only usable region (if it contained the kernel), leaving pmm_bitmap unset and causing corruption. Plan requires bitmap stored in a free region; we now pick a non-overlapping subrange inside a usable region.
+Details:
+- pmm.c: added find_bitmap_base() to choose a gap that avoids boot/kernel ranges; bitmap base now selected from a safe subrange below 4GB.
+Next: rebuild ISO and rerun QEMU to verify the non-canonical RIP fault is gone.

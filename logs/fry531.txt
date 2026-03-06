@@ -1,0 +1,61 @@
+========================================================================
+TaterTOS64v3 - fry531 — Dell validation expectations + next steps
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-05 02:46:51 UTC
+
+TEST TARGET
+-----------
+- ISO to validate on Dell Precision 7530 (UEFI):
+  `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+- Expected SHA256:
+  `5911cfb2713d9a5b332f0f6351eca20ed290716cf6511bc39e1e809437182284`
+
+EXPECTED COMMAND RESULTS (PASS CRITERIA)
+----------------------------------------
+1) `ls /`
+   - Expected app files visible:
+     `GUI.FRY SHELL.TOT SYSINFO.FRY UPTIME.FRY PS.FRY FILEMAN.FRY`
+
+2) `vfsdbg` (before touching `/nvme*`)
+   - Expected:
+     - `storage: nvme=1`
+     - `root=/ (ramdisk)`
+     - `secondary=/nvme` (or `/nvme1`)
+   - In mount list, expected at least 2 mounts:
+     - `/` as ramdisk
+     - `/nvme` (or `/nvme1`) as secondary fs
+
+3) `ls /nvme`
+   - Expected: command succeeds (directory listing or empty listing), no hang.
+
+4) `ls /nvme1`
+   - Expected:
+     - Succeeds if a second supported partition was mounted.
+     - May fail if only one supported partition exists.
+
+5) GUI launch sanity
+   - Open Start menu, launch `SHELL` then `SYSINFO`.
+   - Expected: immediate launch responsiveness; no persistent "Starting app..." stall.
+
+IF RESULTS FAIL
+---------------
+- Capture and share exactly:
+  1) Full `vfsdbg` output before `ls /nvme`
+  2) Output of `ls /nvme`
+  3) Output of `ls /nvme1`
+  4) Full `vfsdbg` output after those `ls` commands
+- This will confirm whether:
+  - recovery fired but partition candidate selection failed, or
+  - no secondary mount attempt happened.
+
+MOVE FORWARD PLAN
+-----------------
+1) Run the validation sequence above on Dell.
+2) If `secondary` is still `(none)`, patch `vfs_mount_secondary(...)` instrumentation
+   to print candidate type/LBA and per-candidate mount rc.
+3) Rebuild and retest with same checklist until `/nvme` is mounted and stable.
+
+========================================================================

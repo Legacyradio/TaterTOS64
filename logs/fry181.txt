@@ -1,0 +1,7 @@
+2026-02-20 23:42:35
+Change: Temporarily disabled framebuffer usage in kprint_init to isolate crash.
+Why: Still crashing immediately after K_BEFORE_PRINT; disabling FB output tests whether framebuffer access in kprint_init triggers the fault.
+Details:
+- kprint.c: set kcon.fb_base = 0 and commented out VMM_FB_BASE assignment.
+Rule note: Temporary debug change; will be reverted after diagnosis.
+Next: rebuild ISO, run QEMU with debugcon, report last marker seen.

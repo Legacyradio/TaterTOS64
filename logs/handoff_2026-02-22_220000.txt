@@ -1,0 +1,146 @@
+HANDOFF 2026-02-22 22:00 UTC
+=============================
+
+WHERE WE CAME FROM
+------------------
+fry308: Fixed #PF at CR2=0xFEE000B0 (LAPIC EOI). common_isr now saves/restores CR3
+        around irq_dispatch using irq_kernel_cr3 global so LAPIC MMIO is accessible
+        even when a user process CR3 is loaded. Fix: irqdesc.c, irqdesc.h, main.c.
+
+fry309: Fixed two syscall bugs:
+  Bug 1 - EFER.SCE=0: syscall_init() never set bit 0 of MSR 0xC0000080.
+          Fixed by rdmsr/wrmsr to enable SCE before setting STAR/LSTAR.
+  Bug 2 - GDT missing user code at 0x28: STAR[63:48]=0x18 makes SYSRETQ use
+          CS=(0x18+16)|3=0x2B, but gdt[5] was the TSS. Fixed by expanding
+          gdt_block.gdt[5]→gdt[6], adding user 64-bit code at gdt[5] (0x28→0x2B),
+          shifting TSS to 0x30, updating tss_load(0x28)→tss_load(0x30) in both
+          tss.c and smp.c, and changing process_start iretq to CS=0x2B.
+  Fix files: gdt.h, gdt.c, tss.c, smp.c, syscall.c, process.c.
+
+CURRENT STATE (fry309 logs)
+----------------------------
+serial.log line 132: init: shell pid=5   ← shell still launching correctly
+serial.log line 137+: #UD loop:
+  vec=6 RIP=FFFFFFFF8023FF7C CS=0x08 RF=0x10082 CR3=0x3780000
+
+  - User-mode #UD (RIP=0x400CCC CS=0x1B) is GONE → fry309 EFER.SCE fix worked
+  - Kernel-mode #UD at 0x8023FF7C CS=0x08 persists and loops forever
+
+ROOT CAUSE FOUND (fry310 needed)
+---------------------------------
+Disassembled kernel.elf. GCC inlined context_switch() into sched_tick() with -O2.
+
+context_switch has inline asm that does:
+  16 pushes → save RSP to from->saved_rsp → load to->saved_rsp → 16 pops → ret
+
+The `ret` is designed to "return" to whatever is at position 16 above the loaded RSP:
+  - For a FRESH process: setup_initial_stack put process_start there → works
+  - For RESUMING a process: expects the return address from `call context_switch`
+    to be there, so ret returns into sched_tick at the instruction after the call
+
+BUG: When GCC INLINES context_switch into sched_tick, there is NO `call` instruction.
+No call → no return address pushed onto the stack before the 16 asm pushes.
+So from->saved_rsp+128 is NOT a return address — it's a LOCAL VARIABLE inside
+sched_tick's stack frame (the slot at rbp-0x30 in sched_tick's frame).
+
+Timeline of failure:
+  1. FIRST timer interrupt fires on main boot thread (ring 0, on kernel_stack)
+     sched_tick → inlined context_switch(idle, shell):
+       - 16 pushes on main kernel_stack
+       - idle->saved_rsp saved (now points into main kernel_stack)
+       - shell's initial stack loaded, 16 pops, ret → process_start → iretq → shell ✓
+
+  2. SECOND timer interrupt fires while shell runs (ring 3, on shell kstack):
+     sched_tick → inlined context_switch(shell, idle):
+       - 16 pushes on shell kstack (shell->saved_rsp set)
+       - Load idle->saved_rsp (points into main kernel_stack's first sched_tick frame)
+       - 16 pops from main kernel_stack → RSP ends up at sched_tick's local var area
+       - `ret` pops a LOCAL VARIABLE SLOT, not a return address
+       - That slot contains 0xFFFFFFFF8023FF7C (a kernel_stack address produced by
+         some pointer arithmetic GCC spilled there during first sched_tick execution)
+       - CPU jumps to 0x8023FF7C (data in kernel_stack) → invalid bytes → #UD → loop
+
+Confirmed by disassembly at sched_tick+0x188..+0x1c9 (ffffffff80014140..80014179):
+  pushf / push rax..r15 / mov rsp, 0x10(rdx) / mov 0.10(r12), rsp
+  pop r15..rax / popf / ret
+  (context_switch inlined directly into sched_tick, no `call` instruction)
+
+THE FIX (fry310)
+-----------------
+File: src/kernel/proc/sched.c
+
+Change context_switch declaration from:
+  static void context_switch(struct fry_process *from, struct fry_process *to) {
+
+To:
+  __attribute__((noinline))
+  static void context_switch(struct fry_process *from, struct fry_process *to) {
+
+With noinline, sched_tick emits `call context_switch`. The call pushes a return
+address onto the stack. Inside context_switch:
+  call pushes RETURN_ADDR → RSP = Q - 8
+  16 asm pushes → RSP = Q - 136
+  from->saved_rsp = Q - 136
+
+When restoring from's context later:
+  load RSP = Q - 136
+  16 pops → RSP = Q - 8
+  ret → pops RETURN_ADDR (= instruction in sched_tick after `call context_switch`) ✓
+
+For a FRESH process (setup_initial_stack):
+  heap kstack top - 17 items. saved_rsp = kstack_top - 136.
+  After 16 pops: RSP = kstack_top - 8 = process_start slot.
+  ret → process_start ✓
+
+IMPORTANT: With noinline + -O2, GCC should NOT add callee-saved register pushes
+to context_switch (no function calls inside, simple control flow). VERIFY the
+disassembly of context_switch after build to confirm no extra prologue pushes.
+If GCC adds any (push rbx, push r12 etc.), setup_initial_stack needs adjustment
+or __attribute__((naked)) + full asm must be used.
+
+AFTER fry310: expected next issues
+------------------------------------
+If context_switch works, the shell should run, call syscall, get responses,
+and eventually print "TaterTOS64v3 shell\n" and "tater> " prompt.
+
+Possible remaining issues:
+- syscall_entry does NOT switch to kernel stack. It runs on the USER stack.
+  TSS.RSP0 was updated by sched_tick for the shell, but syscall instruction
+  itself does NOT load RSP from TSS.RSP0 (only IDT interrupts do). So
+  syscall_entry runs on user RSP. This is unsafe but probably works in QEMU
+  since the user stack is mapped in the shell's address space.
+- If shell's first syscall (probably SYS_WRITE to print header) works end-to-end,
+  we should see serial output from the shell.
+- Watch for any new exceptions in the log after fry310.
+
+KEY ADDRESSES
+-------------
+kernel_stack: 0xFFFFFFFF80200000..0xFFFFFFFF80240000 (256KB, .stack section)
+idle_loop:    0xFFFFFFFF80013A80
+sched_tick:   0xFFFFFFFF80013FB0
+context_switch inline asm in sched_tick: 0xFFFFFFFF80014140..0xFFFFFFFF80014179
+process_start: ~0xFFFFFFFF8000xxxx (in .text)
+shell entry:   0x400000+offset (ELF user address, ring 3)
+
+GDT after fry309:
+  0x00: null
+  0x08: kernel 64-bit code (access=0x9A, L=1)
+  0x10: kernel data (access=0x92)
+  0x18: user 64-bit code (access=0xFA, L=1) → sel 0x1B (legacy, kept for compat)
+  0x20: user data (access=0xF2) → sel 0x23
+  0x28: user 64-bit code (access=0xFA, L=1) → sel 0x2B (SYSRETQ target)
+  0x30: TSS (64-bit, 2 slots)
+
+STAR: STAR[47:32]=0x08 (SYSCALL: CS=0x08, SS=0x10)
+      STAR[63:48]=0x18 (SYSRETQ: CS=0x2B, SS=0x23) ✓
+EFER.SCE: now 1 ✓
+LSTAR: &syscall_entry ✓
+
+Files modified this session:
+  src/boot/gdt.h         - gdt[5]→gdt[6]
+  src/boot/gdt.c         - added user code at gdt[5] (0x28)
+  src/boot/tss.c         - tss_load(0x28)→tss_load(0x30)
+  src/drivers/smp/smp.c  - tss_load(0x28)→tss_load(0x30)
+  src/kernel/proc/syscall.c  - rdmsr/wrmsr to set EFER.SCE
+  src/kernel/proc/process.c  - process_start iretq CS 0x1B→0x2B
+  logs/fry308.txt, logs/fry309.txt created

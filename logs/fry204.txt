@@ -1,0 +1,3 @@
+2026-02-21 02:07:43 CST
+Change: fixed 2MB mapping helper to handle PD boundaries by mapping each 2MB page with correct pml4/pdpt/pd lookup (new vmm_map_2m) instead of overflowing a single PD.
+Why: the previous map_range_2m wrote past the PD array for large ranges (physmap/kernel), corrupting page tables and causing non-canonical RIP faults after VMM.

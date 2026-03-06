@@ -1,0 +1,28 @@
+========================================================================
+TaterTOS64v3 - fry513 — Clean rebuild after storage fixes
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 19:36:33 CST
+
+WHY THIS LOG
+------------
+- Rebuilt kernel/ISO to exercise ramdisk root stat fix and NVMe duplicate-LBA guard.
+
+COMMANDS
+--------
+PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make clean
+PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+BUILD / TEST STATUS
+-------------------
+- Build succeeded; ISO at out/tatertos64v3.iso and NVMe image at out/tater_nvme.img.
+- Export to /mnt/c/Users/jjsako/Documents/tateriso/ failed (read-only FS) — local artifacts are valid.
+
+NOTES
+-----
+- Warnings unchanged: RWX LOAD segments for user ELFs; cosmetic.
+- Ready for boot test to verify distinct /nvme (FAT32) vs /nvme1 (NTFS) and no "/" stat errors.
+
+========================================================================

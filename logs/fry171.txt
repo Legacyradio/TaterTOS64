@@ -1,0 +1,6 @@
+2026-02-20 19:38:11
+Change: Force PMM bitmap placement below 4GB during early boot.
+Why: Early page table construction relies on identity mapping of low memory; if the bitmap is placed above 4GB, writes go to unmapped memory and corrupt data/return addresses, leading to non-canonical RIP faults.
+Details:
+- pmm.c: limit bitmap candidate ranges to <4GB and clip ranges that cross 4GB.
+Next: rebuild ISO and rerun QEMU; check serial/qemu logs for progress past the non-canonical RIP fault.

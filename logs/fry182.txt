@@ -1,0 +1,7 @@
+2026-02-20 23:53:39
+Change: Added temporary debugcon markers inside kprint_init to pinpoint the crash site.
+Why: We consistently reach K_BEFORE_PRINT and then crash before K_KPRINT; the fault is inside kprint_init. These markers bracket the exact line.
+Details:
+- kprint.c: added KP_INIT_0..KP_INIT_3 via early_debug_puts.
+Rule note: Temporary debug change; will be removed after diagnosis.
+Next: rebuild ISO, run QEMU with debugcon, report last marker seen.

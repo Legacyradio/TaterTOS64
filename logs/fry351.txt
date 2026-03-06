@@ -1,0 +1,16 @@
+2026-02-27 03:07:25 UTC
+Step: Fix kernel framebuffer text path rendering spaces as '?'.
+Why: `glyph5x7_for()` treated all-zero glyphs as missing and fell back to `'?'`; space (`' '`) is intentionally all-zero.
+
+Changes made:
+- src/kernel/kprint.c
+  - In `glyph5x7_for(char c)`, added explicit space fast-path:
+    `if (uc == ' ') return font5x7[(int)' '];`
+  - Kept unknown-glyph fallback for truly unmapped all-zero entries.
+
+Validation commands run:
+1) `PATH="/opt/cross/bin:$PATH" bash build_iso.sh`
+   - Exit: 0
+   - ISO produced: `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+   - Non-fatal warning: export copy to `/mnt/c/...` failed (read-only mount).
+

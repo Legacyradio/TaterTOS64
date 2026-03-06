@@ -1,0 +1,73 @@
+========================================================================
+TaterTOS64v3 - fry573 - VMM physmap bootstrap based on UEFI map coverage
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 00:44:52 UTC
+2026-03-05 18:44:52 CST
+
+CONTEXT
+-------
+- Review flagged brittle early physmap coverage risk if RAM/ACPI/boot data
+  lives above low fixed limits.
+- Existing logic hard-capped physmap bootstrap to `early_identity_limit`,
+  which can miss high-memory regions on modern UEFI systems.
+
+WHY
+---
+- Early kernel access to handoff-backed structures must not assume a fixed
+  1 GiB/4 GiB window.
+- Physmap bootstrap should reflect actual UEFI memory descriptors so early
+  consumers (filesystem/ACPI paths) can safely touch mapped physical ranges.
+
+CHANGES APPLIED
+---------------
+- File updated:
+  - `src/kernel/mm/vmm.c`
+    - Added `PAGE_SIZE_2M` constant and used it in `map_range_2m()`.
+    - Added `is_physmap_bootstrap_type()` helper to select descriptor types
+      safe/useful for bootstrap mapping.
+    - Reworked `vmm_init()` physmap bootstrap:
+      - Iterates EFI memory descriptors.
+      - Validates page count overflow before byte conversion.
+      - Aligns each selected descriptor to 2 MiB boundaries.
+      - Maps each selected range directly into the physmap window.
+      - Tracks `mapped_max` from mapped ranges instead of clamping to
+        `early_identity_limit`.
+    - Added fallback: if descriptor-driven mapping produces no range, map
+      `[0, early_identity_limit)` as before.
+    - Set `physmap_max = mapped_max`.
+    - Increased default `early_identity_limit` from 1 GiB to 4 GiB.
+
+EFFECT
+------
+- Physmap bootstrap no longer depends on a fixed low-memory cap when a valid
+  UEFI memory map is present.
+- High physical ranges described by UEFI are now covered during early bring-up,
+  reducing early page-fault risk when touching high-memory tables/data.
+
+VALIDATION (THIS SESSION)
+-------------------------
+1) Confirm plan/log sequencing requirements and latest log id:
+   - `ls logs | rg '^fry[0-9]+\.txt$' | sed 's/^fry//; s/\.txt$//' | sort -n | tail -n 5`
+2) Inspect applied VMM changes:
+   - `git diff -- src/kernel/mm/vmm.c | sed -n '1,260p'`
+3) Inspect updated physmap bootstrap implementation:
+   - `nl -ba src/kernel/mm/vmm.c | sed -n '296,370p'`
+4) Compile verification (full clean + verbose rebuild per plan rule 12):
+   - `make clean && PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+5) RESULT:
+   - PASS (physmap bootstrap now derives coverage from UEFI descriptors and
+     no longer hard-caps to fixed low-memory limit when map data is present)
+   - PASS (full rebuild exited 0; `src/kernel/mm/vmm.c` compiled; ISO produced
+     at `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`)
+
+NOTES
+-----
+- No rebuild requested; per plan rule 16, no SHA-256 recorded.
+- Windows mount export warning observed during build:
+  `cp: cannot create regular file '/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso': Read-only file system`
+  Local ISO output generation still completed successfully.
+
+========================================================================

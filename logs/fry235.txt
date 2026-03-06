@@ -1,0 +1,6 @@
+DATE: 2026-02-21
+TIME: 10:35:00 -0600
+DESC: Guard RSDP deref with boot_identity_limit check and panic if unmapped.
+WHY: Still stops after R; need explicit failure if rsdp_phys is outside mapped physmap.
+FILES:
+  - src/kernel/acpi/tables.c

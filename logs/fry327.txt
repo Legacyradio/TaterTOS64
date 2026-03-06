@@ -1,0 +1,61 @@
+fry327 — 2026-02-25 15:52 CST
+Topic: ACPI mutex deadlock + _CRS slowness on Dell Precision 7530
+
+=== Symptom ===
+On real hardware, ACPI device enumeration:
+  - printed "ACPI dev: \_SB_.PCI0.PSDC" and then froze (hung permanently)
+  - was running much slower than QEMU during the whole enumeration loop
+
+=== Root Cause 1: Mutex deadlock (hang at PSDC) ===
+File: src/kernel/acpi/aml_exec.c  (Acquire opcode, ext==0x23)
+
+The Acquire handler misused sync_level as both:
+  - the AML-defined synchronization level (0–15, set by parser from AML)
+  - a binary lock flag (0=free, non-zero=locked)
+
+The spin was:
+  while (n->u.mutex.sync_level) {}   // BUG: waits for sync_level==0
+  n->u.mutex.sync_level = 1;         // BUG: sets it to 1 as "locked"
+
+If any mutex in the DSDT has a declared sync level > 0 (which is common;
+Dell's PSDC _CRS or a descendent calls one), this loop spins forever —
+a deadlock that freezes the machine.
+
+Fix: Since AML execution is single-threaded during boot init, Acquire
+always succeeds immediately, Release is a no-op. No spin, no state mutation.
+
+=== Root Cause 2: _CRS evaluated for every ACPI device (slowness) ===
+File: src/drivers/acpi_bus/acpi_bus.c  (create_acpi_device callback)
+
+For each of the ~50+ ACPI devices, the bus driver called:
+  aml_eval(crs_path)   // executes the device's _CRS AML method
+
+_CRS methods perform real hardware I/O: MMIO reads, PCI config reads,
+EC queries, etc. On QEMU these complete in nanoseconds. On real hardware
+each takes many microseconds — multiplied by 50+ devices = very slow.
+
+Additionally, acpi_decode_resources() issued kprint("RES: ...") for every
+resource in every device, flooding serial.
+
+Fix: Removed _CRS evaluation from the device enumeration callback entirely.
+IRQ routing is resolved separately via _PRT in acpi_extended_init — no
+need to walk _CRS here.
+
+=== Files Changed ===
+- src/kernel/acpi/aml_exec.c
+    Acquire (ext==0x23): removed spin, always return 0 (success)
+    Release (ext==0x27): removed state mutation, always return 0 (no-op)
+
+- src/drivers/acpi_bus/acpi_bus.c
+    create_acpi_device: removed entire _CRS eval + acpi_decode_resources block
+    Removed unused #include "../../kernel/acpi/resources.h"
+
+=== Build ===
+make kernel  → OK (pre-existing warning about unused ctx param, not new)
+bash build_iso.sh → OK → exported to /mnt/c/Users/jjsako/Documents/tateriso/
+
+=== Expected After Fix ===
+- ACPI device enumeration completes past PSDC without hanging
+- Enumeration speed on real hardware close to QEMU speed (no _CRS I/O)
+- All ACPI devices (PSDC and beyond) printed to serial log
+- _PRT / _OSC / battery / backlight still work (use separate paths)

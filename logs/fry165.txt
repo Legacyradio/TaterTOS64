@@ -1,0 +1,4 @@
+[2026-02-20 21:19:33 UTC] Step: Add early diagnostics in multiboot entry.
+Why: Triple-fault loop with no console visibility; need early fault capture.
+Change: Initialized COM1, emitted markers, installed minimal IDT before mode switch.
+Files: src/boot/mb_entry.asm

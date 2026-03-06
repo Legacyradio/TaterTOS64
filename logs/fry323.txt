@@ -1,0 +1,80 @@
+fry323.txt — 2026-02-23 17:05 CST
+TaterTOS64v3 session log
+
+=== M30: Standalone ISO boot (no separate NVMe image required) ===
+
+Problem:
+  The ISO alone was not bootable without a separate tater_nvme.img.
+  The kernel called vfs_init(nvme_get_block_device()) unconditionally.
+  If no NVMe was present (USB boot, QEMU without -device nvme), no VFS
+  mounted and process_launch("/GUI.FRY") failed.
+  The .fry files only lived in the NVMe image, not the ISO.
+
+Solution: ramdisk loaded by EFI loader from the EFI partition.
+
+Files changed:
+
+1) src/boot/efi_handoff.h
+   Added to struct fry_handoff:
+     uint64_t ramdisk_base;  // physical address of ramdisk (below 4GB)
+     uint64_t ramdisk_size;  // total size in bytes
+   Added: RAMDISK_MAGIC, RAMDISK_MAXFILES, struct ramdisk_entry,
+          struct ramdisk_header
+   Why: shared between EFI loader (mingw PE) and kernel (x86_64-elf).
+        Struct layout is identical on both compilers.
+
+2) src/boot/efi_loader.c
+   After handoff->rsdp_phys is set, before GetMemoryMap:
+   - Tries to read \fry\GUI.FRY, \fry\SHELL.FRY, \fry\SYSINFO.FRY,
+     \fry\UPTIME.FRY, \fry\PS.FRY from the EFI partition (same volume
+     that BOOTX64.EFI and kernel.elf live on).
+   - If any are found: allocates one contiguous EFI page block,
+     writes ramdisk_header + packed file data, stores in handoff.
+   - If none found: prints "no ramdisk (NVMe only)" and continues.
+   Why: UEFI file I/O is only available before ExitBootServices.
+        After that, no EFI calls are possible.
+
+3) src/kernel/fs/vfs.c
+   Added complete ramdisk VFS backend:
+     rd_open, rd_read, rd_write (read-only), rd_close,
+     rd_readdir, rd_stat, rd_nameeq (case-insensitive)
+   Added vfs_init_ramdisk(uint64_t phys_base, uint64_t size):
+     - Maps physical address via TATER_PHYSMAP (0xFFFF800000000000)
+     - Validates RAMDISK_MAGIC
+     - Mounts at "/"
+   Why: VFS ops interface already abstracted; adding a new backend
+        only required implementing the 6 function pointers.
+
+4) src/kernel/fs/vfs.h
+   Added: int vfs_init_ramdisk(uint64_t phys_base, uint64_t size);
+
+5) src/kernel/main.c
+   Added: int vfs_init_ramdisk(uint64_t phys_base, uint64_t size);
+   Changed VFS init (Phase 13) from:
+     vfs_init(nvme_get_block_device());
+   To:
+     if (nvme_bd) vfs_init(nvme_bd);
+     else if (handoff->ramdisk_base) vfs_init_ramdisk(...);
+     else kprint("vfs no device");
+   Why: NVMe takes priority (QEMU + NVMe image still works exactly
+        as before). Ramdisk is fallback only.
+
+6) build_iso.sh
+   After existing efiboot.img content (BOOTX64.EFI, kernel.elf):
+   Added mmd ::/fry + mcopy for all 5 .fry files.
+   Why: efi_loader reads them from \fry\ on the EFI partition.
+
+Verification:
+  mdir -i out/efiboot.img ::/fry/
+  → GUI.FRY (19848), SHELL.FRY (14480), SYSINFO.FRY (12112),
+    UPTIME.FRY (11856), PS.FRY (11808) — all present.
+
+Build: zero errors (same pre-existing warnings).
+ISO: out/tatertos64v3.iso
+Exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+Boot modes now supported:
+  1. QEMU with -device nvme  → NVMe path (unchanged)
+  2. QEMU without -device nvme → ramdisk path (new)
+  3. USB flash drive (dd iso to usb) → ramdisk path (new)
+  4. Real hardware NVMe → NVMe path (unchanged)

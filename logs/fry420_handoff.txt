@@ -1,0 +1,59 @@
+fry420 HANDOFF — Skip _REG entirely (the "just don't call it" experiment)
+=========================================================================
+Date: 2026-03-01
+ISO: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+RULES (from planv3.txt — must follow exactly)
+=========================================================================
+1) Follow the plan step by step. No shortcuts or cut corners.
+2) No "minimal" implementations; do thorough, functional work.
+3) No Linux or Windows code inside the OS.
+4) Use Edit/Write tools for code edits.
+5) Log every completed step in its own logs/fryN.txt with timestamps.
+6) If you change code, include a brief "why" in the log.
+7) Don't pause after saying you'll continue; just continue.
+8) Branding is TaterTOS64v3 (never FryOS).
+9) UEFI-only boot path.
+10) When testing, always include the necessary commands to run the test.
+11) Default rebuild: make clean && PATH="..." /bin/bash -x build_iso.sh
+12) All apps must follow TaterWin SHM protocol.
+Next fry log: fry421.txt
+
+WHAT WAS CHANGED (fry420)
+=========================================================================
+After 29 consecutive iterations (fry391-fry419) that all failed to fix
+the Dell EC, with sup=0 from fry419 proving that _REG's AML code does
+NOT do EC I/O — this build simply SKIPS the _REG(3,1) call entirely.
+
+The EC is confirmed alive (preREG=0x00) every boot.  It dies only after
+_REG runs.  So: don't run _REG.
+
+Changes:
+  1) extended.c: Entire _REG block replaced with skip block
+     - No _INI, no _REG bytecode dump, no suppression, no ECAV check
+     - GPE enable kept (harmless)
+     - Diagnostic kprints for EC status without _REG
+     - Pre-probe delay reduced from ~200ms to ~50ms
+     - Probe messages say "probe (no _REG)" instead of "recovery"
+  2) sysinfo.c: Shows "REG=SKIP" instead of "REG=0"
+
+WHAT TO LOOK FOR ON DELL BOOT
+=========================================================================
+Sysinfo panel:
+  - "REG=SKIP" confirms this build
+  - "EC: OK" = IT WORKED (EC survived without _REG)
+  - "EC: FAIL" = EC still dies (something else is killing it)
+  - "rcv=1" = normal probe succeeded
+  - "rcv=0" = all probes failed
+
+Three outcomes:
+  1) EC: OK, rcv=1, Battery shows values → _REG was the killer. Done.
+  2) EC: FAIL, sts=0xff → something before _REG kills it. Suspect
+     ec_try_acpi_enable() in ec_setup_ports(). Next: remove that too.
+  3) EC alive (sts!=0xff) but probe fails at OBF → EC needs _REG to
+     accept READ commands but _REG kills it. Need to fix AML interpreter.
+
+FILES CHANGED
+=========================================================================
+src/kernel/acpi/extended.c  — Skip _REG block, keep GPE, update messages
+src/user/apps/sysinfo.c     — REG=SKIP display

@@ -1,0 +1,63 @@
+========================================================================
+TaterTOS64v3 - fry571 - harden FAT32 cluster/sector math to 64-bit paths
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 00:32:10 UTC
+2026-03-05 18:32:10 CST
+
+CONTEXT
+-------
+- Review flagged potential 32-bit wrap risk in FAT32 cluster-to-sector math on
+  large media.
+
+WHY
+---
+- Cluster/LBA computations should remain explicitly 64-bit through multiplication
+  and addition to avoid truncation and implicit-width assumptions.
+- While patching this path, an adjacent correctness issue was found: read/write
+  skip offsets were applied only to sector 0 of a cluster, which can produce
+  out-of-bounds sector offsets when `sectors_per_cluster > 1`.
+
+CHANGES APPLIED
+---------------
+- File updated:
+  - `src/kernel/fs/fat32.c`
+    - `fat32_cluster_to_lba()` now uses explicit 64-bit cluster index math:
+      `cluster_index * (uint64_t)sectors_per_cluster`.
+    - `alloc_cluster()` loop bound widened to 64-bit (`cluster_limit`) to avoid
+      32-bit bound expression overflow.
+    - `fat32_read()` and `fat32_write()` now compute cluster-size bytes in
+      explicit 64-bit arithmetic:
+      `(uint64_t)sectors_per_cluster * (uint64_t)bytes_per_sector`.
+    - `skip` tracking widened to `uint64_t` in read/write paths.
+    - Fixed skip-within-cluster sector handling using:
+      - `skip_sectors = skip / bytes_per_sector`
+      - `skip_bytes = skip % bytes_per_sector`
+      so offsets are applied to the correct sector, not always sector 0.
+
+EFFECT
+------
+- Eliminates implicit 32-bit cluster/sector multiplication in key FAT32 I/O
+  paths.
+- Prevents bad offset math on multi-sector clusters when file position is not
+  sector-aligned.
+
+VALIDATION (THIS SESSION)
+-------------------------
+1) Arithmetic/path audit:
+   - `rg -n "cluster|lba|sectors_per_cluster|bytes_per_sector|\* fs->sectors_per_cluster|\* fs->bytes_per_sector" src/kernel/fs/fat32.c`
+2) Inspect updated code blocks:
+   - `nl -ba src/kernel/fs/fat32.c | sed -n '48,130p'`
+   - `nl -ba src/kernel/fs/fat32.c | sed -n '492,620p'`
+3) Verify scoped diff:
+   - `git diff -- src/kernel/fs/fat32.c | sed -n '1,260p'`
+4) RESULT:
+   - PASS (requested 64-bit math hardening and related skip fix present)
+
+NOTES
+-----
+- No rebuild requested; per plan rule 16, no SHA-256 recorded.
+
+========================================================================

@@ -1,0 +1,27 @@
+fry441 — Boot/test expectations and in-OS command checklist
+Date: 2026-03-01
+
+Timestamps (UTC):
+  Hash verification: 2026-03-01 22:17:08 UTC
+  Log written: 2026-03-01 22:17:14 UTC
+
+Goal:
+  Provide exact user-facing boot expectations and required shell commands
+  for validating current EC/eSPI diagnostics.
+
+Rule-15 hash verification (before writing this log):
+  source ISO  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+    54edde480987e49ad5c42776285dea6991224d682312dd8c16e4a41b7c204edf
+  target ISO  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+    54edde480987e49ad5c42776285dea6991224d682312dd8c16e4a41b7c204edf
+  Result:
+    Source and target are now identical for this artifact.
+
+Move completed:
+  - Prepared concise operator guidance:
+    - which command to run in TaterTOS64v3 shell (`acpibreak`)
+    - what output changes are expected after status-bit masking update
+    - what follow-up payload to capture.
+
+Code changes:
+  - None.

@@ -1,0 +1,82 @@
+========================================================================
+TaterTOS64v3 - fry471 — NTFS Agnostic Sector Reads + MFT Run Coverage Guard
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 01:54:24 UTC
+
+USER DIRECTION
+--------------
+- Compare current NTFS behavior against external analysis:
+  "filenames visible, size 0B, cannot open files"
+- Prioritize hardware-agnostic disk geometry handling (no Dell-specific assumptions).
+- Verify whether fry469 gates are the direct fix path.
+
+OBSERVATION
+-----------
+Symptoms (names visible, stats/open failing) are consistent with:
+1) Directory index parse succeeds ($INDEX_ROOT/$INDEX_ALLOCATION), but
+2) Per-file MFT record/stat/read path fails due to geometry/runlist issues.
+
+CHANGES IMPLEMENTED
+-------------------
+Files:
+- src/kernel/fs/ntfs.c
+- src/kernel/fs/ntfs.h
+
+1) Hardware-agnostic byte-granular partition reads
+- Added ntfs_dev_read_bytes() in ntfs.c.
+- Reads arbitrary byte ranges using bd->sector_size at runtime.
+- Removes hidden assumption that NTFS logical sectors == block-device sectors.
+
+2) Boot sector read reworked to tiered geometry validation
+- ntfs_read_boot_sector() now:
+  - reads first 512 bytes via byte-granular helper,
+  - reads BPB bytes/sector (offset 0x0B),
+  - validates bytes/sector (power-of-two, 512..4096),
+  - reads full boot sector of that size,
+  - validates 0x55AA at BPB sector tail.
+
+3) NTFS LBA reads now honor NTFS sector units explicitly
+- ntfs_read_sectors() now treats rel_lba/count in NTFS bytes_per_sector units
+  and translates to byte offsets before device read.
+- Prevents sector-size mismatch math from silently reading wrong ranges.
+
+4) MFT runlist robustness
+- Increased NTFS_MAX_RUNS from 128 -> 512 (ntfs.h).
+- ntfs_decode_data_runs() now rejects malformed/truncated runlists instead of
+  silently returning partial data.
+- Added negative-LCN and zero-run guards.
+
+5) Mount-time MFT coverage validation
+- ntfs_mount() now computes total bytes covered by decoded $MFT runs.
+- Mount fails if run coverage is smaller than $MFT real_size.
+- This prevents partial mounts that can list names but fail stat/open later.
+
+BUILD VALIDATION
+----------------
+Command:
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make -C /home/jjsako/TaterTOS64v3 kernel
+
+Result:
+- Success (kernel linked).
+- Existing linker warning unchanged: RWX LOAD segment on kernel.elf.
+
+FRY469 GATES RELATION
+---------------------
+- Gate 1 (IRQ-driven NVMe completion) and Gate 2 (scheduler-based timeout)
+  are important storage architecture work, but they are not the direct logic
+  fix for NTFS 0B/stat/open parsing failures.
+- Gate 3 (real-hardware regression matrix) is the required validation step to
+  prove this fix resolves the user-visible NTFS behavior.
+
+NEXT VALIDATION (REQUIRED)
+--------------------------
+Run on target hardware and verify:
+1) /nvme and /nvmeN readdir show entries.
+2) stat on multiple files returns non-zero expected sizes.
+3) open/read/spawn succeeds for representative files.
+4) MFT/fixup errors are absent from serial logs.
+
+========================================================================

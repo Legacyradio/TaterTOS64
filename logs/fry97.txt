@@ -1,0 +1,3 @@
+STEP 97
+TIME: 2026-02-20 10:14:32
+ACTION: Added explicit RSDP signature validation and log of RSDP physical address/revision in acpi_tables_init to ensure correct RSDP discovery before Phase 16 work.

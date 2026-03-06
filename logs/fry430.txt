@@ -1,0 +1,69 @@
+fry430 — Fix DMI PID selection for Dell 7530 (A30E) + no-write PCR diag probing
+=======================================================================
+Date: 2026-03-01 18:10:34 UTC
+
+WHAT CHANGED (why)
+=======================================================================
+- `src/kernel/acpi/extended.c`
+  - Updated `pcr_get_dmi_pid_candidates()` ordering for `LPC 8086:A30E`:
+    - Prefer `PID_DMI_CANNONLAKE (0x88)` first
+    - Keep `PID_DMI_DEFAULT (0xEF)` as fallback
+    - Keep `PID_DMI_PANTHERLAKE (0x2F)` as fallback
+  - Why: Dell Precision 7530 is Coffee Lake/Cannon Lake PCH family; primary
+    source shows DMI PID is `0x88` for this family.
+
+  - Updated PID tie-break behavior in `ec_mirror_pcr_ioe()`:
+    - Tie-break now prefers candidate[0] from runtime candidate ordering
+      instead of always preferring `PID_DMI_DEFAULT`.
+  - Why: keep PID preference hardware-aware and runtime-detected.
+
+  - Updated no-write diagnostics path (when BIOS IOE bits are already set):
+    - Replaced fixed `PID_DMI_DEFAULT` read with runtime candidate probing and
+      scoring across all DMI PID candidates.
+    - Persist selected diagnostic PID into `g_pcr_pid_used`.
+    - Added per-PID diagnostic probe logging.
+  - Why: avoid false `0xFFFFFFFF` diagnostics caused by forcing the wrong PID
+    in read-only mode.
+
+  - Updated stale comment about wrong/correct PID behavior to generic wording
+    that avoids hardcoded platform assumptions.
+  - Why: keep code comments accurate and hardware-agnostic.
+
+PRIMARY SOURCE REFERENCES
+=======================================================================
+- coreboot Cannon Lake PCR IDs (shows `PID_DMI 0x88`):
+  https://fossies.org/linux/coreboot/src/soc/intel/cannonlake/include/soc/pcr_ids.h
+- Linux P2SB driver reference for hide/unhide behavior:
+  https://codebrowser.dev/linux/linux/drivers/platform/x86/p2sb.c.html
+
+FILES TOUCHED
+=======================================================================
+- src/kernel/acpi/extended.c
+
+TESTING
+=======================================================================
+Commands run:
+1) PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/acpi/extended.o
+2) make clean
+3) PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Results:
+- 1) PASS
+- 2) PASS
+- 3) PASS (ISO built at `out/tatertos64v3.iso`)
+
+Notes:
+- Existing warnings remain unchanged (`extended.c` unused helpers, RWX link
+  warnings, and unrelated warnings in other units).
+- Windows export copy failed due read-only mount:
+  `/mnt/c/.../tatertos64v3.iso: Read-only file system`.
+
+NEXT HARDWARE CHECK
+=======================================================================
+- Boot `out/tatertos64v3.iso` on Dell Precision 7530 and capture:
+  - `PCR PID=... IOE: ...` line (expect runtime-selected PID for A30E path to
+    prefer `0x88` when scores are equal/plausible)
+  - New per-PID diag lines:
+    `ACPI: PCR[DMI] diag PID probe[...] pid=... IOE=... IOD=... score=...`
+  - `EC:` + `probe:` + battery lines for correlation
+

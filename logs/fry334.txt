@@ -1,0 +1,13 @@
+2026-02-26 03:35:44 UTC
+Step: Rebuilt boot artifacts after GPT/NVMe/VFS fixes for bare-metal validation.
+Why: Needed a fresh ISO + NVMe image carrying the filesystem and storage-path fixes before next Dell hardware boot.
+
+Build/Test commands run:
+- PATH="/opt/cross/bin:/usr/bin:/bin:$PATH" bash /home/jjsako/TaterTOS64v3/build_iso.sh
+
+Result:
+- Produced:
+  - /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+  - /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Final Windows export copy failed due read-only mount:
+  cp: cannot create regular file '/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso': Read-only file system

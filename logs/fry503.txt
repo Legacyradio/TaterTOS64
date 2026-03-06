@@ -1,0 +1,4 @@
+STEP 503
+TIME: 2026-03-03 15:10:25
+ACTION: Verified SHA-256 hashes after user rebuild and confirmed ISO content matches build outputs (kernel.elf and efiboot.img extracted from ISO match local artifacts). Why: ensures ISO integrity and avoids mismatched boot payloads.
+NOTE: Prior to this entry, I mistakenly created logs fry100.txt–fry104.txt instead of continuing the existing 500s sequence. Those files should be treated as misnumbered; this log (fry503) is the correct sequence point.

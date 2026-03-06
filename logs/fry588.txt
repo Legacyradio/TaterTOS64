@@ -1,0 +1,17 @@
+2026-03-06 01:04:30 CST
+Step: Integrate canonical packaging and verify build
+
+Completed:
+- Updated `build_iso.sh` to build `init`, package canonical `/system` and `/apps` content into `fs.img`, `efiboot.img`, and the ISO tree, and keep legacy compatibility copies in place.
+- Kept secondary writable ToTFS payload copies compatible by also including `INIT.FRY` at root while the runtime still keeps ToTFS disabled as primary root.
+- Verified with:
+  1. `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+  2. `make test-storage-fuzz`
+
+Observed:
+- ISO build completed successfully and produced `out/tatertos64v3.iso`.
+- `make test-storage-fuzz` passed.
+- `make test-elf-bounds` still fails in the current tree because the host-side test target does not link PMM symbols required by `src/kernel/proc/elf.c`.
+
+Why:
+- The runtime-layer change is incomplete unless the image builder emits the same canonical layout the kernel and userland now expect.

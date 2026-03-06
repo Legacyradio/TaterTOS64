@@ -1,0 +1,4 @@
+[2026-02-20 20:09:13 UTC] Step: Revert GRUB serial/text console change.
+Why: Change was made without explicit approval; reverting per user request.
+Change: Removed GRUB serial console directives and restored previous gfxmode/gfxpayload settings.
+Files: build_iso.sh

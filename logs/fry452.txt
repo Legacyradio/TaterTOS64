@@ -1,0 +1,97 @@
+fry452 — EC/eSPI Dell Hardware Test Checklist (reference log)
+=============================================================
+Date: 2026-03-02
+Type: Reference / checklist (no code changes)
+
+PURPOSE
+-------
+After fry443-fry446 (EC rebuild + eSPI channel init) we detoured into GUI
+work (fry447-fry451: window resize, shell jitter, uniform window handling).
+This log records exactly what to look for when booting the current ISO on
+the Dell Precision 7530 to validate the EC/eSPI fixes.
+
+The ISO to test is the one built in fry451 (or any rebuild from the same
+source tree — no EC-related code has changed since fry446).
+
+BOOT THE ISO ON DELL PRECISION 7530 VIA USB
+--------------------------------------------
+QEMU cannot test this — it has no real EC or eSPI bus.
+
+STEP 1: Open sysinfo app
+-------------------------
+Look for the "chinit:" line. Possible values:
+
+  chinit: ALREADY_RDY  — channels were already up (unlikely)
+  chinit: TOGGLED_OK   — channel toggle fixed PCRDY (best case)
+  chinit: PARTIAL      — one channel came up, other didn't
+  chinit: FAILED       — both channels still not ready
+  chinit: NOT_RUN      — eSPI not enabled or no SBREG_BAR
+
+Also note:
+  - PLT= deassrt or assrt (PLT_RST# wire state)
+  - pc=XXXXXXXX  (PC_CAP register — bit 16 = PCRDY)
+  - vw=XXXXXXXX  (VW_CAP register — bit 16 = VWRDY)
+
+STEP 2: Open shell, run "acpibreak"
+------------------------------------
+Key lines to report:
+
+  1. EC status
+     ec: ok=1 or ok=0
+     sts=0xNN (0xFF = floating bus = EC not responding)
+
+  2. Recovery method
+     recov=none        — no recovery needed (probe succeeded first try)
+     recov=espi_clear  — method 7 (eSPI W1C error clear) fixed it
+     recov=<other>     — which method worked
+
+  3. eSPI error clear
+     espi_clr run=0xNN found=N ok=N
+       pre:  pc=XXXXXXXX vw=XXXXXXXX fc=XXXXXXXX ln=XXXXXXXX
+       post: pc=XXXXXXXX vw=XXXXXXXX fc=XXXXXXXX ln=XXXXXXXX
+     Key: pre should show the sticky errors (pc=00001280 ln=0060FF00
+     from prior runs). post should be zeros if W1C clear worked.
+
+  4. Channel init
+     chinit result + PC_CAP/VW_CAP values (same as sysinfo)
+
+  5. Query/policy
+     query: disp=N drop=N storm=N frz=N cands=N
+     policy: tmo=N ret=N mfail=N flg=XX
+
+  6. Battery
+     bat: STA=0xNN
+     Non-zero STA = EC is talking and battery data is available.
+     STA=0x00 = EC still not responding.
+
+WHAT SUCCESS LOOKS LIKE
+-----------------------
+  - chinit: TOGGLED_OK (or ALREADY_RDY)
+  - ec: ok=1, sts != 0xFF
+  - bat: STA != 0x00
+  - espi_clr post registers = 0x00000000
+
+WHAT FAILURE LOOKS LIKE
+-----------------------
+  - chinit: FAILED
+  - ec: ok=0, sts=0xFF
+  - bat: STA=0x00
+  - PC_CAP bit 16 still 0 (PCRDY never set)
+
+IF IT FAILS — WHAT TO REPORT BACK
+----------------------------------
+All of the above values, plus:
+  - Any serial log output (if serial capture is available)
+  - The exact hex values for pc=/vw= from chinit line
+  - The espi_clr pre/post values
+  - The cands= count (how many EC candidates were found)
+  - The ec_best_cand_source value (0=fallback, 1=ECDT, 2=CRS)
+
+NEXT STEPS DEPENDING ON RESULT
+-------------------------------
+  Success: EC works → proceed to battery/power integration
+  Partial: Analyze which channel is stuck, adjust toggle strategy
+  Failed:  Decode raw VW register dumps from serial, consider:
+           - ACPI _REG(EmbeddedControl, 1) evaluation path
+           - SMI-based EC reset (outb to SMI_CMD)
+           - Dell-proprietary EC init investigation

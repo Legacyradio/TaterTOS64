@@ -1,0 +1,53 @@
+========================================================================
+  TaterTOS64v3 - Session Handoff Log (fry401)
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-01 00:38:49 UTC
+
+LAST FRY LOG
+------------
+logs/fry401.txt
+
+SCOPE COMPLETED
+---------------
+- Verified and retained CF8/CFC path for P2SB unhide/read in ACPI extended logic.
+- Added safety refinement: re-hide now uses read-modify-write on byte 0xE1,
+  setting only the hide bit instead of blasting literal 0x01.
+- Confirmed compile of changed unit:
+  PATH=/opt/cross/bin:$PATH make -C /home/jjsako/TaterTOS64v3 src/kernel/acpi/extended.o
+
+USER REQUEST CAPTURED
+---------------------
+- Build command requested and provided:
+  PATH=/opt/cross/bin:$PATH make -C /home/jjsako/TaterTOS64v3
+
+- ISO build command (rule-11 flow):
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+RULES (must follow exactly)
+=====================================================================
+1) Follow the plan step by step. No shortcuts or cut corners.
+2) No “minimal” implementations; do thorough, functional work.
+3) No Linux or Windows code inside the OS.
+4) Use apply_patch for code edits.
+5) Log every completed step in its own logs/fryN.txt with timestamps.
+6) If you change code, include a brief “why” in the log.
+7) Don’t pause after saying you’ll continue; just continue.
+8) Branding is TaterTOS64v3 (never FryOS).
+9) UEFI-only boot path.
+10) When testing, always include the necessary commands to run the test.
+11) Default rebuild mode is clean + verbose:
+    make clean
+    PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+12) All apps built and run must follow the TaterWin protocol.
+
+NEXT EXPECTED ACTIONS
+---------------------
+1) Build full tree with:
+   PATH=/opt/cross/bin:$PATH make -C /home/jjsako/TaterTOS64v3
+2) Build ISO with rule-11 command block above.
+3) Boot on target hardware and check ACPI logs for CF8 P2SB unhide + SBREG_BAR.
+========================================================================

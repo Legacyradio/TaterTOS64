@@ -1,0 +1,30 @@
+fry363 — Bare-metal app launch stall fix (BSP-only runnable queue)
+Timestamp: 2026-02-27 17:23:28 CST
+
+Why:
+  User reports persisted: app often needs repeated open attempts ("7-8 times")
+  before it starts doing anything.
+
+Root cause (code-path):
+  - sched_add() load-balanced new processes across all detected CPUs.
+  - lapic_timer handler only calls sched_tick() on BSP (CPU0).
+  - Result: processes queued to AP runqueues do not get scheduled, so GUI windows
+    remain at "Starting app...".
+
+Change:
+  src/kernel/proc/sched.c
+    + sched_add() now pins new runnable processes to CPU0 (BSP queue).
+    + Added comment documenting BSP-only scheduling requirement until per-CPU
+      scheduling/syscall-path support is completed.
+
+Build/Test run:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+Result:
+  - Build succeeded (exit 0)
+  - ISO: out/tatertos64v3.iso
+  - Export to /mnt/c/Users/jjsako/Documents/tateriso failed (read-only filesystem)
+
+Status update (2026-02-27 17:50:05 CST):
+  - Bare-metal app-launch stall fix status: SUCCESSFUL

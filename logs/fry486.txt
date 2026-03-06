@@ -1,0 +1,37 @@
+========================================================================
+TaterTOS64v3 - fry486 — Dell runtime test: /nvme freeze on ls
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 14:38:27 UTC
+
+TEST CONDITIONS
+---------------
+- Hardware-only validation on Dell Precision 7530 (i5-8300H).
+- BIOS revision/date not captured in this test.
+
+RESULTS / USER REPORT
+---------------------
+- Running `ls /nvme` causes the system to freeze solid.
+- The shell stays open and other apps continue to run.
+- `ls /nvme1` is not available (path not present).
+
+BUILD / ARTIFACT VALIDATION
+---------------------------
+- No rebuild performed in this step.
+
+HASH / FRESHNESS (Rule 15)
+--------------------------
+Source ISO:
+- 2026-03-03 02:42:24.891312411 -0600  135536640 bytes
+- SHA256: 31b07fa0ac303363ce83faeaa370deef5aa4b397c851d0727926bea597dea2f3
+- Path: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+Target/export ISO:
+- 2026-03-03 08:11:10.798578400 -0600  135536640 bytes
+- SHA256: 31b07fa0ac303363ce83faeaa370deef5aa4b397c851d0727926bea597dea2f3
+- Path: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- Note: hashes match; export appears up to date.
+
+========================================================================

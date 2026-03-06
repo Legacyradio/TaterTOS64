@@ -1,0 +1,70 @@
+[2026-02-23 00:30 UTC] Step: Fix mouse byte theft by keyboard fallback + cursor starts at center.
+
+Symptom:
+  Mouse worked for ~1 second (hover highlighted briefly), then stopped entirely.
+  No cursor visible on screen.
+
+Root cause 1 — keyboard fallback steals mouse bytes:
+  ps2_kbd_read() has a fallback polling loop that runs when the IRQ key buffer
+  is empty (n==0).  The loop did:
+    if (inb(0x64) & 0x01) { sc = inb(0x60); ... }
+  It checked OBF (bit 0) but NOT AUXB (bit 5).  AUXB=1 means the byte in the
+  output buffer came from the auxiliary (mouse) port.
+
+  During SYS_READ syscall, IF=0 (SFMASK clears it).  A mouse IRQ12 is pending
+  while the mouse byte sits in the PS/2 output buffer.  The keyboard fallback
+  runs and finds OBF=1 — but the byte is a mouse byte (AUXB=1).  It reads
+  0x60 anyway, stealing the byte.  The mouse IRQ handler fires later but the
+  buffer is empty.
+
+  The GUI calls getchar_nb() (→ SYS_READ → ps2_kbd_read) 60 times/second.
+  The mouse generates ~300 bytes/second at 100Hz (3 bytes/packet).  The
+  fallback loop attempts up to 8 reads per call → up to 480 steal attempts/sec.
+  This corrupted the 3-byte packet accumulation in ps2_mouse_irq: byte 1 of
+  each packet was stolen, mouse_buf[0] bit3 check failed, packets discarded.
+  After a handful of corrupted packets, mouse appeared completely dead.
+
+Fix (ps2_kbd.c):
+  Read status byte once into a local variable.  If OBF=0: no data, skip.
+  If AUXB=1: data is from the mouse port — do NOT read 0x60 (leave it for
+  the IRQ12 handler).  Only read 0x60 when OBF=1 AND AUXB=0 (keyboard byte).
+
+Root cause 2 — cursor starts at (0,0):
+  ps2_mouse_init() set mouse_x = mouse_y = 0.  The GUI maps this to pixel
+  (0, 0) on the first frame.  The crosshair at (0,0) with CUR_R=4 only shows
+  the positive-direction arms (d=0..4), giving a 9-pixel L-shape in the
+  top-left corner of the title bar.  Easy to miss; user reported "no cursor."
+
+Fix (ps2_mouse.c):
+  Initialize mouse_x = mouse_y = 2048 (centre of the 0-4095 virtual canvas).
+  GUI maps this to (screen_w/2, screen_h/2): cursor appears dead-centre on
+  the first frame, clearly visible as a white crosshair on the dark background.
+
+Why both issues mattered together:
+  The mouse briefly worked (a few unstealt packets early in the session when
+  IF=1 periods allowed IRQ12 to fire before the fallback ran), so the user
+  saw a hover flicker.  Then the fallback started winning the race → dead mouse.
+  The cursor was at (0,0) the whole time, not centre, so it was never seen.
+
+Files changed:
+  src/drivers/input/ps2_kbd.c
+    - Fallback loop: read status into `st = inb(0x64)` once.
+    - Check `if (!(st & 0x01)) continue;`  (no data — skip)
+    - Check `if (st & 0x20) continue;`     (AUXB=1 — mouse byte, don't touch)
+    - Only then read `inb(0x60)` as keyboard scancode.
+
+  src/drivers/input/ps2_mouse.c
+    - ps2_mouse_init(): mouse_x = 2048; mouse_y = 2048; (was 0, 0)
+    - Updated init print: "PS2_MOUSE: init ok x=2048 y=2048"
+
+Build:
+  make clean all && ./build_iso.sh -> OK (warnings only, zero errors)
+  ISO: out/tatertos64v3.iso
+  Exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+Expected after fix:
+  - Cursor visible at centre of screen on first frame (white crosshair).
+  - Mouse movement tracked continuously without byte theft.
+  - Hover highlights persist as mouse stays over app rows.
+  - Keyboard input still works (fallback only reads confirmed keyboard bytes).
+  - Serial: "PS2_MOUSE: init ok x=2048 y=2048"

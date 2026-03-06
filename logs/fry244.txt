@@ -1,0 +1,29 @@
+Handoff Follow-up - 2026-02-21
+
+Summary
+- Investigated new crash after reaching deep boot markers (debugcon: kgtubpvSCS0123PTR).
+- Found stack overflow corrupting IDT, leading to non-canonical RIP in QEMU (#GP/#DF loop).
+
+Evidence
+- QEMU log shows RIP = 0007fdffffffff80 and RSP = ffffffff80016e90 during #GP/#DF loop.
+- IDT base is ffffffff80016e20 (nm: idt at 0xffffffff80016e20).
+- Kernel stack is 64 KiB: kernel_stack [0xffffffff80019ea0 .. 0xffffffff80029ea0].
+- RSP is below kernel_stack base by ~0x3010, indicating stack overflow into IDT region.
+
+Changes
+1) Increased kernel stack size from 64 KiB to 256 KiB.
+   - src/kernel/main.c: kernel_stack[262144]
+   - kernel_linker.ld: __kernel_stack_top = kernel_stack + 262144
+   - Why: prevent stack overflow from ACPI/AML and early init phases corrupting IDT.
+
+Test Commands (run after rebuild)
+PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh
+qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+  -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+  -cdrom ./out/tatertos64v3.iso \
+  -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+
+tail -n 50 logs/debugcon.log
+tail -n 50 logs/serial.log
+tail -n 100 logs/qemu.log

@@ -1,0 +1,98 @@
+fry418 - EC pre-_REG probe removal (Option B) - Dell EC desync fix
+===================================================================
+Date: 2026-03-01 06:35 UTC
+
+DIAGNOSIS (from Dell Precision 7530 bare-metal photos):
+  early=0x00     (port 0x66 reads 0x00 = EC alive BEFORE init)
+  postLPC=0x??   (after LPC decode config)
+  preREG=0x00    (port 0x66 reads 0x00 = EC still alive before _REG)
+  probe: STS_FF sts=0xff try=5  (EC dead DURING probe = after commands sent)
+
+  The PCR sideband mirror was correctly skipped (fry417 fix), and the PID
+  question (0xEF vs 0x88) is now irrelevant because no PCR write occurs
+  when BIOS already has IOE bits set.
+
+  Yet EC still dies. The EC is alive (0x00) right up until ec_probe()
+  sends the first outb(0x66, 0x80) READ command.
+
+ROOT CAUSE:
+  The pre-_REG ec_probe() in Step 3 of ec_reg_init() sends:
+    outb(cmd_port, 0x80)   ← EC READ command
+    outb(data_port, 0x00)  ← address byte
+  BEFORE _REG(3,1) tells the Dell EC firmware that the OS region handler
+  is active. On Dell Precision 7530, the EC firmware gates command
+  acceptance on the _REG handshake. Sending commands before _REG desyncs
+  the EC state machine, causing all subsequent port reads to return 0xFF.
+
+  This is consistent with the ACPI spec: _REG(EmbeddedControl, Connect)
+  must be called before the OS accesses the EC operation region. Linux
+  follows the same order: acpi_ec_setup() → _REG → then probe.
+
+  The pre-_REG probe was added as a "diagnostic baseline" but it's
+  actively harmful on Dell hardware because it sends real EC commands
+  (outb to both ports) before the handshake.
+
+FIX (Option B):
+  Removed ec_reset_state() and ec_probe() calls BEFORE _REG(3,1).
+  Replaced with status-read-only diagnostic (inb only, no outb).
+
+  Before (old Step 3):
+    g_ec_pre_reg_sts = inb(cmd_port);        // harmless read
+    ec_reset_state();                         // reads only, mostly harmless
+    ec_probe() → outb(0x66, 0x80) + outb(0x62, 0x00)  ← KILLS EC ON DELL
+
+  After (new Step 3):
+    g_ec_pre_reg_sts = inb(cmd_port);        // harmless status read
+    if (g_ec_pre_reg_sts != 0xFF)            // status-only baseline check
+        g_ec_pre_reg_probe_ok = 1;           // EC alive = good baseline
+    // NO ec_reset_state(), NO ec_probe() before _REG
+
+  Flow is now: status read → _REG(3,1) → delay → recovery probes.
+  The post-_REG recovery methods (1-5) remain unchanged.
+
+FILES CHANGED:
+  src/kernel/acpi/extended.c  - Removed ec_reset_state() + ec_probe()
+                                 calls before _REG(3,1) in ec_reg_init().
+                                 Replaced with inb-only status check.
+                                 Added detailed comment explaining why
+                                 pre-_REG commands are forbidden on Dell.
+
+WHY:
+  The pre-_REG probe was the remaining code path that sent outb() to EC
+  ports before the _REG handshake. With fry417 skipping the PCR mirror
+  write and this fix removing the pre-_REG probe, there are now ZERO
+  outb() calls to EC ports before _REG(3,1). The EC should stay alive
+  through the entire init sequence.
+
+BUILD:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+  Result: PASS - no new warnings in extended.c
+
+ISO:
+  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  Exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+EXPECTED ON DELL AFTER FLASH:
+  - early=0x00    (EC alive before init, unchanged)
+  - postLPC=0x00  (EC alive after LPC config, unchanged)
+  - preREG=0x00   (EC alive before _REG, unchanged)
+  - preProbe=1    (status-only baseline says EC alive)
+  - _REG(3,1) executes without prior EC desync
+  - Post-_REG recovery method 1 (normal probe) should succeed
+  - rcv=1         (normal probe, no aggressive recovery needed)
+  - EC: OK ports=0x62/0x66
+  - Battery: non-zero mV/rate/remain
+  - Batt: STA != 0x00000000
+
+  If recovery method 1 still fails (unlikely but possible):
+  - Methods 2-5 will try burst mode, SCI drain, force ACPI_ENABLE
+  - The key difference is that _REG has run first, so the EC firmware
+    should be in command-accepting mode for ALL recovery methods
+
+TEST ON DELL:
+  Flash tatertos64v3.iso to USB, boot Dell Precision 7530
+  Watch sysinfo panel for:
+    early=0x00 postLPC=0x00 preREG=0x00 preProbe=1 rcv=N
+    EC: OK ports=0x62/0x66
+    Battery: >0 mV

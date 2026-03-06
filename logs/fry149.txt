@@ -1,0 +1,4 @@
+[2026-02-20 19:32:07 UTC] Step: Fix mformat usage for EFI image.
+Why: mformat -F 32 is invalid syntax; build failed during ESP formatting.
+Change: Use mformat -F :: (auto FAT selection) for efiboot.img.
+Files: build_iso.sh

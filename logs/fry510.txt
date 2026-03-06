@@ -1,0 +1,36 @@
+========================================================================
+TaterTOS64v3 - fry510 — NVMe mount root probe + /nvme auto-remount guard
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 19:22:00 CST
+
+WHY THIS LOG
+------------
+- Added protection against /nvme turning into “not a directory” after navigating to other NVMe partitions.
+
+CHANGES
+-------
+- Kernel VFS: probe secondary mounts (ToTFS/FAT32/NTFS) before publishing them; reject if root stat/readdir fails.
+- Kernel VFS: on path resolution, if /nvme root stops presenting as a directory, auto-umount and re-mount from the NVMe block device, then retry lookup.
+
+FILES
+-----
+- src/kernel/fs/vfs.c
+
+COMMANDS
+--------
+PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/fs/vfs.o
+
+BUILD / TEST STATUS
+-------------------
+- Kernel object builds clean.
+- Full kernel/ISO not rebuilt yet (pending user go-ahead).
+- No runtime testing yet.
+
+NEXT STEPS
+----------
+- Rebuild kernel/ISO and rerun File Manager navigation between /nvme and /nvme1 to confirm the guard prevents the regression.
+
+========================================================================

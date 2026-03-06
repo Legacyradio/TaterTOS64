@@ -1,0 +1,93 @@
+========================================================================
+  TaterTOS64v3 - Session Handoff Log (2026-02-28)
+  Covers: fry396
+========================================================================
+
+TIMESTAMP
+---------
+2026-02-28 21:38:02 UTC
+
+LAST FRY LOG
+------------
+logs/fry396.txt
+
+========================================================================
+RULES (STRICTLY, ABSOLUTELY NON-NEGOTIABLE - MUST FOLLOW EXACTLY)
+========================================================================
+1) Follow the plan step by step. No shortcuts or cut corners.
+2) No "minimal" implementations; do thorough, functional work.
+3) No Linux or Windows code inside the OS.
+4) Use apply_patch for code edits.
+5) Log every completed step in its own logs/fryN.txt with timestamps.
+6) If you change code, include a brief "why" in the log.
+7) Don't pause after saying you'll continue; just continue.
+8) Branding is TaterTOS64v3 (never FryOS).
+9) UEFI-only boot path.
+10) When testing, always include the necessary commands to run the test.
+11) Default rebuild mode is clean + verbose:
+    make clean
+    PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+12) All apps built and run must follow the TaterWin protocol.
+
+========================================================================
+WHAT CHANGED THIS SESSION
+========================================================================
+1) EC selection hardening for multi-PC compatibility:
+   - Replaced first-match PNP0C09 behavior with full candidate scan.
+   - Scores EC candidates by present/_STA, _CRS ports, _REG, _GPE, _INI.
+   - Logs all candidate paths/scores and selects strongest node.
+
+2) EC port selection and retry improvements:
+   - Added robust _CRS port-pair heuristics:
+     - prefer explicit 0x62/0x66 if present;
+     - otherwise prefer pairs separated by +4;
+     - fallback to first descriptors.
+   - Added post-_REG _CRS re-evaluation and port switch if improved ports appear.
+   - Added safe swapped-order legacy probe fallback in ec_probe()
+     for +4 pairs (primary and alternate 0x68/0x6C).
+
+3) Safety constraints preserved:
+   - No broad unsafe I/O probing.
+   - Existing LPC write gating and non-target safety behavior remain intact.
+
+FILES TO REVIEW
+---------------
+- src/kernel/acpi/extended.c
+- src/kernel/acpi/ec.c
+- logs/fry396.txt
+
+BUILD / TEST STATUS
+-------------------
+Commands run:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Result:
+  PASS (both commands exit code 0)
+  ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  NVMe image: /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+  Note: copy to /mnt/c/... failed in this environment (read-only FS).
+
+CURRENT STATE
+-------------
+- Prior Dell diagnostics showed EC probe failure:
+  EC: FAIL ports=0x62/0x66
+  probe: STS_FF sts=0xff try=5
+  EC src: default
+- New build now adds stronger EC node/port selection and additional safe fallbacks.
+- Hardware validation is still required on Dell Precision 7530.
+
+NEXT ACTION
+-----------
+Boot updated ISO on Dell 7530 and capture sysinfo ACPI lines:
+1) All "ACPI: EC cand[...]" lines
+2) "ACPI: selected EC node ..."
+3) "EC src: ..."
+4) "probe: ... sts=... try=..."
+5) "LPC ...", "LPC80 ...", "LPC84/LPC88 ..."
+
+These values determine whether EC failure is still port-selection related
+or a deeper firmware-gated EC visibility issue.
+
+NEXT FRY LOG: fry397.txt
+========================================================================

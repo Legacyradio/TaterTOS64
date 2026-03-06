@@ -1,0 +1,3 @@
+2026-02-21 02:49 - Step: Trace pmm_alloc_page_below call/success.
+Why: L1F1 indicates free low pages exist, yet alloc_table fails; need to confirm pmm_alloc_page_below is called and returns 0 vs success.
+Change: src/kernel/mm/pmm.c prints 'c' on entry and 'C' on successful allocation in pmm_alloc_page_below (keeps 'x' on failure). Will remove after diagnosis.

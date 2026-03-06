@@ -1,0 +1,7 @@
+2026-02-21 00:33:03
+Change: Replaced K_STOP_HERE with inline 0xE9 output to avoid a function call.
+Why: K_BEFORE_PRINT appears but K_STOP_HERE does not; inline outb tests whether stack corruption prevents the next function call.
+Details:
+- main.c: after K_BEFORE_PRINT, emit 'Z' to port 0xE9 via inline asm and halt.
+Rule note: Temporary debug change; will be removed after diagnosis.
+Next: rebuild ISO, run QEMU with debugcon, confirm whether 'Z' appears.

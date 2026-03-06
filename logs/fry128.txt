@@ -1,0 +1,4 @@
+[2026-02-20 18:37:06 UTC] Step: Implement vfs_size and wire file size on open.
+Why: ELF loader needs VFS file size to read .fry payload correctly.
+Change: Populate vfs_file.size from FAT32 file and added vfs_size accessor.
+Files: src/kernel/fs/vfs.c

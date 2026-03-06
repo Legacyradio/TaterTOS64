@@ -1,0 +1,15 @@
+DATE: 2026-02-21
+TIME: 11:55:38 -0600
+DESC: Record validation commands for UEFI-only boot test after paging-limit cleanup.
+WHY: Rule requires explicit runnable test commands with each testing step.
+FILES:
+  - build_iso.sh
+  - logs/serial.log
+  - logs/qemu.log
+CMDS:
+  - make clean all
+  - ./build_iso.sh
+  - qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd -cdrom ./out/tatertos64v3.iso -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+  - tail -n 200 logs/serial.log
+  - tail -n 200 logs/qemu.log
+

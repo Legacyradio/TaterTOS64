@@ -1,0 +1,4 @@
+[2026-02-22 08:26:34 UTC] Step: Make NVMe CQ reads volatile.
+Why: Completion entries are DMA-written; without volatile reads the compiler can cache CQ status and miss completions, causing admin timeouts.
+Change: Declare admin/io CQs as volatile and read CQ entries via volatile pointers.
+Files: src/drivers/storage/nvme.c

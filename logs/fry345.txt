@@ -1,0 +1,15 @@
+2026-02-26 22:40:59 UTC
+Step: Update persistent memory/handoff file with latest resume state before reboot.
+Why: User requested a durable resume point so next session does not lose where debugging left off.
+
+Changes made:
+- CODEX_BRIEFING.md
+  - Added `Current Resume Point (2026-02-26)` section with:
+    - latest completed implementation log reference (`fry344`)
+    - exact root cause being debugged
+    - exact VFS partition-selection fix summary
+    - required post-reboot verification markers
+  - Updated `Next fry log` pointer to `fry346.txt`.
+
+Validation:
+- Documentation update only; no build/test command required for this step.

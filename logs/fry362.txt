@@ -1,0 +1,40 @@
+fry362 — Session log: rule enforcement handoff + current turn summary
+Timestamp: 2026-02-27 16:54:56 CST
+
+Why:
+  User requested explicit handoff guidance that plan rules are non-negotiable,
+  plus a session log entry for this turn.
+
+Rule enforcement reference created:
+  logs/handoff_2026-02-27_165456_rules_nonnegotiable.txt
+  - Points directly to /home/jjsako/TaterTOS64v3/planv3.txt lines 17-31.
+  - States rules are 100% non-negotiable and must be followed exactly.
+
+This session (technical summary):
+  1) SHM / process-lifecycle stability fixes
+     - Prevented user address-space teardown from freeing non-owned SHM/FB pages
+       via VMM_FLAG_NOFREE handling.
+     - Mapped SHM/FB user pages with NOFREE marker to avoid PMM double-free.
+
+  2) GUI/TaterWin protocol cleanup
+     - Filtered TaterWin binary protocol packets from text console rendering path
+       (still captured in per-process output ring for GUI routing).
+
+  3) ACPI robustness and forward progression
+     - Replaced IRQ-time AML GPE execution shortcut with deferred GPE worker model:
+       SCI IRQ captures/acks and queues; worker executes _Lxx/_Exx in process context.
+     - Increased AML object arena and added allocator locking to reduce allocator races.
+     - Adjusted battery refresh cadence for more responsive status polling.
+
+Build/Test run:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+Result:
+  - Build succeeded (exit 0)
+  - ISO: out/tatertos64v3.iso
+
+Status update (2026-02-27 17:50:05 CST):
+  - SHM/process-lifecycle fixes: SUCCESSFUL
+  - GUI/TaterWin protocol cleanup: SUCCESSFUL
+  - ACPI deferred worker progression path: SUCCESSFUL

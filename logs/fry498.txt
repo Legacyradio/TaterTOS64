@@ -1,0 +1,37 @@
+========================================================================
+TaterTOS64v3 - fry498 — Clean rebuild + ISO output
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 17:38:50 UTC
+
+WHY THIS LOG
+------------
+- User requested full rebuild using clean + verbose default commands.
+
+HASH / FRESHNESS (Rule 15)
+--------------------------
+Source ISO:
+- 2026-03-03 11:38:29.520818777 -0600  135559168 bytes
+- SHA256: 0ea11dd942846ab06dd822e39a65543c62073f48a8fba880f226ed1361a73f2d
+- Path: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+Target/export ISO:
+- 2026-03-03 10:27:48.905109600 -0600  135553024 bytes
+- SHA256: a42aea46242e19d1b018ed66b01f6316e0d3c8abab5a48f3ab26e08ee39d0a28
+- Path: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- Note: export failed (read-only filesystem), so target hash is stale.
+
+COMMANDS
+--------
+make clean
+PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+BUILD OUTPUT NOTES
+------------------
+- Build completed successfully with existing warnings (unused functions, RWX segments).
+- ISO written to /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso.
+- Export copy to /mnt/c/Users/jjsako/Documents/tateriso failed: read-only filesystem.
+
+========================================================================

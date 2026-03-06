@@ -1,0 +1,4 @@
+[2026-02-20 18:40:20 UTC] Step: Link SMP trampoline object into kernel.
+Why: Linker failed on smp_trampoline symbols because trampoline.o was not in KERNEL_OBJS.
+Change: Added src/drivers/smp/trampoline.o to kernel object list.
+Files: Makefile

@@ -1,0 +1,79 @@
+========================================================================
+TaterTOS64v3 - fry473 — Fileman /nvme1 Freeze Fix (IRQ + NVMe + FAT32)
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03
+
+PROBLEM CONTEXT (from latest logs + runtime symptom)
+---------------------------------------------------
+- Symptom: clicking a secondary NVMe mount entry (ex: /nvme1 FAT32) could lock
+  the UI/clock.
+- Relevant prior logs: fry465..fry472.
+  - fry469 gates flagged polling completion + spin-loop timeout risks.
+  - fry470/fry471 focused NTFS correctness and geometry hardening.
+  - freeze report still present during File Manager navigation to secondary mount.
+
+ROOT CAUSE CHAIN
+----------------
+1) Syscall path kept IF masked for entire syscall body, so long storage syscalls
+   prevented timer IRQ progression (visible as frozen clock/UI).
+2) NVMe completion/readiness waits were pure spin loops with no time-bounded
+   wall-clock timeout and no cooperative yield when a process context exists.
+3) FAT32 directory/data cluster walks had no loop bound; a cyclic/corrupt FAT
+   chain could trap readdir/stat/read/write in unbounded traversal.
+
+CHANGES IMPLEMENTED
+-------------------
+1) syscall IRQ window during dispatch
+   File: src/kernel/proc/syscall.c
+   - In syscall_entry asm:
+     - `sti` before `call syscall_dispatch`
+     - `cli` immediately after return, before SYSRET frame restore
+   - Keeps timer/scheduler alive during slow syscalls while preserving controlled
+     return-state handling.
+
+2) NVMe bounded, hardware-agnostic waits
+   File: src/drivers/storage/nvme.c
+   - Added HPET-based elapsed-time helpers and timeout constants.
+   - poll_cq():
+     - timeout by wall clock (fallback spin cap if HPET unavailable)
+     - `pause` in loop
+     - periodic `sched_yield()` when running in process context
+   - nvme_wait_ready():
+     - timeout by wall clock (fallback spin cap)
+     - `pause` in loop
+   - Result: no unbounded busy-spin in completion/ready waits.
+
+3) FAT32 cluster-chain loop guards
+   File: src/kernel/fs/fat32.c
+   - Added chain step limit derived from total cluster count.
+   - Applied guards to:
+     - find_in_dir()
+     - fat32_readdir()
+     - fat32_read()
+     - fat32_write()
+   - Cyclic/corrupt FAT chains now fail safely instead of infinite looping.
+
+BUILD / ARTIFACT VALIDATION
+---------------------------
+Commands:
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make -C /home/jjsako/TaterTOS64v3 kernel fileman
+- bash build_iso.sh
+
+Result:
+- Build succeeded.
+- ISO produced:
+  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Export copy succeeded:
+  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+STATUS
+------
+- Freeze-by-click path now guarded at three layers:
+  syscall preemption, NVMe bounded waits, FAT32 traversal bounds.
+- Next required validation remains real-hardware regression on Dell 7530 for:
+  /nvme + /nvme1 navigation/readdir/stat/open matrix and serial log confirmation.
+
+========================================================================

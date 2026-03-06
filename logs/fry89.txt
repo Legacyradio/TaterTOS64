@@ -1,0 +1,3 @@
+STEP 89
+TIME: 2026-02-20 07:45:35
+ACTION: Fixed ACPI device path construction order in acpi_bus.c.

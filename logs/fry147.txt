@@ -1,0 +1,4 @@
+[2026-02-20 19:28:11 UTC] Step: Use xorriso EFI boot option for UEFI image.
+Why: El Torito -e rejected the EFI image size as non-floppy.
+Change: Switched to --efi-boot EFI/efiboot.img for proper UEFI boot image handling.
+Files: build_iso.sh

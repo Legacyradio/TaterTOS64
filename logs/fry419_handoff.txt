@@ -1,0 +1,139 @@
+fry419 HANDOFF — EC _REG I/O suppression + AML bytecode dump
+=============================================================
+Date: 2026-03-01
+ISO: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+RULES (from planv3.txt — must follow exactly)
+=============================================================
+1) Follow the plan step by step. No shortcuts or cut corners.
+2) No "minimal" implementations; do thorough, functional work.
+3) No Linux or Windows code inside the OS.
+4) Use Edit/Write tools for code edits.
+5) Log every completed step in its own logs/fryN.txt with timestamps.
+6) If you change code, include a brief "why" in the log.
+7) Don't pause after saying you'll continue; just continue.
+8) Branding is TaterTOS64v3 (never FryOS).
+9) UEFI-only boot path.
+10) When testing, always include the necessary commands to run the test.
+11) Default rebuild: make clean && PATH="..." /bin/bash -x build_iso.sh
+12) All apps must follow TaterWin SHM protocol.
+Next fry log: fry420.txt
+
+WHAT WAS CHANGED (fry419)
+=============================================================
+This is iteration ~23 of the Dell EC fix. Previous iterations kept
+guessing at the root cause and patching one thing at a time. This
+build takes a different approach: stop guessing, get hard data.
+
+Three things in this build:
+
+1) AML _REG BYTECODE DUMP (the aggressive diagnostic)
+   - Before calling _REG, we find the _REG method node under the EC
+     device and hex-dump its raw AML bytecode to serial/console.
+   - This tells us EXACTLY what Dell's _REG method does — whether
+     it's a simple ECAV flag set or something that touches EC fields.
+   - No more theorizing about what _REG might do.
+
+2) EC I/O SUPPRESSION DURING _REG
+   - ec_read() and ec_write() now check a g_ec_reg_in_progress flag.
+   - While _REG is evaluating, any EC region access from AML returns
+     dummy data without sending outb to EC ports.
+   - Counter tracks how many calls were suppressed (shown as sup=N).
+   - Theory: AML _REG method accesses EC operation region fields,
+     which routes through aml_ops.c → ec_read() → outb(0x66, 0x80)
+     → kills EC before handshake completes. Same root cause as the
+     pre-_REG probe, just triggered by the AML interpreter itself.
+
+3) ECAV/ECFL VERIFICATION
+   - After _REG, looks up ECAV or ECFL in the EC namespace to verify
+     the method actually set the flag to 1.
+   - If ECAV != 1, _REG didn't execute properly.
+
+WHY
+=============================================================
+23 iterations of: theorize → patch → flash → fail → repeat.
+The fundamental problem: we never knew what _REG actually DOES on
+this specific Dell DSDT. The bytecode dump ends that.
+
+The suppression fix addresses the most likely remaining root cause:
+ec_setup_ports() sets g_ec_ok=1 before _REG, so if _REG's AML code
+touches any EmbeddedControl (space=0x03) field, the region handler
+sends real outb commands to the EC during _REG evaluation. This is
+the same "EC commands before handshake" problem we've been chasing,
+just triggered from inside the AML interpreter rather than from
+explicit C code.
+
+WHAT TO LOOK FOR ON DELL BOOT
+=============================================================
+Boot console / serial will show (in order):
+
+1) "_REG bytecode dump (N bytes, argc=2):"
+   Followed by hex lines like:
+     0000: A0 0A 93 68 0A 03 70 69 45 43 41 56
+
+   IF YOU SEE THIS: Copy it down. This is the most valuable data.
+   We can decode it to see exactly what _REG does.
+
+   Common AML opcodes to spot:
+     A0 = If          93 = LEqual      68 = Arg0
+     69 = Arg1        70 = Store       0A = ByteConst
+     80 = EC READ cmd (if this appears as an opcode operand, _REG
+          is doing EC field access — which our suppression catches)
+
+   IF YOU SEE "_REG method NOT FOUND": The namespace doesn't have
+   _REG under the EC node. Completely different problem.
+
+2) "calling EC _REG(3,1) [EC I/O suppressed]"
+   Confirms suppression is active during _REG.
+
+3) "_REG done rc=X ret=X post-_REG sts=0xXX suppressed=N"
+   - rc: will be -1 for void methods (normal, not an error)
+   - ret: will be (nil) for void methods (normal)
+   - post-_REG sts: 0x00 = EC still alive, 0xFF = EC dead
+   - suppressed: N>0 means _REG DID try EC I/O and we caught it
+                  N=0 means _REG didn't touch EC fields
+
+4) "ECAV/ECFL = 1 (expected 1)" or "WARNING: _REG did not set ECAV=1"
+   or "no ECAV/ECFL node found"
+
+5) Sysinfo panel: look for "sup=N" on the preProbe/rcv line
+
+EXPECTED OUTCOMES
+=============================================================
+BEST CASE (suppression was the fix):
+  - post-_REG sts=0x00 (EC alive after _REG)
+  - sup>0 (proves _REG was doing EC I/O that we blocked)
+  - rcv=1 (normal probe succeeds after _REG)
+  - EC: OK, Battery: non-zero values
+  - ECAV=1
+
+INFORMATIONAL (suppression wasn't needed, but dump tells us why):
+  - sup=0 (_REG didn't touch EC fields)
+  - Bytecode dump shows simple Store(Arg1, ECAV) — _REG is innocent
+  - EC still fails → root cause is elsewhere, but now we KNOW it's
+    not _REG's AML code, and we have the bytecode to prove it
+
+BAD CASE (_REG not found):
+  - "_REG method NOT FOUND" → namespace problem, need to investigate
+    how PNP0C09 node is structured
+
+WORST CASE (EC still dies, sup=0, _REG looks fine):
+  - We've now definitively ruled out: pre-_REG probe (fry418),
+    PCR sideband write (fry417), AML _REG EC I/O (fry419)
+  - Need to look at ec_setup_ports() → ec_try_acpi_enable() or
+    something else entirely (maybe the EC just doesn't work with
+    polling-only transactions after ACPI mode transition)
+
+FILES CHANGED
+=============================================================
+src/kernel/acpi/ec.h        - ec_set_reg_in_progress, ec_is_reg_in_progress,
+                               ec_get_reg_suppressed_count declarations
+src/kernel/acpi/ec.c        - g_ec_reg_in_progress flag, g_ec_reg_suppressed counter,
+                               ec_read/ec_write check flag before port I/O
+src/kernel/acpi/extended.c  - _REG bytecode hex dump before call,
+                               _REG call bracketed with suppression,
+                               ECAV/ECFL verification after _REG,
+                               sup count in diagnostics
+src/kernel/acpi/extended.h  - ec_reg_suppressed field in fry_acpi_diag
+src/user/libc/libc.h        - matching struct change
+src/user/apps/sysinfo.c     - display sup=N

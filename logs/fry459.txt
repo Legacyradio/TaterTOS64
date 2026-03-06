@@ -1,0 +1,376 @@
+fry459 — Sysinfo Cleanup + Storage Info Syscall (HANDOFF — NOT COMPLETE)
+=======================================================================
+Date: 2026-03-02
+Status: IN PROGRESS — hit rate limit after reading all files, before any edits
+
+Goal:
+  Clean up sysinfo.c: remove all EC/eSPI/ACPI debug diagnostics (no longer
+  needed now that shell terminal works — debug can be done via shell commands).
+  Add NVMe/storage status display. New syscall SYS_STORAGE_INFO=32 to expose
+  NVMe + filesystem mount info to userspace.
+
+Plan (5 steps, none completed yet):
+
+═══════════════════════════════════════════════════════════════════════════
+STEP 1: libc.h — Add struct fry_storage_info + syscall wrapper
+═══════════════════════════════════════════════════════════════════════════
+
+Add AFTER the existing `fry_acpi_diag` struct (around line 222):
+
+```c
+struct fry_storage_info {
+    uint8_t  nvme_detected;       /* 1 if NVMe controller found */
+    uint8_t  root_fs_type;        /* 0=none, 1=FAT32, 2=ToTFS, 3=NTFS, 4=ramdisk */
+    uint8_t  secondary_fs_type;   /* 0=none, 1=FAT32, 2=ToTFS, 3=NTFS */
+    uint8_t  pad;
+    uint32_t sector_size;         /* NVMe sector size (512/4096) */
+    uint64_t total_sectors;       /* NVMe total sectors */
+    char     root_mount[16];      /* "/" */
+    char     secondary_mount[16]; /* "/nvme" or empty */
+};
+long fry_storage_info(struct fry_storage_info *out);
+```
+
+The syscall wrapper in libc (assembly glue) follows the existing pattern:
+  - SYS_STORAGE_INFO = 32
+  - mov $32, %rax; mov arg1 to %rdi; syscall; ret
+  - Look at how fry_acpi_diag() is implemented in the libc .c file for the
+    exact pattern. It's: `long fry_acpi_diag(struct fry_acpi_diag *out) { return syscall1(28, (uint64_t)out); }`
+  - So: `long fry_storage_info(struct fry_storage_info *out) { return syscall1(32, (uint64_t)out); }`
+
+File: src/user/libc/libc.h (add struct + declaration)
+File: src/user/libc/libc.c (add wrapper — find where fry_acpi_diag wrapper is)
+
+NOTE: Check src/user/libc/libc.c for the actual syscall wrapper implementation
+pattern. I didn't read that file yet. It likely uses a syscall1() helper.
+
+═══════════════════════════════════════════════════════════════════════════
+STEP 2: vfs.c + vfs.h — Add vfs_get_storage_info()
+═══════════════════════════════════════════════════════════════════════════
+
+The kernel needs a function to collect storage/FS info. Add to vfs.c:
+
+```c
+/* Forward declare — defined in nvme.c */
+struct block_device *nvme_get_block_device(void);
+
+/* Storage info struct — matches userspace fry_storage_info layout exactly */
+struct vfs_storage_info {
+    uint8_t  nvme_detected;
+    uint8_t  root_fs_type;        /* 0=none 1=FAT32 2=ToTFS 3=NTFS 4=ramdisk */
+    uint8_t  secondary_fs_type;
+    uint8_t  pad;
+    uint32_t sector_size;
+    uint64_t total_sectors;
+    char     root_mount[16];
+    char     secondary_mount[16];
+};
+
+int vfs_get_storage_info(struct vfs_storage_info *out) {
+    if (!out) return -1;
+    memset-equivalent zero out the struct (use a for loop, no memset in kernel)
+
+    /* NVMe detection */
+    struct block_device *bd = nvme_get_block_device();
+    if (bd) {
+        out->nvme_detected = 1;
+        out->sector_size = (uint32_t)bd->sector_size;
+        out->total_sectors = bd->total_sectors;
+    }
+
+    /* Walk g_mounts to find root and secondary mounts */
+    for (struct vfs_mount *m = g_mounts; m; m = m->next) {
+        /* Identify FS type by comparing ops->open function pointer */
+        uint8_t fs_type = 0;
+        if (m->ops->open == rd_open)         fs_type = 4; /* ramdisk */
+        else if (m->ops->open == fat32_open_vfs)  fs_type = 1; /* FAT32 */
+        else if (m->ops->open == totfs_open_vfs)  fs_type = 2; /* ToTFS */
+        else if (m->ops->open == ntfs_open_vfs)   fs_type = 3; /* NTFS */
+
+        if (m->mountpoint[0] == '/' && m->mountpoint[1] == '\0') {
+            /* Root mount */
+            out->root_fs_type = fs_type;
+            copy mountpoint to out->root_mount (max 15 chars + NUL)
+        } else {
+            /* Secondary mount (first non-root wins) */
+            if (out->secondary_fs_type == 0) {
+                out->secondary_fs_type = fs_type;
+                copy mountpoint to out->secondary_mount
+            }
+        }
+    }
+    return 0;
+}
+```
+
+KEY DESIGN DECISION — FS type identification:
+  The function compares ops->open function pointers to identify FS type.
+  All the fs_ops function pointers are file-static in vfs.c:
+    - rd_open (ramdisk) — static in vfs.c
+    - fat32_open_vfs (FAT32) — static in vfs.c
+    - totfs_open_vfs (ToTFS) — declared in totfs.h, defined in totfs.c
+    - ntfs_open_vfs (NTFS) — declared in ntfs.h, defined in ntfs.c
+
+  For secondary mounts in vfs_mount_secondary(), the sec_totfs_ops and
+  sec_fat32_ops use the SAME underlying function pointers (totfs_open_vfs,
+  fat32_open_vfs), so the pointer comparison still works correctly.
+
+  IMPORTANT: fat32_open_vfs and rd_open are static to vfs.c (not extern),
+  so the comparison is straightforward. totfs_open_vfs and ntfs_open_vfs
+  are declared in their respective headers so also accessible.
+
+Add to vfs.h:
+```c
+struct vfs_storage_info;
+int vfs_get_storage_info(struct vfs_storage_info *out);
+```
+
+═══════════════════════════════════════════════════════════════════════════
+STEP 3: syscall.c — Add SYS_STORAGE_INFO=32 handler
+═══════════════════════════════════════════════════════════════════════════
+
+In the enum (after SYS_UNLINK = 31):
+    SYS_STORAGE_INFO = 32
+
+In syscall_dispatch switch (after the SYS_UNLINK case, before default):
+```c
+case SYS_STORAGE_INFO: {
+    if (!user_ptr_ok(a1, sizeof(struct vfs_storage_info))) return (uint64_t)-1;
+    struct vfs_storage_info info;
+    /* Zero it */
+    uint8_t *p = (uint8_t *)&info;
+    for (unsigned i = 0; i < sizeof(info); i++) p[i] = 0;
+    if (vfs_get_storage_info(&info) != 0) return (uint64_t)-1;
+    struct vfs_storage_info *u = (struct vfs_storage_info *)(uintptr_t)a1;
+    *u = info;
+    return 0;
+}
+```
+
+NOTE: Need to include vfs.h (already included at line 7) and the struct
+vfs_storage_info must be visible. Either:
+  a) Define it in vfs.h (cleanest), or
+  b) Forward-declare in syscall.c
+
+Option (a) is better — put the struct definition in vfs.h.
+
+═══════════════════════════════════════════════════════════════════════════
+STEP 4: sysinfo.c — Rewrite render()
+═══════════════════════════════════════════════════════════════════════════
+
+REMOVE everything from line 62 to line 253 (the entire ACPI diagnostics
+block including the fry_acpi_diag call, all EC probe/eSPI/LPC/PCR/query/
+policy/battery-debug/backlight-debug lines).
+
+REMOVE the #define macros at top (ESPI_PCERR_STATUS_MASK etc, lines 9-12)
+since they're only used by the removed code.
+
+KEEP lines 24-60 (the render function header, background fill, uptime,
+processes, backlight, battery — these are the clean useful lines).
+
+ADD after the battery block (after line 60):
+
+```c
+    /* ── Storage Info ── */
+    struct fry_storage_info sto;
+    int sto_y = 140;  /* Y position after battery section */
+
+    if (fry_storage_info(&sto) == 0) {
+        if (sto.nvme_detected) {
+            uint64_t total_bytes = sto.total_sectors * (uint64_t)sto.sector_size;
+            uint32_t gb = (uint32_t)(total_bytes / (1024ULL * 1024ULL * 1024ULL));
+            snprintf(buf, sizeof(buf), "NVMe:      detected  %uB sectors  %u GB",
+                     sto.sector_size, gb);
+            gfx_draw_text(ctx, 10, sto_y, buf, 0x80FF80, 0xFF000000);
+        } else {
+            gfx_draw_text(ctx, 10, sto_y, "NVMe:      not detected", 0x888888, 0xFF000000);
+        }
+
+        const char *fs_names[] = {"none", "FAT32", "ToTFS", "NTFS", "ramdisk"};
+
+        snprintf(buf, sizeof(buf), "Root FS:   %s at %s",
+                 sto.root_fs_type <= 4 ? fs_names[sto.root_fs_type] : "?",
+                 sto.root_mount[0] ? sto.root_mount : "?");
+        gfx_draw_text(ctx, 10, sto_y + 20, buf, 0xFFFFFF, 0xFF000000);
+
+        if (sto.secondary_fs_type > 0) {
+            snprintf(buf, sizeof(buf), "Secondary: %s at %s",
+                     sto.secondary_fs_type <= 4 ? fs_names[sto.secondary_fs_type] : "?",
+                     sto.secondary_mount[0] ? sto.secondary_mount : "?");
+            gfx_draw_text(ctx, 10, sto_y + 40, buf, 0xFFFFFF, 0xFF000000);
+        } else {
+            gfx_draw_text(ctx, 10, sto_y + 40, "Secondary: none", 0x888888, 0xFF000000);
+        }
+    } else {
+        gfx_draw_text(ctx, 10, sto_y, "Storage:   info unavailable", 0x888888, 0xFF000000);
+    }
+```
+
+The window can be smaller now. Change INIT_H from 420 to ~260 (much less
+content). Also remove the static fallback_pixels array or shrink it.
+
+Final render layout:
+```
+  TaterTOS64v3 System Info          (y=10, blue)
+  Uptime:    HH:MM:SS              (y=36, white)
+  Processes: N                      (y=60, white)
+  Backlight: N%                     (y=84, white)
+  Battery:   N mV  rate=N          (y=108, green)
+             remain=N  state=N     (y=124, green)
+  NVMe:      detected 512B 238 GB  (y=140, green or gray)
+  Root FS:   ramdisk at /          (y=160, white)
+  Secondary: ToTFS at /nvme        (y=180, white or gray)
+```
+
+═══════════════════════════════════════════════════════════════════════════
+STEP 5: Build + verify
+═══════════════════════════════════════════════════════════════════════════
+
+Commands:
+  cd /home/jjsako/TaterTOS64v3
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+Then update this log file with results and mark COMPLETE.
+
+═══════════════════════════════════════════════════════════════════════════
+FILES READ (all fully loaded into context before rate limit):
+═══════════════════════════════════════════════════════════════════════════
+
+  src/user/libc/libc.h        — 228 lines, full contents known
+  src/kernel/proc/syscall.c   — 647 lines, full contents known
+  src/kernel/fs/vfs.c         — 701 lines, full contents known
+  src/kernel/fs/vfs.h         — 56 lines, full contents known
+  src/user/apps/sysinfo.c     — 354 lines, full contents known
+  src/kernel/fs/part.h        — 42 lines, full contents known (block_device struct)
+
+FILES NOT YET READ (need to check before implementing):
+  src/user/libc/libc.c        — need to see syscall wrapper pattern (syscall1 etc)
+
+═══════════════════════════════════════════════════════════════════════════
+CRITICAL DETAILS FOR NEXT SESSION:
+═══════════════════════════════════════════════════════════════════════════
+
+1. struct block_device (from part.h):
+     uint64_t sector_size;
+     uint64_t total_sectors;
+     int (*read)(...); int (*write)(...); void *ctx;
+
+2. nvme_get_block_device() is declared in multiple files as:
+     struct block_device *nvme_get_block_device(void);
+   Returns NULL if no NVMe. Defined in src/drivers/storage/nvme.c line 647.
+
+3. FS type identification via ops->open function pointer comparison:
+   - rd_open = ramdisk (static in vfs.c)
+   - fat32_open_vfs = FAT32 (static in vfs.c)
+   - totfs_open_vfs = ToTFS (extern in totfs.h)
+   - ntfs_open_vfs = NTFS (extern in ntfs.h)
+   Secondary mounts in vfs_mount_secondary() use same underlying functions.
+
+4. g_mounts is a singly-linked list (static in vfs.c). Newest mount is head.
+   Root mount has mountpoint = "/". Secondary has mountpoint = "/nvme".
+
+5. Syscall pattern (from SYS_ACPI_DIAG at line 536-543 of syscall.c):
+     case SYS_ACPI_DIAG: {
+         if (!user_ptr_ok(a1, sizeof(struct fry_acpi_diag))) return -1;
+         struct fry_acpi_diag diag;
+         if (acpi_get_diag(&diag) != 0) return -1;
+         *u = diag;
+         return 0;
+     }
+
+6. sysinfo.c lines to KEEP: 1-8 (headers), 14-60 (fallback_pixels, win_w/h,
+   render_buf, render() up through battery display)
+   Lines to REMOVE: 9-12 (ESPI masks), 62-253 (all ACPI diag code)
+   Lines to KEEP unchanged: 256-353 (check_resize + main)
+
+7. No code was edited yet. All 5 steps are pending. Zero changes made.
+
+═══════════════════════════════════════════════════════════════════════════
+SESSION UPDATE — 2026-03-02 (COMPLETED)
+═══════════════════════════════════════════════════════════════════════════
+
+Status change:
+  Previous: IN PROGRESS / no edits
+  Current: IMPLEMENTED + BUILT SUCCESSFULLY
+
+STEP 1 — COMPLETE
+  Updated userspace libc syscall interface.
+  - src/user/libc/libc.h
+      Added `struct fry_storage_info` and declaration:
+      `long fry_storage_info(struct fry_storage_info *out);`
+  - src/user/libc/libc.c
+      Added syscall number `SYS_STORAGE_INFO = 32`
+      Added wrapper:
+      `long fry_storage_info(struct fry_storage_info *out) { return syscall1(SYS_STORAGE_INFO, (long)out); }`
+
+STEP 2 — COMPLETE
+  Added kernel VFS storage info API.
+  - src/kernel/fs/vfs.h
+      Added `struct vfs_storage_info` (layout matches userspace struct)
+      Added prototype: `int vfs_get_storage_info(struct vfs_storage_info *out);`
+  - src/kernel/fs/vfs.c
+      Added `nvme_get_block_device()` forward declaration.
+      Added helpers to zero/copy storage info and map fs type from mount ops.
+      Added `vfs_get_storage_info()` implementation:
+        * fills NVMe detect + sector size + total sectors
+        * walks `g_mounts`
+        * identifies fs type via `ops->open` function pointer comparison
+          (rd_open/fat32_open_vfs/totfs_open_vfs/ntfs_open_vfs)
+        * captures root mount `/` and first secondary mount
+
+STEP 3 — COMPLETE
+  Added syscall handler for storage info.
+  - src/kernel/proc/syscall.c
+      Added enum value: `SYS_STORAGE_INFO = 32`
+      Added switch case:
+        * validates user pointer for `struct vfs_storage_info`
+        * populates via `vfs_get_storage_info()`
+        * copies result to userspace
+
+STEP 4 — COMPLETE
+  Rewrote sysinfo app render path to remove ACPI diagnostics and show storage info.
+  - src/user/apps/sysinfo.c
+      * Changed `INIT_H` from 420 -> 260
+      * Removed eSPI/ACPI debug mask macros
+      * Removed full ACPI diagnostics render block (`fry_acpi_diag` UI)
+      * Added compact storage section:
+          NVMe detected/not detected
+          Root FS type + mount
+          Secondary FS type + mount (or none)
+      * Kept uptime/process/backlight/battery info intact
+
+STEP 5 — COMPLETE (BUILD + VERIFY)
+  Commands run:
+    make clean
+    PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+  Result:
+    - make clean: exit 0
+    - build_iso.sh: exit 0
+    - ISO built: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+  Notes:
+    - Existing compile warnings still present in unrelated files.
+    - Export copy to Windows path failed due read-only mount:
+      /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+      (non-fatal; ISO output in /home/jjsako/TaterTOS64v3/out is valid)
+
+FILES MODIFIED THIS SESSION:
+  src/user/libc/libc.h
+  src/user/libc/libc.c
+  src/kernel/fs/vfs.h
+  src/kernel/fs/vfs.c
+  src/kernel/proc/syscall.c
+  src/user/apps/sysinfo.c
+
+═══════════════════════════════════════════════════════════════════════════
+VALIDATION UPDATE - 2026-03-02 18:56:32 UTC
+═══════════════════════════════════════════════════════════════════════════
+
+User confirmation:
+  Adding NVMe info to System Info was successful.
+  NVMe drive was detected and is displayed correctly in sysinfo.
+
+Status:
+  SUCCESSFUL (user-verified on target workflow)

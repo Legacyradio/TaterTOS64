@@ -1,0 +1,79 @@
+fry355 — Mouse: fix cursor responsiveness (deadzone + integer truncation)
+2026-02-27 08:18 CST
+
+Problem reported: cursor flies to top but requires jerky movements to get
+back down; generally unresponsive to slow/precise mouse motion.
+
+=== ROOT CAUSES ===
+
+1. DEADZONE (ps2_mouse.c):
+   if (abs_i32(dx) <= 1) dx = 0;  // killed ALL slow-speed packets
+   if (abs_i32(dy) <= 1) dy = 0;  // QEMU sends ±1-3 for slow movement
+   Result: precise movements were silently dropped; only fast/jerky throws
+   produced any delta large enough to survive.
+
+2. INTEGER TRUNCATION in absolute→screen remap (gui.c):
+   mx = (ms.x * width) / 4096;
+   For a 1024px-wide screen: 1 unit of mouse_x = 0.25 screen pixels.
+   Need ≥4 raw delta units to move 1 pixel. A delta of 2 or 3 (which
+   survived the deadzone) still mapped to 0 pixels via integer division.
+   At the y=0 edge this made the cursor appear frozen even as mouse_y
+   internally grew, requiring a large overshoot to see any movement.
+
+3. NO PER-READ DELTA ACCUMULATION:
+   The kernel only exposed absolute position. Between successive gui.c
+   reads the integer truncation was applied independently each frame,
+   so sub-pixel motion accumulated in mouse_x/y but was invisible.
+
+=== FIX ===
+
+src/drivers/input/ps2_mouse.c:
+  - Removed abs_i32() helper (no longer needed)
+  - Removed ±1 deadzone; replaced comment explains why
+  - Added mouse_dx_acc / mouse_dy_acc static accumulators (renamed from
+    unused mouse_smooth_dx/dy)
+  - IRQ handler: mouse_dx_acc += dx; mouse_dy_acc += dy; after each packet
+  - ps2_mouse_get() gains dx/dy output params; clears accumulators on read
+    so caller sees displacement since last call, not cumulative absolute
+  Why: exposes exact per-frame delta with no precision loss
+
+src/kernel/proc/syscall.c:
+  - Updated ps2_mouse_get() forward declaration (adds int32_t *dx, *dy)
+  - SYS_MOUSE_GET: struct size 12→20 bytes, fills out[2]=mdx, out[3]=mdy,
+    btns now at *(uint8_t*)(out+4)
+  Why: pass new dx/dy fields through to userspace
+
+src/user/libc/libc.h:
+  - fry_mouse_state: added int32_t dx, dy fields (offsets 8, 12)
+    btns remains at offset 16; _pad[3] for alignment; size = 20
+  Why: expose delta fields to GUI and any other client
+
+src/user/gui/gui.c:
+  - Replaced: mx = (ms.x * width) / 4096  (absolute remap)
+  - With:     mx += ms.dx * 2;  // delta-based, 2× sensitivity
+              my += ms.dy * 2;
+              clamp to [0, width-1] / [0, height-1]
+  - mx/my initialized to screen center at startup (unchanged)
+  Why: 1 raw delta unit now = 2 screen pixels minimum; slow precise
+  movements are visible immediately; no integer truncation on small deltas
+
+=== BUILD (rule 11: clean + verbose) ===
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+  Result: clean, zero errors, ISO exported to
+    /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+=== TEST COMMANDS (rule 10) ===
+  qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+    -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+    -cdrom ./out/tatertos64v3.iso \
+    -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+
+  Expected behaviour:
+    - Cursor tracks mouse movement smoothly at all speeds
+    - Slow precise movements visible immediately (no dead zone)
+    - No sticky/frozen behaviour at screen edges
+    - Dragging windows should feel direct and proportional
+
+=== NEXT LOG: fry356.txt ===

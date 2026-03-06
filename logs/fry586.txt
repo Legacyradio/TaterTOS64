@@ -1,0 +1,11 @@
+2026-03-06 01:04:30 CST
+Step: Add canonical live-runtime layout and PID 1 init
+
+Completed:
+- Added `src/user/init/init.c` and new `init` build target.
+- Switched kernel startup to launch `INIT.FRY` first from canonical `/system/INIT.FRY`, with legacy GUI/shell fallback only if init is unavailable.
+- Updated GUI/shell/file manager userland to prefer canonical `/system` and `/apps` paths instead of relying on root-level payload scavenging.
+
+Why:
+- The system previously booted directly into `/GUI.FRY` or `/SHELL.TOT`, which made live boot behave like a payload launcher instead of a real runtime layer.
+- Adding a stable PID 1 is the first required layer above boot for a true live OS model.

@@ -1,0 +1,8 @@
+2026-02-21 01:20:37 CST
+Step: Add heap_init and RSP diagnostics to localize crash after VMM.
+Why: Debugcon shows crash after VMM and before later markers; need to confirm stack pointer and heap_init progress without guessing.
+Changes:
+- heap_init now emits K_HEAP_ENTER/K_HEAP_FAIL/K_HEAP_OK on serial+debug ports.
+- main.c prints current RSP (K_RSP=...) right after VMM before heap_init.
+Notes:
+- Debug markers are temporary and will be removed once the fault is identified.

@@ -1,0 +1,92 @@
+========================================================================
+TaterTOS64v3 - fry554 - dynamic PRP list allocation for large NVMe transfers
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 22:59:37 UTC
+2026-03-05 16:59:37 CST
+
+CONTEXT
+-------
+- Review noted PRP list handling was effectively fixed-size from a single
+  driver-owned page and not suitable for larger transfers.
+- Existing path could not scale beyond single-page PRP-list capacity.
+
+WHY
+---
+- Large transfers require multi-page PRP lists.
+- For multi-page PRP lists, list pages must be chained via link pointers in
+  the last entry of each non-final list page.
+
+CHANGE APPLIED
+--------------
+- File updated: `src/drivers/storage/nvme.c`
+  - Replaced fixed PRP-list cap macro with:
+    - `NVME_PRP_ENTRIES_PER_PAGE`
+  - Added dynamic PRP allocation tracking:
+    - `struct nvme_prp_alloc { phys, page_count }`
+    - `nvme_prp_release()` to free dynamically allocated PRP-list pages.
+  - Updated `build_prp()` signature to accept PRP allocation context:
+    - `build_prp(..., struct nvme_prp_alloc *alloc)`
+  - `build_prp()` now:
+    - Uses existing static PRP page for single-page PRP-list cases.
+    - Dynamically allocates contiguous PRP-list pages via `pmm_alloc_pages()`
+      when needed.
+    - Builds properly chained multi-page PRP lists by placing next-page
+      pointers in the last slot of each non-final PRP-list page.
+    - Flushes only PRP-list pages and cleans up dynamic allocations on failure.
+  - Updated call sites to release dynamic PRP resources after command
+    completion/failure:
+    - `nvme_identify()`
+    - `nvme_io_rw()`
+
+EFFECT
+------
+- Removes fixed PRP-list sizing constraint for large transfers.
+- Supports dynamic multi-page PRP-list construction with proper chaining.
+- Prevents PRP-list dynamic memory leaks via explicit release paths.
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Kernel build validation:
+   - `PATH="/opt/cross/bin:$PATH" make -j"$(nproc)"`
+2) RESULT:
+   - PASS (build succeeded)
+
+NOTES
+-----
+- No hash recorded in this log (planv3 rule 16; no user-requested rebuild).
+
+FOLLOW-UP UPDATE
+----------------
+- Removed legacy 1MB transfer cap that throttled dynamic PRP-list usage.
+
+CHANGE APPLIED (FOLLOW-UP)
+--------------------------
+- File updated: `src/drivers/storage/nvme.c`
+  - In `nvme_max_blocks()`:
+    - From: `max_bytes = 1024ull * 1024ull` (hardcoded 1MB cap)
+    - To:   `max_bytes = 65536ull * g_sector_size` (NVMe NLB field max)
+  - Existing MDTS clamp remains in place and still bounds max transfer when
+    controller advertises a smaller limit.
+
+EFFECT (FOLLOW-UP)
+------------------
+- Removes artificial 1MB ceiling.
+- Allows larger requests up to protocol/controller limits, enabling the new
+  dynamic PRP-list path to be exercised.
+
+VALIDATION (FOLLOW-UP)
+----------------------
+1) Kernel build validation:
+   - `PATH="/opt/cross/bin:$PATH" make -j"$(nproc)"`
+2) RESULT:
+   - PASS (build succeeded)
+
+UPDATE RECORDED
+---------------
+2026-03-05 23:01:10 UTC
+2026-03-05 17:01:10 CST
+
+========================================================================

@@ -1,0 +1,39 @@
+2026-02-26 21:16:49 UTC
+Step: Add bare-metal build fingerprinting and log ISO export mismatch root cause.
+Why: User reported persistent GUI/SHELL launch open failures on bare metal and correctly challenged stale-image assumptions; needed hard proof of what binary firmware actually boots.
+
+Changes made:
+- src/kernel/main.c
+  - Added build ID constant: `2026-02-26-bmtrace1`.
+  - Added earliest serial/debug markers:
+    - `K_BUILD 2026-02-26-bmtrace1`
+- src/boot/efi_loader.c
+  - Added build ID constant: `2026-02-26-bmtrace1`.
+  - Added early EFI serial/screen markers:
+    - `EFI: build 2026-02-26-bmtrace1`
+    - `TATER EFI: build 2026-02-26-bmtrace1`
+
+Validation run:
+- Rebuilt full image:
+  - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+  - Result: SUCCESS (exit 0)
+  - Note: Windows export copy failed:
+    - `cp ... /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso: Read-only file system`
+
+Evidence collected:
+- Fingerprint present in new artifacts:
+  - kernel.elf contains `K_BUILD 2026-02-26-bmtrace1`
+  - BOOTX64.EFI contains `EFI: build 2026-02-26-bmtrace1`
+  - out/tatertos64v3.iso contains both strings
+- New vs Windows-path ISO are different files:
+  - `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+    - size: 137545728
+    - sha256: 68b8b64c57697d05ae0ccfe5f0d83edc2be04d9bed74673739a2abfba0f7f687
+  - `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+    - size: 137541632
+    - sha256: 2514c40c025f8a7d40b7efe7102021ebfa51f63ccb8238784d6e8e10ef2c4dc5
+
+Conclusion:
+- "Fresh build" can still boot older content if flashing from the Windows export path while that copy silently fails due to read-only `/mnt/c`.
+- Use WSL output path ISO directly for flashing:
+  - `\\wsl.localhost\Ubuntu\home\jjsako\TaterTOS64v3\out\tatertos64v3.iso`

@@ -1,0 +1,10 @@
+[2026-02-22 07:53:17 UTC] Log NVMe queue allocation failure addresses.
+
+Changes:
+- src/drivers/storage/nvme.c: include sq/cq physical values in the "no memory for queues" log.
+
+Why:
+- PMM reports plenty of free pages, yet NVMe queue allocation fails. Printing returned addresses confirms whether one or both allocations are zero.
+
+Tests (not run):
+- bash build_iso.sh

@@ -1,0 +1,66 @@
+fry391 — EC chicken-and-egg fix: _REG + _INI + GPE before probe
+Timestamp: 2026-02-28
+
+PROBLEM:
+  EC: FAIL on Dell Precision 7530 — ports 0x62/0x66 never respond.
+  Root cause: ec_reg_init() probed the EC (5 retries) BEFORE calling _REG(3,1).
+  On Dell (and many modern ECs), the EC firmware ignores direct port I/O
+  (READ 0x80 / WRITE 0x81 commands) until the OS announces a region handler
+  via _REG(EmbeddedControl=3, Connect=1). But _REG was only called after a
+  successful probe — if probe fails, return early, _REG never called.
+  Classic chicken-and-egg deadlock.
+
+CHANGES:
+
+1. src/kernel/acpi/ec.c — added ec_setup_ports() and ec_probe()
+   - ec_setup_ports(data, cmd): sets ports, enables ACPI (SCI_EN), sets
+     g_ec_ok=1 optimistically so ec_read/ec_write work during _REG evaluation
+     (Dell _REG may internally touch EC fields to set ECAV flag)
+   - ec_probe(): probes currently-configured ports with retries (5 attempts),
+     tries alternate Dell ports 0x68/0x6C on failure. Separate from port setup.
+   - ec_init_ports() unchanged (legacy entrypoint).
+
+2. src/kernel/acpi/ec.h — exported ec_setup_ports() and ec_probe()
+
+3. src/kernel/acpi/extended.c — rewrote ec_reg_init() initialization order:
+   OLD: discover ports → ec_init_ports(probe) → [fail → return] → _REG
+   NEW: discover ports → ec_setup_ports(no probe) → _INI → _REG(3,1) →
+        enable EC _GPE → ec_probe(with retries)
+
+   Added #include "events.h" for acpi_enable_gpe().
+
+   Specific additions in ec_reg_init():
+   a) Call EC device _INI method if it exists (some Dell BIOSes need this)
+   b) Call _REG(3,1) BEFORE probing — Dell EC _REG typically sets ECAV flag
+      in AML namespace that gates all EC field access
+   c) Enable EC's _GPE (from PNP0C09._GPE object) via acpi_enable_gpe() —
+      EC may be in low-power state without its GPE enabled
+   d) THEN probe — after _REG + GPE, EC should be responsive
+
+WHY:
+  The ACPI spec says: install region handler → call _REG → use region.
+  We had it backwards (probe-then-_REG). On Dell Precision 7530:
+  1. EC firmware won't service READ/WRITE until ECAV is set by _REG
+  2. EC _GPE enables SCI events that wake the EC from idle
+  3. Without _REG, all 5 probe retries fail at OBF timeout (EC ignores cmd)
+
+FILES CHANGED:
+  src/kernel/acpi/ec.c         — ec_setup_ports(), ec_probe()
+  src/kernel/acpi/ec.h         — exported new functions
+  src/kernel/acpi/extended.c   — restructured ec_reg_init(), added events.h
+
+BUILD: clean + build_iso.sh — kernel compiles clean, ISO exported.
+NVMe: shell.fry updated via mcopy.
+ISO: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+EXPECTED BOOT OUTPUT:
+  ACPI: EC ports set to 0x62/0x66 (pre-REG)
+  ACPI: calling EC _REG(3,1)
+  ACPI: EC _REG done
+  ACPI: enabling EC GPE N
+  ACPI: EC probing ports 0x62/0x66
+  ACPI: EC probe #1 ... OK: read reg[0x00]=0xXX   ← success after _REG
+  ACPI: EC found at ports 0x62/0x66
+
+  If still failing, the verbose probe output shows the exact step that
+  times out (IBF stuck? OBF timeout?) for further diagnosis.

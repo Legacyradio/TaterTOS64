@@ -1,0 +1,71 @@
+fry415 — EC Recovery Fix for Dell Precision 7530
+Date: 2026-02-28 23:26
+
+Problem:
+  Dell Precision 7530 EC not responding to READ commands (0x80).
+  OBF TIMEOUT on all probes. ec_try_acpi_enable() skips ACPI_ENABLE SMI
+  because SCI_EN is already set. Failed EC accesses during _REG AML
+  evaluation may desync the EC command state machine.
+
+Root cause hypothesis:
+  Dell BIOS sets SCI_EN but still needs ACPI_ENABLE SMI to fully hand off
+  EC control. Additionally, failed EC accesses during _REG can desync EC.
+
+Changes:
+
+1. src/kernel/acpi/ec.c — Added 5 recovery functions + 4 new defines
+   - EC_CMD_BURST_ENABLE (0x82), EC_CMD_BURST_DISABLE (0x83),
+     EC_CMD_SCI_QUERY (0x84), EC_BURST_ACK (0x90)
+   - ec_reset_state(): Wait IBF clear, drain OBF, delay 5ms, drain again
+   - ec_burst_enable(): Send 0x82, wait for OBF, check 0x90 ack
+   - ec_burst_disable(): Send 0x83 to exit burst mode
+   - ec_sci_query_drain(): Send 0x84 repeatedly until event=0 or 16 iters
+   - ec_force_acpi_enable(): Send ACPI_ENABLE to SMI_CMD unconditionally
+     (bypasses SCI_EN check), waits 500ms. Key fix for Dell.
+   Why: Need multiple recovery strategies since normal probe fails.
+
+2. src/kernel/acpi/ec.h — Declared all 5 new functions
+   Why: Make recovery primitives accessible from extended.c
+
+3. src/kernel/acpi/extended.h — Added 2 diagnostic fields to fry_acpi_diag
+   - ec_pre_reg_probe_ok: 1 if pre-_REG probe succeeded (baseline)
+   - ec_recovery_method: 0=none 1=normal 3=burst 4=sci_drain
+     5=force_enable 6=burst+force
+   - Adjusted _pad6 from [3] to [1] to maintain alignment
+   Why: Need to see on sysinfo which recovery method worked on Dell.
+
+4. src/kernel/acpi/extended.c — Restructured ec_reg_init() probe sequence
+   - Added pre-_REG baseline probe: ec_reset_state() + ec_probe() before
+     _REG. Diagnostic only — continues to _REG regardless.
+   - Replaced old 2-attempt post-_REG probe with 5-method recovery:
+     Method 1: Normal (state reset + probe)
+     Method 2: Burst mode (burst_enable + probe + burst_disable)
+     Method 3: SCI drain (sci_query_drain + reset + probe)
+     Method 4: Force ACPI_ENABLE (force_acpi_enable + reset + probe)
+     Method 5: Force ACPI_ENABLE + Burst (combine both)
+     Stops on first success, tracks which method in g_ec_recovery_method.
+   - Added g_ec_pre_reg_probe_ok and g_ec_recovery_method globals
+   - Updated acpi_get_diag() to fill new fields
+   Why: The old 2-attempt probe was just retry-with-delay. New sequence
+   tries progressively more aggressive EC wakeup strategies.
+
+5. src/user/libc/libc.h — Updated struct fry_acpi_diag mirror
+   - Added ec_pre_reg_probe_ok, ec_recovery_method fields
+   - Adjusted _pad6 to match kernel struct
+   Why: Must match kernel struct for syscall data transfer.
+
+6. src/user/apps/sysinfo.c — Added recovery info display
+   - New line after early/preREG/p2sb: "preProbe=%u rcv=%u"
+   - Shifted subsequent display lines down by 16px to avoid overlap
+   Why: Need to see recovery results on-screen (Dell has no serial).
+
+Build: clean + build_iso.sh — SUCCESS, no new warnings.
+ISO exported to C:\Users\jjsako\Documents\tateriso\tatertos64v3.iso
+
+Test on Dell:
+  Watch serial/sysinfo for:
+  - "ACPI: EC pre-_REG probe: ..." — baseline result
+  - "ACPI: EC recovery: trying ..." — each method attempted
+  - "ACPI: EC found at ports 0x62/0x66" — success
+  - sysinfo: preProbe=N rcv=N shows which method worked
+  Expected: rcv=5 (force_acpi_enable) most likely on Dell.

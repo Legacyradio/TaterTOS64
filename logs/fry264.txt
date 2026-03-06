@@ -1,0 +1,30 @@
+Handoff Follow-up - 2026-02-22
+
+Summary
+- Applied NVMe MMIO/physmap fixes that Claude described (rate‑limit interrupted).
+
+Changes (already present in tree)
+1) src/drivers/storage/nvme.c
+   - Ensure MMIO BAR is mapped: vmm_ensure_physmap(bar + 0x2000)
+   - Access BAR via vmm_phys_to_virt(bar)
+   - Convert pmm_alloc_page() results to virtual pointers with vmm_phys_to_virt() for:
+     - identify buffer
+     - admin SQ/CQ
+     - IO SQ/CQ
+
+Why
+- In QEMU the NVMe BAR can be at 0xC000000000 (>> 4GB); without physmap extension
+  the MMIO registers are unmapped.
+- pmm_alloc_page returns physical addresses; need vmm_phys_to_virt for CPU access.
+
+Test Commands
+PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh
+qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+  -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+  -cdrom ./out/tatertos64v3.iso \
+  -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+
+tail -n 50 logs/debugcon.log
+tail -n 50 logs/serial.log
+tail -n 100 logs/qemu.log

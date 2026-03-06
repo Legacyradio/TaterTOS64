@@ -1,0 +1,3 @@
+2026-02-21 02:14:18 CST
+Change: limit early page-table allocations to <1GB in vmm.c when vmm_ready=0.
+Why: boot paging only identity-maps low 1GB; allocating tables above that corrupts mappings and leads to non-canonical RIP faults before stack switch.

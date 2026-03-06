@@ -1,0 +1,62 @@
+========================================================================
+TaterTOS64v3 - fry540 — ultra-early bare-metal framebuffer stage markers
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 18:43:41 UTC
+2026-03-05 12:43:41 CST
+
+CONTEXT
+-------
+- User requested immediate next-step instrumentation for bare-metal lockups
+  after `TATER EFI: handoff ExitBS`.
+- Goal: identify exact handoff boundary reached without relying on serial.
+
+WHY
+---
+- Some bare-metal systems have no usable COM1 path; serial breadcrumbs are not
+  sufficient to localize stalls.
+- Needed on-screen stage markers that survive into the kernel entry path and
+  distinguish pre-CR3, post-CR3, and early `_fry_start` milestones.
+
+CHANGE APPLIED
+--------------
+- Added framebuffer stage-marker routine in `src/boot/efi_boot.asm`:
+  - Draws 12x12 top-row blocks at stage-dependent X positions.
+  - Stage 1: entered `efi_boot_start`
+  - Stage 2: after CR3 switch
+  - Stage 3: after stack switch, before `_fry_start`
+  - Guarded by `boot_identity_limit` so markers only touch identity-mapped
+    framebuffer addresses.
+- Added matching early kernel stage markers in `src/kernel/main.c`:
+  - Stage 4: first instruction path in `_fry_start` (before serial init)
+  - Stage 5: after GDT/IDT init
+  - Stage 6: after TSS init
+  - Stage 7: after PMM init
+  - Uses the same identity-limit guard and writes directly to GOP framebuffer.
+
+FILES
+-----
+- `src/boot/efi_boot.asm`
+- `src/kernel/main.c`
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Rebuild + ISO generation command:
+   - `/bin/bash -lc 'PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh'`
+2) RESULT:
+   - PASS (kernel/userland built, ISO produced)
+   - ISO: `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+   - Export: `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+HARDWARE NOTE
+-------------
+- BIOS revision/date was not visible in this shell session, so no BIOS metadata
+  is recorded in this log entry.
+
+HASH POLICY
+-----------
+- SHA-256 not recorded (not explicitly requested by user).
+
+========================================================================

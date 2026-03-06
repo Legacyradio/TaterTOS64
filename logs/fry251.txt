@@ -1,0 +1,27 @@
+Handoff Follow-up - 2026-02-21
+
+Summary
+- Moved IST stacks to low identity-mapped .boot section so #PF/#DF can always switch to a safe stack.
+
+Changes
+1) src/boot/tss.c
+   - Place ist1_stack/ist2_stack in .boot section (low memory identity map).
+
+2) src/kernel/mm/vmm.c
+   - Removed .iststack mapping (IST stacks no longer in high-half section).
+
+Why
+- IST stacks were in high-half and still not being used; putting them in low identity map
+  avoids any high-half mapping issues during early faults.
+
+Test Commands
+PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh
+qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+  -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+  -cdrom ./out/tatertos64v3.iso \
+  -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+
+tail -n 50 logs/debugcon.log
+tail -n 50 logs/serial.log
+tail -n 100 logs/qemu.log

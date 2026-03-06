@@ -1,0 +1,3 @@
+STEP 87
+TIME: 2026-02-20 07:44:18
+ACTION: Added PCI bus type and device registration during enumeration in src/drivers/pci/pci_core.c.

@@ -1,0 +1,87 @@
+DATE: 2026-02-21
+TIME: 12:24:54 -0600
+STEP: Boot page table mapping fix + early fault telemetry
+
+PROBLEM IDENTIFIED
+------------------
+Root cause of #GP at RIP=ffffffff800a0002 (past __kernel_end):
+
+The pd_high table in src/boot/efi_boot.asm mapped the higher-half kernel
+region starting from phys 0x000000, but KERNEL_LMA in the linker script
+places the kernel text at phys 0x200000. Result:
+
+  virt ffffffff80000000 → phys 0x000000  (was WRONG)
+  virt ffffffff80000000 → phys 0x200000  (now CORRECT)
+
+Because of this, after efi_boot_start switched CR3 to the boot page table,
+`call rax` (jumping to _fry_start VMA) executed from phys 0x000000+offset
+instead of actual kernel code. The CPU slid through BIOS/UEFI zero bytes
+(0x00 0x00 = `add [rax], al`) for ~655KB, reaching phys 0xa0002 (VGA area),
+which caused a #GP. No kernel serial output (K_START etc.) ever appeared
+because real kernel code never ran.
+
+Evidence:
+  - serial.log: stops at "TATER EFI: GOP ok", no K_START
+  - qemu.log: CS=0038 (OVMF selector), GDT=OVMF, IDT=OVMF at fault time
+    → gdt_init/idt_init never ran
+  - CR3=0x101000 at fault: boot page table was loaded but kernel didn't run
+  - RIP=ffffffff800a0002 = exactly 0xa0002 bytes past ffffffff80000000
+    (VGA area offset through a 2MB page starting at phys 0)
+
+CHANGES MADE
+------------
+1) src/boot/efi_boot.asm — pd_high fix
+   Old: dq (m * 0x200000) | 0x083       pd_high[0] = 0x000083 (phys 0)
+   New: dq ((m + 1) * 0x200000) | 0x083 pd_high[0] = 0x200083 (phys 0x200000)
+
+   Why: Makes virt ffffffff80000000 → phys 0x200000 = KERNEL_LMA. All kernel
+   sections fit within the first 2MB page (.text+.rodata+.data+.bss ends at
+   ffffffff80097680, well within ffffffff80000000–ffffffff801fffff).
+
+   Verified in built binary via objdump:
+     108000: 83 00 20 00 00 00 00 00  = 0x200083 ✓
+     pml4_table[511] = 0x103003 ✓
+     pdpt_high[510]  = 0x108003 ✓
+
+2) src/kernel/irq/irqdesc.c — early serial fault telemetry
+   Added #include of early_serial.h and early serial output at the top of
+   irq_dispatch for all CPU exceptions (vector < 32). Prints:
+     !EXC vec=N err=... RIP=... CS=... RF=... CR2=... CR3=...
+   using I/O port instructions (no kprint dependency). This fires as soon as
+   idt_init() has run, allowing fault diagnosis before kprint_init.
+
+   Why: irq_dispatch previously used only kprint() for exception output.
+   kprint requires kprint_init which runs after VMM. Before VMM is up, any
+   fault produced no visible output.
+
+BUILD RESULT
+------------
+make clean all: SUCCESS (only pre-existing warnings, no new errors)
+ISO built and exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+EXPECTED RESULT AFTER FIX
+--------------------------
+Serial should now show kernel execution past the loader:
+  K_START
+  K_GDT_IDT
+  K_TSS
+  K_PMM
+  K_VMM
+  S  (stage marker = after_vmm entry)
+  ...
+
+If new faults occur after the fix, the early serial telemetry will print
+"!EXC vec=..." lines in serial.log with RIP/CR2/CR3 to identify the next
+blocker.
+
+TEST COMMAND (for user to run)
+--------------------------------
+make clean all
+./build_iso.sh
+qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+  -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+  -cdrom ./out/tatertos64v3.iso \
+  -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+tail -n 100 logs/serial.log
+tail -n 100 logs/qemu.log

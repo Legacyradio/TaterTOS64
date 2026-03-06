@@ -1,0 +1,55 @@
+========================================================================
+TaterTOS64v3 - fry472 — QEMU UEFI Test Attempts (Logged + Interrupted)
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 01:59:38 UTC
+
+SCOPE
+-----
+Record QEMU validation attempts performed after NTFS agnostic-sector patching
+and note why these runs are not final NTFS regression evidence.
+
+RUN A (attempt 1)
+-----------------
+Runtime dir:
+- logs/runtime_qemu_uefi_20260302_195654
+
+Result:
+- rc=124 (timeout)
+- OVMF stayed in PXE path, did not boot OS payload
+- serial log shows PXE failure; debugcon empty
+
+RUN B (attempt 2)
+-----------------
+Runtime dir:
+- logs/runtime_qemu_uefi_bootd_20260302_195846
+
+Launch adjustments:
+- Forced boot order from CD (`-boot order=d`)
+- Disabled networking (`-net none`) to avoid PXE fallback
+
+Observed output:
+- UEFI boot reached Tater EFI + kernel markers
+- serial includes: "K_BUILD 2026-02-26-vfsprobe2"
+- serial includes: "init: NVMe secondary mount failed (no supported FS)"
+
+Critical caveat:
+- This run booted an older ISO payload (build tag `2026-02-26-vfsprobe2`),
+  not a freshly rebuilt image that includes latest NTFS changes.
+- Therefore Run B is a boot-path smoke test only, not a valid NTFS patch regression.
+
+INTERRUPTION
+------------
+- User explicitly stopped the active test turn.
+- Any in-flight process was terminated per session control.
+
+STATUS
+------
+- Artifacts/logs from both QEMU attempts are present and preserved.
+- NTFS code-change log remains in: logs/fry471.txt
+- Proper NTFS regression in QEMU still requires rebuilding ISO/image with current code
+  before rerunning the matrix.
+
+========================================================================

@@ -1,0 +1,3 @@
+STEP 86
+TIME: 2026-02-20 07:43:47
+ACTION: Implemented basic PS/2 keyboard IRQ handler and unmask in src/drivers/input/ps2_kbd.c.

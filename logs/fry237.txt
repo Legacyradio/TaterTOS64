@@ -1,0 +1,6 @@
+DATE: 2026-02-21
+TIME: 10:53:00 -0600
+DESC: Emit single marker '4' or '1' for boot_identity_limit (>=4GB or not) before RSDP deref.
+WHY: Confirm runtime boot_identity_limit value without heavy debug.
+FILES:
+  - src/kernel/acpi/tables.c

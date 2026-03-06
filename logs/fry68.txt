@@ -1,0 +1,3 @@
+STEP 68
+TIME: 2026-02-20 09:52:22
+ACTION: Implemented full FAT32 path open/read/write/readdir/stat in src/kernel/fs/fat32.c/.h with LFN support, cluster allocation, and directory entry updates, because the filesystem must support VFS operations beyond minimal reads.

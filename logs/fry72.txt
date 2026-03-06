@@ -1,0 +1,3 @@
+STEP 72
+TIME: 2026-02-20 01:43:15
+ACTION: Added VFS file size API and wired SYS_SPAWN to load .fry via VFS + elf_load_fry.

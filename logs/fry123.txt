@@ -1,0 +1,4 @@
+[2026-02-20 18:26:26 UTC] Step: Add AML executor forward declarations.
+Why: Build failed due to implicit declarations of parse_int_from_string and aml_exec_method.
+Change: Added static prototypes near top and removed redundant later prototype.
+Files: src/kernel/acpi/aml_exec.c

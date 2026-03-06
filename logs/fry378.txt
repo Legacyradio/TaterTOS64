@@ -1,0 +1,36 @@
+fry378 — Fix userspace vsnprintf width/flag parsing (2026-02-28)
+
+PROBLEM:
+  sysinfo.c displayed "Uptime: 2u:2u:2u" instead of "Uptime: 00:01:23"
+  gui.c clock displayed "0:211d:211d" instead of "0:01:23"
+  uptime.c had same issue
+
+ROOT CAUSE:
+  src/user/libc/libc.c vsnprintf() did not handle width specifiers or flags.
+  When parsing "%02u", it checked for 'l' first, found '0' (no match), then
+  checked format chars (s/c/d/u/x/X/p/%) — '0' matched none, fell through.
+  The characters '0', '2', 'u' were output as literals. va_arg was never
+  consumed for that argument.
+
+  Similarly "%02lld" produced literal "2lld" (rendered as "2LLD" by the
+  uppercase-only 5x7 font, transcribed as "211d").
+
+  Kernel kprint (vkformat_buf in kprint.c) already had proper width/flag
+  support — this was userspace-only.
+
+FIX (src/user/libc/libc.c):
+  Rewrote vsnprintf() to parse:
+  1. Flags: '0' (zero-pad) and '-' (left-align) after '%'
+  2. Width: decimal digits after flags
+  3. Length modifiers: 'l' / 'll' AFTER width (was before, causing misparse)
+  Added append_padded() helper for right-aligned padding.
+  All format specifiers (s/c/d/u/x/X/p/%) now respect width and pad char.
+  Negative numbers with zero-pad emit '-' before zeros (standard behavior).
+
+AFFECTED CALLERS:
+  - sysinfo.c line 26: "%02u:%02u:%02u" → now correct
+  - gui.c line 401: "%lld:%02lld:%02lld" → now correct
+  - uptime.c line 57: "%02u:%02u:%02u" → now correct
+  - sysinfo.c lines 29,33,38,41: "%u", "%u%%" → still work (width=0 = no pad)
+
+BUILD: make clean && build_iso.sh — success, ISO exported to Windows.

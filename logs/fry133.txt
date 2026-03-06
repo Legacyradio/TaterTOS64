@@ -1,0 +1,4 @@
+[2026-02-20 18:43:18 UTC] Step: Make trampoline self-relative and base-register driven.
+Why: Linker still failed because far jumps and data accesses used absolute labels in high-half link.
+Change: Added offset constants for pm/lm entry and tramp_base, used EBX as base across mode switches, and used DI-based lgdt.
+Files: src/drivers/smp/trampoline.asm

@@ -1,0 +1,46 @@
+========================================================================
+TaterTOS64v3 - fry474 — Source-of-Truth Logging Rule (User Directive)
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03
+
+USER DIRECTIVE (AUTHORITATIVE)
+------------------------------
+- QEMU logs are OFF LIMITS for this issue.
+- Reason: stale QEMU data can cause incorrect conclusions/regressions.
+- For this bug workflow, only these sources are allowed:
+  1) User-provided textual runtime description
+  2) fry log chain (`logs/fry*.txt`)
+
+PROCESS RULE (EFFECTIVE IMMEDIATELY)
+------------------------------------
+- Do not use QEMU runtime logs/evidence for diagnosis or validation of this
+  freeze issue unless the user explicitly re-authorizes it in a future turn.
+- Treat fry logs + direct user text as the sole source of truth.
+
+SCOPE NOTE
+----------
+- This rule is recorded after fry473 implementation work.
+- All subsequent analysis for this issue must remain anchored to fry logs and
+  user text only.
+
+NEXT TODO IF CURRENT FIX FAILS
+------------------------------
+Use only user text + fry logs (no QEMU evidence) and execute these in order:
+
+1) Close Gate 1 (NVMe completion architecture)
+- Replace poll-only completion with IRQ-driven completion + wake/event path.
+- Keep polling only as explicit debug fallback path.
+
+2) Close Gate 2 (timeout strategy)
+- Replace remaining spin waits with scheduler-blocking wait + explicit timeout
+  error propagation back to VFS/Fileman.
+
+3) Close Gate 3 (real-hardware regression matrix on Dell Precision 7530)
+- Run/record pass-fail for mount/readdir/stat/read/open across `/`, `/nvme`,
+  and `/nvmeN`.
+- Confirm no UI clock freeze and no hard lock during sidebar navigation.
+
+========================================================================

@@ -1,0 +1,4 @@
+[2026-02-20 19:59:02 UTC] Step: Split kernel VMA/LMA to fix GRUB 4GiB load error.
+Why: GRUB UEFI refused to load high-half ELF segments crossing 4GiB.
+Change: Link kernel at high VMA but load at 1MB LMA; exposed __kernel_lma_start and used it for mapping.
+Files: kernel_linker.ld, src/kernel/mm/vmm.c

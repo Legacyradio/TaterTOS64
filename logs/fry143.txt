@@ -1,0 +1,4 @@
+[2026-02-20 19:24:53 UTC] Step: Create EFI System Partition image for UEFI boot.
+Why: xorriso rejected BOOTX64.EFI as an El Torito boot image; it needs a FAT EFI system image.
+Change: build_iso.sh now builds efiboot.img (FAT), copies BOOTX64.EFI into \EFI\BOOT, and uses it for UEFI El Torito plus GPT append.
+Files: build_iso.sh

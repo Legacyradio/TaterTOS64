@@ -1,0 +1,3 @@
+STEP 117
+TIME: 2026-02-20 11:16:46
+ACTION: Phase 16 (Extended AML + ACPI device features) complete per plan: SCI/GPE/Notify framework, power/reset/sleep flows, and extended AML opcode coverage implemented.

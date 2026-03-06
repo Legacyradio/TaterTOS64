@@ -1,0 +1,25 @@
+Handoff Follow-up - 2026-02-21
+
+Summary
+- Fixed SMP trampoline GDT: use 32-bit code/data for protected-mode entry, 64-bit code for long-mode jump.
+
+Change
+1) src/drivers/smp/trampoline.asm
+   - GDT now has 32-bit code (0x08) + 32-bit data (0x10) + 64-bit code (0x18).
+   - Long-mode far jump uses selector 0x18.
+
+Why
+- APs were #GP looping at 0x8008 in protected mode because code segment had L=1.
+  PM entry must use a 32-bit code segment (L=0, D=1).
+
+Test Commands
+PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh
+qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+  -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+  -cdrom ./out/tatertos64v3.iso \
+  -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+
+tail -n 50 logs/debugcon.log
+tail -n 50 logs/serial.log
+tail -n 100 logs/qemu.log

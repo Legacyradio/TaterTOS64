@@ -1,0 +1,85 @@
+========================================================================
+TaterTOS64v3 - fry521 — Post-mount path verification for secondary volumes
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-04 00:49:19 CST
+
+WHY THIS LOG
+------------
+- User provided the requested validation output after fry520.
+- Observed on latest boot output:
+  1) `/` is fixed (`ok size=0 attr=0x10`).
+  2) `/nvme1` is mounted and traversable.
+  3) `/nvme` is still listed in mounts but `stat /nvme` is missing and `readdir /nvme` fails.
+- Requirement remains: do not publish dead secondary mount entries.
+
+USER VALIDATION SNAPSHOT (KEY POINTS)
+-------------------------------------
+- `vfsdbg`:
+  - mounts include `/nvme1` (FAT32) and `/nvme` (NTFS)
+  - `paths:` shows `/nvme : missing`
+- `vfsdbg /nvme1`:
+  - directory listing succeeds
+- `vfsdbg /nvme`:
+  - `readdir /nvme: fail`
+
+CHANGES IN THIS SESSION
+-----------------------
+- Added post-publish secondary mount verifier in `vfs.c`:
+  - `sec_verify_mounted_path(mountpoint)`
+  - validates mounted path through normal VFS routing using:
+    - `vfs_stat(mountpoint)`
+    - `vfs_readdir_ex(mountpoint, ...)`
+- Updated FAT32 and NTFS secondary mount flows:
+  - Keep existing backend-root probe (`stat + readdir` on fs root).
+  - After `vfs_mount(...)`, run mounted-path verification.
+  - If verification fails, immediately `vfs_umount(mountpoint)` and treat mount as failed.
+- Net effect:
+  - unreachable or misrouted mounts are removed before exposure.
+  - prevents persistent dead entries like `/nvme` in `mounts`.
+
+FILES
+-----
+- src/kernel/fs/vfs.c
+
+COMMANDS
+--------
+- Object verify:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/fs/vfs.o
+- Full rebuild:
+  PATH="/opt/cross/bin:$PATH" bash build_iso.sh
+
+BUILD / TEST STATUS
+-------------------
+- Full rebuild: success.
+- Expected warnings only (existing unused/sign-compare + RWX LOAD segment warnings).
+- ISO: out/tatertos64v3.iso
+- NVMe image: out/tater_nvme.img
+- EFI image: out/efiboot.img
+- Windows export still failed: `/mnt/c/Users/jjsako/Documents/tateriso` is read-only.
+
+ARTIFACT MTIME
+--------------
+- 2026-03-04 00:49:09.838232005 -0600  out/tatertos64v3.iso
+- 2026-03-04 00:49:08.428513922 -0600  out/tater_nvme.img
+- 2026-03-04 00:49:09.383047124 -0600  out/efiboot.img
+
+SHA256
+------
+- out/tatertos64v3.iso : fec0cba640e8cc5a2c440c66c621b3bce5ddb4066d62d7d9944734d1230e5fcb
+- out/tater_nvme.img   : a00c74e3c2f2f3711b8e873b48f6852f203eb225f9ae3d178450a9818eb27513
+- out/efiboot.img      : 6c877eacf2d1e1687e083aeaa31755d264f5498dffb472ed958b0949b6bbedf9
+
+NEXT STEPS
+----------
+- Boot this ISO and run:
+  - `vfsdbg`
+  - `vfsdbg /nvme1`
+  - `vfsdbg /nvme`
+- Expected outcome:
+  - If NTFS secondary is healthy: `/nvme : ok` and `readdir /nvme` succeeds.
+  - If NTFS secondary is unhealthy/misrouted: `/nvme` is not published in mounts (no dead entry).
+
+========================================================================

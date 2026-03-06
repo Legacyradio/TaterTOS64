@@ -1,0 +1,75 @@
+Action Log - fry254 - 2026-02-21
+
+Summary
+Two fixes based on new serial.log telemetry after fry253 build.
+
+---
+
+Observation from fry253 run:
+- serial.log now correctly shows K_START / K_GDT_IDT / K_TSS / K_PMM (fry253 fix worked)
+- NO K_VMM — vmm_init crashes before returning
+- CR3=0x03780000 in !EXC — vmm_init DID run and switch CR3
+- RIP=0x000A0002 after #GP — ret jumped into VGA territory
+- "EXC lu err=0xlx" — kprint called before kprint_init, garbled output
+
+Root Cause Confirmed: Stack LMA / Boot Page Table Mismatch
+- Boot page table pd_high[1] maps VMA 0xffffffff80200000 → phys 0x400000
+  (pd_high[1] = (1+1)*0x200000 | 0x083 = 0x400083)
+- _fry_start pushes call frames to phys 0x400000+offset (via boot VMA mapping)
+- vmm_init builds new PML4, maps stack VMA using __kernel_stack_lma_start = 0x286000
+  → VMA 0xffffffff80201000 → phys 0x287000 (the zeroed .stack section LMA)
+- After write_cr3: same stack VMA now maps to phys 0x2c5XXX (all zeros)
+- ret reads 0 as return address, CPU jumps to 0x0, stumbles to 0xa0002, #GP fires
+- IST2 works — handler runs and prints !EXC correctly
+
+---
+
+Fix 1: kernel_linker.ld — align .stack LMA to 2MB (0x400000)
+
+Why:
+The boot page table assigns pd_high[1] = 0x400000 for VMA 0xffffffff80200000.
+The .stack LMA must match so vmm_init maps the stack VMA to the same physical
+memory where boot code actually wrote stack frames.
+
+Change:
+  Before: .stack : AT(ALIGN(LOADADDR(.bss) + SIZEOF(.bss), 0x1000))
+  After:  .stack : AT(ALIGN(LOADADDR(.bss) + SIZEOF(.bss), 0x200000))
+
+Result: .stack LMA = 0x400000 (next 2MB boundary after .bss at ~0x286000).
+Now vmm_init maps VMA 0xffffffff80201000 → phys 0x401000, consistent with
+the boot page table's pd_high[1] large-page mapping.
+
+File: kernel_linker.ld
+
+---
+
+Fix 2: src/kernel/irq/irqdesc.c — replace pre-init kprint with early_serial
+
+Why:
+kprint("EXC %llu err=0x%llx\n", ...) fires in the unhandled-exception path before
+kprint_init runs, producing garbled "EXC lu err=0xlx" on serial. Changed to use
+early_serial_puts/puthex64 which work at any boot stage (pure I/O port output).
+
+File: src/kernel/irq/irqdesc.c
+
+---
+
+Expected Outcome
+- After write_cr3, vmm_init's ret reads the correct return address (in kernel .text)
+- vmm_init returns cleanly, K_VMM appears on serial
+- stack_switch_and_call runs, after_vmm starts, 'S' and 'C' appear on debugcon
+- Exception output clean — no more garbled kprint lines
+
+---
+
+Test Commands
+PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh
+qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+  -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+  -cdrom ./out/tatertos64v3.iso \
+  -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+
+tail -n 50 logs/serial.log
+cat logs/debugcon.log
+tail -n 80 logs/qemu.log

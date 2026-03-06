@@ -1,0 +1,7 @@
+2026-02-21 00:23:22
+Change: Increased kernel stack to 64KB to prevent early underflow.
+Why: QEMU shows RSP falling below the 16KB stack region into GDT/IDT area, consistent with stack underflow. Larger stack avoids corruption while we isolate the root cause.
+Details:
+- main.c: kernel_stack size increased to 65536.
+- kernel_linker.ld: __kernel_stack_top updated accordingly.
+Next: rebuild ISO, run QEMU with debugcon, see if K_STOP_HERE appears or crash moves.

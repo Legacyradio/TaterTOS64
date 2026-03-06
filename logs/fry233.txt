@@ -1,0 +1,7 @@
+DATE: 2026-02-21
+TIME: 10:26:00 -0600
+DESC: Raise boot_identity_limit to 4GB to cover high RSDP and avoid vmm_map failure.
+WHY: Still hitting alloc_table '!' after R; likely rsdp_phys above 1GB.
+FILES:
+  - src/boot/mb_handoff.c
+  - src/boot/efi_main.c

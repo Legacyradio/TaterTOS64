@@ -1,0 +1,45 @@
+fry388 — ACPI discovery compatibility hardening for battery/backlight
+Timestamp: 2026-02-28 16:52:14 UTC
+
+Why:
+  Precision 7530 still reports battery as unavailable and backlight as 0%.
+  Discovery paths were still too dependent on strict ACPI node typing, which
+  can vary across DSDT/SSDT layouts (Scope-first definitions, aliases, mixed
+  declaration order).
+
+Changes:
+  1) src/kernel/acpi/namespace.c
+     - Added alias resolution helper for HID/ADR matching.
+     - Relaxed `ns_hid_match()` to match HID/CID on resolved nodes without
+       requiring `node->type == ACPI_NODE_DEVICE`.
+     - Added HID string comparison that is case-insensitive for robustness.
+     - Added node-type promotion in `ns_create()`:
+       a) promote UNKNOWN -> concrete type
+       b) promote SCOPE -> concrete type for non-root/non-scope declarations
+       This handles AML patterns where `Scope()` appears before `Device()`.
+     - Updated ADR search to resolve aliases before `_ADR` evaluation.
+
+  2) src/kernel/acpi/extended.c
+     - Removed strict DEVICE-type requirement from battery/backlight candidate
+       scans and battery shape checks.
+     - Kept selection criteria hardware-agnostic:
+       battery by HID/method signature, backlight by HID/method availability.
+
+Build/Test commands run (Rule 11 default rebuild mode):
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Result:
+  - Build succeeded.
+  - ISO produced: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  - NVMe image updated: /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+  - Non-fatal export warning persisted:
+    cp to /mnt/c/Users/jjsako/Documents/tateriso failed (read-only filesystem).
+
+Expected next Precision 7530 boot diagnostics:
+  - Battery should show either candidate lines or non-zero `_BST`-backed values:
+    `ACPI: battery node ...`
+    `ACPI: battery candidates=...`
+  - Backlight path should show selected node and normalized level:
+    `ACPI: backlight node ...`
+    `ACPI: backlight levels=... supported=... raw=... current=...%`

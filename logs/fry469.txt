@@ -1,0 +1,63 @@
+========================================================================
+TaterTOS64v3 - fry469 — Build Verification + Blocking Storage Gates
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 01:15:50 UTC
+
+USER DIRECTION
+--------------
+Log the build run and explicitly add the following as gates before moving
+on to unrelated work:
+1) NVMe completion path is still polling-based (not IRQ-driven)
+2) Timeout strategy is still spin-loop based (not scheduler/blocking)
+3) Build passed, but no full real-hardware regression matrix yet
+
+BUILD EXECUTED
+--------------
+Working dir:
+- /home/jjsako/TaterTOS64v3
+
+Commands:
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make clean
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make kernel fileman
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+Captured output:
+- logs/build_20260303_011550.log
+
+Result:
+- BUILD_RC=0 (success)
+- ISO produced: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Windows export copy failed in this environment (read-only destination):
+  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+BLOCKING GATES (DO NOT PROCEED TO NON-STORAGE WORK UNTIL CLOSED)
+-----------------------------------------------------------------
+Gate 1 (PENDING): NVMe completions must be IRQ-driven, not poll_cq spin.
+Pass criteria:
+- NVMe command completion path uses IRQ wakeup/event mechanism.
+- Poll-only completion path removed or relegated to explicit debug fallback.
+- No UI freeze under NVMe timeout/error on Dell Precision 7530.
+
+Gate 2 (PENDING): Timeout handling must be scheduler/blocking based.
+Pass criteria:
+- Replace long spin waits with bounded sleep/yield + timeout accounting.
+- Timeout exits return explicit error state to caller/UI.
+- No hard lockup from missing controller response.
+
+Gate 3 (PENDING): Real-hardware regression matrix must be completed.
+Pass criteria:
+- Run matrix on Dell Precision 7530 covering mount/readdir/stat/read across
+  root + /nvme + /nvmeN where present.
+- Verify file sizes (no false 0B for normal files) and navigation stability.
+- Record pass/fail per scenario with log references.
+
+STATUS
+------
+- Build is green.
+- All three gates are now explicitly tracked and remain OPEN.
+- Next engineering work should be gate-closure focused until all are PASS.
+
+========================================================================

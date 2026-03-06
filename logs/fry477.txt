@@ -1,0 +1,112 @@
+========================================================================
+TaterTOS64v3 - fry477 - /nvme readdir regression + FAT32 fileman stall guard
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 04:30:57 UTC
+
+USER-REPORTED SYMPTOMS
+----------------------
+1) File Manager showed:
+   - empty list
+   - `readdir failed: /nvme`
+   even though NVMe was detected and mount entries appeared.
+2) Clicking FAT32 NVMe entry (ex: `/nvme1`) could hard-freeze UI.
+
+ROOT CAUSE SUMMARY
+------------------
+1) Secondary mount selection could assign `/nvme` to a candidate that mounted
+   structurally but failed root directory access at runtime.
+2) File Manager performed `stat()` across many entries immediately after
+   `readdir()`, which can stall interaction on slow/problematic directories.
+
+CHANGES IMPLEMENTED
+-------------------
+1) Kernel secondary mount root-probe gate
+   File: src/kernel/fs/vfs.c
+   Why:
+   - Prevent `/nvme` from pointing at a mount that cannot serve root dir
+     `stat/readdir`, which directly causes `readdir failed: /nvme`.
+   What:
+   - Added `sec_probe_mount_root()`:
+     - validates mount root as directory via `ops->stat(fs_data, "", &st)`
+     - validates root enumeration via `ops->readdir(fs_data, "", ...)`
+   - Applied probe before publishing secondary mounts for:
+     - ToTFS
+     - NTFS
+     - FAT32
+   - If probe fails, candidate is rejected and not mounted at `/nvme`/`/nvmeN`.
+
+2) File Manager stat-budget and lazy fallback
+   File: src/user/apps/fileman.c
+   Why:
+   - Avoid synchronous stat storms causing visible hangs during navigation.
+   What:
+   - Added reload budget:
+     - max 96 `stat()` calls OR 250ms per directory reload.
+   - Beyond budget, mark entries unresolved instead of forcing full probe pass.
+   - Defer expensive directory probe (`readdir(full)`) until user opens
+     unresolved entry.
+   - Preserves navigation while reducing freeze risk on FAT32 NVMe paths.
+
+FILES MODIFIED
+--------------
+- src/kernel/fs/vfs.c
+- src/user/apps/fileman.c
+
+BUILD / EXECUTION RECORD
+------------------------
+Commands run in this session:
+1) PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" \
+   make -C /home/jjsako/TaterTOS64v3 src/kernel/fs/vfs.o kernel
+2) bash /home/jjsako/TaterTOS64v3/build_iso.sh
+3) PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" \
+   make -C /home/jjsako/TaterTOS64v3 src/user/apps/fileman.o fileman kernel
+4) bash /home/jjsako/TaterTOS64v3/build_iso.sh
+5) Freshness rerun requested by user:
+   bash /home/jjsako/TaterTOS64v3/build_iso.sh
+
+Result:
+- All listed builds completed successfully.
+- ISO produced at:
+  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+RULE 15 HASH / FRESHNESS VERIFICATION
+-------------------------------------
+Source ISO:
+- 2026-03-02 22:26:07.469670258 -0600  135548928 bytes
+- SHA256:
+  92c379c149fa718ad83886c4a6748e9ad732ef6724f0ddf799c35e099e3fc06c
+- Path:
+  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+Target/export ISO (exists):
+- 2026-03-02 22:26:08.694216000 -0600  135548928 bytes
+- SHA256:
+  92c379c149fa718ad83886c4a6748e9ad732ef6724f0ddf799c35e099e3fc06c
+- Path:
+  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+Hash match:
+- Source and target hashes are identical.
+
+ENVIRONMENT NOTE
+----------------
+- `mount` currently reports `/mnt/c` as `ro` in this environment:
+  `C:\ on /mnt/c type 9p (ro,...)`
+- Despite current read-only report, target ISO exists and matches source hash.
+
+NEXT VALIDATION ON TARGET MACHINE
+---------------------------------
+1) Boot latest ISO.
+2) Shell checks:
+   - `ls /nvme`
+   - `ls /nvme1`
+3) File Manager checks:
+   - enter `/nvme` and `/nvme1` repeatedly
+   - confirm files populate
+   - confirm no hard freeze
+   - verify sizes render when stat resolves; unresolved entries show unknown.
+
+========================================================================

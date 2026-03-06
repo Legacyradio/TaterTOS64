@@ -1,0 +1,51 @@
+fry413 - Bare-metal EC/PCR selection hardening + ramdisk DBG_VFS noise fix
+Timestamp: 2026-03-01 02:59:24 UTC
+
+CONTEXT:
+  Latest Dell bare-metal logs showed:
+    - ACPI: P2SB unhide failed (CF8 path locked)
+    - EC probe timeout / STS_FF pattern
+    - sysinfo showing PCR/LPC values that looked internally consistent but were
+      being rejected by strict plausibility checks
+    - repeated DBG_VFS ENTRY spam from ramdisk readdir on non-root paths
+
+CHANGES:
+1) src/kernel/acpi/extended.c
+   - Replaced hard-reject plausibility gate with score-based candidate ranking:
+       pcr_dmi_regs_score()
+   - SBREG fallback probe now evaluates all {BAR, PID} candidates and selects
+     best-scoring candidate, with weak-select fallback instead of immediate fail.
+   - PID selection for PCR mirror uses the same score approach.
+   - Added alternate IOD hint path from LPC register 0x88 low word, so
+     Dell-valid readings like IOD=0x0081 are no longer filtered out by an
+     overly strict 0x0070-only check.
+   - Kept P2SB/CF8 behavior intact; this change improves fallback selection when
+     P2SB remains locked on bare metal.
+
+2) src/kernel/fs/vfs.c
+   - Fixed rd_readdir() for flat ramdisk semantics:
+     non-root readdir now returns -1 instead of re-emitting root file list.
+
+3) src/kernel/main.c
+   - Changed DBG_VFS log prefix from "ERROR: DBG_VFS ..." to "DBG_VFS ..."
+     so diagnostic lines are not mistaken for functional failures.
+
+WHY:
+  On affected bare-metal boots, the prior strict plausibility logic could reject
+  real PCR candidates and force default behavior that never enables EC decode.
+  Score-based selection + alternate IOD hint is more robust for Dell-specific
+  register patterns while preserving guardrails against all-FF/all-00 garbage.
+
+BUILD / VALIDATION:
+Commands run:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/acpi/extended.o src/kernel/fs/vfs.o src/kernel/main.o
+
+Result:
+  PASS - build succeeded.
+  ISO:
+    /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+NOTES:
+  - Windows export copy failed in this environment due to read-only /mnt/c.

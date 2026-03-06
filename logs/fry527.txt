@@ -1,0 +1,85 @@
+========================================================================
+TaterTOS64v3 - fry527 — Block-device abstraction + ramdisk FAT32 primary path
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-04 17:55:44 CST
+
+WHY THIS LOG
+------------
+- Implement requested filesystem abstraction so FAT32 can talk to a generic
+  block device, not directly to NVMe assumptions.
+- Add a RAM-backed block device path so boot ramdisk can mount via FAT32
+  block I/O and avoid NVMe latency in app launch flow.
+
+CHANGES APPLIED
+---------------
+1) Generic block device moved into VFS interface
+- File: `src/kernel/fs/vfs.h`
+- Added/defined `struct block_device` with:
+  - `read_sector(struct block_device *bd, uint64_t lba, void *buf)`
+  - `write_sector(struct block_device *bd, uint64_t lba, const void *buf)`
+- Added compatibility helpers:
+  - `block_device_read(...)`
+  - `block_device_write(...)`
+  These preserve existing multi-sector callers while new code can use
+  sector-level callbacks.
+
+2) Partition layer switched to generic block I/O abstraction
+- File: `src/kernel/fs/part.h`
+  - Removed local struct definition; now forward-declares `struct block_device`.
+- File: `src/kernel/fs/part.c`
+  - Includes `vfs.h` for full block-device definition.
+  - Replaced raw `bd->read(...)` calls with `block_device_read(...)`.
+
+3) FAT32 init + sector access now use abstracted block device
+- File: `src/kernel/fs/fat32.h`
+  - `fat32_init(struct block_device *bd)` signature confirmed.
+- File: `src/kernel/fs/fat32.c`
+  - Includes `vfs.h`.
+  - Sector I/O now prefers `bd->read_sector` / `bd->write_sector`.
+  - Probe/mount paths use `block_device_read(...)`.
+  - `fat32_init(...)` takes explicit block-device pointer.
+
+4) NVMe block device now provides sector callbacks
+- File: `src/drivers/storage/nvme.c`
+  - Added `nvme_read_sector(...)` and `nvme_write_sector(...)`.
+  - Wired into `nvme_bd.read_sector` and `nvme_bd.write_sector`.
+
+5) RAM-disk block device added and used by FAT32 path
+- File: `src/kernel/fs/vfs.c`
+  - Added RAM block-device instance and init:
+    - `rd_block_device_init(...)`
+    - `rd_bd_read_sector(...)`
+  - `rd_bd_read_sector(...)` copies from:
+    `g_rd_base + (lba * 512)`
+  - `vfs_init_ramdisk(...)` now:
+    1. Builds RAM block device.
+    2. Runs FAT32/VFS mount path on that device (preferred).
+    3. Falls back to legacy packed `ramdisk_header` file backend if needed.
+
+6) Boot sequence adjusted for ramdisk-first flow
+- File: `src/kernel/main.c`
+  - Sets storage BD via `vfs_set_storage_device(nvme_bd)`.
+  - Skips eager NVMe `part_init()/fat32_init()` when boot ramdisk is present.
+  - Keeps NVMe secondary mount behavior under ramdisk primary.
+
+BUILD / VERIFY
+--------------
+- `PATH="/opt/cross/bin:$PATH" make clean && PATH="/opt/cross/bin:$PATH" make -j4` -> PASS
+- `bash build_iso.sh` -> PASS
+
+ARTIFACTS
+---------
+- `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+- `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+- `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso` (exported by script)
+
+NOTES
+-----
+- Build completed with warnings only (no compile/link failures).
+- Existing warnings include unused parameters/functions and RWX LOAD segment
+  linker warnings.
+
+========================================================================

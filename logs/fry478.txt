@@ -1,0 +1,65 @@
+========================================================================
+TaterTOS64v3 - fry478 - NTFS secondary mount regression fallback restore
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03
+
+USER-REPORTED REGRESSION
+------------------------
+- After fry477 secondary root probing, NTFS no longer appeared as a mounted
+  secondary drive; FAT32 was shown instead.
+- User expectation: NTFS must still be discoverable/mountable alongside ToTFS.
+
+ROOT CAUSE (SOURCE + FRY CHAIN)
+-------------------------------
+1) fry477 added strict secondary root gate (`stat + readdir`) before mount publish.
+2) NTFS candidates that passed `ntfs_mount()` but failed root readdir probe were
+   rejected entirely.
+3) With NTFS rejected, selection fell through to FAT32 candidate(s), making NTFS
+   appear to have "disappeared."
+4) NTFS candidate detection was also GUID-constrained, which can miss valid NTFS
+   partitions if GPT typing is non-standard/mis-typed.
+
+CODE CHANGES
+------------
+File:
+- src/kernel/fs/vfs.c
+
+1) Root-probe path tolerance
+- Added probe helper that tries both `""` and `"/"` root path forms.
+
+2) NTFS-specific fallback policy
+- ToTFS/FAT32 keep strict `stat + readdir` root gate.
+- NTFS now:
+  - first tries strict root gate,
+  - if strict fails, retries stat-only gate,
+  - mounts with warning if stat-only succeeds.
+- Prevents NTFS from being silently dropped solely due root readdir probe failure.
+
+3) NTFS candidate discovery robustness
+- Secondary scan now accepts NTFS by on-disk `ntfs_probe()` result regardless of
+  GPT type GUID, reducing false negatives from GUID mismatch/mislabeling.
+
+BUILD / ARTIFACT RESULT
+-----------------------
+Commands:
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/fs/vfs.o kernel
+- /bin/bash build_iso.sh
+
+Result:
+- Build/link succeeded.
+- ISO produced:
+  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Export copy to `/mnt/c/...` still failed in this environment (read-only mount).
+
+EXPECTED BOOT-TIME DIFFERENCE
+-----------------------------
+- NTFS secondary partitions should no longer disappear from mount candidates when
+  strict root readdir probe is flaky.
+- Kernel should log either:
+  - `VFS: NTFS mounted at ...`
+  - or `VFS: NTFS root readdir probe failed ... using stat-only fallback`
+
+========================================================================

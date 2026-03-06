@@ -1,0 +1,49 @@
+Step fry268 - 2026-02-22
+
+Summary
+- Fixed LAPIC timer calibration failure on all APs.
+
+Root Cause
+  smp_init() was called before hpet_init() in main.c.
+  When APs call lapic_timer_calibrate() in ap_entry(), hpet_get_freq_hz()
+  returns 0 because hpet_init() hasn't run yet. The calibration function
+  has an early-return guard: if (freq == 0) return; — so it exits without
+  setting lapic_ticks_per_ms. That static stays 0 → "calibrate failed".
+
+  Serial log confirmed the ordering bug:
+    SMP: detected 4 CPU(s)
+    LAPIC timer: calibrate failed     ← AP calling calibrate, HPET not ready
+    SMP: CPU1 online (APIC 1)
+    ...
+    HPET: enabled freq=100000000 Hz  ← hpet_init() ran AFTER all APs!
+
+Fix
+  src/kernel/main.c: moved hpet_init() to BEFORE smp_init().
+  BSP lapic_timer_init() moved to after smp_init() (APs handle their own
+  via ap_entry, BSP handles its own after SMP is fully up).
+
+Why this ordering is correct
+  hpet_init() sets hpet_freq_hz and enables the HPET counter.
+  lapic_timer_calibrate() needs hpet_freq_hz != 0 and a running HPET
+  counter to measure 10ms for LAPIC tick counting.
+  APs call lapic_timer_calibrate() during their ap_entry() sequence,
+  so hpet_init() must complete before smp_init() sends the first SIPI.
+
+Build
+  PATH="/usr/bin:/opt/cross/bin:$PATH" make all && ./build_iso.sh
+  ISO exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+Expected Result
+  Serial log should now show for each AP:
+    LAPIC timer: N ticks/ms
+    SMP: CPUx online (APIC x)
+  (No more "calibrate failed")
+
+Test Commands
+qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+  -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+  -cdrom ./out/tatertos64v3.iso \
+  -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+
+tail -n 30 logs/serial.log

@@ -1,0 +1,7 @@
+2026-02-20 19:30:14
+Change: Prevent PMM bitmap/kernel overlap by reserving boot+kernel LMA ranges and avoiding them for bitmap placement.
+Why: The non-canonical RIP and repeated #GP suggests stack/data corruption; PMM was free‑ing and reusing pages that contain the kernel image/stack because it didn’t reserve kernel LMA ranges.
+Details:
+- kernel_linker.ld: added __boot_lma_start/__boot_lma_end symbols for the .boot segment.
+- pmm.c: skip bitmap placement in regions overlapping boot/kernel, and explicitly reserve boot+kernel pages after freeing usable pages.
+Next: rebuild ISO, rerun QEMU, and check serial + qemu logs for progress beyond early faults.

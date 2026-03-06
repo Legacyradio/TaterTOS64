@@ -1,0 +1,83 @@
+[2026-02-22 22:30 UTC] Step: Fix keyboard input deadlock + implement PS/2 mouse + GUI event loop.
+
+Why (keyboard dead):
+  kread_serial() called serial_read_char() which contained:
+      while (!serial_received()) {}
+  When QEMU serial goes to a file, UART LSR bit0 is always 0 → the GUI
+  process blocked here forever.  Even when PS/2 IRQ1 put a char into the
+  keybuf, the process was stuck and could never call ps2_kbd_read() again.
+
+Why (mouse stub):
+  ps2_mouse_init() was a 7-line placeholder.  ps2_ctrl_init() disabled the
+  aux port (0xA7) and never re-enabled it.  No IRQ12 handler was registered.
+
+Why (GUI blocked):
+  GUI used gets_bounded() → blocked until newline → no mouse cursor, no
+  click handling, could not redraw while waiting for keyboard input.
+
+Changes:
+
+src/kernel/kprint.c
+  kread_serial(): replaced blocking spin with single poll.
+    if (!serial_received()) break;
+  Returns 0 immediately if no data; caller gets control back.
+
+src/kernel/proc/syscall.c
+  SYS_READ fd=0: after ps2_kbd_read and kread_serial both return 0,
+    call sched_yield() before returning 0 to userspace.
+    Prevents GUI busy-spinning; scheduler gives other processes a turn.
+  Added SYS_MOUSE_GET = 20.
+    Handler: calls ps2_mouse_get(), writes {x, y, btns} to user pointer.
+  Added ps2_mouse_get() forward declaration.
+
+src/drivers/input/ps2_mouse.c (full rewrite from stub)
+  ps2_mouse_init():
+    1. 0xA8 → re-enable aux port.
+    2. Read config (0x20), set bit1 (IRQ12 enable), clear bit5 (aux clock),
+       write back (0x60).
+    3. Reset mouse: 0xFF via D4-redirect, read ACK/BAT/ID.
+    4. Enable reporting: 0xF4, read ACK.
+    5. request_irq(44, ps2_mouse_irq, ...) — IOAPIC IRQ12 → vector 44.
+  ps2_mouse_irq(): 3-byte packet accumulator.
+    Validates byte0 bit3.  Sign-extends dx/dy.  Ignores overflow axes.
+    Accumulates mouse_x/mouse_y clamped to 0–4095.  Stores buttons.
+  ps2_mouse_get(): returns x, y, btns to kernel callers.
+
+src/user/libc/libc.h
+  Added struct fry_mouse_state { int32_t x, y; uint8_t btns; }.
+  Added fry_mouse_get() and getchar_nb() prototypes.
+
+src/user/libc/libc.c
+  Added SYS_MOUSE_GET = 20 to enum.
+  fry_mouse_get(): syscall1(SYS_MOUSE_GET, ptr).
+  getchar_nb(): calls fry_read(0,&c,1); returns -1 if nothing ready.
+
+src/user/gui/gui.c (full rewrite of main())
+  Event loop replaces blocking gets_bounded():
+    * fry_mouse_get() each frame → scale 0–4095 virtual coords to px.
+    * hover_app: which app row is under cursor (-1 if none).
+    * Left-click rising edge on app row → launch_app(name) → fry_wait.
+    * getchar_nb() each frame → accumulate kbd_buf; Enter → parse/run.
+    * Backspace removes last character from kbd_buf.
+    * draw_ui() highlights hovered app row in blue.
+    * draw_cursor() paints 9-pixel white crosshair at (mx, my).
+    * fry_sleep(16) at frame end → ~60 fps, returns CPU to scheduler.
+
+Build:
+  PATH="/opt/cross/bin:$PATH" /usr/bin/make kernel → OK
+  export PATH=... && /bin/bash build_iso.sh → OK
+  ISO: out/tatertos64v3.iso
+  NVMe: out/tater_nvme.img (5 files: SHELL GUI SYSINFO UPTIME PS)
+  Exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+Test (QEMU):
+  Expected in serial: "PS2_MOUSE: init ok x=0 y=0"
+                      "gui: entering event loop"
+  Move mouse in QEMU → white crosshair moves on screen.
+  Hover over app row → row highlights blue.
+  Left-click app row → app launches.
+  Type "run SHELL" + Enter → shell spawns.
+
+Next: fry317 — verify PS/2 kbd IRQ fires (watch for "PS2: key input
+      detected" in serial log); verify mouse movement in QEMU.
+      If PS/2 mouse needs -device ps2-mouse QEMU flag, add instructions.

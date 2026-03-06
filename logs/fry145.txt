@@ -1,0 +1,4 @@
+[2026-02-20 19:27:18 UTC] Step: Increase EFI boot image size.
+Why: mformat failed with "Disk full" because BOOTX64.EFI (~6MB) didn’t fit in 4MB efiboot.img.
+Change: Increased efiboot.img size to 16MB.
+Files: build_iso.sh

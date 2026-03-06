@@ -1,0 +1,92 @@
+========================================================================
+TaterTOS64v3 - fry575 - add per-subsystem SMP locks for VFS, PMM, and sched
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 01:09:48 UTC
+2026-03-05 19:09:48 CST
+
+CONTEXT
+-------
+- Review flagged unsynchronized global mutable state in core subsystems:
+  VFS mount list/storage state, PMM bitmap counters, and scheduler runqueues.
+- Local `cli/sti` masking is not sufficient on SMP because it only blocks the
+  current CPU, not concurrent mutation from another core.
+
+WHY
+---
+- `g_mounts` and related VFS state can corrupt under concurrent mount/lookup.
+- PMM bitmap test/set/clear and `pmm_used_pages` updates can double-allocate or
+  lose accounting on concurrent alloc/free.
+- Scheduler runqueues/current state need cross-CPU exclusion; IRQ masking alone
+  does not serialize other cores.
+
+CHANGES APPLIED
+---------------
+- Files updated:
+  - `src/kernel/fs/vfs.c`
+    - Added subsystem-local `g_vfs_lock`.
+    - Guarded mount list/storage globals (`g_mounts`, `g_storage_bd`,
+      `g_nvme_recovering`, `sec_ops_inited`) with VFS lock helpers.
+    - Reworked mount lookup to take a stable mount reference before dropping
+      the lock (`find_mount_ref()` + locked refcount helpers).
+    - Hardened `vfs_mount()` / `vfs_umount()` against concurrent list mutation.
+    - Wrapped mount enumeration/info helpers so mount-list walks are serialized.
+  - `src/kernel/mm/pmm.c`
+    - Added subsystem-local `g_pmm_lock`.
+    - Wrapped `pmm_alloc_page`, `pmm_alloc_page_below`, `pmm_alloc_pages`,
+      `pmm_alloc_pages_below`, `pmm_free_page`, and `pmm_get_used_pages`.
+    - Left boot-phase-only `pmm_init`, `pmm_relocate_bitmap`, and
+      `pmm_alloc_early_low` unlocked.
+  - `src/kernel/proc/sched.c`
+    - Added subsystem-local `g_sched_lock`.
+    - Wrapped runqueue/current mutations in `sched_init`, `sched_set_current`,
+      `sched_add`, `sched_remove`, `sched_sleep`, `sched_block`, `sched_wake`,
+      and `sched_tick`.
+    - `sched_tick()` now selects/publishes the next task under lock, drops the
+      lock, then performs the CR3/context switch.
+
+EFFECT
+------
+- VFS mount-list reads/writes now serialize on a VFS-local lock rather than
+  racing on raw globals.
+- PMM bitmap allocation/free paths now serialize on a PMM-local lock.
+- Scheduler queue/current state now has a scheduler-local lock instead of
+  relying on per-CPU interrupt masking.
+- This avoids introducing a single giant kernel lock; each touched subsystem
+  owns its own lock.
+
+VALIDATION (THIS SESSION)
+-------------------------
+1) Inspect VFS lock/ref changes:
+   - `nl -ba src/kernel/fs/vfs.c | sed -n '1,40p'`
+   - `nl -ba src/kernel/fs/vfs.c | sed -n '460,610p'`
+   - `nl -ba src/kernel/fs/vfs.c | sed -n '926,1190p'`
+2) Inspect PMM lock coverage:
+   - `nl -ba src/kernel/mm/pmm.c | sed -n '34,45p'`
+   - `nl -ba src/kernel/mm/pmm.c | sed -n '323,455p'`
+3) Inspect scheduler lock coverage:
+   - `nl -ba src/kernel/proc/sched.c | sed -n '1,40p'`
+   - `nl -ba src/kernel/proc/sched.c | sed -n '159,345p'`
+4) Compile verification (full clean + verbose rebuild per plan rule 12):
+   - `make clean && PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+5) RESULT:
+   - PASS (`src/kernel/fs/vfs.c`, `src/kernel/mm/pmm.c`, and
+     `src/kernel/proc/sched.c` compiled successfully)
+   - PASS (full rebuild exited 0; ISO produced at
+     `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`)
+
+NOTES
+-----
+- This step hardens the shared-state corruption points called out in VFS/PMM/
+  scheduler. It does not redesign every remaining SMP concern in process/syscall
+  code (for example `g_syscall_kstack_top` remains BSP-oriented).
+- `g_handoff` was not locked in this step because it is established during boot
+  handoff/copy and then treated as read-mostly state, not a live mutable list.
+- Existing unrelated compiler warnings remain elsewhere in the tree.
+- Windows mount export warning observed during build:
+  `cp: cannot create regular file '/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso': Read-only file system`
+  Local ISO output generation still completed successfully.
+
+========================================================================

@@ -1,0 +1,33 @@
+========================================================================
+  TaterTOS64v3 - Session Handoff Log (handoff_fry412)
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-01 02:50:00 UTC
+
+PREVIOUS ACTION
+---------------
+- Added detailed diagnostic logging to the `acpi_pci_prt_init` function in `src/kernel/acpi/extended.c`. This change is documented in `logs/fry411.txt`.
+- Rebuilt the `tatertos64v3.iso` with these changes.
+
+REMEDIAL ACTIONS TAKEN
+----------------------
+1.  **For "_PRT not found"**: Added verbose diagnostic logging to `acpi_pci_prt_init` in `src/kernel/acpi/extended.c` (documented in `logs/fry411.txt`). This aims to pinpoint the exact failure point when searching for the `_PRT` table, which is crucial for correct PCI interrupt routing.
+2.  **For LPC Controller (SBREG/PID) Probing**: The previous developer implemented a targeted PID probing strategy (0x88, 0xEF, 0x2F priority) to establish communication with the Embedded Controller, as documented in `handoff_fry409.txt`. This was an attempt to remedy issues related to EC access for components like battery. The user reported this did not fix the problem. Further diagnosis awaits new boot logs.
+3.  **For Battery Stats Issue**: Direct remedial action on this specific issue is pending. Current diagnostic efforts for `_PRT` and previous work on SBREG/PID probing are foundational, as EC communication and ACPI setup are prerequisites for correct battery status reporting.
+
+
+
+CURRENT UNDERSTANDING OF PROBLEMS
+---------------------------------
+1.  **"ACPI: _PRT not found"**: The user is consistently reporting this message during boot. Initial analysis points to `acpi_pci_prt_init` failing to locate the PCI Root Bridge ACPI `_PRT` (PCI Routing Table), even with fallback searches. This can severely impact PCI interrupt routing and overall peripheral functionality.
+2.  **"GUI/SHELL launch failed with open error -101"**: This is the overarching problem from the `CODEX_BRIEFING.md`. The current hypothesis is that the `_PRT` issue (or other ACPI failures) may be preventing necessary hardware initialization for the GUI/shell to function.
+3.  **LPC Controller (SBREG/PID) Probing**: The "last fix" in `handoff_fry409.txt` focused on refining the probing logic for the Intel PCH LPC controller's sideband registers (SBREG) to enable communication with the Embedded Controller (EC). The user reported this fix did not resolve the issue, suggesting the correct PID for the Dell Precision 7530 might still be elusive, or the probing logic requires further refinement.
+4.  **Battery Stats Issue**: The user has noted that "battery stats are an issue". This is highly likely linked to a failure in communicating with the Embedded Controller (EC), which itself depends on the correct SBREG/PID probing, or general ACPI functionality for battery-related AML methods (`_BIF`, `_BST`).
+
+NEXT STEPS FOR USER
+-------------------
+Please boot the newly built `tatertos64v3.iso` on the Dell Precision 7530. Capture the *complete* boot log, paying particular attention to all lines starting with "ACPI:". The enhanced logging in `acpi_pci_prt_init` should provide more detailed messages regarding the `_PRT` search. This information is crucial for further diagnosis.
+
+========================================================================

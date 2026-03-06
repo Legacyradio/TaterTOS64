@@ -1,0 +1,10 @@
+[2026-02-22 06:57:15 UTC] Make vmm_ensure_physmap map only the needed 2MB window.
+
+Changes:
+- src/kernel/mm/vmm.c: vmm_ensure_physmap now maps only the 2MB region containing phys_end-1 instead of filling from physmap_max to phys_end.
+
+Why:
+- NVMe BAR is at 0xC000000000; the old implementation tried to map ~768GB via 2MB pages and hung. Mapping just the required 2MB MMIO window prevents that stall while still allowing MMIO access.
+
+Tests (not run):
+- bash build_iso.sh

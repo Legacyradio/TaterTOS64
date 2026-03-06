@@ -1,0 +1,86 @@
+========================================================================
+TaterTOS64v3 - fry475 — NVMe IRQ-Driven Completion + Blocking Timeout Path
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03
+
+USER DIRECTION
+--------------
+- Ignore prior claims that did not materially change behavior.
+- Apply professional, architecture-level storage fixes to close the open NVMe
+  completion/timeout gates in code.
+
+SOURCE OF TRUTH REVIEW
+----------------------
+Reviewed latest chain:
+- fry469: Gate 1/2/3 explicitly OPEN
+- fry474: reaffirms gate-closure focus and source-of-truth workflow
+
+Confirmed in source before this change:
+- `src/drivers/storage/nvme.c` still used poll-only CQ completion (`poll_cq`)
+- timeout handling remained spin-oriented with optional yield
+
+IMPLEMENTED (CODE-LEVEL, NOT COSMETIC)
+--------------------------------------
+File changed:
+- src/drivers/storage/nvme.c
+
+1) True IRQ completion plumbing (MSI)
+- Added PCI capability walk for MSI (cap ID 0x05).
+- Added MSI vector allocation (`msi_alloc_vector`) + IRQ registration
+  (`request_irq`) + message address/data programming for local APIC delivery.
+- Added teardown path to disable MSI and free IRQ/vector on init failure.
+- IO completion mode now tracks whether IRQ completion is active.
+
+2) Event/wake completion path (scheduler-integrated)
+- Added NVMe IRQ handler that advances a completion epoch and wakes the blocked
+  waiter process via `sched_wake(pid)`.
+- Added IRQ-driven CQ wait path for IO queue:
+  - waits for CQ completion
+  - blocks current process via `sched_sleep(pid, 1)` + `sched_yield()`
+  - resumes on IRQ wake or timeout
+- Preserved bounded polling as explicit fallback when IRQ waiting is not
+  available (e.g., early boot/IRQs disabled/no process context).
+
+3) IO CQ interrupt enable
+- Create IO CQ command now sets IEN when IRQ completion is enabled.
+
+4) Runtime visibility
+- NVMe init logs completion mode:
+  - IRQ mode with vector, or
+  - bounded poll fallback mode
+
+BUILD VERIFICATION
+------------------
+Commands:
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/drivers/storage/nvme.o
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make kernel
+
+Results:
+- compile/link succeeded
+- existing warning unchanged: kernel.elf LOAD segment has RWX permissions
+
+GATE STATUS UPDATE
+------------------
+Gate 1 (NVMe completion architecture): PASS (code-level)
+- Completion path now supports IRQ-driven wake/event instead of poll-only spin.
+- Polling path retained only as bounded fallback.
+
+Gate 2 (timeout strategy): PASS (code-level)
+- IO completion wait now blocks via scheduler sleep/wake path with bounded
+  timeout checks, instead of pure spin-loop waiting.
+
+Gate 3 (real-hardware regression matrix on Dell Precision 7530): OPEN
+- Requires physical runtime validation and pass/fail matrix capture.
+- Cannot be closed by static code/build evidence alone.
+
+NEXT REQUIRED FOR FULL CLOSEOUT
+-------------------------------
+Run the real-hardware matrix and log outcomes for:
+- mount/readdir/stat/read/open across `/`, `/nvme`, `/nvmeN`
+- UI clock continuity and no hard lock during File Manager navigation
+- timeout/error behavior under stalled device responses
+
+========================================================================

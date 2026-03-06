@@ -1,0 +1,90 @@
+fry324.txt — 2026-02-25 CST
+TaterTOS64v3 session log
+
+=== Real-hardware fixes: serial hang, FB slowness, dummy device spam ===
+
+Problem report (Dell Precision 7530, bare-metal USB boot):
+  - "Terribly slow" — rendering was sluggish
+  - "Got hung" — system froze at some point during boot
+  - "Device IDs marked as dummy" — user saw spurious "dummy" messages
+
+Root causes identified:
+
+1. HANG: src/kernel/kprint.c serial_write_char()
+   The function busy-spins on inb(0x3F8+5) & 0x20 (UART TX empty bit) before
+   every character written. The Dell Precision 7530 has NO physical COM1 port.
+   On Intel 300-series PCH hardware without a UART, reading the I/O port range
+   0x3F8–0x3FF can return 0x00 for the LSR (Line Status Register), meaning
+   "TX buffer not empty" — causing an infinite spin on every kprint character.
+   There was no UART presence detection; we committed to spinning unconditionally.
+
+2. SLOW: src/kernel/kprint.c fb_fill_rect()
+   Called fb_putpixel() for every single pixel — a function with per-pixel
+   bounds checking, colour conversion, and an index calculation. For a 1920-pixel
+   wide fill/clear, this is millions of slow calls per scroll or screen clear.
+   fb_scroll_up() also copied the framebuffer byte-by-byte (1 byte at a time),
+   so a scroll of a full terminal window copied megabytes one byte per iteration.
+
+3. DUMMY: src/kernel/drivers/platform.c platform_init()
+   Registered a dummy_driver + dummy_device as a placeholder/test. During boot
+   this printed "platform: dummy device probed (dummy)" which the user saw as
+   evidence of broken device detection. Serves no functional purpose.
+
+4. MINOR: src/drivers/pci/pci_core.c pci_enum_all()
+   Iterated all 256 PCI buses unconditionally. For each bus, mcfg_get_ecam_base()
+   walked the ECAM list and pci_ecam_addr() called vmm_ensure_physmap(). On the
+   Precision 7530 with a large MCFG range this scanned far more address space
+   than necessary and triggered many vmm calls.
+
+Fixes applied:
+
+1) src/kernel/kprint.c — serial_init(): UART loopback detection
+   After programming baud/format, enable MCR loopback (0x1E), send test byte
+   0xAE, poll LSR bit 0 for up to 10000 iterations, read RBR and compare.
+   - If byte echoes back correctly → real UART, set serial_inited=1, restore
+     MCR to normal mode (0x0B), proceed as before.
+   - If no echo → no UART, set serial_inited=2, return early.
+   Why: loopback test is the standard UART detection technique. Does not depend
+   on chipset behaviour for unimplemented I/O ports.
+
+   serial_write_char(): added guard `if (kcon.serial_inited != 1) return;`
+   Why: prevents the TX-empty spin-wait from executing when no UART is present.
+   On real hardware without UART, kprint now writes only to the framebuffer.
+
+2) src/kernel/kprint.c — fb_fill_rect(): direct uint32_t row writes
+   Replaced per-pixel fb_putpixel() loop with:
+   - Colour conversion done once before the loops
+   - Outer loop: iterate rows with bounds check
+   - Inner loop: direct `row[xx] = val` uint32_t writes to framebuffer memory
+   Why: eliminates per-pixel function call overhead, bounds checks, and index
+   recalculations. Fills are now memory-bandwidth limited, not loop-overhead
+   limited.
+
+   fb_scroll_up(): uint32_t pixel-wide copy instead of byte-by-byte
+   Changed inner copy loop from `dst[i] = src[i]` (uint8_t) to
+   `dst[i] = src[i]` (uint32_t, iterating term_w pixels instead of term_w*4
+   bytes). 4× fewer loop iterations for the same data moved.
+   Why: pixels are always 4-byte aligned (stride is pixel-count, not byte-count);
+   uint32_t copy is safe and 4× faster.
+
+3) src/kernel/drivers/platform.c — removed dummy device/driver
+   Removed dummy_probe(), dummy_driver struct, dummy_device struct, and the
+   driver_register/device_register calls for them from platform_init().
+   platform_init() now only registers the platform bus type.
+   Why: the dummy was a test artifact with no functional role. It was confusing
+   users on real hardware.
+
+4) src/drivers/pci/pci_core.c — pci_enum_all(): scan MCFG bus ranges only
+   Added #include for mcfg.h. Changed from `for bus in 0..255` to iterating
+   mcfg_get_ecam_count() entries and scanning each ECAM's [start_bus, end_bus].
+   Why: skips buses with no ECAM backing, avoids spurious vmm_ensure_physmap
+   calls and mcfg_get_ecam_base scans for unreachable bus numbers.
+
+Build: zero errors. Pre-existing warnings only (serial_read_char unused, RWX).
+Verified: PATH="/opt/cross/bin:$PATH" /usr/bin/make kernel
+
+Next steps:
+  - Full ISO rebuild + re-test on Dell Precision 7530
+  - Confirm no hang during boot (serial now silent on no-UART hardware)
+  - Confirm smooth rendering (fill/scroll optimized)
+  - Continue remaining milestones

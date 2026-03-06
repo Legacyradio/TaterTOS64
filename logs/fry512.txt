@@ -1,0 +1,34 @@
+========================================================================
+TaterTOS64v3 - fry512 — Guard against duplicate GPT LBAs in secondary mounts
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 19:55:00 CST
+
+WHY THIS LOG
+------------
+- File Manager showed two NVMe mountpoints with different labels but mirrored content. Likely same partition being mounted twice.
+
+CHANGES
+-------
+- VFS secondary mount (nvme): deduplicate GPT candidates by first LBA before mounting, preventing the same partition from being exposed under multiple mountpoints.
+
+FILES
+-----
+- src/kernel/fs/vfs.c
+
+COMMANDS
+--------
+PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/fs/vfs.o
+
+BUILD / TEST STATUS
+-------------------
+- Kernel object builds clean.
+- Full kernel/ISO not rebuilt in this log (pending user go-ahead).
+
+NEXT STEPS
+----------
+- Rebuild ISO and boot; verify /nvme and /nvme1 now show distinct contents (FAT32 vs NTFS) and no “not a directory: /” in File Manager status bar.
+
+========================================================================

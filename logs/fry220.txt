@@ -1,0 +1,3 @@
+2026-02-21 03:13 - Step: Add ACPI sub-stage markers.
+Why: crash appears around ACPI table init; need precise boundary (tables vs MADT/FADT/MCFG).
+Change: main.c now emits M/m, F/f, G/g markers around MADT, FADT, MCFG after T/t.

@@ -1,0 +1,3 @@
+STEP 96
+TIME: 2026-02-20 10:08:11
+ACTION: Completed Phase 15 shell + libc requirements by adding full libc string/memory/printf helpers, wait/proc-count syscalls, and shell taskbar/background/spawn-wait behavior. Added minimal ANSI CSI handling in kprint_write (cursor move/save/restore, clear screen/line) so the shell can draw a taskbar via stdout without direct framebuffer access.

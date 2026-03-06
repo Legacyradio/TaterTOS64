@@ -1,0 +1,23 @@
+========================================================================
+TaterTOS64v3 - fry501 — Hash verification (per request)
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 13:58:11 CST
+
+WHY THIS LOG
+------------
+- User requested SHA-256 verification and log.
+
+HASH / FRESHNESS (Rule 16)
+--------------------------
+Source ISO:
+- SHA256: 3b151faa71f06bc048a74e858a229f5df50c1762117dac8abf56d0d3bec894ac
+- Path: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+Target/export ISO:
+- SHA256: 3b151faa71f06bc048a74e858a229f5df50c1762117dac8abf56d0d3bec894ac
+- Path: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+========================================================================

@@ -1,0 +1,60 @@
+========================================================================
+TaterTOS64v3 - fry560 - add multi-outstanding NVMe command queueing
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 23:27:01 UTC
+2026-03-05 17:27:01 CST
+
+CONTEXT
+-------
+- Review requested command queueing: driver previously issued one IO command
+  then waited for completion before submitting the next.
+
+WHY
+---
+- NVMe is designed for multiple outstanding commands per queue; serial issue
+  underutilizes queue depth and device parallelism.
+
+CHANGE APPLIED
+--------------
+- File updated: `src/drivers/storage/nvme.c`
+  - Added queueing constant:
+    - `NVME_IO_PIPELINE_MAX` (32)
+  - Added async SQ submission helper:
+    - `submit_cmd_nowait()` (assign CID, post SQ entry, ring doorbell, no wait)
+  - Reworked `nvme_io_rw()` from strict serialize/wait loop to pipelined model:
+    - Computes active pipeline depth from `io_q.size - 1` (bounded by
+      `NVME_IO_PIPELINE_MAX`)
+    - Submits multiple commands while queue window has space
+    - Tracks outstanding command metadata (`cid`, `lba`, `blocks`, PRP alloc)
+    - Reaps completions via `wait_cq(&io_q, &cpl)` and matches by CID
+    - Handles out-of-order completions by CID lookup in pending set
+    - Releases per-command PRP resources on completion
+    - On bad/unknown completion, releases all pending PRP allocations and
+      triggers IO queue recovery path
+  - Timeout handling integration:
+    - `submit_cmd()` timeout-reset path now gated to runtime (`g_ready`) to
+      avoid init-time recursive reinit hazards.
+    - Pipelined IO path explicitly triggers timeout reset when `wait_cq()`
+      times out.
+
+EFFECT
+------
+- Enables multiple in-flight NVMe IO commands per queue.
+- Improves potential throughput/latency by using queue depth.
+- Preserves failure handling with queue recovery and controller timeout reset.
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Kernel build validation:
+   - `PATH="/opt/cross/bin:$PATH" make -j"$(nproc)"`
+2) RESULT:
+   - PASS (build succeeded)
+
+NOTES
+-----
+- No hash recorded in this log (planv3 rule 16; no user-requested rebuild).
+
+========================================================================

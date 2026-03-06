@@ -1,0 +1,32 @@
+========================================================================
+TaterTOS64v3 - fry508 — NTFS MFT cache + mount hygiene
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 18:09:37 CST
+
+WHY THIS LOG
+------------
+- Improve NTFS directory perf and safety by caching MFT records and handling $DATA-less directories.
+- Prevent NVMe remount state leakage by freeing secondary fs_data on unmount and capping mount count.
+
+CHANGES
+-------
+- Added a 64-entry LRU cache of fixup-applied MFT records to avoid re-reading $MFT on large readdir()s.
+- Guarded ntfs_get_file_info(): directories without $DATA now report size=0 without falling back to FILE_NAME sizes.
+- Implemented vfs_umount() that frees secondary fs_data (including NTFS cache buffers) and exposes the API.
+- Added mount prefix counting with a hard cap (8) to stop unbounded /nvmeX mount growth during recovery attempts.
+
+FILES
+-----
+- src/kernel/fs/ntfs.h
+- src/kernel/fs/ntfs.c
+- src/kernel/fs/vfs.h
+- src/kernel/fs/vfs.c
+
+TESTING
+-------
+- Not run (changes are self-contained; no rebuild requested).
+
+========================================================================

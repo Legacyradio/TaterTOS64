@@ -1,0 +1,4 @@
+[2026-02-22 08:20:36 UTC] Step: Fix NVMe CQ phase-bit check.
+Why: Admin commands were timing out despite queue setup; phase bit was read from bit 15 instead of bit 0, so completions were never detected.
+Change: Use status bit 0 for phase in admin and I/O CQ polling.
+Files: src/drivers/storage/nvme.c

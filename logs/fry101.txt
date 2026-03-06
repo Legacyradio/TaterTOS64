@@ -1,0 +1,3 @@
+STEP 101
+TIME: 2026-03-03 14:46:11
+ACTION: Phase 18a gap audit against current NTFS implementation (driver + VFS integration) to identify deviations from planv3.txt before any code changes.

@@ -1,0 +1,8 @@
+2026-02-21 01:45:35 CST
+Step: Remove serial RSP print and replace kernel_panic on stack_switch return with debug halt.
+Why: Crash happens immediately after K_BEFORE_RSP; need to verify if early_serial_puts/hex is the trigger and avoid kprint-based panic noise.
+Changes:
+- Disabled serial K_RSP hex output; kept K_BEFORE_RSP/K_AFTER_RSP debug markers.
+- After stack_switch_and_call, emit K_STACK_SWITCH_RETURN and halt instead of kernel_panic.
+Notes:
+- Temporary diagnostics will be removed after root cause is identified.

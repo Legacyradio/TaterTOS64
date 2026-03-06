@@ -1,0 +1,45 @@
+Handoff: Shutdown-click lockup fix + verified clean QEMU logs
+Timestamp: 2026-02-27 20:08:07 CST
+
+Context:
+- User reported system was stable until clicking Shutdown in QEMU, then lockup.
+- Earlier imported logs (2026-02-27 19:55) showed repeated #GP at:
+  RIP=FFFFFFFF8000EE5E (common_isr iretq).
+
+Implemented:
+1) SYSCALL flag masking hardening
+   - File: src/kernel/proc/syscall.c
+   - In syscall_init(), IA32_FMASK changed to 0x700 (TF|IF|DF masked).
+   - Purpose: prevent user flag leakage into kernel syscall path.
+
+2) Terminal shutdown path hardening
+   - File: src/kernel/acpi/power.c
+   - Added halt_forever() helper.
+   - acpi_shutdown() now:
+     - executes cli before PM1 control writes,
+     - writes ACPI S5 request,
+     - issues QEMU/Bochs fallback outw(0x0604, 0x2000),
+     - never returns (halts forever if not powered off).
+   - Removed old "sleep then panic" failure path.
+
+Build/Test executed:
+- make clean
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+Result:
+- Build success (exit 0)
+- Artifacts updated:
+  - out/tatertos64v3.iso
+  - out/tater_nvme.img
+- Windows export still non-fatal failure due to read-only /mnt/c mount.
+
+Verification of newest logs:
+- logs/qemu.log (2026-02-27 20:04) and logs/serial.log (2026-02-27 20:01)
+- No fault signatures found:
+  - qemu.log: 0 matches for "check_exception old: 0xffffffff new"
+  - qemu.log: 0 matches for "v=0d|v=0e"
+  - serial.log: 0 matches for "!EXC|EXC unhandled|PANIC"
+
+Operational status:
+- Shutdown-triggered fault loop seen in previous run is not present in latest run.
+- Current state considered verified clean for this issue.

@@ -1,0 +1,90 @@
+fry436 — eSPI PID Selection Hardening + Multi-Pass W1C Clear
+Date: 2026-03-01
+
+Timestamps (UTC):
+  Start: 2026-03-01 21:12:00 UTC
+  Build complete: 2026-03-01 21:28:00 UTC
+  Hash verification: 2026-03-01 21:30:05 UTC
+  Log written: 2026-03-01 21:31:00 UTC
+
+Goal:
+  Address persistent EC probe failure with eSPI errors that do not fully
+  clear in one pass (PC/FC/LN bits remain set and EC status stays 0xFF).
+  Keep behavior hardware-agnostic while biasing PID selection correctly
+  for Intel 300-series/Coffee Lake-class PCH IDs.
+
+Rule-15 hash verification (performed before writing this log):
+  source ISO  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+    52c33e8bdf7cc2ddbf4048f47f91a29fd314be73187c67811c78c297441b567f
+  target ISO  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+    325beedefbd95bb0bdb25b647256560be0d6d771263b3a0a9b57a5fea89b51c0
+  Result:
+    Hash mismatch confirms target/export ISO is stale versus current source.
+    Export copy remains blocked in this environment (read-only mount).
+
+Code changes:
+
+1) src/kernel/acpi/extended.c
+   A) Added eSPI PID selection helpers:
+      - lpc_is_intel_300_series()
+      - espi_get_pid_candidates()
+      - espi_select_pid()
+      WHY:
+        Prior logic accepted the first non-FF CFG_VAL candidate, which can
+        select a suboptimal PID on some systems and produce misleading
+        diagnostics/recovery behavior.
+
+   B) Hardened PID selection strategy:
+      - Uses candidate scoring with strap match and platform bias.
+      - Prefers PID 0xC7 on Intel 300-series-class LPC/eSPI device IDs.
+      - Logs candidate cfg/score decisions for visibility.
+      WHY:
+        Improves deterministic PID choice on Coffee Lake-era systems while
+        preserving runtime detection for other platforms.
+
+   C) Upgraded espi_clear_errors() from single-pass to multi-pass:
+      - ESPI_CLEAR_MAX_PASSES = 3
+      - ESPI_CLEAR_SETTLE_LOOPS = 10000000 (~10ms target settle)
+      - Re-read and log register state after each pass and final state.
+      WHY:
+        Sticky W1C states can persist briefly; repeated clear+settle improves
+        chance of full recovery before EC probe retry.
+
+   D) Recovery path after espi_clear_errors(1):
+      - Replaced very short settle loop with the same ~10ms settle helper.
+      WHY:
+        Aligns post-clear timing with observed need for controller/link settle.
+
+2) src/user/shell/shell.c
+   - acpibreak output label changed from "pid" to "pcrpid".
+   WHY:
+     Avoids confusion between eSPI PCR PID and Virtual Wire index.
+
+3) src/user/apps/sysinfo.c
+   - sysinfo eSPI label changed from "pid" to "pcrpid".
+   WHY:
+     Same diagnostic clarity improvement as shell output.
+
+Build and test commands (rule-10 compliant):
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Build result:
+  - Success (exit code 0)
+  - Existing non-fatal warnings unchanged from prior baseline.
+  - Windows export copy still blocked by read-only filesystem mount.
+
+Artifact hashes:
+  kernel.elf     16acd13a45503541998635c9cb0a9f3b7504562192a1d83ce29a27f87f501282
+  shell.fry      9bd519d7f8c4388199f3bbff4465d8dee43dd2824b1868e21e0c754a989a5436
+  gui.fry        cc3119651fbbaaab86ccd1e63f27c55c2e352a679a44169bfe1a148f98c6bf21
+  sysinfo.fry    471cf96a0f85efe7cdc2ee2c524ec81b41f64c8d813cbe24c7869beeb1a6f601
+  uptime.fry     be2d52f09c970a70bc6717d72898f26dc55269b50234293239e239ab6d6ea971
+  ps.fry         5161f67679f07f34afe9acd7579bda222f575b7c73b15f59f76cf4b3495a1c84
+  ISO (source)   52c33e8bdf7cc2ddbf4048f47f91a29fd314be73187c67811c78c297441b567f
+  NVMe image     6214de48757a9405ac3ff7284dd7b6a778f3738d3d3c8cb0748bba24ca944466
+  ISO (target)   325beedefbd95bb0bdb25b647256560be0d6d771263b3a0a9b57a5fea89b51c0
+
+Hardware/BIOs note (rule 13):
+  BIOS revision/date not visible in this build-only environment; must be
+  recorded on next bare-metal Dell Precision 7530 boot session when visible.

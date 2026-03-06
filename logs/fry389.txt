@@ -1,0 +1,38 @@
+fry389 — ACPI diagnostics syscall + sysinfo display
+Timestamp: 2026-02-28 ~17:15 UTC
+
+WHAT:
+Added SYS_ACPI_DIAG (syscall 28) to expose ACPI discovery status to userspace.
+Sysinfo app now shows a "--- ACPI Diagnostics ---" panel with:
+  - EC: OK/FAIL + port addresses (0x62/0x66 or alternate)
+  - Battery: count of found nodes, _STA flags, namespace path
+  - Backlight: found flag, _STA flags, namespace path, BCL level count,
+    supported count, raw value, percent
+
+WHY:
+On bare metal Dell Precision 7530 there is no serial output, so all kprint()
+diagnostics during ACPI init are invisible. Battery shows "unavailable" and
+backlight shows 0% despite being cranked in BIOS. Need on-screen visibility
+into whether ACPI even found the battery/backlight nodes, and EC status.
+
+FILES CHANGED:
+  src/kernel/acpi/extended.h  — added struct fry_acpi_diag + acpi_get_diag()
+  src/kernel/acpi/extended.c  — implemented acpi_get_diag()
+  src/kernel/acpi/ec.h        — added ec_get_ports()
+  src/kernel/acpi/ec.c        — implemented ec_get_ports()
+  src/kernel/proc/syscall.c   — added SYS_ACPI_DIAG=28 handler
+  src/user/libc/libc.h        — added fry_acpi_diag struct + wrapper decl
+  src/user/libc/libc.c        — added SYS_ACPI_DIAG enum + fry_acpi_diag()
+  src/user/apps/sysinfo.c     — expanded window to 340px, added diag panel
+
+BUILD: success (Rule 11: make clean + build_iso.sh)
+ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+Exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+NEXT:
+Boot on Dell Precision 7530. Read the ACPI Diagnostics panel in sysinfo:
+  - If EC=FAIL → EC not responding, need different port or init sequence
+  - If Batt found=0 → namespace walk didn't find PNP0C0A or _BST+_BIF
+  - If Batt found>0 but unavailable → _BST eval returning bad package
+  - If BL found=0 → no ACPI0008 or _BCM/_BQC/_BCL in namespace
+  - If BL found=1 but pct=0 → _BQC returning 0, BCL levels may be empty

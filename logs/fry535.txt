@@ -1,0 +1,55 @@
+========================================================================
+TaterTOS64v3 - fry535 — VMD multi-controller + NVMe re-init leak fix rebuild
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 06:09:52 UTC
+2026-03-05 00:09:52 CST
+
+COMPLETED STEP
+--------------
+- Completed storage-driver hardening step and clean verbose rebuild.
+- Updated code:
+  - `src/drivers/storage/vmd.c`, `src/drivers/storage/vmd.h`
+  - `src/drivers/storage/nvme.c`
+
+WHY (CODE CHANGE)
+-----------------
+- VMD previously used one global ready/config context, so only one controller
+  could be used even if more existed.
+- NVMe previously allocated DMA pages again on repeated `nvme_init()` without
+  freeing prior pages; this leaked memory across reload/re-init flows.
+- Fix keeps behavior hardware-agnostic by iterating discovered controllers
+  and cleaning resources through generic init/fail paths.
+
+REBUILD COMMANDS (PLANV3 DEFAULT MODE)
+--------------------------------------
+1) `make clean`
+2) `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+
+COMMAND RESULTS
+---------------
+- `make clean`: PASS
+- `build_iso.sh`: PASS
+- ISO output:
+  `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+- ISO mtime:
+  `2026-03-05 00:09:42.392177741 -0600`
+
+HASH (USER-REQUESTED REBUILD)
+-----------------------------
+- SHA256:
+  `a4d3117101db43598f41cb02ee4824600b78f2bf6d2f30156594f05f4d23a4b7`
+
+EXPORT COMMAND (TERMINAL)
+-------------------------
+`cp /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+EXPORT RESULT (THIS SESSION)
+----------------------------
+- Auto-export from `build_iso.sh` failed:
+  `Read-only file system` on `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+- Linux-side ISO artifact is valid at the output path above.
+
+========================================================================

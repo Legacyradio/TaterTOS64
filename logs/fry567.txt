@@ -1,0 +1,50 @@
+========================================================================
+TaterTOS64v3 - fry567 - reduce unnecessary aml_eval allocations in ACPI bus
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 00:18:22 UTC
+2026-03-05 18:18:22 CST
+
+CONTEXT
+-------
+- Review flagged potential leak behavior from `aml_eval(hid_path)` in ACPI
+  device enumeration.
+
+WHY
+---
+- AML object allocator is monotonic (`aml_obj_arena` in `aml_types.c`) with no
+  per-object free API.
+- Best mitigation here is to avoid calling `aml_eval()` when `_HID` object is
+  already present in namespace node storage.
+
+CHANGES APPLIED
+---------------
+- File updated:
+  - `src/drivers/acpi_bus/acpi_bus.c`
+    - In `create_acpi_device()`, lookup `_HID` node with
+      `ns_find_child(node, {'_','H','I','D'})`.
+    - If `_HID` node already has `node->object`, use it directly.
+    - Only build path and call `aml_eval()` as fallback when object is absent.
+
+EFFECT
+------
+- Eliminates unnecessary AML evaluations/allocations for common static `_HID`
+  declarations (NameOp-backed objects already in namespace).
+- Keeps compatibility for `_HID` cases that require runtime evaluation.
+
+VALIDATION (THIS SESSION)
+-------------------------
+1) Inspect updated ACPI bus HID path:
+   - `nl -ba src/drivers/acpi_bus/acpi_bus.c | sed -n '76,122p'`
+2) Verify scoped diff:
+   - `git diff -- src/drivers/acpi_bus/acpi_bus.c | sed -n '1,220p'`
+3) RESULT:
+   - PASS (direct namespace object path + eval fallback present)
+
+NOTES
+-----
+- No rebuild requested; per plan rule 16, no SHA-256 recorded.
+
+========================================================================

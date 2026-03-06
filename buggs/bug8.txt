@@ -1,0 +1,87 @@
+========================================================================
+TaterTOS64v3 - bug8 — VFS/FAT32 storage path hard-coded to NVMe, bypassing ramdisk
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-04 17:21:04 CST
+
+WHY THIS LOG
+------------
+- Reported boot/runtime failure where app launch path could hit NVMe reads even
+  when EFI ramdisk handoff was present and intended as primary filesystem.
+- Resulted in wrong file bytes for `vfs_open -> elf_load` and executable load
+  failures when NVMe contents did not match expected userspace payloads.
+
+BUG
+---
+- Root issue:
+  - `fat32_init()` internally called `nvme_get_block_device()`.
+  - `vfs.c` had NVMe lookup in internal recovery/info paths.
+  - Storage ownership was not fully injected from init path, allowing implicit
+    NVMe coupling in filesystem plumbing.
+- Impact:
+  - filesystem backend selection could drift from boot policy.
+  - ramdisk-first boot behavior was vulnerable to NVMe fallback coupling.
+
+FIX APPLIED
+-----------
+1) Decoupled FAT32 init from NVMe global lookup
+- Files: `src/kernel/fs/fat32.h`, `src/kernel/fs/fat32.c`
+- Change:
+  - `fat32_init(void)` -> `fat32_init(struct block_device *bd)`
+  - removed direct `nvme_get_block_device()` dependency in FAT32 module.
+
+2) Added explicit VFS storage-device injection
+- Files: `src/kernel/fs/vfs.h`, `src/kernel/fs/vfs.c`
+- Change:
+  - added `vfs_set_storage_device(struct block_device *bd)`
+  - internal VFS paths now use injected `g_storage_bd` instead of direct NVMe
+    lookup for mount recovery and storage info.
+
+3) Wired kernel init to pass the chosen storage device explicitly
+- File: `src/kernel/main.c`
+- Change:
+  - fetch NVMe device once in init sequence
+  - call `vfs_set_storage_device(nvme_bd)`
+  - call `fat32_init(nvme_bd)` only when device exists
+  - kept ramdisk-first mount policy intact.
+
+4) Hardened EFI handoff defaulting
+- File: `src/boot/efi_main.c`
+- Change:
+  - zero-initialized `struct fry_handoff` and explicitly set
+    `ramdisk_base/ramdisk_size` to `0` in this path to avoid stale fields.
+
+WHY THIS FIX
+------------
+- Removes implicit hardware coupling from filesystem initialization.
+- Ensures storage backend is selected by kernel policy (ramdisk-first on live
+  media) and carried consistently through VFS/FAT32 code paths.
+- Prevents accidental NVMe-only assumptions in modules meant to be backend
+  agnostic.
+
+FILES CHANGED
+-------------
+- src/kernel/fs/fat32.h
+- src/kernel/fs/fat32.c
+- src/kernel/fs/vfs.h
+- src/kernel/fs/vfs.c
+- src/kernel/main.c
+- src/boot/efi_main.c
+
+BUILD / VERIFY COMMANDS
+-----------------------
+- `PATH="/opt/cross/bin:$PATH" make -C /home/jjsako/TaterTOS64v3 kernel`
+- `bash /home/jjsako/TaterTOS64v3/build_iso.sh`
+
+BUILD RESULT
+------------
+- PASS (full build completed, ISO and NVMe image regenerated)
+- Artifacts:
+  - `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+  - `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+  - `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+- Warnings only (pre-existing class: unused params/functions, RWX segment, xorriso boot-image-size warning).
+
+========================================================================

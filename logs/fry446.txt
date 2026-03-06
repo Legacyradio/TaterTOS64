@@ -1,0 +1,234 @@
+fry446 - eSPI Channel Initialization: PLT_RST + Channel Enable Toggle
+======================================================================
+Date: 2026-03-01
+Type: Implementation (kernel + userspace diagnostics)
+Status: Built, awaiting Dell hardware test
+
+## SHA-256 Hashes (Rule 15)
+Source ISO:  1a9e2acfacbfa73a9696c5643e3a27e84a2cf11161b431e8adf89712f61be6f3
+  path: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+Export ISO: 1a9e2acfacbfa73a9696c5643e3a27e84a2cf11161b431e8adf89712f61be6f3
+  path: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+## Summary
+
+Implements eSPI channel initialization to fix the root cause identified in
+fry445: EC slave has rdy=0 on both Peripheral Channel and Virtual Wire
+channels. Without PCRDY, I/O cycles to 0x62/0x66 are NOT tunneled to the
+EC via eSPI, returning 0xFF (floating bus).
+
+## Root Cause (from fry445 research)
+
+The Zephyr espi_mchp_xec_v2.c driver analysis shows the EC firmware's
+channel ready sequence:
+  1. Host de-asserts ESPI_nRESET → espi_rst_isr()
+  2. Host de-asserts PLT_RST via Virtual Wire → vw_pltrst_handler()
+  3. vw_pltrst_handler() calls setup_espi_io_config() (maps 0x62/0x66)
+  4. Host sends SET_CONFIGURATION enabling PC channel
+  5. espi_pc_isr() detects EN_CHG → writes PCRDY=1
+  6. VW: espi_vw_chan_en_isr() sets VWRDY=1
+
+PCRDY is set by EC firmware, NOT automatic hardware. TaterTOS64v3 was
+not completing this handshake after taking over from UEFI.
+
+## What This Fry Implements
+
+### 1. espi_slave_write_indirect() — SET_CONFIGURATION write command
+
+New function in extended.c that issues SET_CONFIGURATION transactions on
+the eSPI bus via the PCH's SLV_CFG_CTL/DATA registers (PCR offset
+0x4000/0x4004). This is the standard mechanism for the host to configure
+eSPI slave registers.
+
+SLV_CFG_CTL command format:
+  - Bit 31: SCRE=1 (start transaction)
+  - Bits 17:16: SCRT=01 (write)
+  - Bits 11:0: Slave register address
+  - Bits 30:28: SCRS completion status (read-back):
+    001=ACCEPT, 010=DEFER, 011=NON-FATAL, 1xx=FATAL
+
+Returns: 1 on ACCEPT, 0 on timeout, -1 on error (with SCRS code).
+
+Why: Needed to toggle channel enable bits on the slave, which sends an
+actual eSPI bus transaction that triggers the EC firmware's EN_CHG ISR.
+
+### 2. espi_channel_init() — Full channel bring-up sequence
+
+Comprehensive eSPI channel initialization function called BEFORE
+espi_clear_errors() and EC probe attempts. Sequence:
+
+Step 1: Dump all 8 Master-to-Slave VW TX registers (XMVW0-7 at PCR
+offset 0x4220-0x423C). Each register controls one VW index group with 4
+wires. Format: [7:0]=Index, [11:8]=data, [15:12]=valid. Logged to
+serial for diagnostics.
+
+Step 2: Dump all 8 Slave-to-Master VW RX registers (XSVW0-7 at PCR
+offset 0x4200-0x421C). Same format. Logged for pre/post comparison.
+
+Step 3: PLT_RST# detection and de-assertion. Scans XMVW registers for
+VW Index 4 (PLT_RST# is wire 1 in index 4). If PLT_RST# data bit is 0
+(asserted = EC held in reset), attempts de-assertion by writing data=1
+and valid=1 for wires 0-1. Allows 100ms for EC to process.
+
+NOTE: On Intel PCH, master VW TX registers may be hardware-controlled
+(tied to PCH reset controller). The write may have no effect. We verify
+via readback and log the result. This is safe to attempt per the eSPI
+spec — worst case the write is ignored.
+
+Step 4: Read ALL slave capability registers via indirect read:
+  - General Config (0x0008): frequency, I/O mode, channel support bits
+  - PC_CAP (0x0010): enable, ready, max payload/read request
+  - VW_CAP (0x0020): enable, ready, max VW count
+  - OOB_CAP (0x0030): enable, ready (for completeness)
+  - FC_CAP (0x0040): enable, ready (for completeness)
+All values logged to serial.
+
+Step 5: If both PC and VW channels already show PCRDY=1 and VWRDY=1,
+return early with result=1 (already_ready). No action needed.
+
+Step 6: Channel enable toggle with retries. For up to 3 attempts:
+  a. Disable PC channel (clear bit 0 of PC_CAP via slave indirect write)
+  b. Wait 20ms for slave state machine to process
+  c. Re-enable PC channel (set bit 0)
+  d. Repeat for VW channel
+  e. Wait with increasing delay (50ms, 100ms, 150ms)
+  f. Readback PC_CAP and VW_CAP to check PCRDY/VWRDY
+  g. If both ready → result=2 (toggled_ok), return
+
+Why toggle: The Dell output showed PC_CAP=0x00001117 — channel enable
+bit 0 is ALREADY set (by UEFI), but PCRDY bit 16 is 0. The EC firmware
+asserts PCRDY in response to EN_CHG (enable change) events. By toggling
+the enable, we generate a fresh EN_CHG that triggers the EC's interrupt
+handler → PCRDY=1.
+
+Step 7: If all retries fail, log final state. Re-read slave-to-master VW
+registers and compare with pre-init values to detect any changes. Also
+check port 0x66 status byte to see if EC is now responding.
+
+Results:
+  - 0 = not_run (eSPI not enabled or no SBREG_BAR)
+  - 1 = already_ready (channels were already up)
+  - 2 = toggled_ok (toggle fixed it)
+  - 3 = partial (one channel ready, other not)
+  - 4 = failed (both still not ready after all retries)
+
+### 3. Diagnostic infrastructure
+
+New globals in extended.c:
+  - g_espi_mvw[8]: Master VW TX register raw values
+  - g_espi_svw[8]: Slave VW RX register raw values
+  - g_espi_pltrst_state: PLT_RST# wire state (b0=data, b1=valid)
+  - g_espi_pltrst_sent: 1 if de-assertion was attempted
+  - g_espi_chinit_result: channel init result code
+  - g_espi_chinit_retries: actual retry count
+  - g_espi_chinit_pc_cap: PC_CAP after init
+  - g_espi_chinit_vw_cap: VW_CAP after init
+
+New fields in fry_acpi_diag struct (extended.h + libc.h):
+  - espi_chinit_result, espi_pltrst_state, espi_pltrst_sent
+  - espi_chinit_retries, espi_chinit_pc_cap, espi_chinit_vw_cap
+
+Updated acpi_get_diag() to export new fields.
+
+### 4. Sysinfo display
+
+New line in sysinfo panel showing channel init results:
+  "chinit: TOGGLED_OK ret=1 PLT=deassrt pc=00011117 vw=00011117"
+Color-coded: green=success, yellow=partial, red=failed.
+Y-coordinates for query/policy/battery/backlight lines adjusted
+dynamically to accommodate the new line.
+
+### 5. Init sequence hook
+
+espi_channel_init() is called in ec_reg_init() AFTER
+ec_enable_lpc_decode() (which sets up g_sbreg_bar_saved) and BEFORE
+espi_clear_errors(0) (which clears eSPI error registers). This ensures:
+  - SBREG_BAR is available for PCR access
+  - Channels are brought up before errors are cleared
+  - EC probe attempts benefit from working eSPI tunneling
+
+## Files Modified
+
+src/kernel/acpi/extended.c:
+  - Added defines: R_ESPI_PCR_XMVW_BASE (0x4220), R_ESPI_PCR_XSVW_BASE
+    (0x4200), ESPI_VW_IDX_PLTRST (4), ESPI_VW_PLTRST_WIRE (1),
+    B_ESPI_SLV_CH_EN (bit 0), B_ESPI_SLV_CH_READY (bit 16),
+    ESPI_SLAVE_CH2_CAP (0x0030), ESPI_SLAVE_CH3_CAP (0x0040),
+    ESPI_CHINIT_MAX_RETRIES (3), ESPI_CHINIT_BASE_DELAY
+  - Added globals for channel init diagnostics
+  - Added espi_slave_write_indirect() function
+  - Added espi_channel_init() function (~200 lines)
+  - Hooked espi_channel_init() into ec_reg_init()
+  - Updated acpi_get_diag() with new fields
+  Why: This is the actual fix for rdy=0 — bringing up eSPI channels.
+
+src/kernel/acpi/extended.h:
+  - Added 6 new fields at end of fry_acpi_diag struct (12 bytes)
+  Why: Expose channel init diagnostics to userspace.
+
+src/user/libc/libc.h:
+  - Mirrored same 6 fields in userspace struct copy
+  Why: Struct layout must match between kernel and userspace.
+
+src/user/apps/sysinfo.c:
+  - Added chinit result display line with color coding
+  - Made battery/backlight Y-coordinates dynamic (based on qy+offset)
+  Why: Visual feedback on Dell hardware for channel init results.
+
+## Hardware-Agnostic Design (Rule 14)
+
+All eSPI slave register addresses (GenCfg 0x0008, PC_CAP 0x0010,
+VW_CAP 0x0020, OOB_CAP 0x0030, FC_CAP 0x0040) are per the eSPI Base
+Specification Rev 1.6 — standard across all eSPI implementations.
+
+VW Index 4 for PLT_RST# is per the eSPI spec Table 5 — standard.
+
+PCR access (SBREG_BAR, PID-based addressing) is Intel-specific but is
+already gated behind Intel PCH detection in the existing code path.
+
+No Dell-specific quirks or hardcoded values. The channel toggle works
+on any eSPI-connected EC that follows the standard channel enable
+handshake.
+
+## Expected Outcomes on Dell Precision 7530
+
+Case A (best): PLT_RST# was asserted → de-assertion triggers EC init →
+  EC sets PCRDY=1 → EC ports 0x62/0x66 start responding → battery works.
+
+Case B (good): PLT_RST# was already de-asserted, channel toggle triggers
+  EN_CHG → EC sets PCRDY=1 → EC starts responding.
+
+Case C (partial): VW regs show useful diagnostic data but toggle doesn't
+  fix the issue → we learn what PLT_RST# state actually is and what the
+  master VW registers contain on this specific PCH.
+
+Case D (no change): EC firmware has proprietary Dell initialization beyond
+  standard eSPI spec (encrypted firmware, fused keys) → the raw VW dumps
+  and SCRS responses from the slave write commands still provide critical
+  diagnostic data for the next iteration.
+
+## Serial Output To Look For
+
+Key lines in the serial log on Dell:
+  - "espi_chinit: PID=0x72" — confirms PID selection
+  - "XMVW0..7" dump — raw master VW register values
+  - "PLT_RST# found" or "not found" — whether index 4 exists
+  - "PLT_RST#: data=N valid=N" — current state
+  - "PC disable/enable" result and SCRS code
+  - "readback: PC_CAP=... rdy=N VW_CAP=... rdy=N"
+  - "SUCCESS" / "PARTIAL" / "FAILED"
+  - "port 0x66 status=0xNN" — final floating bus check
+
+## What If It Doesn't Work
+
+If result=4 (FAILED) on Dell, the serial output gives us:
+  1. All 16 VW register values (raw hex) — decode manually
+  2. SCRS response codes from slave writes — confirm bus is alive
+  3. Pre/post slave VW comparison — any state changes at all?
+  4. Port 0x66 status — still 0xFF or something new?
+
+Next steps if failed:
+  - Decode VW register format from the raw hex dump
+  - Try ACPI _REG(EmbeddedControl, 1) evaluation
+  - Try SMI-based EC reset (outb to SMI_CMD)
+  - Investigate if Dell uses a proprietary EC init beyond standard eSPI

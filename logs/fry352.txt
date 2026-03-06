@@ -1,0 +1,16 @@
+2026-02-27 03:07:25 UTC
+Step: Prevent phantom serial input from producing continuous '?' with no user input.
+Why: On systems without COM1/UART, polling LSR can read garbage states; `kread_serial()` could then consume/echo bogus bytes forever.
+
+Changes made:
+- src/kernel/kprint.c
+  - `serial_is_transmit_empty()` now initializes UART state on demand and returns ready when UART is absent.
+  - `serial_received()` now initializes UART state on demand and returns 0 when UART is absent.
+  - `serial_read_char()` now returns immediately when UART is absent instead of waiting on RX status.
+
+Validation commands run:
+1) `PATH="/opt/cross/bin:$PATH" bash build_iso.sh`
+   - Exit: 0
+   - ISO produced: `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+   - Non-fatal warning: export copy to `/mnt/c/...` failed (read-only mount).
+

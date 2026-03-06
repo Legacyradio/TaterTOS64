@@ -1,0 +1,45 @@
+2026-02-26 — Fix: .FRY files missing from ISO 9660 tree → ramdisk never built on Dell
+
+ROOT CAUSE:
+- On Dell Precision 7530, UEFI boots the hybrid ISO via the ISO 9660 path
+  (El Torito / GPT partition 1). li->DeviceHandle's SFS points to the ISO 9660
+  filesystem, NOT the FAT32 efiboot.img (partition 2).
+- ISO 9660 tree ($ISO_DIR) had: EFI/BOOT/BOOTX64.EFI, boot/kernel.elf, startup.nsh,
+  EFI/efiboot.img (binary blob). NO .FRY files.
+- efiboot.img (FAT32) had the .FRY files, but Dell's firmware does NOT register the
+  appended FAT32 partition as a separate SFS handle → LocateHandleBuffer pass 2 also
+  finds nothing.
+- Result: fry_found=0 → handoff->ramdisk_base=0 → HAVE_RD=0 → kernel falls back to
+  NVMe → mounts Dell's own EFI partition (Microsoft/DELL structure) → no .FRY files
+  there → GUI/SHELL launch fail with -101 (ELF_LOAD_ERR_OPEN).
+
+What Codex (fry340–fry348) got wrong:
+- Kept chasing symptoms: VFS content-aware scoring, expanded path variants in kernel,
+  NVMe GPT/FAT32 hardening. All correct as standalone fixes but none address why
+  handoff->ramdisk_base is 0 to begin with.
+- The NVMe DMA virt_to_phys fix (fry335/fry337) and GPT read improvements (fry333)
+  ARE legitimate and are kept.
+
+Fix applied:
+- build_iso.sh: copy .FRY files into $ISO_DIR at root and $ISO_DIR/fry/ BEFORE
+  xorriso builds the ISO. This bakes them into the ISO 9660 tree.
+- EFI loader already has path variants \GUI.FRY (root, variant 2) and \fry\GUI.FRY
+  (variant 0) that match these locations.
+- Result: regardless of whether li->DeviceHandle gives ISO 9660 SFS or FAT32 SFS,
+  the EFI loader will find .FRY files and build the ramdisk.
+
+Build result:
+- PATH="/opt/cross/bin:$PATH" bash build_iso.sh → exit 0
+- ISO: out/tatertos64v3.iso
+- Windows export: succeeded (out/tatertos64v3.iso → /mnt/c/.../tatertos64v3.iso)
+- xorriso verify: /GUI.FRY /SHELL.FRY /SYSINFO.FRY /UPTIME.FRY /PS.FRY +
+                  /fry/GUI.FRY /fry/SHELL.FRY /fry/SYSINFO.FRY /fry/UPTIME.FRY /fry/PS.FRY
+  all confirmed present in ISO 9660 tree.
+
+Expected serial output after this fix (boot from USB on Dell):
+  EFI: fry pass1 found=5
+  EFI: ramdisk built
+  ...
+  init: ramdisk base=0x<nonzero> size=<nonzero>
+  init: vfs ramdisk primary
+  (no more HAVE_RD=0 / GUI launch failed -101)

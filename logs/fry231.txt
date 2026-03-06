@@ -1,0 +1,6 @@
+DATE: 2026-02-21
+TIME: 10:13:00 -0600
+DESC: Add minimal marker 'r' after RSDP signature check.
+WHY: Determine whether RSDP signature read succeeds after removing vmm_map.
+FILES:
+  - src/kernel/acpi/tables.c

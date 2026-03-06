@@ -1,0 +1,71 @@
+========================================================================
+TaterTOS64v3 - fry551 - fix NVMe IRQ waiter race on g_wait_pid/g_irq_epoch
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 22:52:05 UTC
+2026-03-05 16:52:05 CST
+
+CONTEXT
+-------
+- Review flagged unsynchronized access in NVMe IRQ completion path:
+  - IRQ handler increments `g_irq_epoch` and reads `g_wait_pid`.
+  - `wait_cq_irq()` reads/writes the same globals concurrently.
+- Under contention this allowed waiter PID clobbering and stale epoch/pid
+  observations.
+
+WHY
+---
+- Shared IRQ-wait state must be updated atomically between process and ISR
+  contexts.
+- Prevents race windows where one waiter can overwrite/clear another waiter's
+  PID.
+
+CHANGE APPLIED
+--------------
+- File updated: `src/drivers/storage/nvme.c`
+  - Added `#include "../../drivers/smp/spinlock.h"`.
+  - Added `static spinlock_t g_irq_wait_lock = {0};`.
+  - Added `static spinlock_t g_submit_lock = {0};`.
+  - `nvme_irq_handler()` now snapshots/updates waiter state under
+    `spin_lock_irqsave()` / `spin_unlock_irqrestore()`, then calls
+    `sched_wake(pid)` after releasing the lock.
+  - `nvme_irq_teardown()` and `nvme_enable_msi()` now reset
+    `g_irq_epoch` / `g_wait_pid` under the same lock.
+  - `wait_cq_irq()` now:
+    - Captures `(before_epoch, waiter registration)` under lock.
+    - Refuses to overwrite an existing waiter PID from another task.
+    - Clears waiter PID only when it matches the current task PID.
+    - Uses locked checks for IRQ-epoch change and cleanup.
+  - `submit_cmd()` now uses `g_submit_lock` to serialize CID/queue access,
+    preventing multiple in-flight command races on shared queue state.
+
+EFFECT
+------
+- Eliminates data races on IRQ wait globals.
+- Prevents waiter PID clobbering between competing callers.
+- Preserves current single-waiter IRQ wake model while making it safe.
+- Enforces single-flight submit semantics for shared queue/CID state.
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Kernel build validation:
+   - `PATH="/opt/cross/bin:$PATH" make -j"$(nproc)"`
+2) RESULT:
+   - PASS (build succeeded)
+3) Post-fix rebuild after submit serialization hardening:
+   - `PATH="/opt/cross/bin:$PATH" make -j"$(nproc)"`
+4) RESULT:
+   - PASS (build succeeded)
+
+UPDATE RECORDED
+---------------
+2026-03-05 22:52:55 UTC
+2026-03-05 16:52:55 CST
+
+NOTES
+-----
+- No hash recorded in this log (planv3 rule 16; no user-requested rebuild).
+
+========================================================================

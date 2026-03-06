@@ -1,0 +1,46 @@
+fry367 — GUI shell launch/output routing fix + syscall IRQ window hardening
+Timestamp: 2026-02-27 19:22:19 CST
+
+Why:
+  User-reported bare-metal regression:
+  - Clicking Shell from GUI did not behave like a windowed app.
+  - Initial shell text appeared interwoven directly on the desktop framebuffer.
+  - System could lock when launching shell from GUI path.
+
+Root causes addressed:
+  1) SYS_WRITE(fd=1) still mirrored normal user stdout to kernel framebuffer
+     via kprint_write(), even in GUI mode.
+     Result: shell banner/prompt text rendered directly onto desktop.
+
+  2) syscall_entry kept IRQs masked for the full syscall body.
+     Result: long/heavy syscalls (e.g. spawn/fs paths) had higher risk of
+     deadlock/stall behavior on real hardware.
+
+Changes:
+  src/kernel/proc/syscall.c
+    + syscall_entry assembly:
+      - enable IRQs (`sti`) before calling syscall_dispatch
+      - disable IRQs (`cli`) only for final return-state restore/sysret path
+      Why: allow hardware progress during syscall execution while preserving
+      safe return-state handling.
+
+    + SYS_WRITE(fd=1) routing:
+      - keep per-process stdout ring capture (for GUI window rendering)
+      - stop mirroring non-TaterWin user stdout to framebuffer when GUI is running
+      - preserve console fallback only when GUI is not running
+      Why: prevent shell startup text/prompt from being painted directly on desktop.
+
+    + Performance hardening:
+      - added cached GUI process hint (slot/pid) so GUI-running check is O(1)
+        on hot path instead of scanning full process table on every write.
+      Why: keep stdout path efficient on both QEMU and bare metal.
+
+Build/Test run (required clean + verbose):
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+Result:
+  - Build succeeded (exit 0)
+  - ISO: out/tatertos64v3.iso
+  - NVMe image updated: out/tater_nvme.img
+  - Export to /mnt/c/Users/jjsako/Documents/tateriso/ failed (read-only mount)

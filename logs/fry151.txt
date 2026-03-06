@@ -1,0 +1,4 @@
+[2026-02-20 19:47:09 UTC] Step: Fix GRUB root selection for UEFI ISO.
+Why: GRUB reported /boot/kernel.elf not found because root was ESP, not ISO.
+Change: grub.cfg now insmods iso9660 and searches for /boot/kernel.elf to set root.
+Files: build_iso.sh

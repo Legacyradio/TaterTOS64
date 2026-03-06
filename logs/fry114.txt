@@ -1,0 +1,11 @@
+DATE: 2026-02-22 21:10 CST
+CHANGE: Added userland GUI launcher and basic apps (sysinfo, uptime, ps), wired build + ISO packaging, and switched init to launch GUI first with shell fallback.
+WHY: Provide a real userland GUI surface and app execution path as requested.
+FILES:
+- src/user/gui/gui.c
+- src/user/apps/sysinfo.c
+- src/user/apps/uptime.c
+- src/user/apps/ps.c
+- Makefile
+- build_iso.sh
+- src/kernel/main.c

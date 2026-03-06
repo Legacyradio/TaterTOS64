@@ -1,0 +1,6 @@
+2026-02-20 23:38:02
+Change: kprint_init now uses VMM_FB_BASE mapping instead of physmap for the framebuffer.
+Why: Crash occurs immediately after kprint_init; using vmm_phys_to_virt(fb_base) can point to unmapped memory if the framebuffer is outside the physmap range. VMM_FB_BASE is explicitly mapped in vmm_init.
+Details:
+- kprint.c: fb_base now set to VMM_FB_BASE when a framebuffer is present; otherwise 0.
+Next: rebuild ISO and rerun QEMU with debugcon to confirm we pass K_KPRINT/K_AFTER_PRINT and reach ACPI markers.

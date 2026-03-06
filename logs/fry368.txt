@@ -1,0 +1,52 @@
+fry368 - shutdown-click lockup hardening + verification
+Timestamp: 2026-02-27 20:08:07 CST
+
+Why:
+  User reported system looked stable until clicking Shutdown in QEMU, then lockup.
+  Needed to confirm whether this was normal QEMU exit or kernel fault path.
+
+What was observed:
+  - Prior imported run (logs from 2026-02-27 19:55) showed repeated:
+      !EXC vec=0x0D err=0x02F4 RIP=FFFFFFFF8000EE5E
+  - RIP 0xFFFFFFFF8000EE5E maps to common_isr iretq
+    (src/kernel/irq/irqdesc.c path), indicating interrupt-return frame failure.
+
+Fixes applied:
+  1) SYSCALL entry flag hardening
+     File: src/kernel/proc/syscall.c
+     - IA32_FMASK changed from 0x200 to 0x700 in syscall_init()
+       (clear TF|IF|DF on SYSCALL entry).
+     - Prevents user trap/direction flags from leaking into kernel syscall path.
+
+  2) Shutdown path made non-returning/safe
+     File: src/kernel/acpi/power.c
+     - Added halt_forever() helper.
+     - acpi_shutdown() now:
+       - disables interrupts before PM control writes (cli),
+       - attempts ACPI S5 writes,
+       - attempts QEMU/Bochs poweroff fallback (outw 0x0604, 0x2000),
+       - never returns to normal flow; halts forever if poweroff does not occur.
+     - Removed prior "sleep then kernel_panic" shutdown-failure behavior.
+
+Build/Test run:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+Build result:
+  - Success (exit 0)
+  - Artifacts:
+    - out/tatertos64v3.iso
+    - out/tater_nvme.img
+
+Verification (latest logs after patch):
+  - logs/qemu.log timestamp: 2026-02-27 20:04
+  - logs/serial.log timestamp: 2026-02-27 20:01
+  - counts:
+    - "check_exception old: 0xffffffff new" in qemu.log: 0
+    - "v=0d|v=0e" in qemu.log: 0
+    - "!EXC|EXC unhandled|PANIC" in serial.log: 0
+
+Conclusion:
+  Shutdown-triggered lockup path reproduced in old logs is no longer present in
+  the latest post-fix logs. Current run verifies clean behavior without exception
+  storms.

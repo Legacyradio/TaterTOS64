@@ -1,0 +1,49 @@
+========================================================================
+TaterTOS64v3 - fry556 - replace NVMe queue-creation magic numbers in cdw11
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 23:11:57 UTC
+2026-03-05 17:11:57 CST
+
+CONTEXT
+-------
+- Review flagged magic literals in NVMe queue creation:
+  - `cmd.cdw11 = g_irq_completion ? 3u : 1u`
+  - `cmd.cdw11 = ((uint32_t)qid << 16) | 1u`
+
+WHY
+---
+- These literals hide bit semantics (PC/IEN/CQID field placement) and are
+  harder to maintain/review.
+
+CHANGE APPLIED
+--------------
+- File updated: `src/drivers/storage/nvme.c`
+  - Added named constants:
+    - `NVME_IOQ_CDW11_PC`          (physically contiguous bit)
+    - `NVME_IOCQ_CDW11_IEN`        (completion interrupt enable bit)
+    - `NVME_IOSQ_CDW11_CQID_SHIFT` (SQ->CQ association field shift)
+  - Replaced CQ creation literal with explicit flag composition:
+    - `NVME_IOQ_CDW11_PC | (g_irq_completion ? NVME_IOCQ_CDW11_IEN : 0u)`
+  - Replaced SQ creation literal with explicit CQID field packing:
+    - `((uint32_t)qid << NVME_IOSQ_CDW11_CQID_SHIFT) | NVME_IOQ_CDW11_PC`
+
+EFFECT
+------
+- Removes ambiguous literals from NVMe queue creation path.
+- Preserves behavior while making command field intent explicit.
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Kernel build validation:
+   - `PATH="/opt/cross/bin:$PATH" make -j"$(nproc)"`
+2) RESULT:
+   - PASS (build succeeded)
+
+NOTES
+-----
+- No hash recorded in this log (planv3 rule 16; no user-requested rebuild).
+
+========================================================================

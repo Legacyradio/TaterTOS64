@@ -1,0 +1,3 @@
+STEP 56
+TIME: 2026-02-20 01:28:02
+ACTION: Implemented userspace libc and shell stubs in src/user/libc/* and src/user/shell/shell.c.

@@ -1,0 +1,7 @@
+2026-02-21 00:39:23
+Change: Fixed inline outb syntax in main.c to use AL + outb with immediate port.
+Why: GCC assembler rejected outb imm,imm; this uses valid AL + imm8 port form.
+Details:
+- main.c: inline asm now loads AL with 0x42/0x5A and outputs to port 0xE9.
+Rule note: Temporary debug change; will be removed after diagnosis.
+Next: rebuild ISO, run QEMU with debugcon, confirm 'BZ' appears.

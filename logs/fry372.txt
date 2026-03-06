@@ -1,0 +1,21 @@
+fry372 — Build verification after AP timer disable stability patch
+Timestamp: 2026-02-28
+
+Why:
+  Confirm clean rebuild and fresh boot artifacts after fry371 change.
+
+Commands run:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+Result:
+  - Build succeeded (exit 0).
+  - Updated artifacts:
+      out/tatertos64v3.iso
+      out/tater_nvme.img
+  - Windows export copy to /mnt/c failed non-fatally (read-only mount).
+
+Notes:
+  - Non-fatal compiler warnings only; no build blockers.
+
+Next log: fry373.txt

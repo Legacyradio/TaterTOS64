@@ -1,0 +1,77 @@
+========================================================================
+TaterTOS64v3 - fry582 - preserve live-media semantics for RAM-backed FAT32 root
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 03:19:18 UTC
+2026-03-05 21:19:18 CST
+
+CONTEXT
+-------
+- User reported that apps were back to failing on bare metal and suspected the
+  system was somehow offloading the ramdisk to NVMe despite the root guard.
+- Current live boot path mounts `/` from ramdisk through `vfs_init_ramdisk(...)`,
+  but that routine may expose the ramdisk via the FAT32 VFS path.
+
+WHY
+---
+- Live-mode gating in GUI launch/discovery was checking `root_fs_type == 4`
+  (`ramdisk`) to decide whether secondary `/nvme*` probing should be allowed.
+- When ramdisk root is served by FAT32-on-RAM, `root_fs_type` becomes `FAT32`
+  even though the boot source is still live media.
+- That made userspace treat live boot like ordinary block storage again and
+  re-enable `/nvme*` fallback/probing in paths that were supposed to stay
+  decoupled from app launch.
+
+CHANGES APPLIED
+---------------
+- Files updated:
+  - `src/kernel/fs/vfs.h`
+    - Added `flags` to `struct vfs_storage_info`.
+    - Added `VFS_STORAGE_FLAG_ROOT_RAMDISK_SOURCE`.
+  - `src/user/libc/libc.h`
+    - Mirrored the ABI change in `struct fry_storage_info`.
+    - Added `FRY_STORAGE_FLAG_ROOT_RAMDISK_SOURCE`.
+  - `src/kernel/fs/vfs.c`
+    - Added `g_root_from_ramdisk`.
+    - Set the flag on all successful `vfs_init_ramdisk(...)` root paths,
+      including FAT32-backed ramdisk root.
+    - Exposed that flag through `vfs_get_storage_info(...)`.
+    - Cleared the flag on ordinary block-root `vfs_init(...)`.
+  - `src/user/gui/gui.c`
+    - Changed live-mode gating to use the explicit root-source flag instead of
+      inferring live mode from filesystem type.
+  - `src/user/shell/shell.c`
+    - Updated `storage` output to annotate live root as `, live` for quick
+      verification on bare metal.
+
+EXPECTED BEHAVIOR
+-----------------
+- `/` remains whatever filesystem view was mounted by ramdisk boot
+  (packed-ramdisk or FAT32-on-RAM), but userspace still recognizes it as live
+  media.
+- GUI app discovery and spawn fallback no longer re-enable secondary `/nvme*`
+  probing just because the ramdisk root reports as FAT32.
+- `storage` should now show the root entry with `, live` on ISO/live boot.
+
+VALIDATION (THIS SESSION)
+-------------------------
+1) Targeted rebuild:
+   - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make gui kernel`
+   - Result:
+     - PASS
+2) Full rebuild / repack:
+   - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+   - Result:
+     - PASS
+     - ISO produced at `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+     - NVMe image produced at `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+
+NOTES
+-----
+- This is a semantics fix, not a root remount change: the issue was incorrect
+  live-mode detection in userspace, not `/` being rebound to `/nvme`.
+- No SHA-256 values recorded here to stay aligned with `planv3.txt` rule 16.
+
+========================================================================

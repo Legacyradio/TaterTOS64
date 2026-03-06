@@ -1,0 +1,10 @@
+[2026-02-22 06:32:40 UTC] Add minimal storage init breadcrumbs.
+
+Changes:
+- src/kernel/main.c: add one-line logs around vmd_init and nvme_init.
+
+Why:
+- Current boot stops at `init: storage` with no NVMe logs; these three lines pinpoint whether we hang in vmd_init or nvme_init without spamming debug markers.
+
+Tests (not run):
+- bash build_iso.sh

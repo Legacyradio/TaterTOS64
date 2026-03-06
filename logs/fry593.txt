@@ -1,0 +1,103 @@
+========================================================================
+TaterTOS64v3 - fry593 - bare-metal first-user handoff hardening
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 03:44:10 CST
+
+CONTEXT
+-------
+- User reported the remaining issue is on bare metal; QEMU logs are not relevant
+  for this step per plan rule 11.
+- Current boot diagnostics already bracket the failure around the first scheduler
+  handoff:
+  - stage 32 / `K_BOOT_USER_ENQUEUED`
+  - stage 33 / `K_FIRST_TICK`
+  - stage 34 / `K_FIRST_SWITCH`
+  - stage 35 / `K_FIRST_USER`
+- Review of the live tree found one real lifecycle bug unrelated to the earlier
+  Gemini theory:
+  - `acpi_events_init()` was creating and enqueuing a kernel worker before
+    `process_init()` and `sched_init()` later reinitialized the process and
+    scheduler state.
+- Bare-metal startup was also still depending on the first LAPIC timer tick to
+  perform the initial handoff into userspace.
+
+WHY
+---
+- Creating scheduler-managed threads before the process layer is initialized is
+  invalid lifecycle ordering and can corrupt or discard queued worker state.
+- For the first boot userspace jump, relying on the first external timer tick
+  adds avoidable hardware timing sensitivity on the Dell 7530.
+- The goal of this step is to make the first userspace handoff deterministic on
+  bare metal without introducing Dell-specific behavior.
+
+CHANGES APPLIED
+---------------
+- Files updated:
+  - `src/kernel/acpi/events.h`
+    - Added `acpi_events_start_worker()` declaration.
+  - `src/kernel/acpi/events.c`
+    - Moved GPE worker creation out of `acpi_events_init()`.
+    - Added `acpi_events_start_worker()` so the worker is only created after the
+      process/scheduler subsystem is live.
+  - `src/kernel/main.c`
+    - Added a direct `sched_tick()` immediately after boot userspace is queued
+      and before `sti`.
+    - Deferred `acpi_events_start_worker()` until after that first direct
+      scheduler handoff.
+
+EXPECTED EFFECT
+---------------
+- The first boot user process no longer depends on the first LAPIC timer tick to
+  receive its initial scheduler handoff.
+- Early ACPI GPE worker creation no longer races against later
+  `process_init()`/`sched_init()` reinitialization.
+- Existing post-launch markers remain valid for deeper downstream diagnosis:
+  - 32 = boot user enqueued
+  - 33 = first BSP timer tick
+  - 34 = first context switch
+  - 35 = first scheduled user process
+  - 36 = first user syscall
+  - 37 = first `INIT.FRY` syscall
+  - 38 = init spawned GUI
+  - 39 = GUI reached framebuffer syscall path
+- Marker interpretation changes slightly for this artifact:
+  - stages 34 and 35 may now occur before stage 33, because the first handoff
+    can happen via the direct pre-`sti` `sched_tick()`.
+
+VALIDATION
+----------
+1) Rebuild command:
+   - `bash build_iso.sh`
+2) Rebuild result:
+   - PASS
+   - Produced:
+     - `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+     - `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+   - Export reported:
+     - `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+3) Hash verification after rebuild:
+   - Source ISO:
+     - `9d876e02613359738794e1f34068e3619e9e11b44e436c299fc980382184a5f3`
+   - Exported Windows ISO:
+     - `9d876e02613359738794e1f34068e3619e9e11b44e436c299fc980382184a5f3`
+   - Byte-for-byte equality:
+     - `cmp -s ... ; echo $?` -> `0`
+
+NEXT HARDWARE CHECK
+-------------------
+- Boot the ISO with artifact hash
+  `9d876e02613359738794e1f34068e3619e9e11b44e436c299fc980382184a5f3`.
+- If boot still fails, report the highest square count reached for this exact
+  artifact hash so the failure band can be narrowed using the updated marker
+  semantics above.
+
+NOTES
+-----
+- No QEMU logs were used in this step.
+- SHA-256 hashes were recorded because this step included a user-requested
+  rebuild/export verification, matching plan rule 16.
+
+========================================================================

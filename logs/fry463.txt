@@ -1,0 +1,78 @@
+========================================================================
+TaterTOS64v3 - fry463 — Fix File Manager launch + screen jitter
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-02 ~22:30 UTC
+
+PROBLEMS REPORTED
+-----------------
+1. Screen jitter/glitch when opening file manager
+2. Clicking "File Manager" in start menu does nothing
+3. Need to verify file manager uses same TaterWin SHM protocol as other apps
+
+ROOT CAUSE ANALYSIS
+-------------------
+1. SCREEN JITTER: GUI.FRY (the compositor) was present in the ISO filesystem
+   at / and /fry/. Dynamic app discovery (added in fry460) scanned these dirs
+   and added "GUI" to the start menu as a launchable app. Clicking "GUI"
+   spawned a SECOND compositor instance — two processes fighting over the
+   framebuffer — desktop-wide visual jitter/flicker.
+
+   fry461 tried to fix this by remapping GUI→FILEMAN in discovery, but fry462
+   rolled back ALL gui.c changes (user thought jitter was a fileman window
+   issue, not a start menu issue). This left GUI.FRY discoverable again.
+
+2. FILE MANAGER NOT LAUNCHING: After fry462 rollback, FILEMAN.FRY was removed
+   from the fallback app list. If directory discovery fails on Dell early boot,
+   FILEMAN won't appear at all. Additionally, with "GUI" showing in the menu,
+   user may click it thinking it's related to the file manager — but it spawns
+   another compositor instead.
+
+3. PROTOCOL VERIFICATION: fileman.c follows the exact same TaterWin SHM
+   protocol as sysinfo.c, shell.c, uptime.c, ps.c:
+   - Sends TW_MSG_CREATE_WINDOW with TW_MAGIC via fry_write(1, ...)
+   - Waits for TW_MSG_WINDOW_CREATED via fry_read(0, ...)
+   - Maps SHM via fry_shm_map()
+   - Render loop: draw → memcpy to SHM → TW_MSG_UPDATE → fry_sleep(33)
+   All confirmed correct — no protocol deviation.
+
+FIX APPLIED
+-----------
+File: src/user/gui/gui.c
+
+1. Added GUI filter in add_app_name():
+   - After computing base name, checks str_eq(base, "GUI") → return
+   - Prevents the compositor from ever appearing in the start menu
+   - GUI.FRY still exists on disk for the kernel to load — just not listed
+
+2. Added FILEMAN.FRY to fallback app list:
+   - If directory discovery returns 0 apps, FILEMAN.FRY now included
+   - Ensures file manager appears even on early-boot or discovery failure
+
+WHY
+---
+- GUI filter: the compositor is not a user app — launching it from the start
+  menu spawns a second framebuffer-writing process, causing visual corruption.
+  This is the root cause of the jitter, not anything in fileman.c itself.
+- Fallback: ensures file manager is always available regardless of VFS state.
+
+BUILD
+-----
+make clean
+PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+Result: success, ISO exported to Windows
+
+ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+Export: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+TEST CHECKLIST
+--------------
+1. Boot ISO on Dell Precision 7530
+2. Open start menu — should see: SHELL, SYSINFO, UPTIME, PS, FILEMAN
+   Should NOT see: GUI
+3. Click FILEMAN — file manager window should open with directory listing
+4. No screen jitter when opening/using file manager
+5. Other apps (SHELL, SYSINFO, etc.) still work normally
+========================================================================

@@ -1,0 +1,66 @@
+fry437 — Rule-14 Tightening: Remove Exact A30E Special-Cases in eSPI/DMI Helpers
+Date: 2026-03-01
+
+Timestamps (UTC):
+  Start: 2026-03-01 21:33:30 UTC
+  Build complete: 2026-03-01 21:36:50 UTC
+  Hash verification: 2026-03-01 21:37:28 UTC
+  Log written: 2026-03-01 21:38:45 UTC
+
+Goal:
+  Enforce rule 14 strictly by replacing remaining exact-device (0xA30E)
+  checks in this path with runtime family detection, while retaining Dell
+  Precision 7530 support behavior.
+
+Rule-15 hash verification (before writing this log):
+  source ISO  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+    cb4d855dad8d081e1a7f9de0bd29312b00e59d0eddb821ef118cc3df7a1e5210
+  target ISO  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+    52c33e8bdf7cc2ddbf4048f47f91a29fd314be73187c67811c78c297441b567f
+  Result:
+    Source and target differ; target/export remains stale in this environment.
+
+Code changes:
+
+1) src/kernel/acpi/extended.c
+   A) Added forward declaration:
+      - lpc_is_intel_300_series(uint16_t)
+      WHY:
+        Needed for earlier helper functions to use runtime family detection
+        without duplicating hardcoded model checks.
+
+   B) pcr_get_dmi_pid_candidates():
+      - Replaced exact `g_lpc_device == 0xA30E` with
+        `lpc_is_intel_300_series(g_lpc_device)`.
+      WHY:
+        Keeps Dell support but avoids global assumptions tied to one device ID.
+
+   C) pcr_get_fallback_bars():
+      - Replaced exact `lpc_device == 0xA30E` with
+        `lpc_is_intel_300_series(lpc_device)`.
+      WHY:
+        Same rationale; runtime-family behavior instead of one-model pinning.
+
+Build and test commands (rule-10 compliant):
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Build result:
+  - Success (exit code 0).
+  - Existing non-fatal warnings remain baseline.
+  - Export copy to /mnt/c/... remains blocked by read-only filesystem.
+
+Artifact hashes:
+  kernel.elf     e1bd8d1a2a55da1dc220128ef6906ca63bc9931aa7a39a29c8e22adfd775c0cb
+  shell.fry      9bd519d7f8c4388199f3bbff4465d8dee43dd2824b1868e21e0c754a989a5436
+  gui.fry        cc3119651fbbaaab86ccd1e63f27c55c2e352a679a44169bfe1a148f98c6bf21
+  sysinfo.fry    471cf96a0f85efe7cdc2ee2c524ec81b41f64c8d813cbe24c7869beeb1a6f601
+  uptime.fry     be2d52f09c970a70bc6717d72898f26dc55269b50234293239e239ab6d6ea971
+  ps.fry         5161f67679f07f34afe9acd7579bda222f575b7c73b15f59f76cf4b3495a1c84
+  ISO (source)   cb4d855dad8d081e1a7f9de0bd29312b00e59d0eddb821ef118cc3df7a1e5210
+  NVMe image     c4f29e4a49e4443fcd232da259dba56b0112b624333cae32b571a5bb7e85e2c2
+  ISO (target)   52c33e8bdf7cc2ddbf4048f47f91a29fd314be73187c67811c78c297441b567f
+
+Hardware/BIOs note (rule 13):
+  BIOS revision/date not visible in this build environment; must be captured
+  on next bare-metal Dell Precision 7530 validation run.

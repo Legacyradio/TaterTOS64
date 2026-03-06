@@ -1,0 +1,103 @@
+========================================================================
+TaterTOS64v3 - fry530 — Fallback-first app launch + NVMe decoupling hardening
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-05 02:04:29 UTC
+
+WHY THIS LOG
+------------
+- User requested making app launch "play nice" on Dell without removing NVMe support.
+- Goal: keep GUI/shell launch responsive even when NVMe secondary probing is slow/flaky.
+
+CHANGES APPLIED
+---------------
+1) src/kernel/main.c
+   - Added explicit minimal fallback-first launch order:
+     - Try `/GUI.FRY` first.
+     - If that fails, try `/SHELL.TOT`.
+     - Only then attempt broader path variants.
+   - This ensures first-launch usability is not blocked by broader path scanning.
+
+2) src/kernel/fs/vfs.c
+   - Tightened `vfs_try_recover_mount(...)` trigger rules.
+   - Secondary recovery now runs only for exact mountpoint paths (`/nvme`, `/nvmeN`),
+     not arbitrary `/nvme/...` file opens.
+   - Prevents app file opens from implicitly triggering storage recovery scans.
+
+3) src/user/gui/gui.c
+   - Start-menu discovery is now primary-first:
+     - Seed minimal app list immediately (`SHELL`, `SYSINFO`, `UPTIME`, `PS`, `FILEMAN`).
+     - Scan primary paths (`/`, `/fry`, `/FRY`, `EFI/...`) first.
+     - Scan `/nvme*` only if secondary mounts are already present.
+   - Spawn path resolution is now primary-first with secondary fallback only when mounts exist.
+   - Added one-shot launch watchdog (`LAUNCH_WATCHDOG_MS=5000`):
+     - If a spawned app shows no output/window progress by deadline, GUI marks it done,
+       kills the stuck process, and stays responsive.
+
+BUILD / EXECUTION RECORD
+------------------------
+Commands executed:
+1) PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make gui kernel
+2) PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Results:
+- Build succeeded.
+- ISO produced: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Export to /mnt/c failed during build script (read-only filesystem in this environment).
+
+HASH / FRESHNESS (Rule 15)
+--------------------------
+Source ISO:
+- 2026-03-04 20:03:09.175392955 -0600  135575552 bytes
+- SHA256: ee11a87ac78d2c1c3782df7090e1437523c0f08cec4e31b42975c94b1c8e0ac3
+- Path: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+Target/export ISO (exists, stale):
+- 2026-03-04 19:25:47.514561100 -0600  135579648 bytes
+- SHA256: 9353d0730a2eecc35f436b5cf8370bc1f0a4c023ba85234f48850ab1046294df
+- Path: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- Note: target hash does not match source; export refresh blocked by read-only mount.
+
+DELL BOOT VALIDATION CHECKLIST
+------------------------------
+1) Boot the new ISO on Dell Precision 7530 in UEFI mode.
+2) After desktop appears, open Start menu immediately.
+3) Launch `SHELL`, then launch `SYSINFO`.
+4) In `SHELL`, run:
+   - `ls /`
+   - `ls /fry`
+5) Confirm these launch/read actions work before touching `/nvme*`.
+6) Then run storage checks:
+   - `vfsdbg`
+   - `ls /nvme`
+   - `ls /nvme1`
+7) If an app shows only "Starting app..." and stalls, wait ~5 seconds and
+   confirm GUI recovers (watchdog path).
+8) Record pass/fail for:
+   - Immediate app launch responsiveness
+   - `/nvme*` responsiveness vs freeze
+   - Watchdog behavior on stuck launch
+
+USER-REPORTED RESULTS (RELATED TO CHECKLIST)
+--------------------------------------------
+Source:
+- User-provided shell transcript (no serial log data used).
+
+Reported commands/results:
+- `ls /`
+  - `GUI.FRY`
+  - `SHELL.TOT`
+  - `SYSINFO.FRY`
+  - `UPTIME.FRY`
+  - `PS.FRY`
+  - `FILEMAN.FRY`
+- `ls /fry` -> `ls: failed`
+- `ls /nvme` -> `ls: failed`
+- `ls /nvme1` -> `ls: failed`
+
+Current follow-up status:
+- Still waiting on `vfsdbg` results from user run.
+
+========================================================================

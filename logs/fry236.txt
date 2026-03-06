@@ -1,0 +1,6 @@
+DATE: 2026-02-21
+TIME: 10:38:00 -0600
+DESC: Add extern decls for g_handoff and kernel_panic in acpi tables to fix build.
+WHY: Guard code referenced g_handoff/kernel_panic without declarations.
+FILES:
+  - src/kernel/acpi/tables.c

@@ -1,0 +1,3 @@
+STEP 4
+TIME: 2026-02-20 09:21:40
+ACTION: Refactored GDT setup in src/boot/gdt.c and added src/boot/gdt.h to support per-CPU GDT building/loading for SMP while preserving kernel/user segments and TSS descriptor setup.

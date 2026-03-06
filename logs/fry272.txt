@@ -1,0 +1,22 @@
+fry272 - 2026-02-26
+
+Summary:
+- Replaced vmd.c with the TatertOS64-new style VMD driver (class=01:04 + DID=0x1911 fallback), bus-start calc, BAR size probing, and exported cfg-space accessors for downstream NVMe.
+- Replaced nvme.c with the TatertOS64-new NVMe path (direct PCI, RST remap, VMD cfg access), MDTS-aware I/O chunking, NS list query, PRP list support, and DMA cache flushes.
+- Adapted all MMIO/DMA to v3 physmap model (VMM_PHYSMAP_BASE + vmm_phys_to_virt) and allocated queue/identify/prp buffers via PMM for physical addresses.
+
+Why:
+- The old VMD driver only handled one VMD class and relied on BIOS BAR2 being programmed; DID=0x1911 hides ECAM in a scratch reg and classifies as 08:80, so NVMe devices were invisible.
+- The old NVMe driver lacked VMD cfg-space access, RST remap fallback, namespace discovery, and MDTS-aware transfers, causing failures on real hardware.
+
+Files:
+- src/drivers/storage/vmd.c (full port: cfgbar probe, VMCAP/VMCFG bus start, scratch reg fallback, cfg read/write API)
+- src/drivers/storage/vmd.h (new API used by nvme)
+- src/drivers/storage/nvme.c (full port: PCI/VMD/RST init paths, PRP lists, MDTS, cache sync, NS list)
+
+Build/Test:
+- PATH="/opt/cross/bin:/usr/bin:/bin:$PATH" /usr/bin/make clean all && ./build_iso.sh
+
+Result:
+- Build succeeded; ISO produced at out/tatertos64v3.iso.
+- Copy to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso failed: Permission denied.

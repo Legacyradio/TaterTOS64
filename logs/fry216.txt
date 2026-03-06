@@ -1,0 +1,3 @@
+2026-02-21 02:59 - Step: Remove temporary early debug markers.
+Why: alloc_table now succeeds; need to clean up debug output to avoid flooding and keep logs readable.
+Change: Removed alloc_table sequence markers and vmm_init step digits; removed PMM low-memory and alloc_below debug chars; kept functional early pool logic.

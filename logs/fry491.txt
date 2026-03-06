@@ -1,0 +1,46 @@
+========================================================================
+TaterTOS64v3 - fry491 — Readdir early-stop to avoid FAT32 hard-lock
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 15:53:36 UTC
+
+USER REPORT / CONTEXT
+---------------------
+- NTFS partition visible as nvme; FAT32 partition shows as nvme1.
+- Clicking FAT32 locks system hard.
+- Request: “do it like Windows would do it.”
+
+WHY THESE CHANGES
+-----------------
+- Emulate Windows-style directory enumeration by stopping when the caller’s
+  buffer is full instead of walking entire directories.
+- Prevent long/indefinite readdir scans that can hard-lock on FAT32.
+
+CODE CHANGES
+------------
+1) vfs readdir callbacks now return int to allow early-stop.
+   - src/kernel/fs/vfs.h
+   - src/kernel/fs/vfs.c
+
+2) SYS_READDIR stops enumeration when user buffer is full.
+   - src/kernel/proc/syscall.c
+
+3) FAT32/NTFS/ToTFS/ramdisk readdir implementations honor stop signal.
+   - src/kernel/fs/fat32.h
+   - src/kernel/fs/fat32.c
+   - src/kernel/fs/ntfs.h
+   - src/kernel/fs/ntfs.c
+   - src/kernel/fs/totfs.h
+   - src/kernel/fs/totfs.c
+   - src/kernel/fs/vfs.c (ramdisk)
+
+4) Debug readdir callback signature updated.
+   - src/kernel/main.c
+
+STATUS
+------
+- SOLVED: FAT32 access no longer hard-locks (user confirmed).
+
+========================================================================

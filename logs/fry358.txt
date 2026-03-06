@@ -1,0 +1,89 @@
+fry358 — GUI Redesign (Puppy/Garuda layout, dark teal-purple palette)
+Timestamp: 2026-02-27
+
+Changes:
+  src/user/libc/gfx.h
+    + gfx_gradient_h declaration
+    + gfx_fill_rounded declaration
+
+  src/user/libc/gfx.c
+    + Full a-z lowercase glyphs added to font8x16[]
+    + Common symbols added: " # % & ' ( ) * + , / ; < = @ [ \ ] ^ _ ` { | } ~
+    + gfx_gradient_h: horizontal color gradient fill
+    + gfx_fill_rounded: filled rect with 2px corner blanking for r=2
+
+  src/kernel/proc/syscall.c
+    + SYS_KILL = 26: kills target process by pid via proc_free+sched_yield
+      Guards: pid must be > 1 and != current pid
+
+  src/user/libc/libc.h
+    + fry_kill(long pid) declaration
+
+  src/user/libc/libc.c
+    + SYS_KILL = 26 added to enum
+    + fry_kill() wrapper: syscall1(SYS_KILL, pid)
+
+  src/user/gui/gui.c — FULL REWRITE
+    Why: old code used memmove on window_t structs (corrupts shm_ptr virtual
+    addresses), no z_order table, left sidebar instead of taskbar, no
+    close/min/max buttons, locked up at 6 windows.
+
+    New architecture:
+    - windows[MAX_WINDOWS=16]: stable slots, never memmoved
+    - z_order[]: separate ordering array, bring_to_front() rewrites it
+    - Taskbar: bottom 36px, violet gradient top border, TATER> start button,
+      per-window task buttons with active accent, uptime HH:MM:SS clock
+    - Start menu: popup above start button, header gradient, 4 app rows,
+      Reboot/Shutdown bottom bar
+    - Window chrome: 28px title bar with gfx_gradient_h, violet left accent
+      for active window, [−][□][×] buttons (amber/teal/red circles)
+    - Maximize: saves/restores geometry, fills desktop area
+    - Minimize: hides window, taskbar button restores it
+    - Close: fry_kill(pid) + rebuild z_order without slot
+    - Hit test order: start menu > title bar buttons > title bar drag >
+      window body focus
+    - Desktop: vertical gradient 0x0D1117 → 0x080C14
+
+Build:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+---
+
+fry358-b — Shell interactive typing fixes
+Timestamp: 2026-02-27 18:20:26
+
+Problem confirmed by user: window showed literal VT escape sequences and
+typing produced no visible feedback:
+  "Starting app...  TaterTOS64v3 shell
+   [s [999:1HTaterTOS64v3 0:1:15 procs:17 [K [utater> "
+
+Bug 1 — draw_taskbar() VT sequences rendered literally (shell.c)
+  shell.c called draw_taskbar() each loop iteration before the prompt.
+  draw_taskbar() emits \x1b[s, \x1b[999;1H, \x1b[K, \x1b[u (VT100).
+  gfx_draw_text() has no ANSI interpreter — shows raw bytes as text.
+  Fix: removed draw_taskbar() call from main loop. The GUI has its own
+  taskbar; shell's VT-based one is meaningless in a TaterWin window.
+
+Bug 2 — No local echo in gets_bounded (libc.c)
+  gets_bounded() received chars from fry_read(0,...) but never wrote them
+  back to stdout. User saw nothing while typing.
+  Fix: after storing each printable char, fry_write(1, &c, 1) echoes it.
+  Added backspace: \b or DEL (127) → back-erase with "\b \b".
+  On \n: write "\n" before breaking so cursor advances before the prompt.
+
+Bug 3 — 8-byte gate in process_window_output (gui.c)
+  Outer while loop only ran when msgbuf >= 8 bytes (sizeof TW header).
+  With echo active, each typed char is 1 byte. Chars accumulated silently
+  until 8 had piled up, then rendered all at once — 8-char display lag.
+  Fix: after process_window_output(), if 0 < msglen < 8, flush directly to
+  textbuf. TW messages always arrive complete (< 128-byte poll chunk and
+  written atomically), so sub-8-byte leftovers are always plain text.
+
+Files changed:
+  src/user/shell/shell.c   — removed draw_taskbar() call in main loop
+  src/user/libc/libc.c     — gets_bounded: add echo + backspace handling
+  src/user/gui/gui.c       — poll loop: flush sub-8-byte msgbuf remnants
+
+Build: clean + ISO, success.
+ISO exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso

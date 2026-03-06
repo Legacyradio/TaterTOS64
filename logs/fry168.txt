@@ -1,0 +1,7 @@
+2026-02-20 19:19:22
+Change: Switched early long-mode stack to the kernel high-half stack before entering C.
+Why: QEMU log shows a #GP at non-canonical RIP (000a1dffffffff80) followed by a #PF on low stack (CR2=0x104ff8). This is consistent with boot-stack corruption from early allocators or unmapped low memory; moving to the kernel stack avoids overwriting return addresses.
+Details:
+- mb_entry.asm: load RSP from kernel_stack_top before calling _mb_start.
+- main.c: export kernel_stack and kernel_stack_top symbols (16-byte aligned) for assembly use.
+Next: rebuild ISO and rerun QEMU to confirm the non-canonical RIP is gone and serial shows A/L markers.

@@ -1,0 +1,62 @@
+========================================================================
+TaterTOS64v3 - fry549 - clarify pci_get_devices ownership (no free required)
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 22:17:45 UTC
+2026-03-05 16:17:45 CST
+
+CONTEXT
+-------
+- Follow-up review flagged a potential leak in `vmd.c` from:
+  `pci_get_devices(&count)` with no corresponding free.
+
+WHY
+---
+- `pci_get_devices()` returns PCI-core static storage (`pci_info[256]`) in
+  `src/drivers/pci/pci_core.c`, not heap memory.
+- There is no allocation to release, but API/call-site types were mutable and
+  could imply ownership to readers.
+
+CHANGE APPLIED
+--------------
+- Updated API and call sites to make ownership explicit and non-mutable:
+  - `src/drivers/pci/pci.h`
+    - `pci_get_devices()` now returns
+      `const struct pci_device_info *`
+    - Added comment: caller must not free/modify returned storage.
+  - `src/drivers/pci/pci_core.c`
+    - Updated function definition return type to `const`.
+  - `src/drivers/storage/vmd.c`
+    - Updated both local `devs` pointers to `const`.
+  - `src/kernel/drivers/platform.c`
+    - Updated local `devs` pointer to `const`.
+  - `src/kernel/acpi/extended.c`
+    - Updated both local `devs` pointers to `const`.
+
+EFFECT
+------
+- Confirms no memory leak exists for `pci_get_devices()` usage in VMD probe.
+- Prevents accidental mutation/free assumptions at compile-time.
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Kernel build validation:
+   - `/bin/bash -lc 'PATH="/opt/cross/bin:$PATH" make -j"$(nproc)"'`
+2) RESULT:
+   - PASS (build succeeded)
+3) User-requested clean rebuild + ISO pipeline:
+   - `/bin/bash -lc 'make clean && PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh'`
+4) RESULT:
+   - PASS (clean rebuild + ISO build succeeded)
+   - ToTFS NVMe image: `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+   - ISO: `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+   - Export warning unchanged:
+     `cp: cannot create regular file '/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso': Read-only file system`
+
+NOTES
+-----
+- No hash recorded in this log (planv3 rule 16).
+
+========================================================================

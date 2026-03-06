@@ -1,0 +1,11 @@
+2026-02-26 19:30:35 UTC
+Step: Updated planv3 rules to make clean + verbose rebuild the default.
+Why: User requested that full-step rebuild output be the default in the rules section.
+
+File changed:
+- planv3.txt
+  - RULES section:
+    - Kept rule 10 (testing commands must be included).
+    - Added rule 11 setting default rebuild mode to:
+      make clean
+      PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh

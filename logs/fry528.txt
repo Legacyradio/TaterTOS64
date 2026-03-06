@@ -1,0 +1,40 @@
+========================================================================
+TaterTOS64v3 - fry528 — Rebuild on request + live ISO export command
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-04 18:28:03 CST
+
+WHY THIS LOG
+------------
+- User requested an explicit rebuild for the live environment image.
+- User asked for the exact export command afterward.
+
+ACTIONS
+-------
+1) Ran full image build:
+   - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash /home/jjsako/TaterTOS64v3/build_iso.sh`
+
+2) Verified fresh artifacts:
+   - ISO: `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+   - NVMe image: `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+
+3) Verified build marker embedded in ISO:
+   - `EFI: build 2026-03-04-dell-nvme-scan`
+
+4) Recorded ISO hash:
+   - SHA-256 (ISO): `e8b47b5b1c78542fb31a53901c045c7544bce5404725ef6182543aacdc8f13f6`
+
+EXPORT COMMAND (exact)
+----------------------
+- `cp /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+NOTES
+-----
+- In this environment, `/mnt/c` is read-only, so script export step prints:
+  `Warning: could not export ISO to /mnt/c/Users/jjsako/Documents/tateriso`
+- Local artifact remains valid at:
+  `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+
+========================================================================

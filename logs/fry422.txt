@@ -1,0 +1,194 @@
+fry422 — Floating bus detection + force ACPI_ENABLE before probe
+=========================================================================
+Date: 2026-03-01 ~10:30 UTC
+
+CONTEXT (from fry421 boot on Dell):
+  fry421 added an immediate raw probe (Phase 0) and stripped all suspects
+  (GPE eval, GPE enable, delay, reset_state) from the init-to-probe path.
+
+  fry421 results on Dell Precision 7530:
+    IMM=OBF v=0x00 post=0x00 setup=0x00
+    e=0x00 lpc=0x00 reg=0x00 rcv=0 sup=0
+    Serial: all probes on 0x62/0x66 get "OBF TIMEOUT WAITING FOR DATA"
+    Serial: probes on alternate ports (0x68/0x6C) get "status=0xFF (no device)"
+
+  CRITICAL OBSERVATION: Status on ports 0x62/0x66 is ALWAYS 0x00.
+  IBF clears instantly after writing commands.  OBF never sets.
+  This pattern is consistent with a FLOATING BUS (no device behind
+  ports 0x62/0x66) or an EC in deep sleep that ignores commands.
+
+  On a REAL EC:
+    - After outb(0x66, 0x80), IBF (bit 1) should be asserted for ~1-100us
+      while the EC microcontroller reads the command from its input buffer.
+    - The EC then processes the READ command, fetches the register, and
+      sets OBF (bit 0) when data is ready at port 0x62.
+  On a FLOATING BUS:
+    - outb(0x66, val) writes to nothing.
+    - inb(0x66) returns the bus default (0x00 with pull-down or 0xFF with pull-up).
+    - IBF is never set because no device reads the input buffer.
+    - OBF is never set because no device produces output.
+    - IBF "clears instantly" because it was never set in the first place.
+
+  The _CRS extraction failed (EC src: default, crs=0 in candidate scan),
+  so we used default ports 0x62/0x66.  Verbose _CRS was not enabled
+  in fry421, so we don't know WHY it failed.
+
+WHAT THIS BUILD DOES:
+
+  1) PHASE 0: ENHANCED IMMEDIATE PROBE WITH FLOATING BUS DETECTION
+     - Reads port 0x62 BEFORE any command (g_ec_pre_data) to check for
+       pending output data from the EC.
+     - Checks if OBF is set in initial status and drains it if so.
+     - After outb(0x66, 0x80), does ONE io_wait then reads port 0x66.
+       If IBF (bit 1) is NOT set on this first read: floating bus likely.
+       If IBF IS set: real EC confirmed, IBF clearing is genuine.
+       Result stored in g_ec_ibf_seen (1 = IBF seen = real EC).
+     - Counts iterations until IBF clears (diagnostic).
+     - EXTENDED OBF timeout: 1M iterations (~2-4 seconds) instead of 100K.
+       Maybe the EC takes much longer to respond than we thought.
+     - Logs status samples every 200K iterations during OBF wait to detect
+       transient state changes.
+     - If status goes 0xFF during wait, aborts early (EC died).
+
+  2) PHASE 1: FORCE ACPI_ENABLE SMI + RE-PROBE
+     If Phase 0 fails:
+     - Sends ACPI_ENABLE to SMI_CMD regardless of SCI_EN state.
+       Dell UEFI may set SCI_EN in PM1a_CNT without actually sending
+       ACPI_ENABLE to the EC firmware.  The EC may need this SMI to
+       transition from BIOS mode (SMM-only access) to OS mode (direct
+       port I/O access).
+     - Waits ~100ms for SMI to process.
+     - Logs PM1a before/after and post-SMI EC status.
+     - Re-probes with same sequence (IBF test, extended OBF wait).
+     - If Phase 1 succeeds: EC needed the SMI to wake up.
+     - Result stored in g_ec_imm2_step (same encoding as imm_step).
+
+  3) VERBOSE _CRS EXTRACTION
+     collect_ec_candidates_cb now calls ec_extract_ports_from_crs with
+     verbose=1.  Serial output will show:
+       - "EC _CRS unavailable" (aml_eval returned NULL)
+       - "EC _CRS has N IO descriptors" (buffer parsed)
+       - "EC _CRS IO candidates: 0xNN 0xNN ..."
+       - "EC _CRS rejected (no plausible EC port pair)"
+       - "EC _CRS selected ports data=0xNN cmd=0xNN"
+     This tells us whether _CRS evaluation works and what ports it returns.
+
+  4) NEW DIAGNOSTIC FIELDS
+     - g_ec_ibf_seen: 1 if IBF (bit 1) was observed set after writing to
+       port 0x66.  THE floating bus test.  0 = floating bus likely.
+     - g_ec_pre_data: raw inb(0x62) before any command sent.
+     - g_ec_smi_sent: 1 if force ACPI_ENABLE was sent in Phase 1.
+     - g_ec_imm2_step: Phase 1 re-probe result (same encoding as imm_step).
+
+  5) SYSINFO DISPLAY CHANGES
+     New line at Y=352:
+       "IBF1=N pend=0xNN SMI=N P1=<step>"
+       Color: green if IBF1=1 (real EC), red if IBF1=0 (floating bus).
+     Battery/backlight sections shifted down 16px to accommodate.
+
+  6) ADDED inw() TO extended.c AND #include "fadt.h"
+     Phase 1 reads PM1a_CNT via inw() and uses fadt_get_info().
+
+FILES CHANGED:
+  src/kernel/acpi/extended.c:
+    - Added #include "fadt.h"
+    - Added inw() static inline
+    - Added g_ec_ibf_seen, g_ec_pre_data, g_ec_smi_sent, g_ec_imm2_step globals
+    - Rewrote Phase 0 immediate probe with floating bus detection, extended
+      OBF timeout, status sampling during wait
+    - Added Phase 1: force ACPI_ENABLE + re-probe
+    - collect_ec_candidates_cb: verbose=1 for _CRS extraction
+    - acpi_get_diag: fills new fields
+  src/kernel/acpi/extended.h:
+    - Added ec_ibf_seen, ec_pre_data, ec_smi_sent, ec_imm2_step to fry_acpi_diag
+  src/user/libc/libc.h:
+    - Added same 4 fields to user-side fry_acpi_diag
+  src/user/apps/sysinfo.c:
+    - New line: IBF1/pend/SMI/P1 display
+    - Battery/backlight Y offsets shifted down by 16px
+
+WHAT DID NOT CHANGE:
+  - ec.c: unchanged
+  - Normal init path (LPC decode, ec_setup_ports, probe methods 1-5): still exists
+  - Recovery methods still run if Phase 0 and Phase 1 both fail
+
+BUILD:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+  Result: PASS — no new warnings in ec.c, extended.c, sysinfo.c
+  Pre-existing warnings: str_eq, obj_to_str unused
+
+ISO:
+  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  Exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+EXPECTED ON DELL BOOT:
+
+  CASE A: FLOATING BUS CONFIRMED (IBF1=0, both phases fail)
+    Serial:
+      "EC fry422: initial sts=0x00 pre_data=0x00 OBF=0 IBF=0"
+      "EC fry422: IBF test: sts_after_write=0x00 IBF=0"
+      "EC fry422: *** IBF NOT SET — FLOATING BUS LIKELY ***"
+      "EC fry422: IBF cleared after 0 iters"
+      "EC fry422: OBF wait sample @100k sts=0x00" (5 samples, all 0x00)
+      "EC fry422: OBF timeout after 1M iterations"
+      "EC fry422: Phase 1 — force ACPI_ENABLE then re-probe"
+      "EC fry422: Phase1 IBF test: 0x00 IBF=0"
+      "EC fry422: Phase1 OBF timeout"
+    Sysinfo:
+      IBF1=0 pend=0x00 SMI=1 P1=OBF
+    Meaning: ports 0x62/0x66 have NO EC behind them.  Even after ACPI_ENABLE,
+      nothing responds.
+    Next step: Check verbose _CRS output — maybe the Dell's EC is at
+      different ports.  Also check DSDT EmbeddedControl OperationRegion
+      for actual port addresses.
+
+  CASE B: EC WAKES AFTER ACPI_ENABLE (IBF1=0, Phase 1 succeeds)
+    Serial:
+      "EC fry422: *** IBF NOT SET — FLOATING BUS LIKELY ***"
+      "EC fry422: OBF timeout after 1M iterations"
+      "EC fry422: Phase 1 — force ACPI_ENABLE then re-probe"
+      "EC fry422: PM1a=0xNNNN SCI_EN=1 (sending ACPI_ENABLE anyway)"
+      "EC fry422: Phase1 IBF test: 0x02 IBF=1"  ← KEY: IBF now works!
+      "EC fry422: Phase1 OK! reg[0]=0xNN"
+    Sysinfo:
+      EC: OK  ports=0x62/0x66
+      IBF1=0 pend=0x00 SMI=1 P1=OK
+    Meaning: EC needs the ACPI_ENABLE SMI to transition from BIOS mode
+      to OS mode.  Without it, the EC ignores host commands on ports 0x62/0x66.
+      Previous fry iterations' ec_try_acpi_enable skipped because SCI_EN was
+      already set — that was wrong.
+    Next step: Permanent fix — always send ACPI_ENABLE before probing.
+
+  CASE C: IBF DETECTED (real EC, just slow)
+    Serial:
+      "EC fry422: IBF test: sts_after_write=0x02 IBF=1"
+      "EC fry422: IBF cleared after N iters"
+      "EC fry422: OBF wait sample @100k sts=0x00" ... then eventually:
+      "EC fry422: OK! reg[0]=0xNN after NNNNNN iters"
+    Sysinfo:
+      EC: OK  ports=0x62/0x66
+      IMM=OK  IBF1=1
+    Meaning: EC IS there, just takes >200ms to respond to READ commands.
+      The 100K iteration timeout (fry421) was too short.
+
+  CASE D: _CRS REVEALS DIFFERENT PORTS
+    Serial (from verbose _CRS):
+      "EC _CRS on \_SB_.PCI0.LPCB.EC0 has 2 IO descriptors"
+      "EC _CRS IO candidates: 0xNN 0xNN"
+      "EC _CRS selected ports data=0xNN cmd=0xNN"
+    If ports != 0x62/0x66: EUREKA — we've been probing the wrong ports!
+    Next step: Use the _CRS-discovered ports for probing.
+
+TEST ON DELL:
+  Flash tatertos64v3.iso to USB, boot Dell Precision 7530.
+  Watch sysinfo for:
+    - IBF1= line (0 = floating bus, 1 = real EC)
+    - P1= (Phase 1 result after force ACPI_ENABLE)
+    - SMI= (1 = ACPI_ENABLE was sent)
+    - pend= (pending data byte)
+    - EC: OK or FAIL
+  Watch serial for:
+    - _CRS verbose output (port extraction details)
+    - IBF test results
+    - OBF wait samples (are they always 0x00?)

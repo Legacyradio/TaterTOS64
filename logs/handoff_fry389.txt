@@ -1,0 +1,104 @@
+========================================================================
+  TaterTOS64v3 — Session Handoff Log (2026-02-28)
+  Covers: fry389 (Claude Opus turn)
+========================================================================
+
+TIMESTAMP
+---------
+2026-02-28 ~17:15 UTC
+
+SESSION SUMMARY
+---------------
+Battery shows "unavailable" and backlight shows 0% on Dell Precision 7530
+bare metal despite brightness cranked in BIOS. No serial cable available,
+so all kprint() diagnostics during ACPI init are invisible. Added a new
+SYS_ACPI_DIAG syscall (28) and expanded the sysinfo TaterWin app to
+display ACPI discovery status on-screen.
+
+PROBLEM
+-------
+After fry379 (EC driver) and fry388 (ACPI namespace hardening), battery
+and backlight are still non-functional on real Dell hardware. The kernel
+discovery code logs diagnostic info via kprint() → COM1 serial, but on
+bare metal there is no serial output. We need on-screen visibility to
+determine WHERE the pipeline breaks:
+  1. EC not responding?
+  2. Namespace walk not finding PNP0C0A (battery) or ACPI0008 (backlight)?
+  3. Nodes found but _BST/_BQC returning zeros?
+
+CHANGES COMPLETED
+-----------------
+1) src/kernel/acpi/ec.h
+   - Added ec_get_ports(uint16_t *data, uint16_t *cmd)
+
+2) src/kernel/acpi/ec.c
+   - Implemented ec_get_ports() — exposes g_data_port / g_cmd_port
+
+3) src/kernel/acpi/extended.h
+   - Added struct fry_acpi_diag (EC status, battery count/path/STA,
+     backlight found/path/STA/BCL counts/raw/percent)
+   - Added acpi_get_diag() declaration
+
+4) src/kernel/acpi/extended.c
+   - Implemented acpi_get_diag() — populates fry_acpi_diag from globals
+     (g_batt_count, g_batt_nodes, g_backlight_node, g_bcl_count, etc.)
+
+5) src/kernel/proc/syscall.c
+   - Added SYS_ACPI_DIAG = 28 to enum
+   - Added case handler: validates user ptr, calls acpi_get_diag(), copies
+     struct to userspace
+
+6) src/user/libc/libc.h
+   - Added matching struct fry_acpi_diag
+   - Added fry_acpi_diag() declaration
+
+7) src/user/libc/libc.c
+   - Added SYS_ACPI_DIAG = 28 to enum
+   - Added fry_acpi_diag() wrapper (syscall1)
+
+8) src/user/apps/sysinfo.c
+   - Window height 220 → 340
+   - Added "--- ACPI Diagnostics ---" panel below battery info
+   - Shows: EC OK/FAIL + ports, Batt found count + STA + path,
+     BL found + STA + path + bcl/supported/raw/pct
+   - Color coded: green for found, red for missing
+
+9) logs/fry389.txt — timestamped completion log
+
+BUILD / TEST (RULE 11)
+----------------------
+make clean
+PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+RESULT
+------
+- Build succeeded, zero errors
+- ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+NEXT ACTION ON HARDWARE
+-----------------------
+Boot this ISO on Dell Precision 7530. Read the ACPI Diagnostics panel in
+the sysinfo window. Report back what you see for each line:
+
+  EC:   OK or FAIL?  ports=0x??/0x??
+  Batt: found=?  STA=0x????????
+        path = (what path, or "no node"?)
+  BL:   found=?  STA=0x????????
+        path = (what path, or "no node"?)
+        bcl=? sup=? raw=? pct=?
+
+INTERPRETATION GUIDE
+--------------------
+- EC=FAIL → EC not responding on either port pair; need different init
+- Batt found=0 → ns_walk didn't find PNP0C0A HID or _BST+_BIF/_BIX combo
+  → namespace parsing issue or Dell uses non-standard battery device
+- Batt found>0, Battery still "unavailable" → _BST eval returning bad pkg
+  → AML execution or EC OpRegion read issue
+- BL found=0 → no ACPI0008 HID or _BCM/_BQC/_BCL methods in namespace
+  → Dell may use vendor-specific backlight (Intel IGFX OpRegion?)
+- BL found=1, pct=0, bcl=0 → node found but no _BCL package
+- BL found=1, bcl>0, raw=0 → _BQC returning 0 despite HW brightness set
+
+NEXT FRY LOG: fry390.txt
+========================================================================

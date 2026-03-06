@@ -1,0 +1,58 @@
+========================================================================
+TaterTOS64v3 - fry482 — NTFS removal + start menu path robustness
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 08:42:47 UTC
+
+USER DIRECTION
+--------------
+- Gut NTFS and revert to before the NTFS changes.
+- Leave File Manager unchanged.
+
+WHY THESE CHANGES
+-----------------
+- User reported regression after repeated NTFS changes and requested full NTFS rollback.
+- Ensure app launches are resilient to path layout differences.
+
+CODE CHANGES
+------------
+1) src/kernel/fs/vfs.c
+   - Removed NTFS from secondary mount detection and selection.
+   - Dropped NTFS ops wiring and NTFS mount path in VFS.
+
+2) Makefile
+   - Removed src/kernel/fs/ntfs.o from KERNEL_OBJS to fully drop NTFS from kernel build.
+
+3) src/user/gui/gui.c
+   - Start menu now stores full discovered paths and launches from those paths first.
+   - Expanded discovery/spawn path variants for robustness across layout/case variants.
+
+File Manager left unchanged per user direction.
+
+BUILD / ARTIFACT VALIDATION
+---------------------------
+Commands:
+1) make clean
+2) PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Result:
+- Build succeeded.
+- ISO produced: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Export to /mnt/c failed (read-only filesystem in this environment).
+
+HASH / FRESHNESS (Rule 15)
+--------------------------
+Source ISO:
+- 2026-03-03 02:42:24.891312411 -0600  135536640 bytes
+- SHA256: 31b07fa0ac303363ce83faeaa370deef5aa4b397c851d0727926bea597dea2f3
+- Path: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+Target/export ISO (exists, older):
+- 2026-03-03 02:13:56.566809300 -0600  135544832 bytes
+- SHA256: b29be02db95e1a149e4ddd982392ab4026542e2ae9b0f03a15d2cef15e56225e
+- Path: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- Note: export write blocked by read-only mount; target hash is stale.
+
+========================================================================

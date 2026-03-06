@@ -1,0 +1,4 @@
+[2026-02-20 21:10:28 UTC] Step: Fix NASM page table entry constants.
+Why: NASM rejected bitwise OR with label addresses in mb_entry.
+Change: Replaced label | flags with label + flags for PML4/PDPT entries.
+Files: src/boot/mb_entry.asm

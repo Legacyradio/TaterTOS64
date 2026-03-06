@@ -1,0 +1,75 @@
+========================================================================
+TaterTOS64v3 - fry577 - reproduce imported QEMU boot stall on current ISO
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 01:44:50 UTC
+2026-03-05 19:44:50 CST
+
+CONTEXT
+-------
+- User imported fresh `logs/qemu.log` and `logs/serial.log` and asked to:
+  1) run a fresh QEMU boot on the current build and compare it to the imported
+     March 5 stall, then
+  2) add tighter VMM / PMM-relocate markers afterward.
+- This log records step 2-before-1: runtime reproduction only, no code change.
+
+WHY
+---
+- The imported logs showed the boot stopping after `K_PMM` with no `K_VMM`.
+- Needed to prove whether the current rebuilt ISO reproduced the same failure,
+  instead of assuming the imported logs matched the current payload.
+
+RUNTIME EXECUTED
+----------------
+- Created isolated runtime dir:
+  - `logs/runtime_qemu_mmcheck_20260305_194101`
+- Launched headless QEMU with fresh OVMF vars and no network/PXE fallback:
+  - `timeout 45s qemu-system-x86_64 -m 4G -machine q35,accel=tcg -cpu qemu64`
+  - `-boot order=d -net none -display none -no-reboot -no-shutdown`
+  - `-drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd`
+  - `-drive if=pflash,format=raw,file=logs/runtime_qemu_mmcheck_20260305_194101/OVMF_VARS.fd`
+  - `-cdrom ./out/tatertos64v3.iso`
+  - `-serial file:logs/runtime_qemu_mmcheck_20260305_194101/serial.log`
+  - `-debugcon file:logs/runtime_qemu_mmcheck_20260305_194101/debugcon.log`
+  - `-d int,cpu_reset -D logs/runtime_qemu_mmcheck_20260305_194101/qemu.log`
+
+OBSERVED
+--------
+- Result code: `124` (timeout), not a QEMU process crash.
+- Cleaned serial log from the fresh run matched the imported March 5 behavior:
+  - EFI handoff succeeds.
+  - Kernel reaches:
+    - `K_START`
+    - `K_BUILD 2026-03-04-fry531-rollback`
+    - `K_GDT_IDT`
+    - `K_TSS`
+    - `K_PMM`
+  - No `K_VMM` appears.
+- Fresh-run debugcon:
+  - `K_BUILD 2026-03-04-fry531-rollback`
+  - `kgtBp!`
+- Imported March 5 logs and fresh current-run logs both stop at the same point.
+- `qemu.log` contained no `#PF`, `#GP`, `#DF`, `cpu_reset`, or triple-fault
+  style markers in the captured run.
+
+CONCLUSION
+----------
+- The current ISO reproduces the imported stall exactly.
+- The stale `K_BUILD` banner is not being used as proof of an old image; the
+  runtime comparison was based on a freshly rebuilt ISO and isolated OVMF vars.
+- Since debugcon ends with `!`, the next step should instrument the VMM bring-up
+  path around the first table allocations and the PMM metadata relocation path.
+
+ARTIFACTS
+---------
+- Imported logs:
+  - `logs/serial.log`
+  - `logs/qemu.log`
+- Fresh comparison run:
+  - `logs/runtime_qemu_mmcheck_20260305_194101/serial.log`
+  - `logs/runtime_qemu_mmcheck_20260305_194101/debugcon.log`
+  - `logs/runtime_qemu_mmcheck_20260305_194101/qemu.log`
+
+========================================================================

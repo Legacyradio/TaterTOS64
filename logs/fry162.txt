@@ -1,0 +1,4 @@
+[2026-02-20 21:10:58 UTC] Step: Fix kernel LMA layout and 64-bit entry call.
+Why: Linker LMA overlap and 32-bit PC-relative call to _fry_start failed.
+Change: Adjusted LMA sequencing using LOADADDR for rodata/data/bss and switched to absolute call via RAX.
+Files: kernel_linker.ld, src/boot/mb_entry.asm

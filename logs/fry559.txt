@@ -1,0 +1,60 @@
+========================================================================
+TaterTOS64v3 - fry559 - add controller reset/reinit path on command timeout
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 23:23:17 UTC
+2026-03-05 17:23:17 CST
+
+CONTEXT
+-------
+- Review flagged that command timeouts did not trigger controller reset/recovery.
+
+WHY
+---
+- Timeout implies queue/controller may be wedged; bounded retry alone is
+  insufficient without a reset/reinit path.
+
+CHANGE APPLIED
+--------------
+- File updated: `src/drivers/storage/nvme.c`
+  - Added per-device timeout/recovery flags:
+    - `cmd_wait_timed_out`
+    - `resetting_controller`
+  - Added helpers/prototypes:
+    - `nvme_reinit_after_timeout()`
+    - forward declaration for `nvme_init_from_mmio()`
+  - Timeout detection wiring:
+    - `wait_cq()` now clears `cmd_wait_timed_out` at entry.
+    - `poll_cq()` sets `cmd_wait_timed_out=1` on timeout exit.
+    - `wait_cq_irq()` sets `cmd_wait_timed_out=1` on timeout exit.
+  - `submit_cmd()` now:
+    - detects timeout-specific wait failures,
+    - emits timeout trace (`cmd_timeout`),
+    - invokes guarded controller reset/reinit path.
+  - `nvme_reinit_after_timeout()` performs:
+    - guard against recursive reset,
+    - MMIO phys derivation from current mapping,
+    - controller shutdown + buffer free,
+    - full `nvme_init_from_mmio(mmio_phys)` reinit,
+    - ready-state clear + trace on failure.
+
+EFFECT
+------
+- Timeouts now have explicit controller recovery behavior instead of silent
+  fail-only path.
+- Reset recursion is prevented by per-device guard.
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Kernel build validation:
+   - `PATH="/opt/cross/bin:$PATH" make -j"$(nproc)"`
+2) RESULT:
+   - PASS (build succeeded)
+
+NOTES
+-----
+- No hash recorded in this log (planv3 rule 16; no user-requested rebuild).
+
+========================================================================

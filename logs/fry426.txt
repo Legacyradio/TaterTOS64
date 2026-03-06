@@ -1,0 +1,29 @@
+fry426 — handoff detail + rules update (hardware lock + hardware-agnostic OS)
+================================================================
+Date: 2026-03-01 16:23:23 UTC
+
+WHAT CHANGED (why)
+================================================================
+- Added a detailed resume handoff plan in `logs/handoff_fry426.txt` so post-test continuation can proceed immediately with explicit decision branches.
+- Updated `planv3.txt` rules with:
+  - Hardware lock for validation target: Dell Precision 7530, i5-8300H, latest BIOS.
+  - New rule: OS must remain completely hardware-agnostic; hardware quirks must be isolated and runtime-detected.
+- Updated `HANDOFF.md` hardware section to include both:
+  - fixed bare-metal validation target
+  - hardware-agnostic OS requirement
+
+FILES TOUCHED
+================================================================
+- planv3.txt
+- HANDOFF.md
+- logs/handoff_fry426.txt
+
+TESTING
+================================================================
+- Documentation/rules update only (no code-path changes).
+- No rebuild required for this step.
+
+NEXT
+================================================================
+- User test boot on Dell Precision 7530.
+- Resume from `logs/handoff_fry426.txt` using the post-boot branch plan.

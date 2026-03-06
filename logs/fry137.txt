@@ -1,0 +1,4 @@
+[2026-02-20 19:08:59 UTC] Step: Add UEFI GRUB BOOTX64.EFI generation to ISO build.
+Why: UEFI boot dropped to shell because ISO lacked EFI/BOOT/BOOTX64.EFI.
+Change: build_iso.sh now runs grub-mkstandalone to create BOOTX64.EFI and embed grub.cfg.
+Files: build_iso.sh

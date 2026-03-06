@@ -1,0 +1,106 @@
+========================================================================
+TaterTOS64v3 - fry591 - record matching ISO hashes and split pre-user boot blind spot
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 10:35:00 CST
+
+CONTEXT
+-------
+- User required direct verification that the rebuilt ISO in `out/` matches the
+  current Windows-exported ISO before logging anything further.
+- Earlier in this session, the diagnostic discussion became invalid because the
+  marker numbering was changed after the user had already reported a hardware
+  result from the previous artifact.
+- The remaining debugging blind spot on bare metal was between:
+  - boot user process launch/enqueue before `sti`
+  - first BSP timer tick
+  - first real context switch
+  - first actual scheduled user process
+
+HASH VERIFICATION
+-----------------
+1) Verified SHA-256 for the current rebuilt ISO artifact:
+   - `sha256sum /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+   - Result:
+     - `704a2246240695b032816a66fe14770a837976231dfae7c2555e6944be937ce7`
+2) Verified SHA-256 for the current exported Windows ISO:
+   - `sha256sum /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+   - Result:
+     - `704a2246240695b032816a66fe14770a837976231dfae7c2555e6944be937ce7`
+3) Verified byte-for-byte equality:
+   - `cmp -s /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso; echo $?`
+   - Result:
+     - `0`
+
+CONCLUSION FROM HASH CHECK
+--------------------------
+- The current `out/tatertos64v3.iso` and
+  `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso` are identical.
+- Stale exported ISO ambiguity is cleared for the current rebuilt artifact.
+
+CHANGES APPLIED
+---------------
+- Files updated:
+  - `src/kernel/main.c`
+    - Added pre-`sti` framebuffer/serial boot marker:
+      - stage 32 / `K_BOOT_USER_ENQUEUED`
+    - Emitted only when boot userspace launch succeeds and a user process has
+      been created and queued.
+    - Why: separate "boot user never launched" from later scheduler/timer
+      failures.
+  - `src/drivers/timer/lapic_timer.c`
+    - Shifted first BSP timer marker from stage 32 to stage 33.
+  - `src/kernel/proc/sched.c`
+    - Shifted:
+      - first context switch from stage 33 to stage 34
+      - first scheduled user process from stage 34 to stage 35
+  - `src/kernel/proc/syscall.c`
+    - Shifted:
+      - first user syscall from stage 35 to stage 36
+      - first `INIT.FRY` syscall from stage 36 to stage 37
+      - first init GUI spawn from stage 37 to stage 38
+      - first GUI framebuffer syscall from stage 38 to stage 39
+
+UPDATED INTERPRETATION
+----------------------
+- For the previous artifact hash
+  `1e674377e7bb83c12260c02d699f9d766fdc1e11457799d2c64b3b9231a1357d`:
+  - 33 white squares meant:
+    - first BSP timer tick observed
+    - first real context switch observed
+    - no user process scheduled yet
+- For the current artifact hash
+  `704a2246240695b032816a66fe14770a837976231dfae7c2555e6944be937ce7`:
+  - 32 squares:
+    - boot userspace was successfully launched/enqueued before interrupts
+  - 33 squares:
+    - first BSP timer tick observed
+  - 34 squares:
+    - first real context switch observed
+  - 35 squares:
+    - first user process actually scheduled
+  - 36+ squares:
+    - userspace reached syscall boundary and beyond
+
+VALIDATION
+----------
+1) Rebuild command:
+   - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+2) Rebuild result:
+   - PASS
+   - Produced:
+     - `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+     - `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+3) Hash verification after rebuild:
+   - PASS
+   - Current source/export ISO hashes match exactly.
+
+NOTES
+-----
+- This log intentionally records the exact artifact hash now in play so future
+  hardware reports can be tied to the correct marker numbering.
+- No QEMU logs were used.
+
+========================================================================

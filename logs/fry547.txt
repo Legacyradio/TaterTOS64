@@ -1,0 +1,60 @@
+========================================================================
+TaterTOS64v3 - fry547 - harden vmd_init against stage-25 hangs
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 21:54:37 UTC
+2026-03-05 15:54:37 CST
+
+CONTEXT
+-------
+- User report after fry546: system shows 25 stage squares.
+- Per fry546 mapping, 25 squares means the boot path enters storage phase and
+  hangs inside or after `vmd_init()` before stage 26.
+
+WHY
+---
+- `vmd_init()` still contained potentially risky probe behavior for bare-metal:
+  1) BAR size probing by writing `0xFFFFFFFF` to VMD BAR registers.
+  2) Running legacy 0x1911 scratch probe even when a class 01:04 VMD controller
+     was already discovered.
+- Either can trigger platform-specific stalls before returning to `main.c`.
+
+CHANGE APPLIED
+--------------
+- Updated `src/drivers/storage/vmd.c` only.
+- Removed BAR size probe writes (`bar_probe_size()` path) for class 01:04 VMD.
+  - CFGBAR size is now derived from bus window (`bus_count * 1MB stride`) with
+    a minimum fallback of 32MB.
+- Changed `vmd_init()` probe flow:
+  - run class 01:04 probe first;
+  - run legacy 0x1911 probe only if class 01:04 found nothing.
+- Added explicit VMD init breadcrumbs:
+  - `VMD: init begin`
+  - `VMD: skipping 1911 probe (01:04 controller present)` (when applicable)
+  - `VMD: init done controllers=<n>`
+
+EXPECTED INTERPRETATION AFTER FRY547
+------------------------------------
+- If hardware now reaches 26+ squares, the stage-25 stall was in removed/avoided
+  VMD probe behavior.
+- If hardware still stops at 25 squares, remaining suspect is inside current
+  class 01:04 discovery path (e.g., ECAM reads or CFGBAR mapping/access).
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Kernel build validation:
+   - `/bin/bash -lc 'PATH="/opt/cross/bin:$PATH" make -j"$(nproc)"'`
+2) ISO pipeline:
+   - `bash build_iso.sh`
+3) RESULT:
+   - PASS (kernel build + ISO build succeeded)
+   - ISO: `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+   - Export: `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+NOTES
+-----
+- No hash recorded in this log (planv3 rule 16).
+
+========================================================================

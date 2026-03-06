@@ -1,0 +1,30 @@
+Step fry270 - 2026-02-22
+
+Summary
+- LAPIC timer calibration confirmed working on all CPUs (BSP + 3 APs).
+- SMP + HPET + LAPIC timer fully operational milestone.
+
+Confirmed serial output
+  HPET: enabled freq=100000000 Hz
+  SMP: detected 4 CPU(s)
+  LAPIC timer: 62901 ticks/ms   ← AP1 (CPU1)
+  SMP: CPU1 online (APIC 1)
+  LAPIC timer: 62552 ticks/ms   ← AP2 (CPU2)
+  SMP: CPU2 online (APIC 2)
+  LAPIC timer: 62531 ticks/ms   ← AP3 (CPU3)
+  SMP: CPU3 online (APIC 3)
+  LAPIC timer: 62981 ticks/ms   ← BSP (CPU0)
+
+All four CPUs now have:
+  - Local APIC enabled and initialized
+  - LAPIC timer calibrated (~62-63k ticks/ms ≈ 1GHz bus / 16 divider)
+  - Per-CPU GDT, TSS, IDT loaded
+  - Periodic timer armed at vector 0x40
+
+Fixes that led here (this session)
+  fry268: moved hpet_init() before smp_init() so APs have HPET available
+          during lapic_timer_calibrate(). Also replaced raw-loop delays in
+          smp_init() with hpet_sleep_ms() for reliable timing.
+  fry269: fixed struct hpet_regs missing uint64_t rsvd1 at offset 0x018.
+          Counter was at 0x0E8 instead of 0x0F0 — every HPET counter read
+          returned 0, hanging all HPET wait loops.

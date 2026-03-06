@@ -1,0 +1,9 @@
+2026-02-21 01:12:14 CST
+Step: Add UEFI stack switch stub and route efi_main through it.
+Why: QEMU log shows RSP in GDT/IDT area (not kernel_stack), causing non-canonical RIP and #GP loop after VMM; UEFI path never switched to kernel_stack.
+Changes:
+- Added src/boot/efi_entry.asm to set RSP=__kernel_stack_top (16-byte aligned) and call _fry_start.
+- efi_main now calls efi_start instead of _fry_start.
+- Makefile links efi_entry.o.
+Notes:
+- This is for UEFI-only boot path; multiboot path already sets RSP.

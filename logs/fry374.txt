@@ -1,0 +1,18 @@
+fry374 — Rebuild verification after fry373 reversion
+Timestamp: 2026-02-28
+
+Why:
+  Confirm clean rules-compliant rebuild after reverting the AP timer shortcut.
+
+Commands run:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+Result:
+  - Build succeeded (exit 0).
+  - Updated artifacts:
+      out/tatertos64v3.iso
+      out/tater_nvme.img
+  - Windows export copy to /mnt/c remained non-fatal read-only failure.
+
+Next log: fry375.txt

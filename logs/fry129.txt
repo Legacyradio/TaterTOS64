@@ -1,0 +1,4 @@
+[2026-02-20 18:39:36 UTC] Step: Implement GPT lookup helpers and part_init.
+Why: Kernel link failed on part_init; plan requires GPT find-by-index/type helpers.
+Change: Added gpt_find_by_index/gpt_find_by_type, GUID helpers, and part_init that reads and logs GPT entries from NVMe.
+Files: src/kernel/fs/part.h, src/kernel/fs/part.c

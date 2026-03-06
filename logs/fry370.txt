@@ -1,0 +1,24 @@
+fry370 — Build/packaging verification after scheduler IRQ-safety patch
+Timestamp: 2026-02-28
+
+Why:
+  Validate that the scheduler IRQ-safety hardening (fry369) compiles and
+  produces fresh boot artifacts using required clean+verbose rebuild flow.
+
+Commands run:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+Result:
+  - Build succeeded (exit 0).
+  - Updated artifacts:
+      out/tatertos64v3.iso
+      out/tater_nvme.img
+      kernel.elf and all user .fry binaries rebuilt.
+  - Windows export copy failed non-fatally due read-only /mnt/c mount
+    (existing environment issue).
+
+Notes:
+  - Warnings observed were non-fatal and pre-existing style/unused warnings.
+
+Next log: fry371.txt

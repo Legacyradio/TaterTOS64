@@ -1,0 +1,3 @@
+STEP 80
+TIME: 2026-02-20 09:52:22
+ACTION: Expanded syscall layer in src/kernel/proc/syscall.c to include open/close/stat/readdir/gettime and reboot/shutdown with user pointer validation and scheduler integration, because Phase 14 requires functional syscalls beyond simple spawn.

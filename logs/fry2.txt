@@ -1,0 +1,3 @@
+STEP 2
+TIME: 2026-02-20 08:23:02
+ACTION: Updated UEFI AllocatePool type to EfiLoaderData (2) in src/boot/efi_main.c.

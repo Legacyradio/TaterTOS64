@@ -1,0 +1,72 @@
+fry433 - ACPI boot + sysinfo declutter for EC triage
+=======================================================================
+Date: 2026-03-01 20:12:57 UTC
+
+HASH VERIFICATION (performed before this log per Rule 15)
+=======================================================================
+- Source build ISO:
+  9e481a5f3c76e49a2c571325bc6e0a8dda441765327721a56f143fe71e481a38  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Target/export ISO:
+  f1facdcadef9a3cad9ebfc7df87b8745a557b2782021bf34a6c701165eb3d496  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+WHAT CHANGED (why)
+=======================================================================
+1) src/kernel/acpi/ec.c
+   - Made EC burst helper quiet on expected timeout/ack failures.
+   - Removed per-event logging in SCI drain helper.
+   - Reworked EC probe logging flow:
+     - `ec_probe_with_retries()` now supports quiet mode.
+     - `ec_probe()` now emits one compact success/failure summary instead of
+       repeating fail lines for each port permutation.
+     - `ec_init_ports()` now uses the same compact summary behavior.
+   - Why:
+     - Boot logs were flooded by repeated probe failures across recovery rounds,
+       making the real signal hard to see.
+
+2) src/kernel/acpi/extended.c
+   - Suppressed non-essential `_PRT` fallback chatter when `_PRT` is absent.
+   - Removed intermediate `P2SB byte unhide failed` noise line while keeping
+     final fallback outcome lines.
+   - Removed `EC using default ports 0x62/0x66` banner.
+   - Removed now-unused `ports_from_acpi` variable.
+   - Why:
+     - These messages were high-volume/low-value for the current EC bring-up
+       failure and obscured required diagnostics.
+
+3) src/user/apps/sysinfo.c
+   - Shrank sysinfo window height from 560 to 420.
+   - Replaced verbose ACPI register dump panel with required-only diagnostics:
+     - EC status/ports/source/recovery method
+     - Probe result (step/status/tries + IBF1/SMI bits)
+     - Core init flags (node/REG/INI/GPE)
+     - Decode summary (IOE before/after + write flags)
+     - PCR summary (PID, IOE before/after, mirror flag)
+     - eSPI mode + error summary
+     - Battery and backlight high-level status + path lines
+   - Removed low-signal lines (LPC class dump, LPC80/84/88/8C/90 raw values,
+     IMM and checkpoint trace spam, and other debug-heavy internals).
+   - Why:
+     - Requested ACPI panel declutter so only decision-critical output remains
+       visible during Dell boot troubleshooting.
+
+TESTING
+=======================================================================
+Commands run:
+1) PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/acpi/ec.o src/kernel/acpi/extended.o sysinfo
+2) make clean
+3) PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+4) sha256sum /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+5) sha256sum /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+Results:
+- 1) PASS (changed units compile; only pre-existing warnings remain)
+- 2) PASS
+- 3) PASS (ISO rebuilt: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso)
+- 4) PASS
+- 5) PASS (target ISO readable, but not overwritten in this environment)
+
+NOTES
+=======================================================================
+- `build_iso.sh` export copy to `/mnt/c/.../tatertos64v3.iso` failed with
+  `Read-only file system`, so source and target hashes differ.
+- BIOS revision/date was not visible in this software-only build step.

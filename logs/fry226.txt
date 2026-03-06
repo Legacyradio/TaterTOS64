@@ -1,0 +1,6 @@
+DATE: 2026-02-21
+TIME: 09:47:00 -0600
+DESC: Remove temporary early debug marker 'Z' from _fry_start.
+WHY: Marker served its purpose confirming kernel identity; avoid debug clutter.
+FILES:
+  - src/kernel/main.c

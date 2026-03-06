@@ -1,0 +1,3 @@
+STEP 58
+TIME: 2026-02-20 09:13:59
+ACTION: Extended AML field access in src/kernel/acpi/aml_ops.c to handle BankField/IndexField sequences and added explicit forward declaration for aml_write_field used during field reads, because AML field addressing must support these modes with correct function linkage.

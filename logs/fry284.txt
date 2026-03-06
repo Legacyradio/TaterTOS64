@@ -1,0 +1,12 @@
+[2026-02-22 07:13:11 UTC] Map NVMe MMIO via fixed window; remove physmap logging.
+
+Changes:
+- src/kernel/mm/vmm.h: add VMM_MMIO_BASE and vmm_map_mmio_2m prototype.
+- src/kernel/mm/vmm.c: add vmm_map_mmio_2m; remove physmap debug prints.
+- src/drivers/storage/nvme.c: map BAR MMIO via vmm_map_mmio_2m instead of vmm_ensure_physmap/vmm_phys_to_virt; drop map mmio/read regs breadcrumbs.
+
+Why:
+- High BAR (0xC000000000) mapping was hanging in physmap growth. Using a fixed 2MB MMIO window avoids sparse physmap expansion and should allow NVMe MMIO access without heavy page-table allocation.
+
+Tests (not run):
+- bash build_iso.sh

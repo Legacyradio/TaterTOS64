@@ -1,0 +1,7 @@
+2026-02-21 01:52:48 CST
+Step: Add debug port markers inside stack_switch_and_call.
+Why: Debugcon output order is inconsistent; need to confirm whether stack_switch_and_call is invoked, reaches the call target, and whether it returns.
+Changes:
+- stack_switch_and_call now emits 'S' (entry), 'C' (before call), and 'R' (unexpected return) to port 0xE9.
+Notes:
+- Temporary diagnostics will be removed after the fault is isolated.

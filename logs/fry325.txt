@@ -1,0 +1,25 @@
+fry325.txt — 2026-02-25 CST
+TaterTOS64v3 session log
+
+=== Real-hardware hang: investigating "pscd" ===
+
+Context:
+  - Booting from Dell Precision 7530 via USB ISO (no serial port / no serial log).
+  - fry324 fixes applied: UART loopback detect, fb_fill_rect optimized, dummy
+    device removed, PCI scan limited to MCFG bus ranges.
+  - User reports system hangs on something resembling "pscd" on the framebuffer.
+
+Suspected area:
+  - PS/2 controller init (ps2_ctrl.c): wait_output_full() and wait_input_clear()
+    use 100000-iteration spin loops. Dell 7530 may not have a real 8042 PS/2
+    controller; I/O port 0x64 behaviour on emulated/absent controllers varies.
+  - No fix applied yet — user interrupted to go get the exact hang text.
+
+Next steps (pending user return with exact hang string):
+  - Identify exact hang point from framebuffer text.
+  - If PS/2: add controller presence check (self-test 0xAA before any init),
+    time-out all waits, make PS/2 init non-fatal.
+  - If elsewhere: diagnose accordingly.
+
+Build: no changes this session.
+Next log: fry326.txt

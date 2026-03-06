@@ -1,0 +1,8 @@
+DATE: 2026-02-21
+TIME: 11:55:29 -0600
+DESC: Normalize EFI loader boot-memory limits to 4GiB and remove mixed 8GiB constants.
+WHY: Boot stub and handoff contract use 4GiB identity map; mixed limits can place staged data outside early-mapped range and trigger early faults.
+FILES:
+  - src/boot/efi_loader.c
+  - src/kernel/mm/vmm.c
+

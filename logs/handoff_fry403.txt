@@ -1,0 +1,81 @@
+========================================================================
+  TaterTOS64v3 - Session Handoff Log (fry403)
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-01 01:25:59 UTC
+
+LAST FRY LOG
+------------
+logs/fry403.txt
+
+SCOPE COMPLETED
+---------------
+- Confirmed previous issue: fallback was fixed-candidate only, not full sweep.
+- Implemented nuclear SBREG fallback sweep in:
+  src/kernel/acpi/extended.c
+  Range: 0xFD000000..0xFE000000
+  Step:  0x00001000
+- Rebuilt ISO using clean workflow.
+- Produced updated boot artifact:
+  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+BUILD COMMAND USED (clean + no xtrace noise)
+---------------------------------------------
+cd /home/jjsako/TaterTOS64v3 && PATH=/opt/cross/bin:$PATH make clean && PATH=/opt/cross/bin:$PATH BASH_XTRACEFD=9 ./build_iso.sh 9>/dev/null
+
+RULES (must follow exactly)
+=====================================================================
+1) Follow the plan step by step. No shortcuts or cut corners.
+2) No “minimal” implementations; do thorough, functional work.
+3) No Linux or Windows code inside the OS.
+4) Use apply_patch for code edits.
+5) Log every completed step in its own logs/fryN.txt with timestamps.
+6) If you change code, include a brief “why” in the log.
+7) Don’t pause after saying you’ll continue; just continue.
+8) Branding is TaterTOS64v3 (never FryOS).
+9) UEFI-only boot path.
+10) When testing, always include the necessary commands to run the test.
+11) Default rebuild mode is clean + verbose:
+    make clean
+    PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+12) All apps built and run must follow the TaterWin protocol.
+
+EXPECTED BOOT-TIME SIGNALS (this session)
+-----------------------------------------
+Look for these ACPI diagnostics on serial/debug output:
+
+1) Fixed candidate probe lines (existing):
+   ACPI: SBREG probe[0] bar=0x........ IOE=0x........ IOD=0x........
+
+2) New brute-force sweep start line:
+   ACPI: SBREG brute-force sweep start=0xFD000000 end=0xFE000000 step=0x00001000
+
+3) If a strong hit is found:
+   ACPI: SBREG brute selected bar=0x........
+   followed by:
+   ACPI: P2SB locked via CF8, using probed SBREG_BAR 0x........
+   or:
+   ACPI: P2SB BAR invalid, using probed SBREG_BAR 0x........
+
+4) If only weak reads are found:
+   ACPI: SBREG brute weak-match bar=0x........ IOE=0x........ IOD=0x........
+
+5) If no useful mapping is found at all:
+   fallback remains:
+   ACPI: P2SB unhide failed via CF8, using SBREG_BAR_DEFAULT 0xFD000000
+   and PCR mirror may still show 0xFFFFFFFF behavior.
+
+NOTES
+-----
+- ISO build succeeded.
+- Optional export to /mnt/c failed in this environment due to read-only FS;
+  this does not affect the generated ISO in /home/jjsako/TaterTOS64v3/out/.
+
+NEXT EXPECTED ACTIONS
+---------------------
+1) Boot updated ISO on target hardware.
+2) Capture serial/debug logs around ACPI SBREG probe lines.
+3) Confirm whether PCR[DMI] IOE transitions away from 0xFFFFFFFF.
+========================================================================

@@ -1,0 +1,10 @@
+[2026-02-22 08:13:16 UTC] Use cached CAP for doorbell stride.
+
+Changes:
+- src/drivers/storage/nvme.c: store CAP in nvme_cap; use it for doorbell stride instead of 64-bit MMIO struct load.
+
+Why:
+- Admin command still times out; doorbell stride comes from CAP.DSTRD and should be read once via 32-bit MMIO. Using the cached CAP avoids unsafe 64-bit MMIO loads and ensures correct doorbell offsets.
+
+Tests (not run):
+- bash build_iso.sh

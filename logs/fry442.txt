@@ -1,0 +1,289 @@
+fry442 - Added strict EC/ACPI execution gate plan block to planv3 workflow
+==========================================================================
+Date: 2026-03-01
+Timestamp (UTC): 2026-03-01 22:55:50 UTC
+
+HASH VERIFICATION (performed before this log per Rule 15)
+==========================================================================
+- Source build ISO:
+  54edde480987e49ad5c42776285dea6991224d682312dd8c16e4a41b7c204edf  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Target/export ISO:
+  54edde480987e49ad5c42776285dea6991224d682312dd8c16e4a41b7c204edf  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+WHAT WAS REQUESTED
+==========================================================================
+User asked for a detailed, strict "do not proceed unless pass" checklist
+that maps EC/ACPI implementation work into gated fry moves and can be pasted
+into planv3.txt.
+
+OUTPUT PROVIDED
+==========================================================================
+The following block is the exact paste-ready strict gate plan.
+
+STRICT EXECUTION GATES (DO NOT PROCEED UNLESS PASS)
+=====================================================================
+This section is mandatory for EC/ACPI bring-up work.
+
+GLOBAL GATE RULES
+1) Exactly one gate may be IN_PROGRESS at a time.
+2) Gate state options: PENDING, IN_PROGRESS, PASS, FAIL, BLOCKED.
+3) If a gate is FAIL or BLOCKED:
+   Stop code edits immediately.
+   Record failure in current fry log.
+   Do not start next gate until user approves.
+4) Rule 15 applies before every fry log:
+   sha256sum /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+   sha256sum /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso   (if path exists)
+5) Rule 14 applies to every change:
+   No machine-ID hardcoding.
+   Dell-specific behavior may exist only as runtime-detected branch behavior.
+6) No code reuse from external OS sources. Behavior modeling only.
+7) Forbidden regression path:
+   Do not reintroduce unconditional/forced PCR mirror writes in the
+   BIOS-already-enabled decode path (rolled back in fry429).
+
+GATE STATE TRACKER
+G442=PENDING
+G443=PENDING
+G444=PENDING
+G445=PENDING
+G446=PENDING
+G447=PENDING
+G448=PENDING
+G449=PENDING
+G450=PENDING
+G451=PENDING
+G452=PENDING
+G453=PENDING
+G454=PENDING
+G455=PENDING
+
+G442 (fry442) BASELINE LOCK
+Objective: Freeze current ACPI/EC behavior before refactor.
+Allowed file changes: none.
+Required commands:
+  Boot current ISO on target Dell.
+  Run shell command: acpibreak
+  Capture full boot ACPI lines.
+PASS criteria:
+  Baseline payload saved: full ACPI log + acpibreak output + sysinfo ACPI panel values.
+FAIL action:
+  Mark G442=FAIL and stop.
+Evidence in fry442:
+  exact observed output lines and timestamp.
+
+G443 (fry443) EC POLICY STRUCT INTRODUCTION
+Objective: Add EC policy knobs with zero behavior change.
+Primary files:
+  src/kernel/acpi/ec.c
+  src/kernel/acpi/ec.h
+Allowed change scope:
+  Add policy struct, defaults, accessors only.
+Required commands:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/acpi/ec.o
+PASS criteria:
+  Compile success.
+  No callsite behavior switched yet.
+FAIL action:
+  G443=FAIL; do not touch next gate.
+Evidence in fry443:
+  list of new fields and default values.
+
+G444 (fry444) POLICY-DRIVEN WAITS/TRANSACTIONS
+Objective: Route EC wait/transaction helpers through policy values.
+Primary files:
+  src/kernel/acpi/ec.c
+Required commands:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/acpi/ec.o
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+PASS criteria:
+  Build success.
+  QEMU boot success.
+  No regression in current baseline behavior with default policy.
+FAIL action:
+  G444=FAIL; revert this gate's partial logic before continuing.
+Evidence in fry444:
+  before/after behavior note showing defaults preserve old behavior.
+
+G445 (fry445) DIAG ABI: POLICY EXPOSURE
+Objective: Expose active EC policy values to diagnostics.
+Primary files:
+  src/kernel/acpi/extended.h
+  src/kernel/acpi/extended.c
+  src/user/libc/libc.h
+  src/kernel/proc/syscall.c   (if struct size handling needs update)
+Required commands:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/proc/syscall.o src/kernel/acpi/extended.o
+PASS criteria:
+  Kernel/userspace struct layouts remain synchronized.
+  fry_acpi_diag syscall returns valid policy fields.
+FAIL action:
+  G445=FAIL; stop at ABI mismatch.
+Evidence in fry445:
+  exact new diag fields and size compatibility confirmation.
+
+G446 (fry446) UNIFIED EC CANDIDATE MODEL
+Objective: Create common EC candidate list (ECDT + PNP0C09 + fallback).
+Primary file:
+  src/kernel/acpi/extended.c
+Required commands:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/acpi/extended.o
+PASS criteria:
+  Candidate list logs correctly with source and score metadata.
+  No candidate execution reorder yet.
+FAIL action:
+  G446=FAIL; stop.
+Evidence in fry446:
+  sample candidate log lines.
+
+G447 (fry447) ECDT CANDIDATE PIPELINE
+Objective: Robustly build and validate ECDT candidate.
+Primary file:
+  src/kernel/acpi/extended.c
+Required commands:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/acpi/extended.o
+PASS criteria:
+  ECDT candidate appears when valid.
+  Invalid ECDT rejected with explicit reason.
+FAIL action:
+  G447=FAIL; stop.
+Evidence in fry447:
+  ECDT acceptance/rejection examples.
+
+G448 (fry448) DSDT/_CRS CANDIDATE PIPELINE
+Objective: Build PNP0C09 candidates with hardened CRS extraction.
+Primary files:
+  src/kernel/acpi/extended.c
+  src/kernel/acpi/resources.c
+Required commands:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/acpi/extended.o src/kernel/acpi/resources.o
+PASS criteria:
+  CRS ports parsed and scored.
+  default source used only when firmware candidates are unusable.
+FAIL action:
+  G448=FAIL; stop.
+Evidence in fry448:
+  parsed descriptor/port evidence for at least one candidate.
+
+G449 (fry449) PER-CANDIDATE BRING-UP STATE MACHINE
+Objective: Run handshake/probe per candidate rather than global one-shot.
+Primary files:
+  src/kernel/acpi/extended.c
+  src/kernel/acpi/ec.c
+Required commands:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/acpi/extended.o src/kernel/acpi/ec.o
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+PASS criteria:
+  For each candidate: setup -> _REG(suppressed) -> _INI -> _GPE -> probe.
+  Deterministic candidate failover visible in logs.
+FAIL action:
+  G449=FAIL; stop and keep failing candidate trace.
+Evidence in fry449:
+  candidate-by-candidate attempt sequence.
+
+G450 (fry450) PER-CANDIDATE RECOVERY SCORING
+Objective: Apply existing recovery methods per candidate and rank outcomes.
+Primary file:
+  src/kernel/acpi/extended.c
+Required commands:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/acpi/extended.o
+PASS criteria:
+  Existing methods 1..7 preserved.
+  No new forced mirror path.
+  Final failure report includes best candidate quality metrics.
+FAIL action:
+  G450=FAIL; stop.
+Evidence in fry450:
+  recovery method attempts per candidate and final selection reason.
+
+G451 (fry451) EC QUERY/EVENT QUEUE CORE
+Objective: Add EC query queue + worker for _Qxx processing.
+Primary files:
+  src/kernel/acpi/ec.c
+  src/kernel/acpi/events.c
+Required commands:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/acpi/ec.o src/kernel/acpi/events.o
+PASS criteria:
+  Queue initializes and processes query events.
+  No deadlock/hard-lock in boot path.
+FAIL action:
+  G451=FAIL; disable queue path and stop.
+Evidence in fry451:
+  event enqueue/dequeue counters.
+
+G452 (fry452) STORM GUARD + FREEZE/RESUME CONTROLS
+Objective: Add storm suppression and suspend/resume event handling guards.
+Primary files:
+  src/kernel/acpi/ec.c
+  src/kernel/acpi/events.c
+Required commands:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/acpi/ec.o src/kernel/acpi/events.o
+PASS criteria:
+  Repeated false events are bounded.
+  Event handling freeze/unfreeze state is explicit and safe.
+FAIL action:
+  G452=FAIL; stop.
+Evidence in fry452:
+  storm counter behavior and threshold behavior.
+
+G453 (fry453) CRS PARSER HARDENING PASS
+Objective: Harden descriptor parsing and pair validation without narrowing hardware support.
+Primary files:
+  src/kernel/acpi/resources.c
+  src/kernel/acpi/extended.c
+Required commands:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/acpi/resources.o src/kernel/acpi/extended.o
+PASS criteria:
+  Improved descriptor coverage.
+  No regression on existing valid descriptors.
+FAIL action:
+  G453=FAIL; stop.
+Evidence in fry453:
+  descriptor type handling matrix and parsed output examples.
+
+G454 (fry454) USER DIAGNOSTICS FINALIZATION
+Objective: Expose candidate/policy/query/storm health in shell+sysinfo.
+Primary files:
+  src/user/shell/shell.c
+  src/user/apps/sysinfo.c
+  src/user/libc/libc.h
+  src/kernel/acpi/extended.h
+  src/kernel/acpi/extended.c
+Required commands:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make shell sysinfo src/kernel/acpi/extended.o
+PASS criteria:
+  acpibreak identifies candidate-stage break reason.
+  sysinfo remains readable and high-signal.
+FAIL action:
+  G454=FAIL; stop.
+Evidence in fry454:
+  final displayed fields and sample outputs.
+
+G455 (fry455) FULL VALIDATION AND EXIT CRITERIA
+Objective: Validate end-to-end and decide closeout or next cycle.
+Required commands:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+  Dell hardware boot and run acpibreak
+PASS criteria:
+  One of:
+  A) EC is operational and battery/backlight status paths improve.
+  B) EC still fails but diagnostics provide materially better, actionable localization than baseline.
+  Plus:
+  No rule-14 violation found.
+  No reintroduction of banned forced mirror behavior.
+FAIL action:
+  G455=FAIL; open next cycle only with user approval.
+Evidence in fry455:
+  side-by-side baseline vs final comparison.
+
+PROGRESSION RULE
+Only change gate N from PENDING to IN_PROGRESS when gate N-1 is PASS.
+Only change gate N to PASS after all listed PASS criteria are satisfied.
+
+NOTES
+==========================================================================
+- This move writes process/plan content only.
+- No kernel/userspace functional code changed in this move.

@@ -1,0 +1,4 @@
+[2026-02-20 19:16:38 UTC] Step: Make ISO explicitly UEFI-bootable via EFI El Torito.
+Why: OVMF still dropped to shell because ISO lacked an EFI boot entry.
+Change: build_iso.sh now uses xorriso with EFI El Torito pointing to EFI/BOOT/BOOTX64.EFI.
+Files: build_iso.sh

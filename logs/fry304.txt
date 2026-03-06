@@ -1,0 +1,4 @@
+[2026-02-22 18:39:51 UTC] Step: Gate LAPIC timer scheduling to BSP only.
+Why: APs run lapic_timer_init and call sched_tick concurrently without runqueue locks, which can corrupt scheduling state and lead to #GP storms. Until SMP scheduling is safe, only BSP should drive sched_tick.
+Change: In lapic_timer_handler, call sched_tick only on BSP (APIC id == smp_cpu_apic_id(0)).
+Files: src/drivers/timer/lapic_timer.c

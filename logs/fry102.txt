@@ -1,0 +1,3 @@
+STEP 102
+TIME: 2026-03-03 14:50:29
+ACTION: Researched Windows volume automount/drive-letter behavior to inform secondary mount ordering; no code changes in this step.

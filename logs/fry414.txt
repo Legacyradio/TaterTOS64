@@ -1,0 +1,13 @@
+fry414 - Created fresh handoff for latest bare-metal fixes
+Timestamp: 2026-03-01 03:03:12 UTC
+
+CHANGES:
+- Added `logs/handoff_fry413.txt` with:
+  - Exact non-negotiable rules block
+  - Summary of ACPI fallback + DBG_VFS fixes completed this session
+  - Build/test commands and result
+  - Required Dell bare-metal validation targets
+
+WHY:
+- User requested a handoff immediately after latest fixes, and session rules
+  require each completed step to be logged in `logs/fryN.txt`.

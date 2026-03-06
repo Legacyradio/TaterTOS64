@@ -1,0 +1,31 @@
+fry350 — 2026-02-26
+
+BUG: All spaces rendered as '?' in GUI (every panel label, prompt line, content text)
+
+ROOT CAUSE:
+  glyph_for() in src/user/gui/gui.c scanned all 7 bytes of the glyph; if every
+  byte was 0 it fell through to return font5x7['?'].  The space glyph ' ' is
+  intentionally all-zero (blank pixel data), so it was classified as "missing"
+  and rendered as a question mark on every single space character.
+
+  Symptoms:
+    "TaterTOS64v3 GUI"   → "TATERTOV64US?GUI"
+    "Launch an app…"     → "LAUNCH?AN?APP?FROM?THE?PANEL.."
+    "Click app or type…" → question mark soup in bottom bar
+    Bottom prompt '> '   → '> ' with spaces in kbd echo → '?'
+
+WHY THE FIX:
+  Space is legitimately all-zero — that IS the correct rendered glyph (nothing).
+  The all-zero check was meant to catch undefined characters (slots that were
+  never populated in the table), but it incorrectly catches space too.
+
+FIX (one line added to glyph_for, gui.c:114):
+    if (uc == ' ') return font5x7[' '];   /* space is all-zero by design */
+  Early-return before the all-zero scan so space always renders as blank pixels.
+
+BUILD & TEST:
+  PATH="/opt/cross/bin:$PATH" bash build_iso.sh
+  Flash ISO to USB, boot Dell Precision 7530.
+  Expected: GUI title bar reads "TaterTOS64v3 GUI", panel shows "Apps:" with
+  correct app names, bottom bar reads "Click app or type: run <NAME>", content
+  area shows "Launch an app from the panel." — all spaces blank, no '?'.

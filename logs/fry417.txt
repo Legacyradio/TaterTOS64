@@ -1,0 +1,38 @@
+fry417 - EC PCR sideband mirror fix (2026-03-01)
+
+DIAGNOSIS from Dell Precision 7530 sysinfo screenshot:
+  LPC IOE: 0x3f0f -> 0x3f0f  (bits 10+11 already set by BIOS, no write needed)
+  PCR PID=0x88 IOE: 0x0000030f -> 0x0000030f  (WRONG PID, write didn't stick)
+  early=0x00  preREG=0x00  (port 0x66 reads 0x00 BEFORE init = EC reachable)
+  probe: STS_FF sts=0xff try=5  (port 0x66 reads 0xFF DURING probe = EC dead)
+
+ROOT CAUSE:
+  The BIOS already correctly sets PCI config IOE bits 10+11 (EC 0x62/0x66 decode).
+  Intel PCH auto-mirrors PCI config IOE to PCR[DMI] sideband registers.
+  Our ec_mirror_pcr_ioe() was writing to PID=0x88 (wrong PID for this PCH),
+  which corrupted PCH state and BROKE the EC decode path. Port 0x66 went from
+  returning 0x00 (EC responding, idle status) to 0xFF (no device) after the
+  PCR sideband write.
+
+FIX:
+  - ec_enable_lpc_decode(): skip PCR sideband mirror when BIOS already has
+    correct IOE bits set (lpc_write_performed == 0). Only call ec_mirror_pcr_ioe
+    when we actually changed the PCI config IOE register. The hardware auto-mirror
+    handles PCI config -> PCR synchronization.
+  - Added g_ec_post_lpc_sts diagnostic: reads port 0x66 immediately after
+    ec_enable_lpc_decode() to confirm LPC decode config didn't break EC access.
+  - Updated extended.h, libc.h, sysinfo.c to show postLPC=0x?? in diagnostics.
+  - Fixed struct padding (_pad6[1] -> _pad6[3]) after adding new field.
+
+FILES CHANGED:
+  src/kernel/acpi/extended.c  - skip PCR mirror when BIOS IOE already correct;
+                                 add g_ec_post_lpc_sts checkpoint read
+  src/kernel/acpi/extended.h  - add ec_post_lpc_sts field, fix padding
+  src/user/libc/libc.h        - mirror struct changes
+  src/user/apps/sysinfo.c     - display postLPC status in diagnostics
+
+EXPECTED RESULT:
+  If the PCR sideband write was the culprit: EC should now stay responsive
+  (postLPC=0x00, preREG=0x00, probe should succeed).
+  Sysinfo should show: early=0x00 postLPC=0x00 preREG=0x00
+  Probe should get past STS_FF and attempt READ command to EC.

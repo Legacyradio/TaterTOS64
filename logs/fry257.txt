@@ -1,0 +1,25 @@
+Handoff Follow-up - 2026-02-21
+
+Summary
+- Fixed kprint format parsing to support length modifiers and stop garbled output.
+
+Changes
+1) src/kernel/kprint.c
+   - Added parsing for %l and %ll length modifiers.
+   - Added %i support.
+   - Implemented %llu/%llx/%llX/%lu/%lx/%lX/%u/%x/%X correctly in both kprint() and kprint_serial_only().
+
+Why
+- Serial logs showed literal "lx/lu/4x" instead of numbers; length modifiers were ignored.
+
+Test Commands
+PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh
+qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+  -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+  -cdrom ./out/tatertos64v3.iso \
+  -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+
+tail -n 50 logs/debugcon.log
+tail -n 50 logs/serial.log
+tail -n 100 logs/qemu.log

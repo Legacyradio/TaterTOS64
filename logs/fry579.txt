@@ -1,0 +1,41 @@
+========================================================================
+TaterTOS64v3 - fry579 - user-requested rebuild for testing
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 01:47:06 UTC
+2026-03-05 19:47:06 CST
+
+CONTEXT
+-------
+- User requested a fresh build so the current image can be tested.
+
+WHY
+---
+- Produce a current ISO artifact from the present tree and record the exact
+  build result plus ISO SHA-256 for test handoff.
+
+CHANGES APPLIED
+---------------
+- No code changes in this step.
+- Performed full clean + verbose rebuild per plan rule 12:
+  - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make clean`
+  - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+
+VALIDATION (THIS SESSION)
+-------------------------
+1) Full rebuild result:
+   - PASS (rebuild exited 0)
+   - PASS (ISO produced at `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`)
+2) SHA-256 verification (user-requested rebuild):
+   - `863ae644d565026a2c717f823239edb66e995c5851a5a4e46162f90c7a0c34a0`
+   - file: `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+
+NOTES
+-----
+- Existing non-fatal warnings remain elsewhere in the tree.
+- Windows export warning remains non-fatal:
+  `cp: cannot create regular file '/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso': Read-only file system`
+
+========================================================================

@@ -1,0 +1,23 @@
+========================================================================
+TaterTOS64v3 - fry502 — Hash verification (post rebuild)
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 14:20:23 CST
+
+WHY THIS LOG
+------------
+- User requested SHA-256 verification and log after rebuild.
+
+HASH / FRESHNESS (Rule 16)
+--------------------------
+Source ISO:
+- SHA256: ac2c3fc6ec91a8d43c4445b392e2bfc4affc69dab044941621decf4002b1de9f
+- Path: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+Target/export ISO:
+- SHA256: ac2c3fc6ec91a8d43c4445b392e2bfc4affc69dab044941621decf4002b1de9f
+- Path: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+========================================================================

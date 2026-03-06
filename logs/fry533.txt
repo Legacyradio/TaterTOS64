@@ -1,0 +1,61 @@
+========================================================================
+TaterTOS64v3 - fry533 — Fix app usability regression from post-sti NVMe mount
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-05 04:07:22 UTC
+
+CONTEXT
+-------
+- fry532 introduced automatic secondary NVMe mount in live mode by running
+  `vfs_mount_secondary()` after `sti` in a kernel worker.
+- Reported regression: app launches became unusable/stalled after fry532.
+
+ROOT CAUSE
+----------
+- VFS mount-list operations are currently unsynchronized.
+- Performing secondary mount after `sti` allowed concurrent runtime VFS access
+  (app launch file opens/stats) while mount-list mutation was in flight.
+- That race can break or stall app launch behavior.
+
+FIX APPLIED
+-----------
+1) `src/kernel/main.c`
+   - Keep live-mode auto secondary mount behavior.
+   - Move deferred `/nvme` mount execution to pre-`sti` (late init, still
+     single-threaded from a VFS perspective).
+   - Remove post-`sti` nvme mount worker scheduling path.
+
+EXPECTED IMPACT
+---------------
+- Apps regain stable launch behavior (no runtime VFS mount mutation race).
+- `/nvme` is still auto-mounted in live mode, but before scheduler start.
+- Tradeoff: slight boot-time delay possible before first user task runs.
+
+BUILD / PACKAGE STATUS
+----------------------
+- `PATH="/opt/cross/bin:$PATH" make kernel`: PASS
+- `./build_iso.sh`: PASS
+- ISO exported to Windows path: PASS
+
+ARTIFACTS
+---------
+- Source ISO:
+  `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+- Export ISO:
+  `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+- SHA256 (both):
+  `3fb33722f2df55e78d7da25d6da389063504d5d64f3f02c3469626c9dbe9485a`
+
+VALIDATION CHECKLIST
+--------------------
+1) Boot new ISO on Dell.
+2) Launch Start -> `SHELL` / `SYSINFO`.
+   - Expect no persistent "Starting app..." stall.
+3) Run `vfsdbg`.
+   - Expect `secondary=/nvme` (or `/nvme1`) without manual `nvmefix`.
+4) Run `ls /nvme`.
+   - Expect success.
+
+========================================================================

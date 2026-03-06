@@ -1,0 +1,49 @@
+========================================================================
+TaterTOS64v3 - fry526 — Preserve FAT32 secondary candidates when NTFS exists
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-04 17:33:21 CST
+
+WHY THIS LOG
+------------
+- User reported: apps launch in QEMU but not on Dell Precision 7530.
+- Root cause path still existed in VFS secondary mount policy.
+
+ROOT CAUSE
+----------
+- `vfs_mount_secondary()` treated FAT32 candidates with app signatures as
+  "boot media" and suppressed all FAT32 candidates whenever a non-FAT32
+  partition (e.g., NTFS) was present.
+- On real hardware with mixed partition types, this could hide app-bearing
+  FAT32 volumes from `/nvme*` mountpoints, making app launch appear broken.
+- QEMU could still appear fine because ramdisk payloads were available.
+
+FIX APPLIED
+-----------
+- File: `src/kernel/fs/vfs.c`
+- Function: `vfs_mount_secondary(...)`
+- Changed policy:
+  - Removed FAT32 candidate suppression in the `boot_media_seen && non_fat32_seen`
+    case.
+  - Keep FAT32 candidates mountable even when NTFS/ToTFS alternatives exist.
+  - Added explicit diagnostic log:
+    `VFS: boot-media-like FAT32 seen at %s with non-FAT32 alternatives; keeping FAT32 candidates`
+
+BUILD / VERIFY
+--------------
+- `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make kernel` -> PASS
+- `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh` -> PASS
+
+ARTIFACTS
+---------
+- `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+- `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+- `/home/jjsako/TaterTOS64v3/out/efiboot.img`
+
+NOTES
+-----
+- Windows export path copy failed in this environment (`/mnt/c` read-only).
+
+========================================================================

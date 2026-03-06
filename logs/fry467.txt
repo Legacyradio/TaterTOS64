@@ -1,0 +1,70 @@
+fry467 - NTFS Architecture Alignment Notes + Fragmented MFT Fix
+===============================================================
+Date: 2026-03-03
+Timestamp (UTC): 2026-03-03 00:10:33 UTC
+
+HASH VERIFICATION (Rule 15)
+===============================================================
+- Source build ISO:
+  8489ed67300425f005bd14d3e35893bba6ee97ed5242d922a490b196798da933  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Target/export ISO:
+  8489ed67300425f005bd14d3e35893bba6ee97ed5242d922a490b196798da933  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- Result:
+  Source and target hashes match.
+
+SUMMARY
+===============================================================
+Recorded architecture review against Linux/Windows NTFS behavior and
+implemented the correctness-critical MFT addressing fix.
+
+Implemented this step:
+- MFT addressing now uses FILE 0 ($MFT) non-resident $DATA runs, not linear
+  LBA guesswork, after bootstrap read of entry 0.
+- Cached MFT run map in ntfs mount state and used it in ntfs_read_mft_entry().
+- Added bounds checks on MFT logical offsets.
+- Reduced block IO overhead in ntfs_read_sectors() by issuing multi-sector reads
+  in one block-device call instead of one call per sector.
+
+Files changed:
+- src/kernel/fs/ntfs.h
+- src/kernel/fs/ntfs.c
+
+Why:
+- Root-level traversal can work while deeper traversal fails on real NTFS when
+  MFT is fragmented. Using MFT data runs from FILE 0 is the correct on-disk
+  mapping model and removes that failure mode.
+
+ARCHITECTURE REVIEW (Current vs Professional Standard)
+===============================================================
+1) MFT addressing
+- Current (after this step): extent/data-run mapped via FILE 0 cache.
+- Professional standard: same model.
+
+2) Interrupts during syscalls
+- Current: syscall body still runs with IF masked in syscall_entry path.
+- Professional standard: keep IRQs enabled; synchronize shared state with
+  locks, not global interrupt masking.
+
+3) IO completion model
+- Current: NVMe completion path is polling-based (poll_cq), not sleep/wakeup.
+- Professional standard: IRQ-driven completion with thread sleep + wakeup.
+
+4) Directory index traversal
+- Current: ntfs_lookup_index_alloc() reads a capped flat buffer (4MB max).
+- Professional standard: iterator-style index-record traversal/caching.
+
+BUILD CHECK
+===============================================================
+Command run:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make kernel
+
+Result:
+- Kernel link succeeded with updated NTFS code.
+
+NEXT ENGINEERING STEPS
+===============================================================
+1) Change syscall path to enable IRQs during syscall dispatch and mask only
+   around sensitive return-state transitions.
+2) Move NVMe from busy-poll completion to IRQ-driven completion with scheduler
+   sleep/wakeup integration.
+3) Replace flat $INDEX_ALLOCATION reads with block-wise iterator traversal.

@@ -1,0 +1,4 @@
+[2026-02-20 18:25:23 UTC] Step: Fix invalid string literal in kernel main.
+Why: Build failed due to stray backslashes around the shell path string.
+Change: Replaced \"/SHELL.FRY\" with "/SHELL.FRY".
+Files: src/kernel/main.c

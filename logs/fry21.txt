@@ -1,0 +1,3 @@
+STEP 21
+TIME: 2026-02-20 01:13:05
+ACTION: Wired Phase 2 ACPI init calls in src/kernel/main.c (tables, MADT, FADT, MCFG, HPET table).

@@ -1,0 +1,4 @@
+[2026-02-22 08:40:56 UTC] Step: Create GPT + FAT32 on NVMe image in workspace.
+Why: GPT header read failed because the test NVMe image was blank; a valid GPT/FAT32 is needed for VFS to mount.
+Change: Initialized GPT with a single EFI partition (start LBA 2048) and formatted FAT32 in /home/jjsako/TaterTOS64v3/out/tater_nvme.img.
+Files: /home/jjsako/TaterTOS64v3/out/tater_nvme.img

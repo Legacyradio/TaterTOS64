@@ -1,0 +1,65 @@
+Action Log - fry255 - 2026-02-21
+
+Summary
+Fixed double vmm_phys_to_virt conversion in all four ACPI parsers.
+
+---
+
+Observation from fry254 run:
+- K_VMM now prints (vmm_init returns cleanly — fry254 stack LMA fix worked)
+- after_vmm runs: 'S', 'P', kprint_init done, "TaterTOS64v3 starting" printed
+- ACPI table enumeration completes (RSDT/FACP/APIC/HPET/MCFG/WAET/BGRT all listed)
+- !EXC vec=0x0D RIP=0xffffffff80004cf4 (madt_init+0x64: `mov 0x4(%rax), %esi`)
+- RAX=0xffff00007f778000 — NON-CANONICAL
+
+Root Cause: Double vmm_phys_to_virt conversion
+- tables.c registry_add stores physmap VIRTUAL addresses into table_registry[]:
+    entries[i] → vmm_phys_to_virt(entries[i]) → physmap VMA stored in registry
+- acpi_find_table returns the physmap VMA from registry (e.g. 0xffff80007f778000)
+- madt_init (and fadt/mcfg/hpet_tbl) then call vmm_phys_to_virt AGAIN on that VMA:
+    vmm_phys_to_virt(0xffff80007f778000)
+    = 0xffff800000000000 + 0xffff80007f778000
+    = 0x1ffff00007f778000 (64-bit truncated: 0xffff00007f778000)
+    → NON-CANONICAL → #GP on first memory access
+
+Fix
+Remove the redundant vmm_phys_to_virt call — acpi_find_table already returns a
+usable virtual address. Just cast h directly.
+
+Files changed:
+- src/kernel/acpi/madt.c line 77:
+    Before: struct acpi_madt *m = (struct acpi_madt *)(uintptr_t)vmm_phys_to_virt((uint64_t)(uintptr_t)h);
+    After:  struct acpi_madt *m = (struct acpi_madt *)h;
+
+- src/kernel/acpi/fadt.c line 90:
+    Before: struct acpi_fadt *f = (struct acpi_fadt *)(uintptr_t)vmm_phys_to_virt((uint64_t)(uintptr_t)h);
+    After:  struct acpi_fadt *f = (struct acpi_fadt *)h;
+
+- src/kernel/acpi/mcfg.c line 35:
+    Before: struct acpi_mcfg *m = (struct acpi_mcfg *)(uintptr_t)vmm_phys_to_virt((uint64_t)(uintptr_t)h);
+    After:  struct acpi_mcfg *m = (struct acpi_mcfg *)h;
+
+- src/kernel/acpi/hpet_tbl.c line 39:
+    Before: struct acpi_hpet *t = (struct acpi_hpet *)(uintptr_t)vmm_phys_to_virt((uint64_t)(uintptr_t)h);
+    After:  struct acpi_hpet *t = (struct acpi_hpet *)h;
+
+Also noting from fry254 run:
+- aml_parse.c probably has same pattern — check if fault continues after this fix
+- kprint "ACPI: RSDP phys=0xlx rev=..." shows %llx not supported by kprint formatter
+  (cosmetic — not blocking boot)
+
+Expected Outcome
+- madt_init/fadt_init/mcfg_init/hpet_tbl_init all parse ACPI tables correctly
+- Boot continues into IRQ infrastructure (pic8259/lapic/ioapic)
+
+Test Commands
+PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh
+qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+  -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+  -cdrom ./out/tatertos64v3.iso \
+  -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+
+head -n 80 logs/serial.log | cat -v | grep -v '^\^\['
+cat logs/debugcon.log
+tail -n 40 logs/qemu.log

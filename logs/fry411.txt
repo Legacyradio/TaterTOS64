@@ -1,0 +1,8 @@
+Timestamp: 2026-03-01 02:45:00 UTC
+
+Step: Add diagnostic logging to ACPI _PRT search.
+
+Why: The user is reporting an "ACPI: _PRT not found" error during boot. The existing code does not provide enough detail to diagnose why the search is failing. This change adds more verbose logging to the `acpi_pci_prt_init` function in `src/kernel/acpi/extended.c` to trace the search path and identify the point of failure. This will provide the necessary information to debug the issue.
+
+Changed files:
+- src/kernel/acpi/extended.c

@@ -1,0 +1,24 @@
+2026-02-26 22:22:14 UTC
+Step: Fix FAT32 partition selection to mount the userland volume instead of the first FAT32 partition.
+Why: Bare-metal logs showed VFS mounting a valid FAT partition that did not contain GUI/SHELL .FRY files, causing launch open failures (-101).
+
+Changes made:
+- src/kernel/fs/vfs.c
+  - Replaced "first FAT32 partition wins" logic with content-aware selection.
+  - Added `fat32_userspace_score()` to score FAT32 candidates by presence of:
+    - /GUI.FRY
+    - /SHELL.FRY
+    - /fry/GUI.FRY or /FRY/GUI.FRY
+    - /fry/SHELL.FRY or /FRY/SHELL.FRY
+  - Added GPT candidate picker `find_best_gpt_fat32_part(...)`.
+  - Added raw-LBA fallback picker `find_best_raw_fat32_lba(...)`.
+  - Updated `vfs_init()` to use best-score partition and emit:
+    - `ERROR: DBG_VFS picked_lba=<lba> userspace_score=<score>`
+
+Validation commands run:
+1) make clean
+   - Exit: 0
+2) PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+   - Exit: 0
+   - ISO output: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+   - Non-fatal environment warning: Windows export copy failed due read-only /mnt/c.

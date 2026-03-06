@@ -1,0 +1,3 @@
+STEP 103
+TIME: 2026-03-03 15:04:26
+ACTION: Hardened NTFS size reporting for directories (report 0) and made $DATA size parsing best-effort to avoid readdir failures when encountering malformed or non-primary data attributes. Why: prevents directory listings from failing due to size parsing and aligns dir sizes with expected UI display semantics.

@@ -1,0 +1,66 @@
+========================================================================
+TaterTOS64v3 - fry520 — Full rebuild after /nvme traversal guard + root stat restore
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-04 00:10:10 CST
+
+WHY THIS LOG
+------------
+- User provided fresh `vfsdbg /nvme1` and `vfsdbg /nvme` output from the latest ISO.
+- Output confirmed:
+  1) /nvme1 (FAT32) and /nvme (NTFS) now map to distinct LBAs.
+  2) `/` incorrectly reported as missing in vfsdbg paths.
+  3) `/nvme` mount entry existed but `readdir /nvme` failed.
+- User requested a full build and session log in the next sequential fry record.
+
+CHANGES IN THIS SESSION
+-----------------------
+- Restored ramdisk root stat behavior in `rd_stat` so `"/"` resolves as a directory (attr 0x10).
+- Added secondary mount root probe helper (`stat + readdir`) before publishing mounts.
+- Applied the probe to FAT32 and NTFS secondary mounts so unusable mounts are rejected instead of exposed as dead entries.
+
+FILES
+-----
+- src/kernel/fs/vfs.c
+
+COMMANDS
+--------
+- Object verify:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/fs/vfs.o
+- Full rebuild:
+  PATH="/opt/cross/bin:$PATH" bash build_iso.sh
+
+BUILD / TEST STATUS
+-------------------
+- Full rebuild: success.
+- Expected warnings only (RWX LOAD segments and existing unused/sign-compare warnings).
+- ISO: out/tatertos64v3.iso
+- NVMe image: out/tater_nvme.img
+- EFI image: out/efiboot.img
+- Windows export still failed: `/mnt/c/Users/jjsako/Documents/tateriso` is read-only.
+
+ARTIFACT MTIME
+--------------
+- 2026-03-04 00:10:00.442898931 -0600  out/tatertos64v3.iso
+- 2026-03-04 00:09:58.988116482 -0600  out/tater_nvme.img
+- 2026-03-04 00:09:59.987027573 -0600  out/efiboot.img
+
+SHA256
+------
+- out/tatertos64v3.iso : 38e784077d7362c766eb727dcbdcf4114c65bc3bb9e9605b97a0913794bc1f47
+- out/tater_nvme.img   : 2c808a0b4c1b79e909c176127c4bf709f94bf001a95c682fa7b08a72c8cc3950
+- out/efiboot.img      : c62d271d286a35ec38a859d42268100b2a0871f36e7292fbdf15a698c7bd3f7b
+
+NEXT STEPS
+----------
+- Boot this new ISO and run:
+  - `vfsdbg /nvme1`
+  - `vfsdbg /nvme`
+- Verify:
+  - `paths:` now shows `/ : ok`.
+  - Either `/nvme` is traversable (if valid NTFS) OR it is not published at all (probe rejects it).
+  - No dead `/nvme` mount entry that always fails readdir.
+
+========================================================================

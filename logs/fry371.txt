@@ -1,0 +1,28 @@
+fry371 — Stability hardening: disable AP LAPIC periodic timers in BSP-only scheduler mode
+Timestamp: 2026-02-28
+
+Why:
+  User reports long-running instability after the shell-input fix campaign.
+  Current scheduler intentionally runs runnable user processes on BSP (CPU0)
+  only, but APs were still enabling LAPIC periodic timers in ap_entry().
+  That creates continuous AP interrupt traffic without any scheduling benefit
+  and increases cross-core race surface.
+
+Change:
+  File: src/drivers/smp/smp.c
+  - Removed AP-side lapic_timer_init() call from ap_entry().
+  - Added comment documenting that AP timers stay disabled until per-CPU
+    scheduling is implemented.
+
+Expected effect:
+  - Lower interrupt contention/churn on APs.
+  - Better stability on bare metal during GUI app launch/input paths.
+
+Build/Test commands (rule 10 + rule 11):
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+Status:
+  Pending build execution after this log.
+
+Next log: fry372.txt

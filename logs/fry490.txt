@@ -1,0 +1,22 @@
+========================================================================
+TaterTOS64v3 - fry490 — NVMe partitions visibility update
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 15:42:47 UTC
+
+USER REPORT / CONTEXT
+---------------------
+- NTFS partition is now visible (shows as nvme).
+- FAT32 partition shows as nvme1, but clicking it locks the system hard.
+
+WHY THIS UPDATE
+---------------
+- Record partial progress: NTFS visibility achieved, FAT32 access still hard-locks.
+
+STATUS
+------
+- Partial success: NTFS visible; FAT32 access still hard-freezes.
+
+========================================================================

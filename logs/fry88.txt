@@ -1,0 +1,3 @@
+STEP 88
+TIME: 2026-02-20 09:09:29
+ACTION: Updated src/drivers/acpi_bus/acpi_bus.c to evaluate _CRS and decode ACPI resource buffers via acpi_decode_resources, because the plan requires printing IRQ/MMIO resources per device.

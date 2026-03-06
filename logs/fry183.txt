@@ -1,0 +1,7 @@
+2026-02-21 00:01:34
+Change: Switched kprint_init debug markers to single-character debugcon output.
+Why: Full strings may be truncated or lost; single chars (0-3) provide a more reliable trace to pinpoint the failing line inside kprint_init.
+Details:
+- kprint.c: replaced KP_INIT_0..3 strings with early_debug_putc('0'..'3').
+Rule note: Temporary debug change; will be removed after diagnosis.
+Next: rebuild ISO, run QEMU with debugcon, report last marker seen.

@@ -1,0 +1,4 @@
+[2026-02-20 18:51:26 UTC] Step: Add Phase 17.5 (GUI/Userland) to plan.
+Why: User requested GUI phase placement after existing phases.
+Change: Inserted Phase 17.5 in build order dependencies and added a phase description section.
+Files: planv3.txt

@@ -1,0 +1,46 @@
+[2026-02-23 02:25 UTC] Step: Improve PS/2 keyboard mapping + add mouse smoothing.
+
+Context:
+  GUI is stable but PS/2 input feels dead/inconsistent, and cursor movement is
+  jittery/erratic. Need a direct PS/2-only fix (no USB assumptions).
+
+Change 1 — keyboard mapping + shift handling:
+  Added a shift-aware scancode map (Set 1) and Shift press/release handling
+  (0x2A/0x36 down, 0xAA/0xB6 up). Extended 0xE0 prefixes are ignored for now
+  to avoid mis-decoding.
+
+  Temporary debug marker (per planv3 rules):
+    - Print first 16 scancodes: "PS2: sc=XX"
+    - This is only to confirm IRQs are firing and to validate scancode stream.
+    - Must be removed once confirmed.
+
+Change 2 — mouse smoothing/jitter clamp:
+  Added a simple jitter filter and clamp for mouse deltas:
+    - Drop |dx|/|dy| <= 1
+    - Clamp to [-32, 32]
+    - Apply 3/4 smoothing to reduce stutter
+  This reduces “wild” cursor jumps while preserving responsiveness.
+
+Files changed:
+  src/drivers/input/ps2_kbd.c
+    - Added shift maps
+    - Track shift state
+    - Ignore 0xE0 extended prefix
+    - Debug print first 16 scancodes
+  src/drivers/input/ps2_mouse.c
+    - Clamp + jitter filter
+    - Simple smoothing filter
+
+Build:
+  PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh -> OK (warnings only)
+  ISO: out/tatertos64v3.iso
+  Exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+Expected after change:
+  - Keyboard produces printable ASCII with Shift support.
+  - Serial shows 16 scancode debug lines (then stops).
+  - Mouse cursor movement is smoother with less jitter.
+
+Next:
+  - Boot and confirm PS/2 scancodes appear.
+  - Remove scancode debug print after confirmation.

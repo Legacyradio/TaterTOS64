@@ -1,0 +1,59 @@
+Handoff Log - 2026-02-22 08:55:52 UTC
+Project: /home/jjsako/TaterTOS64v3
+Goal: NVMe stable I/O in QEMU + real HW (Dell Precision 7530), GPT/FAT32 mount, no shortcuts.
+
+Recent Progress
+- NVMe admin queue timeouts fixed; identify now succeeds consistently.
+- IO queue creation fixed (QID/QSIZE encoding), and IO timeouts cleared.
+- VFS still reports GPT header read failed on the NVMe disk image.
+
+Latest Observed Logs (logs/serial.log @ 2026-02-22 02:53)
+- NVMe: identify ok
+- No IO cmd timeouts
+- GPT: header read failed
+- FAT32: GPT header read failed
+
+Changes Since Previous Handoff
+- Fixed CQ phase-bit check (bit0 not bit15) for admin/io polling.
+- Programmed NVMe AQA/ASQ/ACQ with 32-bit MMIO writes.
+- Marked CQ memory reads volatile.
+- Added Set Features: Number of Queues (1) prior to IO queue creation.
+- Fixed IO queue CDW10 field layout (QID bits 15:0, QSIZE bits 31:16).
+- Added PRP2 support for buffers that cross a page boundary.
+
+Key Files Touched
+- src/drivers/storage/nvme.c
+
+Change Logs (fry)
+- logs/fry296.txt: Fix NVMe CQ phase-bit check.
+- logs/fry297.txt: 32-bit MMIO writes for CC/AQA/ASQ/ACQ.
+- logs/fry298.txt: Volatile CQ reads.
+- logs/fry299.txt: Set Features Number of Queues.
+- logs/fry300.txt: Fix IO queue CDW10 encoding.
+- logs/fry301.txt: Create GPT + FAT32 on NVMe image (workspace copy).
+- logs/fry302.txt: Add PRP2 for cross-page buffers.
+
+NVMe Image Status
+- Prepared GPT+FAT32 image at: /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+- Windows QEMU should point NVMe path to:
+  \\wsl.localhost\Ubuntu\home\jjsako\TaterTOS64v3\out\tater_nvme.img
+- UEFI shell shows NVMe FS (FS1) present and GPT partition visible, so media is good.
+
+Open Issue
+- GPT header read fails in OS despite valid GPT on NVMe.
+
+Likely Next Steps (no shortcuts)
+1) Add a temporary log to dump the first 8 bytes read from LBA1 to verify GPT signature ("EFI PART"). Remove after confirmation.
+2) If signature is wrong, inspect NVMe read path for PRP handling or sector size assumptions.
+3) If signature is correct but parsing fails, check GPT header struct alignment/endianness and read length.
+
+Test Command (build)
+- bash build_iso.sh
+
+User Run Command (QEMU)
+- Uses -drive file=\\wsl.localhost\Ubuntu\home\jjsako\TaterTOS64v3\out\tater_nvme.img,if=none,id=nvm1
+- Uses -device nvme,serial=TATER_NVME_01,drive=nvm1
+
+Notes
+- User wants no shortcuts; follow planv3 rules strictly and log each change with timestamp + why.
+- Installer is last phase; focus now on stable NVMe + GPT/FAT32 mount.

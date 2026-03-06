@@ -1,0 +1,64 @@
+========================================================================
+TaterTOS64v3 - fry522 — Post-rebuild hash re-verification + test expectations
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-04 00:55:49 CST
+
+WHY THIS LOG
+------------
+- User requested re-verification of artifacts and a session log covering:
+  - what has been done,
+  - what is expected next,
+  - and current constraints.
+
+SESSION STATUS (DONE)
+---------------------
+- Secondary mount publishing behavior was tightened in `src/kernel/fs/vfs.c`.
+- Added mounted-path verification after secondary mount publish:
+  - `vfs_stat(<mountpoint>)`
+  - `vfs_readdir_ex(<mountpoint>, ...)`
+- If mounted-path verification fails, mount is immediately removed (`vfs_umount`).
+- Full ISO rebuild already completed successfully in prior step.
+
+CURRENT ARTIFACTS (RE-VERIFIED)
+-------------------------------
+SHA256:
+- out/tatertos64v3.iso : fec0cba640e8cc5a2c440c66c621b3bce5ddb4066d62d7d9944734d1230e5fcb
+- out/tater_nvme.img   : a00c74e3c2f2f3711b8e873b48f6852f203eb225f9ae3d178450a9818eb27513
+- out/efiboot.img      : 6c877eacf2d1e1687e083aeaa31755d264f5498dffb472ed958b0949b6bbedf9
+
+MTIME:
+- 2026-03-04 00:49:09.838232005 -0600  out/tatertos64v3.iso
+- 2026-03-04 00:49:08.428513922 -0600  out/tater_nvme.img
+- 2026-03-04 00:49:09.383047124 -0600  out/efiboot.img
+
+EXPECTED NEXT BOOT RESULT
+-------------------------
+- Run:
+  - `vfsdbg`
+  - `vfsdbg /nvme1`
+  - `vfsdbg /nvme`
+- Expected behavior after fix:
+  1) If NTFS path routing is valid: `/nvme` appears and is traversable.
+  2) If NTFS remains non-traversable: `/nvme` is not left published as a dead mount.
+
+IMPORTANT LIMITATION (UNCHANGED)
+--------------------------------
+- NTFS driver is currently read-only in this tree.
+- NTFS VFS write/create/mkdir/unlink are still stubs returning failure.
+- So even if `/nvme` mounts correctly, saving files to NTFS is not yet implemented.
+
+EXPORT COMMAND (PREVIOUSLY PROVIDED)
+------------------------------------
+- `cp -v out/tatertos64v3.iso out/tater_nvme.img out/efiboot.img /mnt/c/Users/jjsako/Documents/tateriso/`
+- Note: this target path previously failed as read-only from this environment.
+
+FILES
+-----
+- src/kernel/fs/vfs.c
+- logs/fry521.txt
+- logs/fry522.txt
+
+========================================================================

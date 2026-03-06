@@ -1,0 +1,87 @@
+========================================================================
+TaterTOS64v3 - fry574 - harden kmalloc width and NVMe doorbell offset math
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 00:52:56 UTC
+2026-03-05 18:52:57 CST
+
+CONTEXT
+-------
+- Review requested three checks:
+  - Ensure `kmalloc` is not fed a truncated 32-bit length when source size is
+    naturally wider.
+  - Verify variable-depth reverse loops are using an unsigned/address-sized
+    pattern on 64-bit builds.
+  - Ensure NVMe doorbell stride math derived from `CAP.DSTRD` stays 64-bit.
+
+WHY
+---
+- NTFS should not narrow a sector-sized allocation argument before calling a
+  64-bit `kmalloc`.
+- NVMe register-address math should not depend on 32-bit temporaries when
+  deriving doorbell offsets from stride and queue id.
+- Reverse loop audit needed to confirm the earlier `depth` underflow issue was
+  actually resolved rather than still present elsewhere.
+
+CHANGES APPLIED
+---------------
+- Files updated:
+  - `src/kernel/fs/ntfs.c`
+    - Removed two explicit `(uint32_t)` casts on `dev_sec_size` before
+      `kmalloc()` in `ntfs_dev_read_bytes()`.
+  - `src/drivers/storage/nvme.c`
+    - Widened `db_stride` in `struct nvme_device` to `uint64_t`.
+    - Widened `mmio_read32()`, `mmio_write32()`, and `mmio_read64()` offset
+      parameters to `uint64_t`.
+    - Reworked `doorbell_sq()` / `doorbell_cq()` to compute offsets in
+      `uint64_t`.
+    - Widened `g_db_stride = 4ULL << dstrd`.
+
+VERIFICATION NOTES
+------------------
+- Reverse-loop audit:
+  - `src/drivers/acpi_bus/acpi_bus.c` already uses
+    `for (size_t i = (size_t)depth; i-- > 0;)`.
+  - No remaining `for (int i = depth - 1; ...)` pattern was found in `src/`.
+  - Remaining reverse `int` loops found during audit are fixed small-count GUI
+    or formatting loops, not variable-depth/address-sized traversals.
+
+EFFECT
+------
+- NTFS no longer explicitly truncates the sector allocation size before
+  passing it to `kmalloc`.
+- NVMe doorbell register offset math now stays 64-bit from `CAP.DSTRD`
+  decoding through MMIO access helpers.
+- The earlier `depth` reverse-loop issue remains fixed; no extra patch was
+  required for that audit item.
+
+VALIDATION (THIS SESSION)
+-------------------------
+1) Audit `kmalloc` call sites and declarations:
+   - `rg -n "void \\*kmalloc\\((u?int32_t|size_t|u?int64_t|u?int16_t)|kmalloc\\(\\(uint32_t\\)|kmalloc\\(\\(size_t\\)|kmalloc\\(\\(unsigned\\)" src`
+2) Audit reverse `depth` loops:
+   - `rg -n "for \\(int i = depth - 1|for \\(int .*depth - 1|for \\(size_t i = \\(size_t\\)depth; i-- > 0;\\)" src`
+3) Inspect touched NTFS/NVMe code:
+   - `nl -ba src/kernel/fs/ntfs.c | sed -n '180,245p'`
+   - `nl -ba src/drivers/storage/nvme.c | sed -n '112,125p'`
+   - `nl -ba src/drivers/storage/nvme.c | sed -n '272,286p'`
+   - `nl -ba src/drivers/storage/nvme.c | sed -n '434,446p'`
+   - `nl -ba src/drivers/storage/nvme.c | sed -n '944,953p'`
+   - `nl -ba src/drivers/acpi_bus/acpi_bus.c | sed -n '39,52p'`
+4) Compile verification (full clean + verbose rebuild per plan rule 12):
+   - `make clean && PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+5) RESULT:
+   - PASS (`src/kernel/fs/ntfs.c` and `src/drivers/storage/nvme.c` compiled)
+   - PASS (full rebuild exited 0; ISO produced at
+     `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`)
+
+NOTES
+-----
+- Existing unrelated compiler warnings remain elsewhere in the tree.
+- Windows mount export warning observed during build:
+  `cp: cannot create regular file '/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso': Read-only file system`
+  Local ISO output generation still completed successfully.
+
+========================================================================

@@ -1,0 +1,3 @@
+STEP 104
+TIME: 2026-03-03 15:07:41
+ACTION: Verified SHA-256 hashes after user-requested rebuild; recorded artifact digests for kernel.elf, efiboot.img, tater_nvme.img, fs.img, and tatertos64v3.iso.

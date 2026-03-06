@@ -1,0 +1,38 @@
+fry380 — EC/ACPI timeout hardening + rule-alignment verification
+Timestamp: 2026-02-28 14:38:44 UTC
+
+Why:
+  Real-hardware boot regressed after EC integration: "_PRT not found" appeared,
+  boot paused for about a minute, then OS continued with battery/backlight still
+  zero. The pause indicated repeated EC timeout loops during AML field access.
+
+Changes:
+  1) src/kernel/acpi/ec.c
+     - Reduced EC wait timeout constant to limit worst-case stalls.
+     - Added fast-disable path on EC runtime timeout so repeated AML reads do not
+       keep spinning.
+     - Added SCI_EN gate before ACPI-enable write to avoid unnecessary toggling.
+     - Kept EC probe functional via raw probe read path.
+
+  2) src/kernel/acpi/aml_ops.c
+     - Added ec_available() guard for EmbeddedControl (OpRegion space 0x03)
+       read/write to fail fast when EC is unavailable.
+
+  3) src/kernel/acpi/extended.c
+     - Clarified _PRT log line as non-fatal continuation message.
+
+Rule compliance (planv3 RULES 1-11):
+  - Rule 4: Code edits done with apply_patch.
+  - Rule 5/6: This timestamped fry log includes what changed and why.
+  - Rule 10/11: Rebuilt with default clean + verbose command sequence.
+  - Rule 8/9: Branding/UEFI path unchanged.
+  - Rule 3: No Linux/Windows code added to OS code paths.
+
+Build/Test commands run:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+Result:
+  - Build succeeded (kernel + user apps + ISO).
+  - ISO produced: out/tatertos64v3.iso
+  - Windows export copy failed due read-only filesystem (non-fatal packaging step).

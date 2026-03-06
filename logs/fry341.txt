@@ -1,0 +1,8 @@
+2026-02-26 20:30:45 UTC
+Step: Recorded hardware test policy for this debug session.
+Why: User explicitly requires strict bare-metal validation on their Dell system with no QEMU usage.
+
+Policy (effective immediately for this issue):
+- Target platform is Dell Precision 7530 bare metal only.
+- No QEMU run/test commands are to be used or suggested.
+- Validation is performed only by booting directly on the Dell hardware.

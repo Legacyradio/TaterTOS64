@@ -1,0 +1,3 @@
+STEP 29
+TIME: 2026-02-20 09:13:36
+ACTION: Expanded ACPI namespace in src/kernel/acpi/namespace.c/.h to add ns_find_device with _HID evaluation, plus field metadata for BankField/IndexField (bank/index registers and values), because AML device discovery and field access require these namespace capabilities.

@@ -1,0 +1,54 @@
+========================================================================
+TaterTOS64v3 - fry565 - review finding: ACPI node_path NameSeg read safety
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 00:14:22 UTC
+2026-03-05 18:14:22 CST
+
+CONTEXT
+-------
+- Finding claimed `node_path()` may read beyond node-name length because ACPI
+  names can be shorter than 4 chars.
+
+REVIEW RESULT
+-------------
+- Not a valid out-of-bounds read in this implementation.
+
+WHY
+---
+- Namespace node names are fixed-size ACPI NameSeg values:
+  - `struct acpi_node { char name[4]; ... }` in `src/kernel/acpi/namespace.h`
+- Node names are copied as exactly 4 bytes on creation:
+  - `set_name(dst[4], src[4])` and `set_name(n->name, name)` in
+    `src/kernel/acpi/namespace.c`
+- AML parser also reads NameSeg as exactly 4 bytes:
+  - `parse_name_seg(..., char name[4])` in `src/kernel/acpi/aml_parse.c`
+- ACPI short names are represented via underscore padding, so reading indices
+  `[0..3]` is correct by model and by implementation.
+
+RELATED SAFETY STATUS
+---------------------
+- `node_path()` buffer-bounds hardening was already applied in previous step
+  (`fry564`), including zero-length output guard and separator-bound checks.
+
+CHANGES APPLIED
+---------------
+- No code changes for this finding (documentation/review-only outcome).
+
+VALIDATION (THIS SESSION)
+-------------------------
+1) Inspect namespace struct and name handling:
+   - `nl -ba src/kernel/acpi/namespace.h | sed -n '1,120p'`
+   - `nl -ba src/kernel/acpi/namespace.c | sed -n '1,88p'`
+2) Inspect AML NameSeg parsing:
+   - `nl -ba src/kernel/acpi/aml_parse.c | sed -n '20,52p'`
+3) RESULT:
+   - PASS (finding confirmed false positive for OOB read)
+
+NOTES
+-----
+- No rebuild requested; per plan rule 16, no SHA-256 recorded.
+
+========================================================================

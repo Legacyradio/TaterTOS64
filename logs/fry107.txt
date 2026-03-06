@@ -1,0 +1,5 @@
+DATE: 2026-02-22 20:44 CST
+CHANGE: Increased GUI terminal contrast (backgrounds, bar, border) and adjusted margins/title position for visibility.
+WHY: Make the window chrome clearly visible; prior colors were too subtle in capture.
+FILES:
+- src/kernel/kprint.c

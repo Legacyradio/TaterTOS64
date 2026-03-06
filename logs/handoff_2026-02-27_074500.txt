@@ -1,0 +1,146 @@
+Handoff Log - 2026-02-27 07:45:00 -0600
+
+=== CURRENT STATE ===
+Boot is STABLE in QEMU. GUI launches, event loop running. TaterWin IPC fully
+implemented. ISO built clean and exported to Windows for Dell test.
+Last action log: fry354. Next log: fry355.
+
+What is working (confirmed in QEMU):
+  - UEFI EFI loader: ramdisk built from ISO 9660 tree, kernel handoff OK
+  - Kernel: ACPI/PCI/VMM/PMM/HPET/LAPIC all init clean
+  - VMD: Intel VMD (DID=0x1911) scanned, NVMe injected on virtual bus 0xC0+
+  - NVMe/GPT/FAT32/VFS: all mount, SHELL/GUI/SYSINFO/UPTIME/PS found on NVMe
+  - PS/2 keyboard: non-blocking, IRQ1/vec33 via IOAPIC
+  - PS/2 mouse: IRQ12/vec44, 3-byte packets, x/y/btns 0-4095
+  - Scheduler: round-robin, LAPIC timer vec=0x40, BSP only
+  - Syscalls: SYS_WRITE/READ/FB_INFO/FB_MAP/MOUSE_GET/PROC_OUTPUT/PROC_INPUT/
+              SHM_ALLOC/SHM_MAP/SBRK all implemented
+  - GUI: launches, sidebar renders SHELL/SYSINFO/UPTIME/PS, mouse cursor, drag,
+         window chrome, per-window process output polling
+  - SYSINFO: TaterWin client — sends TW_MSG_CREATE_WINDOW, receives shm_id,
+             maps SHM, renders pixel graphics, sends TW_MSG_UPDATE every 1s
+
+=== WHAT WAS DONE THIS SESSION (fry354) ===
+This session was a continuation of a Gemini CLI session that hit a rate limit.
+Gemini had completed the kernel/libc side. This session completed the GUI and
+app side.
+
+Gemini completed (earlier, same session):
+  - process.h: PROC_INBUF 512-byte ring (inbuf[]/inbuf_head/inbuf_tail) in fry_process
+  - syscall.c: SYS_PROC_INPUT=25 — writes bytes into target process inbuf by pid;
+               SYS_READ fd=0 now checks inbuf first (priority over ps2_kbd_read)
+  - libc.c/h: fry_proc_input(pid, buf, len) wrapper; SYS_PROC_INPUT=25 in enum
+  - taterwin.h: TW_MAGIC=0x5457494E, tw_msg_header_t, tw_msg_create_win_t,
+                tw_msg_win_created_t, tw_msg_mouse_t, tw_msg_key_t,
+                TW_MSG_CREATE_WINDOW=1, TW_MSG_WINDOW_CREATED=2, TW_MSG_UPDATE=5
+
+This session completed (fry354):
+  - gui.c (full rewrite): TaterWin compositor
+      window_t gains: shm_id(-1=none), shm_ptr, shm_w/h, done flag,
+        msgbuf[256]/msglen byte accumulator, textbuf[1024]/textlen text ring
+      process_window_output(): parses outbuf bytes for TW_MAGIC:
+        TW_MSG_CREATE_WINDOW → fry_shm_alloc(w*h*4), fry_shm_map(id),
+          resize window chrome, respond with tw_msg_win_created_t via fry_proc_input
+        TW_MSG_UPDATE → consumed (blit happens every frame via shm_ptr)
+        plain text → appended to textbuf for draw_window_text()
+      draw_window_text(): scrolling multiline renderer (12px line height)
+      draw_window(): gfx_blit(shm_ctx) if TW; else text; else black
+      main loop: keyboard forwarded to focused window via fry_proc_input
+      done flag: prevents repeated strcat "[DONE]" on repeated -2 polls
+  - sysinfo.c (full rewrite): TaterWin client
+      sends tw_msg_create_win_t (400x220, "System Info") via fry_write(1,...)
+      waits for tw_msg_win_created_t via fry_read(0,...), up to 3s timeout
+      fry_shm_map(resp.shm_id) → shared physical pages mapped into own VA
+      render(): gfx_fill black, draws uptime/procs/backlight/battery with gfx_*
+      loop: render() → fry_write(1, TW_MSG_UPDATE) → fry_sleep(1000)
+      fallback_pixels[] static buffer used if SHM alloc fails
+
+Build (rule 11):
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+  Result: zero errors, ISO → /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+=== WHAT TO WATCH FOR ON DELL BOOT ===
+The last known Dell-specific issue was fry349 (ramdisk not finding .FRY files).
+That was fixed: build_iso.sh now copies .FRY files into both $ISO_DIR and
+$ISO_DIR/fry/ before xorriso, so they exist in the ISO 9660 tree.
+
+Watch serial output for these milestones in order:
+  1. EFI loader: "fry: found N fry files" — if 0, ramdisk still broken
+  2. Kernel: "ramdisk_base=0x... size=..." — confirms handoff
+  3. Kernel: ACPI/VMD/NVMe init lines — confirms Dell HW path
+  4. GUI: "gui: entering event loop" — confirms user-space launched
+  5. On clicking SYSINFO: no crash, no triple fault
+
+Known Dell quirks already fixed:
+  - ACPI tables above 4 GB → acpi_ensure_mapped() (fry326)
+  - ACPI Acquire deadlock → always-succeed (fry327)
+  - VMD NVMe hidden behind MEMBAR1 → vmd_init ECAM scan (fry328/329)
+  - ECAM BAR wrong offset → BAR2+BAR3 (fry329)
+  - physmap cap 4 GB → vmm_init (fry326)
+
+=== WHAT TO DO IF BOOT FAILS ===
+Capture serial log immediately:
+  - Connect USB-serial adapter to Dell COM port, or
+  - If booting in QEMU on Windows side use the QEMU command below
+
+If ramdisk still broken (fry_found=0):
+  - Check efi_loader.c SFS handle scanning logic
+  - Verify build_iso.sh placed .FRY files in ISO 9660 root AND /fry/ subdir
+
+If GUI launches but SYSINFO crashes:
+  - Check serial for triple fault / #PF address
+  - SHM alloc at 400*220*4 = 352000 bytes = 86 pages contiguous PMM alloc
+  - If PMM can't satisfy contiguous: sysinfo falls back to fallback_pixels[]
+    (window stays black but no crash expected)
+
+If TW handshake times out (sysinfo falls back silently):
+  - sysinfo sends TW_MSG_CREATE_WINDOW; GUI must be scheduled within 3s
+  - With real HW and faster scheduler this should be fine
+  - If not: increase tries from 300 to 1000 in sysinfo.c
+
+=== KEY FILE LOCATIONS ===
+src/kernel/proc/process.h          — fry_process struct (inbuf added fry354)
+src/kernel/proc/syscall.c          — syscall_dispatch (SYS_PROC_INPUT=25 added)
+src/user/libc/libc.h               — fry_proc_input declaration
+src/user/libc/libc.c               — fry_proc_input implementation
+src/user/libc/taterwin.h           — TaterWin IPC protocol definitions
+src/user/gui/gui.c                 — TaterWin compositor (full rewrite fry354)
+src/user/apps/sysinfo.c            — TaterWin client (full rewrite fry354)
+src/boot/efi_loader.c              — EFI loader + ramdisk builder
+src/kernel/drivers/storage/vmd.c   — VMD ECAM scan (Dell NVMe)
+src/kernel/mm/vmm.c                — physmap (cap 4 GB)
+src/kernel/acpi/tables.c           — ACPI ensure_mapped
+
+=== TEST COMMANDS ===
+Build (rule 11):
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+QEMU test (from WSL):
+  qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+    -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+    -cdrom ./out/tatertos64v3.iso \
+    -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+
+Check logs:
+  tail -n 50 logs/serial.log
+  tail -n 50 logs/debugcon.log
+  tail -n 100 logs/qemu.log
+
+=== NEXT STEPS (after Dell boot confirmed) ===
+If boot succeeds and GUI + SYSINFO work on Dell:
+  - fry355: Add close button to windows (X in title bar, right side)
+  - fry356: Add TaterWin keyboard event routing to shell (full interactive shell
+            in a window — typed chars appear, shell responds)
+  - fry357: Add UPTIME and PS as TaterWin apps (graphical panels, not text)
+
+If boot fails, diagnose per "WHAT TO DO IF BOOT FAILS" section above.
+Log all fixes starting at fry355.txt.
+
+Status update (2026-02-27 17:51:35 CST):
+  - Fixes documented in this handoff: SUCCESSFUL
+
+Status update (2026-02-27 18:01:47 CST):
+  - NVMe/GPT/FAT32/VFS runtime milestone: SUCCESSFUL (user-confirmed)

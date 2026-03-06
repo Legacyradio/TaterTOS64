@@ -1,0 +1,7 @@
+2026-02-21 01:24:31 CST
+Step: Add debug markers around RSP print and heap_init call.
+Why: Debugcon stops after K_VMM; need to confirm whether crash occurs during RSP serial output or before heap_init.
+Changes:
+- Added K_BEFORE_RSP / K_AFTER_RSP / K_BEFORE_HEAP debug markers in main.c.
+Notes:
+- Temporary diagnostics will be removed once crash point is identified.

@@ -1,0 +1,61 @@
+Date: 2026-02-22 22:00
+Owner: Claude (Codex)
+
+Summary
+- GUI was launching but input appeared dead; system was rebooting earlier due to kernel faults.
+- Fixed two kernel faults tied to low-memory pointers under user CR3:
+  1) g_handoff access in syscalls
+  2) pmm_bitmap access in pmm_alloc_page_below
+- Ensured NVMe image is always synced with GUI/apps during build without interactive mtools prompts.
+- Added PS/2 keyboard read fallback polling to mitigate IRQ delivery issues.
+
+Key Fixes
+1) g_handoff copied to heap after heap_init
+- File: src/kernel/main.c
+- Why: Avoid low-memory handoff page access when running under user CR3.
+
+2) PMM bitmap relocated to physmap after VMM init
+- Files: src/kernel/mm/pmm.c, src/kernel/mm/pmm.h, src/kernel/main.c
+- Why: Bitmap originally lives in low memory; user CR3 doesn't map it, causing #PF -> reboot.
+
+3) NVMe sync on build + non-interactive overwrite
+- File: build_iso.sh
+- Changes:
+  - Sync GUI/apps into out/tater_nvme.img (FAT at LBA 2048)
+  - Use mcopy -o to avoid prompts like "Long file name exists"
+
+4) PS/2 keyboard fallback polling
+- File: src/drivers/input/ps2_kbd.c
+- Change: If IRQ buffer empty, poll 0x64/0x60 briefly to capture keypress.
+
+Build
+- PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh
+- Output:
+  - /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  - /home/jjsako/TaterTOS64v3/out/tater_nvme.img (synced)
+
+Runtime Notes
+- Serial log now ends at "gui>" (GUI running).
+- Input may still be blocked if QEMU serial is file-only and PS/2 IRQs fail.
+- Suggested QEMU: add USB keyboard device.
+  -device qemu-xhci -device usb-kbd
+
+Files Touched
+- src/kernel/main.c
+- src/kernel/mm/pmm.c
+- src/kernel/mm/pmm.h
+- src/drivers/input/ps2_kbd.c
+- build_iso.sh
+
+Next Checks
+- Boot NVMe image and verify GUI input.
+- If still no input, consider routing COM2 for interactive input or wiring USB HID into stdin.
+
+fry316 Applied (2026-02-22 22:30 UTC)
+- kread_serial() made non-blocking (was spinning on serial_received forever)
+- sched_yield() added in SYS_READ when no kbd/serial data
+- PS/2 mouse driver fully implemented (IRQ12, 3-byte packets, x/y/btns)
+- SYS_MOUSE_GET (20) syscall added
+- libc: fry_mouse_get(), getchar_nb()
+- GUI: event loop with mouse cursor, hover highlight, click-to-launch, kbd input
+- Build OK; fry317 = test run

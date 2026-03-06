@@ -1,0 +1,12 @@
+2026-02-27 04:30:00 UTC
+Step: Implement userspace heap (sbrk) and begin Phase 17.5 GUI overhaul.
+Why: Existing GUI is static and libc is enemic; dynamic memory is required for a modern windowing system and better visuals.
+
+Changes made:
+- src/kernel/proc/process.h: Added heap_start/heap_end to fry_process.
+- src/kernel/proc/process.c: Initialize heap at 1TB mark in process_create_user.
+- src/kernel/proc/syscall.c: Added SYS_SBRK (22) to allocate pages for user heap.
+- src/user/libc/libc.h: Declared sbrk, malloc, free, calloc, realloc.
+- src/user/libc/libc.c: Implemented sbrk wrapper and a first-fit free-list allocator.
+
+Next: libgfx and 8x16 font implementation.

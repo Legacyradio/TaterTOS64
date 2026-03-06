@@ -1,0 +1,27 @@
+========================================================================
+TaterTOS64v3 - fry507 — Fileman mount visibility fix + hash verification
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 22:51:22 UTC
+
+CHANGES
+-------
+- File Manager: keep kernel-reported mountpoints even if stat fails; mark as unverified
+  with a ? and show unverified count in status bar to avoid silent disappearance.
+
+HASH / FRESHNESS (Rule 15)
+--------------------------
+Source ISO:
+- 2026-03-03 16:48:12.137975768 -0600  135563264 bytes  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- SHA256: 8ef7ccdf440191ecc9f9a552bed912454d62acff11a14a9db386223f1fcc63f9
+- Path: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+Target/export ISO:
+- 2026-03-03 16:48:14.138626400 -0600  135563264 bytes  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- SHA256: 8ef7ccdf440191ecc9f9a552bed912454d62acff11a14a9db386223f1fcc63f9
+- Path: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- Note: hashes match; export appears up to date.
+
+========================================================================

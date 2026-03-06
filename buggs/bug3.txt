@@ -1,0 +1,135 @@
+========================================================================
+TaterTOS64v3 - bug3 — Enforce user VA boundary in ELF load and user mapping
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-04 10:07:04 CST
+
+WHY THIS LOG
+------------
+- Reported security issue: ELF `PT_LOAD` virtual addresses were not constrained
+  to user space, and the user mapping helper always set the user bit.
+- Potential impact was page-table corruption / unsafe cross-boundary mappings
+  if a crafted ELF requested high-half addresses.
+- Additional user-facing symptom question: apps appearing in UI but doing
+  nothing when clicked.
+
+REPORTED ISSUE
+--------------
+- Paths initially flagged:
+  - `src/kernel/proc/elf.c` around segment load loop
+  - `src/kernel/mm/vmm.c` in `vmm_map_user`
+- Core problem:
+  1) Loader accepted attacker-controlled `p_vaddr` (for `PT_LOAD`) without
+     enforcing `< user_top`.
+  2) `vmm_map_user` unconditionally added `VMM_FLAG_USER` at page-table levels
+     and leaf PTE, regardless of caller intent.
+
+ROOT CAUSE (IN-DEPTH)
+---------------------
+- The ELF loader had robust payload bounds checks (`p_offset`, `p_filesz`,
+  overflow checks), but lacked a hard privilege-boundary check for virtual
+  destination addresses.
+- Because `p_vaddr` came from untrusted ELF metadata, a crafted binary could
+  request mapping in non-user ranges.
+- In parallel, `vmm_map_user` forced `VMM_FLAG_USER` into intermediate table
+  entries and the final page mapping, making it easier for unsafe mappings to
+  become user-accessible if a bad VA got through validation.
+- This combination violated an important invariant:
+  - `vmm_map_user` should only map user-space virtual addresses.
+  - User-accessible mappings should only happen when caller explicitly asks for
+    user permission.
+
+THREAT / BEHAVIORAL IMPACT
+--------------------------
+- Security: crafted ELF could attempt mappings into high addresses and alter a
+  process page table outside intended user region.
+- Stability: undefined behavior/risk of corruption from invalid mapping targets.
+- UX side-effect possibility: after hardening, malformed/nonconforming app
+  ELFs now fail early with `ELF_LOAD_ERR_BOUNDS` instead of partially loading.
+
+THEORY FOR "APP ICON SHOWS, CLICK DOES NOTHING"
+------------------------------------------------
+- This is plausible and consistent with launch-path behavior.
+- App listing and app launch are different paths:
+  - Listing: directory read / metadata (can still succeed)
+  - Launch: `SYS_SPAWN` -> `process_launch` -> `elf_load_fry`
+- If `elf_load_fry` rejects binary metadata (now including user VA boundary
+  violations), launch returns failure and UI may look like a no-op if it does
+  not surface error codes.
+- So: yes, the observed symptom can be caused by ELF launch failure while app
+  discovery remains functional.
+
+FIX APPLIED
+-----------
+1) Unified user VA ceiling constant
+- File: `src/kernel/mm/vmm.h`
+- Added:
+  - `#define USER_VA_TOP 0x0000800000000000ULL`
+- Reason: single source of truth for user-space upper bound across loader,
+  syscall checks, and mapping logic.
+
+2) Hardened `vmm_map_user` semantics
+- File: `src/kernel/mm/vmm.c`
+- In `vmm_map_user(...)`:
+  - reject non-user virtual addresses: `if (virt >= USER_VA_TOP) return;`
+  - require explicit user intent: `if (!(flags & VMM_FLAG_USER)) return;`
+  - stopped force-adding `VMM_FLAG_USER` to table creation and leaf PTE write;
+    now uses caller-provided flags.
+- Reason: prevent accidental or malicious escalation from implicit user-bit
+  behavior, and enforce that API contract is explicit.
+
+3) Hardened ELF segment and entry-point address validation
+- File: `src/kernel/proc/elf.c`
+- In `PT_LOAD` loop:
+  - reject segments with `p_vaddr >= USER_VA_TOP`
+  - reject segments crossing user boundary:
+    `p_memsz > USER_VA_TOP - p_vaddr`
+  - kept existing overflow-safe arithmetic checks before page rounding.
+- Added entry-point check:
+  - reject `eh->e_entry >= USER_VA_TOP`
+- Also switched stack-top macro to shared bound:
+  - `#define USER_STACK_TOP USER_VA_TOP`
+- Reason: ensure both mapped segment ranges and transfer-of-control target are
+  always in user address space.
+
+4) Updated caller that relied on implicit `VMM_FLAG_USER`
+- File: `src/kernel/proc/syscall.c`
+- `SYS_FB_MAP` path now passes explicit user flag:
+  - `VMM_FLAG_WRITE | VMM_FLAG_USER | VMM_FLAG_CACHE_DISABLE | VMM_FLAG_NOFREE`
+- Also aligned macro usage:
+  - `#define USER_TOP USER_VA_TOP`
+- Reason: maintain expected framebuffer mapping behavior after making
+  `vmm_map_user` strict.
+
+WHY THIS FIX SET
+----------------
+- Enforces boundary at both layers:
+  - Input validation layer (ELF loader)
+  - Mapping primitive layer (`vmm_map_user`)
+- Removes dependence on implicit privilege bits.
+- Makes failure mode deterministic and early (`ELF_LOAD_ERR_BOUNDS`).
+
+CALL-SITE AUDIT RESULT
+----------------------
+- All current `vmm_map_user` call sites were audited.
+- Only one site depended on implicit user-bit behavior (`SYS_FB_MAP`) and was
+  updated.
+- Existing other callers already passed `VMM_FLAG_USER`.
+
+VERIFY / BUILD STATUS
+---------------------
+- Build attempted: `make -j4`
+- Result in this environment: FAIL (toolchain missing)
+  - `x86_64-elf-gcc: No such file or directory`
+- Static code audit completed; runtime verification pending a host with the
+  cross compiler installed.
+
+DEFERRED FOLLOW-UP (NOT APPLIED NOW)
+------------------------------------
+- Optional diagnostics improvement: log `process_last_launch_error()` on
+  `SYS_SPAWN` failure to make click-no-op causes visible immediately.
+- Deferred per user instruction.
+
+========================================================================

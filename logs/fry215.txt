@@ -1,0 +1,3 @@
+2026-02-21 02:58 - Step: Add dedicated early low-memory pool for page tables.
+Why: alloc_table faults inside zeroing despite free low pages; need a deterministic pool in a known identity-mapped region before CR3 switch.
+Change: Added early low pool (2MB..1GB, 16MB size) selection in pmm.c, reserved it in bitmap, added pmm_alloc_early_low(), and switched alloc_table to use it when vmm_ready=0.

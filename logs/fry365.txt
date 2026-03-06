@@ -1,0 +1,16 @@
+fry365 — Bare-metal storage milestone confirmation (NVMe/GPT/FAT32/VFS)
+Timestamp: 2026-02-27 18:01:47 CST
+
+Why:
+  User confirmed current real-hardware progress has moved past prior
+  "NVMe not found / no block device" snapshots.
+
+User-confirmed status:
+  - NVMe init path: SUCCESSFUL
+  - GPT/FAT32 detection: SUCCESSFUL
+  - VFS mount path: SUCCESSFUL
+  - Filesystem-backed app launch path: SUCCESSFUL
+
+Note:
+  - This confirmation supersedes older single-run serial snapshots that showed
+    storage bring-up failure during earlier iterations.

@@ -1,0 +1,85 @@
+========================================================================
+TaterTOS64v3 - fry542 — add kernel stage 8/9 framebuffer markers
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 19:38:14 UTC
+2026-03-05 13:38:14 CST
+
+CONTEXT
+-------
+- User confirmed adding tighter bare-metal breakpoint markers after a photo
+  showing seven top-row white handoff squares.
+- Goal: isolate whether the stall is inside `vmm_init`, bitmap relocation, or
+  stack switch into `after_vmm`.
+
+WHY
+---
+- Existing markers ended at stage 7 (post-PMM), which still left too much
+  ambiguity in the post-PMM crash window.
+- Adding stage 8 and 9 creates a deterministic split across the next two
+  boundaries in `_fry_start`.
+
+CHANGE APPLIED
+--------------
+- Updated `src/kernel/main.c` in `_fry_start(struct fry_handoff *handoff)`:
+  - Added `early_fb_stage(handoff, 8);` immediately after `vmm_init(handoff)`.
+  - Added `early_fb_stage(handoff, 9);` immediately after
+    `pmm_relocate_bitmap();` and before `stack_switch_and_call(...)`.
+
+INTERPRETATION GUIDE
+--------------------
+- 7 squares: stall in `vmm_init`.
+- 8 squares: stall in `pmm_relocate_bitmap`.
+- 9 squares: stall in `stack_switch_and_call` or immediate `after_vmm` entry.
+
+FILES
+-----
+- `src/kernel/main.c`
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Toolchain-path compile validation:
+   - `/bin/bash -lc 'PATH="/opt/cross/bin:$PATH" make -j$(nproc)'`
+2) ISO rebuild validation:
+   - `/bin/bash -lc 'PATH="/opt/cross/bin:$PATH" ./build_iso.sh'`
+3) RESULT:
+   - PASS (kernel/userspace/UEFI/ISO pipeline completed)
+   - ISO: `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+   - Export warning unchanged (Windows mount read-only):
+     `/mnt/c/Users/jjsako/Documents/tateriso`
+
+HARDWARE NOTE
+-------------
+- BIOS revision/date not visible in this shell session.
+
+HASH
+----
+- SHA-256 (out/tatertos64v3.iso):
+  `ffcf1a79a30404ebff16682ba303e17a47304586f388b5b3fad53a0d2d6ecf6d`
+
+HASH VERIFICATION UPDATE
+------------------------
+- Verification run: 2026-03-05 13:52 CST
+- SHA-256 `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`:
+  `ffcf1a79a30404ebff16682ba303e17a47304586f388b5b3fad53a0d2d6ecf6d`
+- SHA-256 `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`:
+  `ffcf1a79a30404ebff16682ba303e17a47304586f388b5b3fad53a0d2d6ecf6d`
+- SHA-256 `/home/jjsako/tatertos64v3.iso`:
+  `6270e163178f61d7ac19ae10d2c7d24a876b6b536d028aaa8cf5647009aee26e`
+- Result:
+  - PASS: out ISO and exported Windows ISO match.
+  - NOTE: `/home/jjsako/tatertos64v3.iso` is a different, older artifact.
+
+STALE ISO CLEANUP
+-----------------
+- Cleanup run: 2026-03-05 13:55 CST
+- Deleted stale duplicate:
+  - `/home/jjsako/tatertos64v3.iso`
+- Canonical fresh ISO for this build:
+  - `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+- Matching export copy:
+  - `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+========================================================================

@@ -1,0 +1,76 @@
+fry584 - Propagate Real Launch Errors to GUI, Shell, and Fileman
+=================================================================
+Timestamp: 2026-03-05 22:48:56 CST
+
+Problem:
+  App launches from the GUI could fail with no useful user-facing reason.
+  The kernel launch path already tracked loader failures internally, but
+  process_launch() collapsed them back to -1, so user-space could not tell
+  whether the failure was open/read/CRC/ELF/process-creation related.
+
+Changes:
+  1. src/kernel/proc/process.c
+     - Changed process_launch() to return the actual negative launch error
+       code from elf_load_fry() instead of flattening failures to -1.
+     - Returns PROCESS_LAUNCH_ERR_CREATE_USER directly on process creation
+       failure.
+     - Why: preserve the kernel failure contract end to end so user-space
+       can report the real reason instead of a fake generic failure.
+
+  2. src/user/gui/gui.c
+     - Added launch_error_text() mapping for the current loader/process
+       failure codes.
+     - Updated launch_app_index() to keep the last attempted path and show
+       a diagnostic window on launch failure:
+         Launch failed.
+         App: <name>
+         Path: <path>
+         Error: <code> (<decoded text>)
+     - Kept the existing watchdog behavior for apps that spawn but never
+       complete the TaterWin handshake.
+     - Guarded local diagnostic/error windows so they do not send keyboard,
+       mouse, resize, kill, or proc-output syscalls against pid=-1.
+     - Why: the GUI must state the actual kernel failure instead of acting
+       like the click was ignored.
+
+  3. src/user/shell/shell.c
+     - Changed "spawn failed" output to include the real rc value.
+     - Why: shell launches should expose the same kernel failure contract.
+
+  4. src/user/apps/fileman.c
+     - Changed fileman launch status text to include the real rc value.
+     - Why: keep app-launch diagnostics consistent across the desktop.
+
+Verification:
+  - Ran syntax-only checks successfully:
+      gcc -fsyntax-only -std=gnu11 -Wall -Wextra -ffreestanding -I. \
+        src/user/gui/gui.c src/user/shell/shell.c src/user/apps/fileman.c
+      gcc -fsyntax-only -std=gnu11 -Wall -Wextra -ffreestanding -I. \
+        src/kernel/proc/process.c
+  - Rebuild requested later in session and completed with the required flow:
+      make clean
+      PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+  - Rebuild output:
+      /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+      /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+  - ToTFS packaging confirmed during build for:
+      /SHELL.TOT
+      /GUI.FRY
+      /SYSINFO.FRY
+      /UPTIME.FRY
+      /PS.FRY
+      /FILEMAN.FRY
+  - Export to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso failed
+    because that destination was read-only in this session.
+
+Rebuild Timestamp:
+  2026-03-05 22:50:36 CST
+
+SHA-256:
+  - tatertos64v3.iso
+    d96708a08373bc85e575ae6466c75a543519806e7c2cedf94de3ca46f9e693ed
+  - tater_nvme.img
+    957c79f904d0b446512d77392ea46166dddffb7d4ecb088e4fea4484414e5110
+
+Notes:
+  - No QEMU logs were used.

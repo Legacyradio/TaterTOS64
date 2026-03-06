@@ -1,0 +1,3 @@
+STEP 83
+TIME: 2026-02-20 07:40:09
+ACTION: Added FAT32 LFN matching and updated VFS to pass full name path to FAT32.

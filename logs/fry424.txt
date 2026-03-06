@@ -1,0 +1,41 @@
+fry424 — eSPI PID priority + error clear + PCR fallback mirror
+================================================================
+Date: 2026-03-01 15:42:52 UTC
+ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+RULES (from planv3.txt — must follow exactly)
+================================================================
+1) Follow the plan step by step. No shortcuts or cut corners.
+2) No “minimal” implementations; do thorough, functional work.
+3) No Linux or Windows code inside the OS.
+4) Use apply_patch for code edits.
+5) Log every completed step in its own logs/fryN.txt with timestamps.
+6) If you change code, include a brief “why” in the log.
+7) Don’t pause after saying you’ll continue; just continue.
+8) Branding is TaterTOS64v3 (never FryOS).
+9) UEFI-only boot path.
+10) When testing, always include the necessary commands to run the test.
+11) Default rebuild mode is clean + verbose:
+    make clean
+    PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+12) All apps built and run must follow the TaterWin protocol.
+
+WHAT CHANGED (why)
+================================================================
+- eSPI PID probe now tries PID 0xC7 first on Coffee Lake-H (matches LPC PID for HM370) to improve chance of hitting the correct eSPI PID. (planv3 rule 6)
+- Added PCR write helper and clear PCERR/VWERR/FCERR/LNKERR after reading so diagnostics show current (not stale) errors. (planv3 rule 6)
+- When BIOS already set IOE bits but PCR read returns 0xFFFFFFFF/0x00000000, force a PCR mirror write to assert EC/KBC decode in sideband instead of trusting the bogus read. (planv3 rule 6)
+
+FILES TOUCHED
+================================================================
+- src/kernel/acpi/extended.c
+
+TESTING (planv3 rule 11)
+================================================================
+make clean
+PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+Result: PASS (warnings pre-existing: unused helpers, RWX segments). Export to /mnt/c/Users/jjsako/Documents/tateriso failed: mount is read-only; ISO is available locally at the path above.
+
+NEXT
+================================================================
+- Boot this ISO on the Dell Precision 7530 and check sysinfo eSPI lines: expect PID=0xC7, errors cleared to 0 unless current faults persist. If PCR read still bogus, forced mirror should keep EC decode active.

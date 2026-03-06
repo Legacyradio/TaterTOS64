@@ -1,0 +1,4 @@
+[2026-02-22 19:02:16 UTC] Step: Place SHELL.FRY onto NVMe FAT32 volume.
+Why: init: shell launch failed because /SHELL.FRY was not present on the mounted FAT32 filesystem.
+Change: Copied shell.fry into /SHELL.FRY inside /home/jjsako/TaterTOS64v3/out/tater_nvme.img (FAT32 partition at LBA 2048).
+Files: /home/jjsako/TaterTOS64v3/out/tater_nvme.img

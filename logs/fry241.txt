@@ -1,0 +1,7 @@
+DATE: 2026-02-21
+TIME: 12:05:17 -0600
+DESC: Write new timestamped handoff summary with latest fault signature and next move.
+WHY: Preserve current state transition (#GP then #PF) and avoid losing debugging context between sessions.
+FILES:
+  - logs/handoff_2026-02-21_120454.txt
+

@@ -1,0 +1,4 @@
+[2026-02-20 20:10:27 UTC] Step: Add rules to planv3.txt.
+Why: User requested rules be written into the plan document.
+Change: Added a RULES section with the current project constraints.
+Files: planv3.txt

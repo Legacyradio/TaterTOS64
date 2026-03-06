@@ -1,0 +1,126 @@
+========================================================================
+TaterTOS64v3 - fry585 - align live-media app packaging with runtime path search
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 23:25:13 CST
+
+CONTEXT
+-------
+- Bare-metal GUI launch diagnostics from fry584 showed the real final attempted
+  path and error:
+  - `Path: /EFI/BOOT/FRY/SHELL.TOT`
+  - `Error: -101 (file open failed)`
+- The runtime app launch/search code already probed multiple primary-root
+  fallback directories:
+  - `/`
+  - `/fry`
+  - `/FRY`
+  - `/EFI/fry`
+  - `/EFI/FRY`
+  - `/EFI/BOOT`
+  - `/EFI/BOOT/fry`
+  - `/EFI/BOOT/FRY`
+- The build layout did not match that contract. `build_iso.sh` only packaged the
+  live userspace payloads into a subset of those locations.
+
+WHY
+---
+- This created a false chase during bare-metal debugging:
+  - runtime was allowed to search fallback paths that the image never contained
+  - fry584 finally exposed the last attempted missing path instead of hiding it
+    behind a generic launch failure
+- The build must populate every primary-root fallback directory that the live
+  runtime advertises and probes.
+
+CHANGES APPLIED
+---------------
+- File updated:
+  - `build_iso.sh`
+    - Added a single source of truth for live app payload directories on the
+      EFI image side:
+      - `/`
+      - `/fry`
+      - `/FRY`
+      - `/EFI/fry`
+      - `/EFI/FRY`
+      - `/EFI/BOOT`
+      - `/EFI/BOOT/fry`
+      - `/EFI/BOOT/FRY`
+    - Added the same directory set to the ISO 9660 tree packaging step.
+    - Added post-build verification that `SHELL.TOT` exists in all eight
+      fallback paths inside:
+      - `out/efiboot.img`
+      - `out/tatertos64v3.iso`
+
+EXPECTED BEHAVIOR
+-----------------
+- Bare-metal live boot no longer depends on fallback directories that were
+  never packaged into the image.
+- If the launcher reaches `/EFI/BOOT/FRY/SHELL.TOT`, that file now exists in
+  the built media instead of being guaranteed missing by construction.
+- Build failures now catch missing live-app fallback paths immediately.
+
+ERROR WINDOW INTERPRETATION AFTER THIS FIX
+------------------------------------------
+- If bare metal still shows:
+  - `Launch failed.`
+  - `App: SHELL`
+  - `Path: /EFI/BOOT/FRY/SHELL.TOT`
+  - `Error: -101 (file open failed)`
+- Then the meaning has changed:
+  - before this fix, that popup could be explained by the build never placing
+    `SHELL.TOT` in the final fallback directories
+  - after this fix, that popup instead indicates a runtime path-resolution /
+    mounted-root problem, not a known packaging omission
+- In other words, if the same popup persists on the rebuilt ISO, the next
+  debugging target is:
+  - which filesystem `/` is actually resolved from at launch time
+  - whether VFS is serving primary-root app paths from NVMe-backed storage
+    instead of the live ramdisk/root view
+  - whether the machine is still booting an older image
+
+VALIDATION (THIS SESSION)
+-------------------------
+1) Shell syntax check:
+   - `bash -n /home/jjsako/TaterTOS64v3/build_iso.sh`
+   - Result:
+     - PASS
+2) Full rebuild:
+   - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+   - Result:
+     - PASS
+     - Produced:
+       - `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+       - `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+3) Build-time packaged-path verification:
+   - `mdir -i out/efiboot.img ::/SHELL.TOT`
+   - `mdir -i out/efiboot.img ::/fry/SHELL.TOT`
+   - `mdir -i out/efiboot.img ::/FRY/SHELL.TOT`
+   - `mdir -i out/efiboot.img ::/EFI/fry/SHELL.TOT`
+   - `mdir -i out/efiboot.img ::/EFI/FRY/SHELL.TOT`
+   - `mdir -i out/efiboot.img ::/EFI/BOOT/SHELL.TOT`
+   - `mdir -i out/efiboot.img ::/EFI/BOOT/fry/SHELL.TOT`
+   - `mdir -i out/efiboot.img ::/EFI/BOOT/FRY/SHELL.TOT`
+   - `xorriso -indev out/tatertos64v3.iso -ls /SHELL.TOT`
+   - `xorriso -indev out/tatertos64v3.iso -ls /fry/SHELL.TOT`
+   - `xorriso -indev out/tatertos64v3.iso -ls /FRY/SHELL.TOT`
+   - `xorriso -indev out/tatertos64v3.iso -ls /EFI/fry/SHELL.TOT`
+   - `xorriso -indev out/tatertos64v3.iso -ls /EFI/FRY/SHELL.TOT`
+   - `xorriso -indev out/tatertos64v3.iso -ls /EFI/BOOT/SHELL.TOT`
+   - `xorriso -indev out/tatertos64v3.iso -ls /EFI/BOOT/fry/SHELL.TOT`
+   - `xorriso -indev out/tatertos64v3.iso -ls /EFI/BOOT/FRY/SHELL.TOT`
+   - Result:
+     - PASS
+
+NOTES
+-----
+- The Windows export step still failed because `/mnt/c/...` is read-only in the
+  current environment.
+- This fixes the confirmed build/layout mismatch. If bare metal still fails
+  after booting the rebuilt ISO, the next debugging step should stay focused on
+  which primary root the live runtime actually mounted, not on missing packaged
+  fallback files.
+
+========================================================================

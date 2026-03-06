@@ -1,0 +1,10 @@
+[2026-02-22 08:06:39 UTC] Use CAP.MQES-based queue sizes for admin/IO queues.
+
+Changes:
+- src/drivers/storage/nvme.c: derive admin_q_size from CAP.MQES; use that for AQA and CQ/SQ ring modulo; set IO queue size to admin_q_size and use it for Create IO queue commands.
+
+Why:
+- Admin command timed out; if MQES < 64, using a fixed size 64 is invalid. Using MQES-compliant queue sizes is correct per spec and should allow admin commands to complete.
+
+Tests (not run):
+- bash build_iso.sh

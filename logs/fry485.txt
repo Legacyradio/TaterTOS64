@@ -1,0 +1,62 @@
+========================================================================
+TaterTOS64v3 - fry485 — NTFS reintroduction step 2 (secondary mount integration)
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 09:30:23 UTC
+
+USER DIRECTION
+--------------
+- Add NTFS back slowly, step by step.
+- NTFS is for external/internal NTFS drives, not the live ramdisk.
+- Do not report/mount the boot drive the live environment is running from.
+
+STEP SUMMARY
+------------
+- Step 2: Reintroduce NTFS into the secondary mount pipeline only, with a
+  boot-media guard to avoid touching the live boot device.
+
+WHY THESE CHANGES
+-----------------
+- Provide controlled NTFS re-entry for host drives while keeping the live
+  ramdisk primary and avoiding accidental access to the boot media.
+
+CODE CHANGES
+------------
+1) src/kernel/fs/vfs.c
+   - Added `#include "ntfs.h"` for NTFS API/structs.
+   - Added `SEC_FS_NTFS` secondary filesystem type.
+   - Added `sec_ntfs_ops` and read-only stub handlers:
+     `ntfs_write_stub`, `ntfs_create_stub`, `ntfs_mkdir_stub`, `ntfs_unlink_stub`.
+   - Wired `sec_ntfs_ops` in `sec_ops_init` to NTFS vfs ops + read-only stubs.
+   - Added `mount_secondary_ntfs()` to mount NTFS partitions read-only.
+   - `mount_secondary_candidate()` now supports NTFS candidates.
+   - Secondary GPT scan now accepts NTFS Basic Data GUID + `ntfs_probe()`.
+   - Added `boot_media_seen` guard: if a FAT32 partition scores >0 for
+     TaterTOS user-space files, skip secondary mounts entirely to avoid
+     touching live boot media.
+   - Added `ntfs_idx` selection: prefer NTFS as primary secondary mount
+     when FAT32 score is 0 (EFI-style FAT32), otherwise keep ToTFS > FAT32.
+
+No changes to ramdisk primary or vfs_init; NTFS only participates in
+`vfs_mount_secondary()` (live-media secondary mount path).
+
+BUILD / ARTIFACT VALIDATION
+---------------------------
+- No rebuild performed in this step.
+
+HASH / FRESHNESS (Rule 15)
+--------------------------
+Source ISO:
+- 2026-03-03 02:42:24.891312411 -0600  135536640 bytes
+- SHA256: 31b07fa0ac303363ce83faeaa370deef5aa4b397c851d0727926bea597dea2f3
+- Path: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+Target/export ISO:
+- 2026-03-03 02:55:41.554127100 -0600  135536640 bytes
+- SHA256: 31b07fa0ac303363ce83faeaa370deef5aa4b397c851d0727926bea597dea2f3
+- Path: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- Note: hashes match; export appears up to date.
+
+========================================================================

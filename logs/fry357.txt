@@ -1,0 +1,112 @@
+fry357 — Mouse: fix axis swap (packet desync) + restore universal Y convention
+2026-02-27 CST
+
+=== HARDWARE REFERENCE ===
+
+Dell Precision 7530 (all CPU variants: i5-8300H, i7-8750H, Xeon E-2176M):
+  - Touchpad: Synaptics (driver synsmbdrv.inf, version 19.x)
+  - In TaterTOS PS/2 compat mode (no SMBus driver): behaves as standard PS/2 mouse.
+
+Official sources consulted:
+  - Synaptics PS/2 TouchPad Interfacing Guide Rev B (511-000275-01):
+      "Upward motion is reported with a positive ∆Y and downward motion
+       is reported with a negative ∆Y." — identical to IBM PS/2 mouse spec.
+  - isdaman.com PS/2 Mouse Interface: positive Y = upward = 0x01 in byte 3.
+  Both sources confirm: byte 2 (our buf[1]) = X, byte 3 (our buf[2]) = Y,
+  positive Y = away from user / upward on screen.
+
+=== PROBLEM REPORTED ===
+
+1. "When I go up or down it goes left and right" — axis swap symptom.
+2. Cursor still not truly responsive.
+
+=== ROOT CAUSES ===
+
+ROOT CAUSE 1 — PACKET DESYNCHRONISATION (axis swap):
+  The fry316 IRQ handler counted bytes blindly: accumulated 3 bytes, THEN
+  checked sync.  If one byte was dropped (spurious IRQ, Synaptics 4-byte
+  packet burst, BIOS leftover byte) the ring shifted by 1:
+    mouse_buf[0] ← actual byte 1 (X delta)   ← no bit-3 guarantee
+    mouse_buf[1] ← actual byte 2 (Y delta)   → decoded as dx (feeds mx)
+    mouse_buf[2] ← actual byte 0 (status)    → decoded as dy (feeds my)
+  Result: vertical finger motion → status byte value → near-zero "dy",
+          horizontal motion → Y data → dx, so Y appears on X axis.
+  This is NOT hardware-specific; it can happen on any PS/2 device when
+  sync is lost.
+
+ROOT CAUSE 2 — WRONG Y DIRECTION (fry356 misdiagnosis):
+  fry356 removed `dy = -dy` claiming "Dell sends down=positive."
+  This contradicts the Synaptics official spec and IBM PS/2 spec.
+  The real cause of the Y inversion seen on Dell in fry355 was the
+  packet desync above (axes were swapped, not just flipped), not a
+  device-specific Y convention.  Restoring the negation is correct
+  for ALL standard PS/2 devices and ALL Synaptics touchpads in compat mode.
+
+=== FIX ===
+
+src/drivers/input/ps2_mouse.c — ps2_mouse_irq():
+  OLD (broken):
+    mouse_buf[mouse_cycle] = data;
+    mouse_cycle++;
+    if (mouse_cycle == 3) {
+        mouse_cycle = 0;
+        if (!(mouse_buf[0] & 0x08)) return;  // too late; desync not caught
+
+  NEW (universal sync):
+    // Check BEFORE storing as byte 0.  If bit 3 is absent, discard and
+    // stay at position 0 until a valid start byte arrives.
+    if (mouse_cycle == 0 && !(data & 0x08)) return;
+    mouse_buf[mouse_cycle++] = data;
+    if (mouse_cycle == 3) {
+        mouse_cycle = 0;
+        // (no need to re-check; sync guaranteed above)
+
+  This matches the Linux ps2_mouse.c and GRUB ps2 driver approach.
+  Self-heals on any hardware after a single out-of-phase byte.
+
+  Also restored: dy = -dy
+    Per Synaptics Rev B §2.1 and IBM PS/2 spec: positive ∆Y = up =
+    negative screen Y.  This is universal — not Dell-specific.
+    Removed the incorrect comment from fry356.
+
+src/user/gui/gui.c:
+  Updated comment only: "Y is not negated: Dell touchpad sends down=positive"
+  → replaced with correct universal explanation.  No code logic change
+  (mx += ms.dx * 4; my += ms.dy * 4; remain — axis assignment was always
+  correct; the kernel driver now delivers screen-direction dy).
+
+=== WHY NO HARDWARE-SPECIFIC CODE ===
+
+The Synaptics PS/2 compat mode is defined by the same spec as the IBM PS/2
+mouse.  Byte 0 bit 3 always set, byte 1 = X (right positive), byte 2 = Y
+(up positive).  This holds for:
+  - Standard PS/2 ball/optical mice
+  - Synaptics touchpads in compat mode (all Dell, HP, Lenovo, Thinkpad)
+  - ALPS touchpads in compat mode
+  - QEMU virtual PS/2 mouse
+No per-OEM branches needed.  The packet-sync fix works universally.
+
+=== BUILD (rule 11: clean + verbose) ===
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+=== TEST COMMANDS (rule 10) ===
+  QEMU (Linux):
+    qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+      -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+      -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+      -cdrom ./out/tatertos64v3.iso \
+      -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+
+  Expected on Dell Precision 7530 (any i5/i7/Xeon config):
+    - Moving finger UP   → cursor moves UP    (no more Y inversion)
+    - Moving finger DOWN → cursor moves DOWN
+    - Moving finger LEFT → cursor moves LEFT  (no more axis swap)
+    - Moving finger RIGHT→ cursor moves RIGHT
+    - Slow movements register (no deadzone)
+    - Full pad coverage at moderate speed (8 counts/mm × 4px/count)
+
+  Expected on QEMU (standard PS/2 virtual mouse):
+    - Same as above; QEMU also follows standard positive-Y=up convention.
+
+=== NEXT LOG: fry358.txt ===

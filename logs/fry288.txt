@@ -1,0 +1,10 @@
+[2026-02-22 07:33:21 UTC] Pre-create MMIO page tables to avoid runtime allocations.
+
+Changes:
+- src/kernel/mm/vmm.c: allocate MMIO page tables during vmm_init and update PDE directly in vmm_map_mmio_2m with invlpg; remove MMIO map kprints.
+
+Why:
+- Hang occurs inside vmm_map_2m while allocating tables at runtime. Pre-creating MMIO tables removes allocator dependency and should stabilize MMIO mapping on QEMU and real hardware.
+
+Tests (not run):
+- bash build_iso.sh

@@ -1,0 +1,10 @@
+[2026-02-22 06:44:15 UTC] Add NVMe init breadcrumbs after scan to locate hang.
+
+Changes:
+- src/drivers/storage/nvme.c: log found BDF and ACPI _DSM entry/exit around acpi_nvme_dsm_for_pci.
+
+Why:
+- Boot still hangs right after "NVMe: scan start"; these markers tell whether we exit scan and whether ACPI _DSM call is the stall point.
+
+Tests (not run):
+- bash build_iso.sh

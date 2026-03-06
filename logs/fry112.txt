@@ -1,0 +1,9 @@
+DATE: 2026-02-22 20:57 CST
+CHANGE: Rebuilt ISO after adding DEBUG CHROME banner and larger forced margins.
+WHY: Verify framebuffer chrome and offset rendering visually in QEMU.
+COMMAND:
+PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh
+RESULT:
+- Build succeeded (warnings only).
+- ISO produced: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- ISO exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso

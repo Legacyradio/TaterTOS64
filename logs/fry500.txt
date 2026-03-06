@@ -1,0 +1,38 @@
+========================================================================
+TaterTOS64v3 - fry500 — NTFS readdir_ex size/dir correctness
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 13:54:33 CST
+
+WHY THIS LOG
+------------
+- fileman shows NTFS entries as files with 0B sizes (directory attr/size wrong).
+- readdir_ex should match fry_stat sizes and directory flags.
+
+HASH / FRESHNESS (Rule 15)
+--------------------------
+Source ISO:
+- SHA256: 8d821dd12704471bb724a90d458a1d712c9eedbe0f7b4637b5a6820b0af9620e
+- Path: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+Target/export ISO:
+- SHA256: 8d821dd12704471bb724a90d458a1d712c9eedbe0f7b4637b5a6820b0af9620e
+- Path: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+CHANGES
+-------
+- NTFS readdir enumeration now consults MFT metadata per entry to set
+  size + directory attribute, instead of relying solely on index entry
+  FILE_NAME flags/real_size. This aligns readdir_ex with fry_stat.
+
+FILES
+-----
+- /home/jjsako/TaterTOS64v3/src/kernel/fs/ntfs.c
+
+TESTING
+-------
+Not run (no rebuild requested).
+
+========================================================================

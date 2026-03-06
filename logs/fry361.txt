@@ -1,0 +1,30 @@
+fry361 — Replace SCI shortcut with deferred ACPI GPE worker (no feature rollback)
+Timestamp: 2026-02-27 CST
+
+Why:
+  The prior safety change removed IRQ-time AML execution but left unhandled GPE AML methods disabled.
+  That was stable but not progression-safe for broader hardware support. This log replaces that with
+  a proper deferred execution path.
+
+Changes:
+  src/kernel/acpi/events.c
+    + Re-introduced GPE AML method support without executing AML in interrupt context.
+    + Added pending bitmap queue for unhandled GPEs (256 entries).
+    + Added atomic mark/take helpers for pending GPE bits.
+    + Added eval_gpe_method() for \_GPE._Lxx / \_GPE._Exx method dispatch.
+    + Added kernel worker thread `acpi_gpe`:
+      - drains pending GPE bitmap
+      - executes AML methods in process context
+      - sleeps/yields to avoid busy spin
+    + acpi_sci_handler now only captures/acks PM/GPE status and queues work.
+
+Build/Test run:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+Result:
+  - Build succeeded (exit 0)
+  - Output ISO: out/tatertos64v3.iso
+
+Status update (2026-02-27 17:50:05 CST):
+  - Deferred ACPI GPE worker fix status: SUCCESSFUL

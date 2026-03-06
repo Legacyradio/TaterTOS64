@@ -1,0 +1,66 @@
+========================================================================
+TaterTOS64v3 - fry594 - prioritize boot userspace on first BSP handoff
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 13:35:00 CST
+
+CONTEXT
+-------
+- `logs/fry593.txt` hardened the first userspace jump by calling `sched_tick()`
+  directly before `sti`, but the user still reported the machine stopping at
+  the stage-34 / `K_FIRST_SWITCH` boundary on bare metal.
+- In the current live tree, stage 35 / `K_FIRST_USER` is emitted before CR3
+  switch and before the `ret` into `process_start()`.
+- That means a stage-34-only stop can only happen if the scheduler's chosen
+  `next` task for the first BSP switch is still a kernel task.
+
+WHY
+---
+- The expected happy path is `idle -> boot user`, but that assumption is brittle
+  if any background kernel worker was queued on the BSP before the first direct
+  handoff.
+- Even if the exact source of that earlier kernel runnable varies, the boot goal
+  is deterministic first userspace entry, not round-robin fairness during the
+  first pre-`sti` switch.
+
+CHANGES APPLIED
+---------------
+- File updated:
+  - `src/kernel/proc/sched.c`
+    - Added `rq_promote_first_user()` to move the first runnable non-kernel task
+      to the head of the BSP runqueue.
+    - Applied that promotion only while the first BSP userspace handoff has not
+      yet been observed (`!g_first_user_switch_seen`).
+    - This preserves normal scheduling after the first user task has been chosen.
+
+EXPECTED EFFECT
+---------------
+- If a hidden/early kernel worker was still ahead of the boot user on the BSP
+  queue, the first direct `sched_tick()` should now choose userspace anyway.
+- On the next hardware boot, a previous stage-34 stop should advance to at least
+  stage 35 / `K_FIRST_USER` if queue ordering was the blocker.
+
+VALIDATION
+----------
+1) Validation command actually run for this code change:
+   - `bash build_iso.sh`
+2) Validation result:
+   - PASS
+   - Produced:
+     - `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+     - `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+   - Export reported:
+     - `ISO exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+3) Scope:
+   - This log records the issue-focused scheduler step only.
+   - No additional rebuild belongs to this step.
+
+NOTES
+-----
+- No QEMU logs were used for this diagnosis.
+- This change is a deterministic handoff hardening step; it does not assume a
+  Dell-specific APIC or timer quirk.
+
+========================================================================

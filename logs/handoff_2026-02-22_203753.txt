@@ -1,0 +1,56 @@
+Handoff Log - 2026-02-22 20:37:53 UTC
+Project: /home/jjsako/TaterTOS64v3
+Scope: Follow planv3 rules (UEFI-only, no shortcuts). Continue from shell launch failure.
+
+Current Status (latest logs @ 2026-02-22 14:35)
+- Boot is stable through VFS.
+- NVMe identify ok; GPT parsed; FAT32 mounted.
+- No #GP storm now.
+- init: shell launch failed (shell not launching yet).
+
+Key Recent Fixes
+- Admin CQ phase bit (bit0) fixed; 32-bit MMIO writes for AQA/ASQ/ACQ/CC.
+- CQ reads marked volatile; Set Features Number of Queues; IO queue CDW10 layout fixed.
+- PRP2 added for cross-page buffers.
+- Scheduler: clamp CPU index in sched_tick wakeup.
+- LAPIC timer: only BSP calls sched_tick to avoid SMP race.
+
+Latest Work
+- Added /SHELL.FRY into NVMe FAT32 image.
+  Image: /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+  Verified with mdir: SHELL.FRY present.
+
+Logs of Changes
+- logs/fry296.txt: CQ phase bit fix
+- logs/fry297.txt: 32-bit MMIO writes for NVMe config
+- logs/fry298.txt: volatile CQ reads
+- logs/fry299.txt: Set Features Number of Queues
+- logs/fry300.txt: IO queue CDW10 encoding
+- logs/fry301.txt: create GPT+FAT32 on NVMe image
+- logs/fry302.txt: PRP2 support
+- logs/fry303.txt: clamp CPU index on wake
+- logs/fry304.txt: BSP-only sched_tick in LAPIC timer
+- logs/fry306.txt: copy SHELL.FRY into NVMe image
+
+Latest Serial Highlights
+- GPT: entries=128 entry_size=128
+- FAT32: LBA=2048 bytes=512 spc=2 fats=2 spf=786 root=2
+- VFS: FAT32 mounted at LBA 2048
+- init: shell launch failed
+
+QEMU Log Tail
+- Only shows periodic INT 0x20/0x40 servicing, no new faults.
+
+Open Issue
+- Shell launch fails despite /SHELL.FRY now present on NVMe image.
+  Likely next steps:
+  1) Confirm the running VM uses the updated NVMe image path: \\wsl.localhost\Ubuntu\home\jjsako\TaterTOS64v3\out\tater_nvme.img
+  2) Add a short, temporary log in vfs_open/fat32_open/elf_load_fry to print the path and failure reason, then remove once confirmed.
+  3) If vfs_open works, verify fry header and CRC check; ensure shell.fry built and copied from workspace root.
+
+Test Command
+- bash build_iso.sh
+
+User QEMU Command (must use WSL NVMe path)
+- -drive file=\\wsl.localhost\Ubuntu\home\jjsako\TaterTOS64v3\out\tater_nvme.img,if=none,id=nvm1
+- -device nvme,serial=TATER_NVME_01,drive=nvm1

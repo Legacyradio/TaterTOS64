@@ -1,0 +1,68 @@
+fry390 — Fix AML parser: OpRegion/Mutex/Event PkgLength bugs + If/Else/While + NS diag
+Timestamp: 2026-02-28 ~18:00 UTC
+
+WHAT:
+Three critical AML parser bugs in aml_parse.c, plus missing If/Else/While handling:
+
+BUG 1 (CRITICAL): OpRegion (0x5B 0x80) has NO PkgLength per ACPI spec.
+  Format: NameString RegionSpace(byte) RegionOffset(TermArg) RegionLen(TermArg)
+  parse_opregion() was calling parse_pkg_length() on the NameString bytes, getting a
+  garbage length (e.g., name "EC0_" → 0x45 misread as PkgLength lead byte → len=0x435).
+  Then parse_block also read the same garbage PkgLength and did p += 1077, jumping past
+  hundreds/thousands of bytes of DSDT content. Every OpRegion caused a massive skip.
+  On a Dell DSDT with dozens of OpRegions, this obliterated most of the namespace tree.
+
+BUG 2: Mutex (0x5B 0x01) also has NO PkgLength. Same pattern — garbage skip.
+  Format: NameString SyncFlags(byte). Was misreading as PkgLength.
+
+BUG 3: Event (0x5B 0x02) also has NO PkgLength. Same pattern.
+  Format: NameString only.
+
+BUG 4: If (0xA0), Else (0xA1), While (0xA2) not handled in parse_block.
+  These have PkgLength and contain TermList bodies with Device/Method/Name declarations.
+  Devices defined inside If blocks were invisible to the namespace.
+
+FIXES:
+  aml_parse.c:
+  - parse_opregion(): removed bogus parse_pkg_length, now parses flat per ACPI spec
+  - parse_mutex(): removed bogus parse_pkg_length, now parses flat per ACPI spec
+  - parse_event(): removed bogus parse_pkg_length, now parses flat per ACPI spec
+  - parse_block(): OpRegion/Mutex/Event now use return value (not PkgLength skip)
+  - parse_block(): Added IfOp (0xA0), ElseOp (0xA1), WhileOp (0xA2) handlers —
+    parse PkgLength, recursively call parse_block on body to find nested declarations
+
+  namespace.c/h: Added ns_node_count() — walks tree and counts all nodes
+  extended.h: Added ns_nodes field (uint32_t) to fry_acpi_diag struct (first field)
+  extended.c: acpi_get_diag() populates ns_nodes via ns_node_count()
+  libc.h: Matching ns_nodes field in userspace struct
+  sysinfo.c: Displays "NS nodes: N" on ACPI diagnostics panel
+
+WHY:
+  ACPI diagnostics on Dell Precision 7530 showed Batt found=0, BL found=0.
+  Both use ns_walk() to find devices — if BOTH are missing, the namespace tree itself
+  is incomplete. Root cause: OpRegion (extremely common in DSDTs) being misparsed with
+  nonexistent PkgLength caused the parser to skip large chunks of the DSDT, missing
+  Device declarations for battery, backlight, EC, and other devices.
+  This is a spec-compliance fix that affects ALL hardware, not Dell-specific.
+
+FILES CHANGED:
+  src/kernel/acpi/aml_parse.c   — fixed OpRegion/Mutex/Event + added If/Else/While
+  src/kernel/acpi/namespace.c   — added ns_node_count()
+  src/kernel/acpi/namespace.h   — declared ns_node_count()
+  src/kernel/acpi/extended.h    — added ns_nodes to fry_acpi_diag
+  src/kernel/acpi/extended.c    — populate ns_nodes in acpi_get_diag()
+  src/user/libc/libc.h          — added ns_nodes to userspace fry_acpi_diag
+  src/user/apps/sysinfo.c       — display NS nodes count + shifted Y coords
+
+BUILD: success (Rule 11: make clean + build_iso.sh)
+ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+Exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+NEXT:
+Boot on Dell Precision 7530. Check sysinfo ACPI Diagnostics panel:
+  - NS nodes: expect significant increase (hundreds vs. tens before fix)
+  - Batt: expect found > 0 if DSDT has PNP0C0A
+  - BL: expect found > 0 if DSDT has ACPI0008
+  - EC: may still FAIL (separate issue — EC port probing, not namespace)
+If Batt/BL still found=0 despite high node count, the devices may use
+non-standard HIDs or be in SSDTs with additional parsing issues.

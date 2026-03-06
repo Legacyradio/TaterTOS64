@@ -1,0 +1,4 @@
+[2026-02-20 18:25:10 UTC] Step: Fix NASM ISR stubs to use valid 64-bit push syntax.
+Why: build failed with parser errors and label redefinitions in idt_stubs.asm due to GAS-style pushq.
+Change: Replaced pushq with NASM "push qword" for error/no-error stubs.
+Files: src/boot/idt_stubs.asm

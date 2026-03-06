@@ -1,0 +1,60 @@
+========================================================================
+TaterTOS64v3 - fry464 — Add FILEMAN.FRY to EFI loader ramdisk
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-02 ~23:00 UTC
+
+PROBLEM
+-------
+FILEMAN.FRY not showing in start menu on Dell. SHELL, SYSINFO, UPTIME,
+PS all work fine because they're in the EFI loader's hardcoded file list.
+
+ROOT CAUSE
+----------
+src/boot/efi_loader.c had a hardcoded list of 5 files to pack into
+the ramdisk (FRY_FILE_COUNT = 5):
+  GUI.FRY, SHELL.TOT, SYSINFO.FRY, UPTIME.FRY, PS.FRY
+
+FILEMAN.FRY was never added when the file manager app was created.
+On Dell ISO boot, the EFI loader builds a ramdisk from only these 5
+files. The GUI's discover_apps() calls fry_readdir("/"), gets back
+those 5, app_count > 0, so the fallback list (which does include
+FILEMAN) never runs. Result: FILEMAN invisible in start menu.
+
+The fry463 GUI-side fix (GUI filter + fallback list) was correct but
+insufficient — it only helps when directory discovery fails entirely
+(app_count == 0). The real fix had to be in the EFI loader.
+
+FIX
+---
+File: src/boot/efi_loader.c
+
+1. FRY_FILE_COUNT: 5 → 6
+2. Added FILEMAN.FRY path variants array (8 paths, same pattern as
+   the other apps: \fry\, \FRY\, root \, \EFI\fry\, \EFI\FRY\,
+   \EFI\BOOT\, \EFI\BOOT\fry\, \EFI\BOOT\FRY\)
+3. Added "FILEMAN.FRY" to fry_names[] array
+
+WHY
+---
+Every new user app needs to be registered in the EFI loader's file
+list so it gets packed into the ramdisk for ISO/USB boot. This was
+missed when fileman.c was first created. The build_iso.sh script
+already had FILEMAN.FRY in all the right places (EFI FAT32, ISO 9660,
+NVMe ToTFS) — only the EFI loader's compiled-in list was missing it.
+
+BUILD
+-----
+make clean
+PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+Result: success
+ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+Export: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+TEST
+----
+Boot ISO on Dell. Start menu should show: SHELL, SYSINFO, UPTIME, PS, FILEMAN
+Click FILEMAN → file manager window should open, no jitter.
+========================================================================

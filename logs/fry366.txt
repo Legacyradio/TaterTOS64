@@ -1,0 +1,55 @@
+fry366 — Move kernel load address to 32 MB to fix QEMU halt + bare-metal lockup
+Timestamp: 2026-02-27
+
+Problem:
+  QEMU: EFI loader halts at E06 (load_kernel_elf) — AllocatePages fails with
+  EFI_NOT_FOUND (0x800000000000000E). Kernel wants phys 0x100000-0x840000 but
+  OVMF ACPI tables occupy 0x800000-0x900000 → collision.
+
+  Bare metal (Dell 7530): boots but clicking Shell in start menu → no window
+  appears, system locks up. Same root cause — kernel stack at phys 0x800000
+  potentially overlapping firmware-reserved memory.
+
+Root cause:
+  fry360 increased aml_obj_arena from 128 KiB to 4 MiB. This bloated BSS by
+  3.875 MiB, pushing kernel .stack section from phys 0x400000 to 0x800000.
+  At the old BOOT_LMA (0x100000), the kernel spanned 0x100000-0x840000 —
+  right into firmware ACPI tables.
+
+Fix (relocate kernel above firmware regions, keep 4 MiB arena):
+
+  kernel_linker.ld
+    - BOOT_LMA:   0x00100000 → 0x02000000 (32 MB)
+    - KERNEL_LMA: 0x00200000 → 0x02200000 (34 MB)
+    Why: firmware ACPI tables, BIOS data, and other reserved regions all live
+    below 16 MB. Moving the kernel to 32 MB gives permanent headroom.
+    CRITICAL: KERNEL_LMA must be 2MB-aligned because efi_boot.asm uses 2MB
+    pages in pd_high. First attempt used 0x2100000 (NOT 2MB-aligned) which
+    caused virt-to-phys mapping mismatch for the stack → silent hang after
+    ExitBootServices.
+
+  src/boot/efi_boot.asm (pd_high page table)
+    - Old formula: (m + 1) * 0x200000  → phys starting at 0x200000
+    - New formula: m * 0x200000 + 0x2200000 → phys starting at 0x2200000
+    Why: high-half virtual mapping (0xFFFFFFFF80000000) must point to the
+    new KERNEL_LMA physical address.
+    Verification: stack virt 0xFFFFFFFF80600000 → pd_high[3] =
+    3 * 0x200000 + 0x2200000 = 0x2800000, matches linker PhysAddr exactly.
+
+  src/kernel/acpi/aml_types.c
+    - Arena kept at 4 MiB (restored for device enumeration growth).
+    Why: 4 MiB is needed for ACPI device enumeration growth. The real fix
+    is the kernel relocation, not shrinking the arena.
+
+Kernel segment layout after fix:
+  Segment 0 (.boot):     phys 0x2000000 (32 MB),  size 0x11000
+  Segment 1 (.text+bss): phys 0x2200000 (34 MB),  memsz 0x4AFBC8 (~4.7 MB)
+  Segment 2 (.stack):    phys 0x2800000 (40 MB),   size 0x40000
+  Total span: 0x2000000 → 0x2840000 — entirely above firmware regions.
+
+Build/Test:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+  Result: Build succeeded (exit 0)
+  ISO: out/tatertos64v3.iso
+  ISO exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso

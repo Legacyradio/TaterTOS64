@@ -1,0 +1,4 @@
+[2026-02-20 18:25:56 UTC] Step: Add UEFI memory descriptor type for PMM.
+Why: Build failed in pmm.c because EFI_MEMORY_DESCRIPTOR was undefined.
+Change: Added EFI_MEMORY_DESCRIPTOR typedef to efi_handoff.h to match firmware memory map layout.
+Files: src/boot/efi_handoff.h

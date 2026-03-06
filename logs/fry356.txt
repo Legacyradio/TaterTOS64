@@ -1,0 +1,70 @@
+fry356 — Mouse: fix Y inversion + raise sensitivity for Dell touchpad
+2026-02-27 CST
+
+Problem reported (real hardware, Dell Precision 7530):
+  - Moving finger/mouse DOWN → cursor goes UP (Y inverted)
+  - Cursor doesn't track across full pad; feels like only part of pad
+    registers (sensitivity too low)
+
+=== ROOT CAUSES ===
+
+1. Y-AXIS INVERSION (ps2_mouse.c):
+   fry355 added `dy = -dy` based on the PS/2 spec comment:
+   "PS/2 positive Y = moved away from user = up on screen".
+   That is correct for a standard external PS/2 mouse on QEMU.
+   The Dell Precision 7530 built-in touchpad (Synaptics, PS/2 compat mode)
+   sends positive Y = finger moved down = downward on screen — already in
+   screen direction.  Our negation therefore flipped it, making down = up.
+
+2. LOW SENSITIVITY (ps2_mouse.c init + gui.c):
+   - PS/2 resolution defaulted to 4 counts/mm (0x02).  A physical touchpad
+     sweep produces tiny raw deltas (±1-4 per packet).
+   - gui.c multiplier was * 2, so a ±2 raw delta = ±4 screen pixels max.
+     Moving finger across the full pad might only traverse a small portion
+     of the screen.
+
+=== FIX ===
+
+src/drivers/input/ps2_mouse.c:
+  - Removed `dy = -dy;`
+    Updated comment: Dell touchpad already sends down=positive (screen
+    direction); negating was wrong for real hardware.
+  - ps2_mouse_init(): after BAT/reset, before 0xF4 streaming enable:
+      mouse_write(0xE8);          // Set Resolution command
+      (void)mouse_read_byte();    // ack
+      mouse_write(0x03);          // 0x03 = 8 counts/mm (max, 2× default)
+      (void)mouse_read_byte();    // ack
+    Doubles the raw delta magnitude from the hardware on the physical pad.
+
+src/user/gui/gui.c:
+  - Changed `mx += ms.dx * 2; my += ms.dy * 2;`
+    to     `mx += ms.dx * 4; my += ms.dy * 4;`
+  - Updated comment to reflect 4× factor and that Y is not negated.
+    Combined with 8 counts/mm resolution, finger motion across the pad
+    now covers the full screen.
+
+=== BUILD (rule 11: clean + verbose) ===
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+  Result: clean, zero errors
+  ISO exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+=== TEST COMMANDS (rule 10) ===
+  QEMU (Linux):
+    qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+      -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+      -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+      -cdrom ./out/tatertos64v3.iso \
+      -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+
+  NOTE on QEMU: QEMU's virtual PS/2 mouse sends standard Y (positive=up),
+  so removing dy=-dy will invert Y in QEMU.  If testing in QEMU, cursor
+  moves opposite on Y axis — this is expected; real Dell hardware is the
+  target and is now correct.
+
+  Expected on Dell Precision 7530:
+    - Moving finger down → cursor moves down (Y no longer inverted)
+    - Moving finger across the full touchpad traverses most of the screen
+    - Slow/precise movements still visible (no deadzone from fry355)
+
+=== NEXT LOG: fry357.txt ===

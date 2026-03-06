@@ -1,0 +1,93 @@
+========================================================================
+TaterTOS64v3 - fry470 — NTFS 0B Size Investigation + Sector-Size Hardening
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-03 01:41:11 UTC
+
+USER DIRECTION
+--------------
+- Read the latest fry log and determine why NTFS partition files still report 0B.
+- Validate/answer claims about struct offsets, resident/non-resident handling,
+  and filesystem routing.
+- Ensure work is logged.
+
+REFERENCE CHECK
+---------------
+- Latest log read: logs/fry469.txt
+- Finding: fry469 is a build/gating note only; no runtime NTFS trace payload.
+
+ROOT-CAUSE ANALYSIS (CODE)
+--------------------------
+Primary risk areas in current NTFS path were:
+1) Boot/MFT read assumptions around sector granularity.
+   - NTFS code used fixed 512-byte boot buffers and assumptions that can be
+     fragile on non-512 logical sectors.
+2) File-size selection from $DATA attributes.
+   - In fragmented/continued attribute layouts, a selected non-resident $DATA
+     extent may have start_vcn != 0 and can yield non-authoritative size values,
+     resulting in visible 0B in UI/stat paths.
+
+Important clarifications:
+- Struct packing was already in place (`__attribute__((packed))`) for NTFS on-disk
+  headers.
+- Resident vs non-resident branching was already implemented.
+- VFS mount routing does not blindly FAT32-parse NTFS partitions; NTFS GUID + probe
+  is checked in secondary mount selection.
+
+IMPLEMENTED CHANGES
+-------------------
+File modified:
+- src/kernel/fs/ntfs.c
+
+1) Added dynamic, validated boot-sector read helper
+- New helper `ntfs_read_boot_sector()`:
+  - uses `bd->sector_size` (clamped to sane bounds 512..4096)
+  - reads one logical sector
+  - copies first 512 bytes for BPB parsing
+  - validates BPB bytes/sector and verifies 0x55AA at correct sector tail
+- `ntfs_probe()` and `ntfs_mount()` now use this helper.
+
+2) Hardened mount math and invariants
+- Uses validated `bytes_per_sector` from boot sector helper.
+- Guards against invalid sectors-per-cluster and overflow.
+- Computes `sectors_per_mft_record` with ceil division for correctness.
+- Adds shift bounds check for negative clusters_per_mft_record encoding.
+
+3) Reworked raw MFT bootstrap reader to byte-offset logic
+- `ntfs_read_mft_entry_linear_raw()` now reads by byte offset + per-sector
+  copy, not simplistic sector-count stepping.
+- Handles record sizes not trivially aligned and avoids sector-size mismatch
+  assumptions.
+
+4) Improved $DATA attribute selection
+- Replaced prior unnamed-attr fallback logic with NTFS-data-specific chooser:
+  - prefers unnamed non-resident extent where `start_vcn == 0`
+  - prefers unnamed resident data where applicable
+  - only then falls back to other candidate data attrs
+
+5) Added safe file-size fallback path
+- New helper `ntfs_get_filename_real_size()` scans all resident FILE_NAME attrs
+  and selects best `real_size`.
+- `ntfs_get_file_info()` now falls back to FILE_NAME size when:
+  - selected $DATA extent is not primary (`start_vcn != 0`), or
+  - parsed size is zero for non-directory files.
+
+BUILD VERIFICATION
+------------------
+Command run:
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make kernel
+
+Result:
+- Success (kernel linked)
+- Existing linker warning remains: RWX LOAD segment on kernel.elf
+
+STATUS
+------
+- Code-side fixes for NTFS size-reporting path and sector-size robustness are in.
+- Latest log requirement is now satisfied by this file (fry470).
+- Real-hardware regression is still required to confirm 0B symptom is eliminated
+  on Dell Precision 7530 (/nvme, /nvmeN stat/read/readdir matrix).
+
+========================================================================

@@ -1,0 +1,3 @@
+2026-02-21 03:02 - Step: Re-enable normal boot flow after VMM.
+Why: after_vmm was hard-stopped with debug markers; need to proceed into kprint and subsystem init to locate the next real failure.
+Change: Removed A/B/C halts and temporary skip-print debug; added minimal 'S'/'P' markers, restored kprint_init + startup banner.

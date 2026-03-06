@@ -1,0 +1,96 @@
+========================================================================
+  TaterTOS64v3 - Session Handoff Log (2026-02-28)
+  Covers: fry397
+========================================================================
+
+TIMESTAMP
+---------
+2026-02-28 21:54:39 UTC
+
+LAST FRY LOG
+------------
+logs/fry397.txt
+
+========================================================================
+RULES (STRICTLY, ABSOLUTELY NON-NEGOTIABLE - MUST FOLLOW EXACTLY)
+========================================================================
+1) Follow the plan step by step. No shortcuts or cut corners.
+2) No "minimal" implementations; do thorough, functional work.
+3) No Linux or Windows code inside the OS.
+4) Use apply_patch for code edits.
+5) Log every completed step in its own logs/fryN.txt with timestamps.
+6) If you change code, include a brief "why" in the log.
+7) Don't pause after saying you'll continue; just continue.
+8) Branding is TaterTOS64v3 (never FryOS).
+9) UEFI-only boot path.
+10) When testing, always include the necessary commands to run the test.
+11) Default rebuild mode is clean + verbose:
+    make clean
+    PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+12) All apps built and run must follow the TaterWin protocol.
+
+========================================================================
+WHAT CHANGED THIS SESSION
+========================================================================
+1) Hardened _CRS IO extraction against placeholder/junk ports:
+   - Added sanitizer/deduper in src/kernel/acpi/resources.c.
+   - Drops low placeholder ports (< 0x10) and duplicate entries.
+   - Applied to small I/O, fixed I/O, and GAS SystemIO resources.
+
+2) Hardened EC _CRS port-pair selection logic for multi-PC compatibility:
+   - Added plausibility checks for EC ports in src/kernel/acpi/extended.c.
+   - Added scoring to prefer canonical pairs:
+     - 0x62/0x66 (highest),
+     - 0x68/0x6C (legacy alternate),
+     - otherwise best plausible pair.
+   - Rejects non-plausible pairs instead of accepting junk (e.g. 0x00/0x04).
+   - Added verbose logging of raw _CRS IO candidates and explicit rejection.
+
+3) Safety/fallback behavior preserved:
+   - Existing fallback chain remains:
+     selected-node _CRS -> ECDT -> default 0x62/0x66.
+   - Existing EC probe fallback paths remain unchanged.
+   - Existing LPC decode safety gating remains unchanged.
+
+FILES TO REVIEW
+---------------
+- src/kernel/acpi/resources.c
+- src/kernel/acpi/extended.c
+- logs/fry397.txt
+
+BUILD / TEST STATUS
+-------------------
+Commands run:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Result:
+  PASS (both commands exit code 0)
+  ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  NVMe image: /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+  Note: export copy to /mnt/c/... failed in this environment (read-only FS).
+
+CURRENT STATE
+-------------
+- Prior Dell diagnostics before this fix:
+  EC: FAIL ports=0x00/0x04
+  probe: STS_FF sts=0xff try=5
+  EC src: _CRS
+- This session specifically blocks junk _CRS ports from being selected.
+- Hardware validation is still required on Dell Precision 7530.
+
+NEXT ACTION
+-----------
+Boot updated ISO on Dell 7530 and capture sysinfo ACPI lines:
+1) "EC src: ..."
+2) "EC: ... ports=0x.. / 0x.."
+3) "probe: ... sts=... try=..."
+4) "ACPI: EC _CRS IO candidates: ..."
+5) "ACPI: EC _CRS selected ports ..." or "ACPI: EC _CRS rejected ..."
+6) "LPC ...", "LPC80 ...", "LPC84/LPC88 ..."
+
+These lines will confirm whether _CRS junk-port selection is resolved and
+whether remaining EC failures are firmware visibility/timing related.
+
+NEXT FRY LOG: fry398.txt
+========================================================================

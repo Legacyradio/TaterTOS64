@@ -1,0 +1,10 @@
+[2026-02-20 20:14:26 UTC] Summary for handoff (pre-unauthorized changes context)
+- UEFI boot path in progress; ISO now builds/exported to C:\Users\jjsako\Documents\tateriso via build_iso.sh.
+- UEFI chain: BOOTX64.EFI exists; startup.nsh added; ESP contains BOOTX64.EFI, kernel.elf, grub.cfg.
+- GRUB errors encountered and fixed in sequence:
+  * “file /boot/kernel.elf not found” -> grub.cfg now searches root for /boot/kernel.elf.
+  * “segment crosses 4 GiB border” -> kernel linker uses VMA high, LMA 1MB; vmm uses __kernel_lma_start.
+  * “no suitable video mode” -> pending; GRUB still warns no console available; next step should be agreed.
+- ISO build uses xorriso --efi-boot EFI/efiboot.img, with efiboot.img FAT (64MB) created via mformat.
+- Last confirmed run: UEFI boots BOOTX64.EFI, shows warning: "no console will be available to OS" and stops at logo.
+- Unauthorized change was GRUB serial/text console tweak; reverted (see logs/fry157.txt).

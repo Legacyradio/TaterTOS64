@@ -1,0 +1,72 @@
+========================================================================
+  TaterTOS64v3 - Session Handoff Log (fry409)
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-01 02:03:22 UTC
+
+RULES (must follow exactly)
+=====================================================================
+1) Follow the plan step by step. No shortcuts or cut corners.
+2) No “minimal” implementations; do thorough, functional work.
+3) No Linux or Windows code inside the OS.
+4) Use apply_patch for code edits.
+5) Log every completed step in its own logs/fryN.txt with timestamps.
+6) If you change code, include a brief “why” in the log.
+7) Don’t pause after saying you’ll continue; just continue.
+8) Branding is TaterTOS64v3 (never FryOS).
+9) UEFI-only boot path.
+10) When testing, always include the necessary commands to run the test.
+11) Default rebuild mode is clean + verbose:
+    make clean
+    PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+12) All apps built and run must follow the TaterWin protocol.
+
+MANDATORY DIRECTIVE
+-------------------
+These rules are non-negotiable and must be followed exactly on every step.
+No shortcuts, no bypasses, no partial compliance.
+
+CURRENT STATUS (RELEVANT)
+-------------------------
+- Nuclear SBREG brute-force sweep was fully rolled back (removed).
+  No broad page-by-page MMIO sweep remains.
+- Current PCR path uses fixed SBREG fallback candidates only, plus
+  runtime DMI PID candidate probing to avoid hardcoding one PID.
+- For Dell 8th-gen/Coffee-Lake class LPC device 0xA30E, PID priority is:
+  0x88 first, then 0xEF, then 0x2F.
+- This change is intended to avoid wrong-PID sideband access while keeping
+  risk lower than the removed nuclear sweep.
+
+KEY FILES TO CHECK
+------------------
+- src/kernel/acpi/extended.c
+  - pcr_get_dmi_pid_candidates()
+  - pcr_probe_fallback_sbreg_bar()
+  - ec_mirror_pcr_ioe()
+- logs/fry406.txt  (nuclear rollback)
+- logs/fry407.txt  (PID candidate probing)
+- logs/fry408.txt  (web-research verification log)
+
+BUILD / TEST COMMANDS USED
+--------------------------
+- make clean
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+ARTIFACT
+--------
+- /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+WINDOWS COPY COMMAND
+--------------------
+mkdir -p /mnt/c/Users/jjsako/Documents/tateriso && cp /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+IF DELL BOOT STILL FAILS
+------------------------
+Capture early ACPI lines around:
+- ACPI: P2SB ... VendorID
+- ACPI: SBREG probe[...] bar=... PID=... IOE=... IOD=...
+- ACPI: PCR PID probe[...] pid=... IOE=... IOD=...
+
+========================================================================

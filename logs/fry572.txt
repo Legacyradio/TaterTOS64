@@ -1,0 +1,64 @@
+========================================================================
+TaterTOS64v3 - fry572 - NVMe PRP width hardening and anti-regression guards
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 00:40:31 UTC
+2026-03-05 18:40:31 CST
+
+CONTEXT
+-------
+- Review flagged possible truncation risk for NVMe PRP addresses (`prp1/prp2`)
+  if DMA buffers are above 4 GiB.
+
+WHY
+---
+- Audit showed runtime path already uses 64-bit PRP fields and 64-bit physical
+  address values, but this should be locked down so future edits cannot
+  accidentally regress to 32-bit PRP packing or assignment.
+
+CHANGES APPLIED
+---------------
+- File updated:
+  - `src/drivers/storage/nvme.c`
+    - Added compile-time command-layout guards:
+      - `prp1` width is 64-bit
+      - `prp2` width is 64-bit
+      - `prp1` offset is 24
+      - `prp2` offset is 32
+      - command size is 64 bytes
+    - Added helper `nvme_cmd_set_prps(struct nvme_cmd *cmd, uint64_t prp1,
+      uint64_t prp2)` and switched PRP assignments to this helper in:
+      - Identify command build
+      - Create IO CQ/SQ command build
+      - I/O read/write command build
+
+EFFECT
+------
+- PRP address fields are now explicitly guarded against type/layout regressions
+  at compile time.
+- All command PRP writes in the touched paths use explicit `uint64_t`
+  assignments (no 32-bit cast path).
+
+VALIDATION (THIS SESSION)
+-------------------------
+1) PRP/cast audit in NVMe source:
+   - `rg -n "prp1|prp2|\(uint32_t\)\s*prp|\(uint32_t\)\s*virt_to_phys" src/drivers/storage/nvme.c`
+2) Inspect updated layout/asserts and helper:
+   - `nl -ba src/drivers/storage/nvme.c | sed -n '52,96p'`
+   - `nl -ba src/drivers/storage/nvme.c | sed -n '460,505p'`
+3) Inspect updated call sites:
+   - `nl -ba src/drivers/storage/nvme.c | sed -n '724,744p'`
+   - `nl -ba src/drivers/storage/nvme.c | sed -n '772,812p'`
+   - `nl -ba src/drivers/storage/nvme.c | sed -n '1218,1240p'`
+4) RESULT:
+   - PASS (PRP fields/uses are 64-bit with compile-time enforcement)
+
+NOTES
+-----
+- `CC` register handling remains `uint32_t` intentionally per NVMe register
+  definition (controller config register is 32-bit).
+- No rebuild requested; per plan rule 16, no SHA-256 recorded.
+
+========================================================================

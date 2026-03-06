@@ -1,0 +1,23 @@
+fry529 — Dell app-launch triage checkpoint (post-ISO hash verify)
+
+Context:
+- Verified ISO hash match:
+  - /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  - /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+  - SHA256: 9353d0730a2eecc35f436b5cf8370bc1f0a4c023ba85234f48850ab1046294df
+- Update (2026-03-05 01:44:31 UTC): Apps now open successfully on Dell; no app-launch failure observed.
+
+If apps still fail to open on Dell after this ISO, then the issue is no longer /nvme probing. At that point it is likely one of these:
+
+1. EFI loader not consistently building/passing ramdisk on Dell
+2. Root VFS not mounting ramdisk correctly on Dell
+3. Process/ELF load path regression
+
+Fastest next hardening:
+
+1. Add on-screen early boot status text for ramdisk found/mounted (not just serial).
+2. Force minimal fallback launch list from / only (/GUI.FRY, /SHELL.TOT) before any directory scan.
+3. Add one-shot watchdog around app launch so GUI cannot stall forever.
+
+Goal:
+- Provide a usable shell/GUI even when storage is flaky, while preserving broader bring-up/debug visibility.

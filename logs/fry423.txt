@@ -1,0 +1,281 @@
+fry423 — eSPI Gen3/Gen4 frequency + I/O mode + error diagnostics
+=========================================================================
+Date: 2026-03-01 ~13:00 UTC (rev2: corrected register offsets and PID)
+
+CONTEXT (from fry422 boot on Dell):
+  fry422 confirmed CASE A — floating bus at ports 0x62/0x66:
+    IBF1=0, SMI=1, P1=OBF.  EC does not respond.
+  LPC IOE = 0x3f0f: MC_EN (bit 11) IS set, KBC_EN (bit 10) IS set.
+  The PCH IS decoding I/O ports 0x62/0x66, but nothing answers.
+
+  CRITICAL INSIGHT from user analysis:
+    The i5-8300H is Coffee Lake-H (NOT Cannon Lake), PCH = HM370.
+    On this platform, EC connects via eSPI, not legacy LPC.
+    The "Gen 3 vs Gen 4" distinction refers to eSPI BUS SPEED:
+      Gen 3 = 33MHz, Gen 4 = 66MHz
+    If the BIOS initialized the eSPI bus at one speed but the slave
+    disagrees, or if the I/O mode (Single/Dual/Quad) is mismatched,
+    communication fails → floating bus behavior.
+
+  The BIOS is updated to the latest Dell version.
+
+  Previous rev1 of fry423 was WRONG: it read PCR offsets 0x00-0x1C
+  (garbage) at PID=0x72 (Cannon Lake, not Coffee Lake-H). The actual
+  eSPI registers are at high offsets within the PID space.
+
+REGISTER INFORMATION (from Intel EDK2 CoffeelakeSiliconPkg/PchRegsLpc.h):
+
+  PCI Config (D31:F0):
+    0xDC = R_ESPI_CFG_PCBC (Peripheral Channel BIOS Control)
+      Bit 2 = ESPI_EN (eSPI Enable pin strap): 1=eSPI mode, 0=LPC mode
+
+  PCR Sideband (eSPI PID space):
+    0x4000 = SLV_CFG_REG_CTL (indirect slave register access)
+      Bit 31 = SCRE (access enable)
+      Bits 30:28 = SCRS (status: 7 = no error/complete)
+      Bits 17:16 = SCRT (0=read, 1=write)
+      Bits 11:0 = SCRA (slave register address)
+    0x4004 = SLV_CFG_REG_DATA (slave register readback)
+    0x4020 = PCERR_SLV0 (Peripheral Channel Error, bit 24 = unsupported req)
+    0x4030 = VWERR_SLV0 (Virtual Wire Error)
+    0x4040 = FCERR_SLV0 (Flash Channel Error)
+    0x4050 = LNKERR_SLV0 (Link Error)
+      Bit 31 = SLCRR (link/slave channel recovery active)
+      Bit 20 = LFET1S (fatal error type 1 status)
+    0xC00C = CFG_VAL (bit 0 = eSPI enabled strap, non-FF = valid PID)
+
+  eSPI Slave Registers (accessed indirectly via SLV_CFG_CTL/DATA):
+    0x0008 = General/Device Configuration
+      Bits [2:0] = Operating Frequency
+        000=20MHz, 001=25MHz, 010=33MHz(Gen3), 011=50MHz, 100=66MHz(Gen4)
+      Bits [4:3] = I/O Mode Support
+        00=Single, 01=Single+Dual, 10=Single+Quad, 11=Single+Dual+Quad
+    0x0010 = Peripheral Channel Cap & Config
+    0x0020 = Virtual Wire Cap & Config
+
+  PID for eSPI on Coffee Lake-H is UNKNOWN (not Cannon Lake 0x72).
+  Code tries three candidates: 0x72, 0xC7 (PID_LPC), 0x6E.
+  The correct PID returns non-FF at offset 0xC00C.
+
+WHAT THIS BUILD DOES:
+
+  1) READ ESPI_EN STRAP (PCI config, no PCR needed)
+     Reads D31:F0 offset 0xDC (PCBC). Bit 2 = ESPI_EN.
+     If 1: hardware is in eSPI mode (EC uses eSPI, not LPC).
+     If 0: hardware is in LPC mode (eSPI not relevant).
+     This is the FIRST thing to check.
+
+  2) SCAN FOR CORRECT eSPI PID
+     Reads PCR[PID]+0xC00C (CFG_VAL) at three PID candidates.
+     The correct PID returns a non-0xFFFFFFFF, non-zero value.
+     Selects the first PID that passes this test.
+
+  3) READ eSPI ERROR REGISTERS
+     At the found PID, reads:
+       PCERR_SLV0 (0x4020): peripheral channel errors
+       VWERR_SLV0 (0x4030): virtual wire errors
+       FCERR_SLV0 (0x4040): flash channel errors
+       LNKERR_SLV0 (0x4050): link errors (fatal, recovery)
+     If any error bits are set, the eSPI bus has problems that would
+     explain the floating bus on EC ports.
+
+  4) READ SLAVE GENERAL CONFIG (indirect access)
+     Issues a read command via SLV_CFG_CTL (0x4000) for slave register
+     0x0008 (General/Device Configuration). Reads result from SLV_CFG_DATA
+     (0x4004). Decodes:
+       - Operating Frequency: 20/25/33(G3)/50/66(G4) MHz
+       - I/O Mode: Single / Dual / Quad
+     This tells us EXACTLY what Gen and I/O mode the BIOS negotiated.
+
+  5) ALSO: LPC GEN3_DEC/GEN4_DEC + PCR IOE FIX (from rev1)
+     - Reads LPC PCI config 0x8C and 0x90 (Generic I/O Decode Range 3 & 4)
+     - Fixed PCR IOE read bug: was showing 0xFFFFFFFF when BIOS already
+       had IOE set (code skipped the read, not just the write)
+
+  6) SYSINFO DISPLAY (WIN_H increased to 560)
+     Y=320: LPC8C and LPC90 values
+     Y=400: eSPI line 1: en=N pid=NN freq io=XX gc=NNNNNNNN
+       en=1 + cyan: eSPI mode confirmed
+       en=0 + red: LPC mode (eSPI not relevant)
+     Y=416: eSPI line 2: err: pc=NN vw=NN ln=NN
+       Gray if all zero (no errors), orange if any set (bus errors)
+
+FILES CHANGED:
+
+  src/kernel/acpi/extended.c (lines ~71-128, ~960-1190, ~1215-1383, ~1861-1866, ~2189-2190):
+
+    WHY: EC on Dell returns floating bus (fry422 Case A). PCH decodes
+    0x62/0x66 but nothing answers → hypothesis is eSPI bus misconfiguration.
+    Need to read eSPI registers to determine bus speed, I/O mode, and errors.
+    Also discovered PCR IOE diagnostic read was never happening in the
+    "BIOS already set" path → always showed 0xFFFFFFFF.
+
+    NEW DEFINES (lines ~71-95):
+      PID_ESPI_A (0x72), PID_ESPI_B (0xC7), PID_ESPI_C (0x6E) — three PID
+        candidates to scan, since Coffee Lake-H PID is unknown
+      R_ESPI_PCR_SLV_CFG_CTL (0x4000) — indirect slave register control
+      R_ESPI_PCR_SLV_CFG_DATA (0x4004) — indirect slave register data readback
+      R_ESPI_PCR_PCERR_SLV0 (0x4020) — peripheral channel error
+      R_ESPI_PCR_VWERR_SLV0 (0x4030) — virtual wire error
+      R_ESPI_PCR_FCERR_SLV0 (0x4040) — flash channel error
+      R_ESPI_PCR_LNKERR_SLV0 (0x4050) — link error
+      R_ESPI_PCR_CFG_VAL (0xC00C) — config validation (used for PID scan)
+      R_ESPI_CFG_PCBC (0xDC) — PCI config Peripheral Channel BIOS Control
+      B_ESPI_CFG_PCBC_ESPI_EN (bit 2) — eSPI Enable pin strap
+      ESPI_SLAVE_GEN_CFG (0x0008) — slave General/Device Config register
+      ESPI_SLAVE_CH0_CAP (0x0010) — Peripheral Channel Cap & Config
+      ESPI_SLAVE_CH1_CAP (0x0020) — Virtual Wire Cap & Config
+
+    NEW GLOBALS (lines ~121-128):
+      g_lpc_reg8c (uint32_t) — Generic I/O Decode Range 3 (PCI config 0x8C)
+      g_lpc_reg90 (uint32_t) — Generic I/O Decode Range 4 (PCI config 0x90)
+      g_sbreg_bar_saved (uint64_t) — SBREG_BAR saved for eSPI probe reuse
+      g_espi_raw[8] (uint32_t) — key eSPI PCR register values for diag export
+      g_espi_probed (uint8_t) — 1 if eSPI probe was attempted
+      g_espi_pid (uint8_t) — PID that returned valid CFG_VAL
+      g_espi_en_strap (uint8_t) — 1 if ESPI_EN strap set
+      g_espi_pcbc (uint32_t) — raw PCI config 0xDC value
+
+    NEW FUNCTION espi_pcr_read32() (line ~1215):
+      Helper for UC-mapped MMIO read at SBREG_BAR + (PID << 16) + offset.
+      Uses vmm_ensure_physmap_uc() for proper uncacheable mapping.
+      Returns 32-bit register value.
+
+    NEW FUNCTION espi_diag_probe() (lines ~1222-1383):
+      Called from ec_reg_init() right after ec_enable_lpc_decode() (line 2300).
+      Step 1: Reads PCI config D31:F0+0xDC for ESPI_EN strap (no PCR needed).
+      Step 2: Scans 3 PID candidates reading CFG_VAL at PCR+0xC00C. Picks
+        first non-FF/non-zero hit. Logs all 3 results.
+      Step 3: Reads error regs at found PID: PCERR (0x4020), VWERR (0x4030),
+        FCERR (0x4040), LNKERR (0x4050), SLV_CFG_CTL (0x4000).
+      Step 4: Indirect slave register read for GenCfg (0x0008):
+        - Writes SLV_CFG_CTL: SCRE=1 (bit 31), read type (bits 17:16=0),
+          address=0x0008 (bits 11:0)
+        - mfence after write for ordering
+        - Polls SCRS (bits 30:28) for non-zero (complete) up to 100K iterations
+          with port 0x80 delay per iteration
+        - Reads SLV_CFG_DATA for result
+        - Decodes: bits [2:0] = freq (20/25/33/50/66 MHz),
+          bits [4:3] = I/O mode (Single/Dual/Quad)
+        - If poll times out: logs "read timeout" (slave unresponsive)
+      Step 5: Checks specific error bits and logs warnings:
+        - LNKERR bit 31 (SLCRR): link/slave recovery active
+        - LNKERR bit 20 (LFET1S): fatal error type 1
+        - PCERR bit 24 (PCURD): unsupported request
+        - Any PCERR/VWERR/FCERR non-zero: "bus errors — EC may be impaired"
+      Stores all results in g_espi_raw[0..7] array:
+        [0]=CFG_VAL [1]=PCBC [2]=PCERR [3]=VWERR
+        [4]=FCERR [5]=LNKERR [6]=SLV_CFG_CTL [7]=GenCfg
+
+    CHANGED ec_enable_lpc_decode() (lines ~1099-1177):
+      WHY: (a) Need Gen3_DEC and Gen4_DEC for completeness, (b) PCR IOE was
+      never read in the "BIOS already set" else branch → always 0xFFFFFFFF.
+
+      Added: reads PCI config 0x8C (Gen3_DEC) and 0x90 (Gen4_DEC), stores
+        in g_lpc_reg8c and g_lpc_reg90. Initializes to 0xFFFFFFFF on failure.
+      Added: kprint for Gen3_DEC/Gen4_DEC values (line ~1189-1190).
+      FIXED (else branch, lines ~1161-1177): When BIOS already has IOE bits
+        10+11 set, code said "skip PCR mirror" but never actually READ PCR
+        either. g_pcr_ioe_before/after stayed at init 0xFFFFFFFF. Now calls
+        pcr_get_sbreg_bar() + pcr_read_dmi_lpc_regs() to fill in actual
+        PCR values. Also saves g_sbreg_bar_saved for eSPI probe reuse.
+
+    CHANGED ec_mirror_pcr_ioe() (line ~973):
+      WHY: eSPI probe needs SBREG_BAR but it was local to this function.
+      Added: g_sbreg_bar_saved = sbreg_bar; (saves for reuse by espi_diag_probe)
+
+    CHANGED ec_reg_init() (lines ~2189-2190, ~2300):
+      Added: g_lpc_reg8c and g_lpc_reg90 reset to 0xFFFFFFFF in re-init path.
+      Added: espi_diag_probe() call right after ec_enable_lpc_decode().
+
+    CHANGED acpi_get_diag() (lines ~1861-1866):
+      Added exports: lpc_reg8c, lpc_reg90, espi_raw[8], espi_probed,
+        espi_pid, espi_en.
+
+  src/kernel/acpi/extended.h (lines ~98-107):
+    WHY: Kernel diag struct needs new fields for syscall export.
+    Added to fry_acpi_diag:
+      uint32_t lpc_reg8c        — Generic I/O Decode Range 3
+      uint32_t lpc_reg90        — Generic I/O Decode Range 4
+      uint32_t espi_raw[8]      — [0]=CFG_VAL [1]=PCBC [2]=PCERR [3]=VWERR
+                                   [4]=FCERR [5]=LNKERR [6]=SLV_CTL [7]=GenCfg
+      uint8_t  espi_probed      — 1 if eSPI PCR was probed
+      uint8_t  espi_pid         — PID that worked for eSPI PCR access
+      uint8_t  espi_en          — 1 if ESPI_EN strap set (D31:F0+0xDC bit 2)
+      uint8_t  _pad7[1]         — alignment padding
+
+  src/user/libc/libc.h (lines ~173-181):
+    WHY: Userspace struct mirror must match kernel struct exactly.
+    Same field additions as extended.h (lpc_reg8c, lpc_reg90, espi_raw[8],
+    espi_probed, espi_pid, espi_en, _pad7[1]).
+
+  src/user/apps/sysinfo.c (lines ~8, ~117-213, ~215-239):
+    WHY: Display new eSPI diagnostics on sysinfo panel for bare-metal debug.
+    WIN_H: 540 → 560 (room for 2 extra eSPI lines)
+    Line Y=320: LPC8C and LPC90 values (new, Generic Decode Range 3 & 4)
+    Lines Y=400-416: eSPI diagnostics (new):
+      Y=400: "eSPI: en=N pid=XX FREQ io=XX gc=XXXXXXXX"
+        - Decodes freq from GenCfg bits[2:0]: 20M/25M/33M-G3/50M/66M-G4
+        - Decodes io_mode from GenCfg bits[4:3]: 1x/1+2x/1+4x/1+2+4x
+        - Color: cyan if espi_en=1, red if espi_en=0
+        - Shows "not probed" in gray if espi_probed=0
+      Y=416: "err: pc=XXXXXXXX vw=XXXXXXXX ln=XXXXXXXX"
+        - Shows PCERR, VWERR, LNKERR raw values
+        - Color: gray if all zero, orange if any non-zero
+    Battery section: Y=440→Y=440 (shifted down from Y=400 by 40px)
+    Backlight section: Y=476→Y=476 (shifted down from Y=440 by 36px)
+
+BUILD:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+  Result: PASS — no new warnings
+  Pre-existing: str_eq/obj_to_str unused, a4/a5 unused, RWX segments
+
+ISO:
+  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  Exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+EXPECTED ON DELL BOOT:
+
+  STEP 1: Check ESPI_EN strap
+    en=1 → Dell is using eSPI mode (expected for Coffee Lake-H)
+    en=0 → Dell is using LPC mode (unexpected, changes diagnosis)
+
+  STEP 2: PID scan result
+    If PID=0x72 returns valid CFG_VAL: Cannon Lake PID works on this PCH
+    If PID=0xC7 returns valid CFG_VAL: eSPI shares PID with LPC controller
+    If PID=0x6E returns valid CFG_VAL: alternate PID
+    If ALL PIDs return 0xFFFFFFFF: eSPI PCR inaccessible (need more PIDs)
+
+  STEP 3: Error registers
+    PCERR=0 VWERR=0 LNKERR=0: no bus errors → bus is clean
+    Any non-zero: eSPI bus has errors → THIS is why EC doesn't respond
+    LNKERR bit 31 (SLCRR): link recovery → bus keeps resetting
+    LNKERR bit 20 (LFET1S): fatal error → bus is dead
+
+  STEP 4: Slave General Config (THE KEY DIAGNOSTIC)
+    frequency field:
+      010 = 33MHz (Gen 3) — standard for many platforms
+      100 = 66MHz (Gen 4) — faster, stricter signal requirements
+    io_mode field:
+      00 = Single I/O — basic, most compatible
+      01 = Single+Dual — 2x bandwidth
+      10 = Single+Quad — 4x bandwidth
+    If read succeeds: BIOS negotiated config is visible
+    If read times out: slave isn't responding to in-band config reads either
+      → eSPI bus is completely non-functional
+
+  SERIAL OUTPUT to look for:
+    "ACPI: eSPI PCBC(0xDC)=0xNN ESPI_EN=N"
+    "ACPI: eSPI PID=0xNN CFG_VAL(0xC00C)=0xNN" (one per candidate)
+    "ACPI: eSPI using PID=0xNN CFG_VAL=0xNN"
+    "ACPI: eSPI PCERR=... VWERR=... FCERR=..."
+    "ACPI: eSPI LNKERR=... SLV_CFG_CTL=..."
+    "ACPI: eSPI slave GenCfg=0xNN freq=NNMHz io=XX SCRS=N"
+    OR: "ACPI: eSPI slave GenCfg read timeout"
+    AND possibly: "ACPI: eSPI LINK RECOVERY ACTIVE" or "FATAL ERROR"
+
+Sources:
+  Intel EDK2 CoffeelakeSiliconPkg/Pch/Include/Register/PchRegsLpc.h
+  Intel 400 Series PCH Register Database (eSPI slave config offsets)
+  Intel eSPI Base Specification (slave register layouts)

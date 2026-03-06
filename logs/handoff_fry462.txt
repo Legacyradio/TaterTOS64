@@ -1,0 +1,54 @@
+========================================================================
+TaterTOS64v3 - Session Handoff Log (fry462)
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-02 21:31:51 UTC
+
+USER DIRECTION (LATEST)
+-----------------------
+- User clarified the observed glitch is specifically when opening GUI/fileman
+  window, not a Start-button/menu interaction issue.
+- Requested rollback of Start-menu assumptions/changes.
+
+ACTIONS TAKEN
+-------------
+1) Reverted Start-menu remap/guard changes added in prior step.
+   File: src/user/gui/gui.c
+   Reverted items:
+   - Removed GUI->FILEMAN remap in app discovery.
+   - Removed FILEMAN fallback menu injection.
+   - Removed GUI->FILEMAN remap in launch path.
+
+2) Kept file-manager-side fixes from prior step.
+   File: src/user/apps/fileman.c
+   - SHM free-on-resize remains removed.
+   - Naming remains "File Manager".
+   - INIT_W/INIT_H remains 760x460.
+
+BUILD + PACKAGING
+-----------------
+Commands run from /home/jjsako/TaterTOS64v3:
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make gui
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Outcome:
+- Build succeeded.
+- ISO rebuilt successfully.
+- Windows export copy failed due read-only mount (non-fatal).
+
+CURRENT ARTIFACT STATUS
+-----------------------
+- ISO path:
+  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- SHA256:
+  eb4164b88b993b6bd533c00477b284ed0d35965d25a10c448da29080e332406f
+- Size:
+  135532544 bytes
+
+FILES MODIFIED THIS SESSION
+---------------------------
+- src/user/gui/gui.c (rollback)
+
+========================================================================

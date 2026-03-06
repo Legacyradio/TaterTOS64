@@ -1,0 +1,3 @@
+STEP 100
+TIME: 2026-03-03 14:40:13
+ACTION: Compared current NTFS driver capabilities against Paragon NTFS3 (Linux) feature scope to align a clean-room replacement path; no code changes in this step.

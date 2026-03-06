@@ -1,0 +1,7 @@
+2026-02-20 22:43:12
+Change: Added a minimal set of ACPI phase markers to pinpoint the post-kprint crash.
+Why: debugcon shows progress through K_KPRINT; failure is after that. Markers around ACPI table init isolate the faulting subsystem.
+Details:
+- main.c: added K_ACPI_TABLES, K_ACPI_MADT, K_ACPI_FADT, K_ACPI_MCFG to debugcon only.
+Rule note: These are temporary debug markers and will be removed once the failing stage is identified.
+Next: rebuild ISO, run QEMU with debugcon, report last marker seen.

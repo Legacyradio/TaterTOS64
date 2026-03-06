@@ -1,0 +1,25 @@
+Handoff Follow-up - 2026-02-21
+
+Summary
+- Fixed build break after adding IST2: AP TSS init needed the new IST2 argument and allocation.
+
+Changes
+1) src/drivers/smp/smp.c
+   - Added ist2_top to per-CPU data.
+   - Allocate ist2 stack for APs.
+   - Pass ist2_top to tss_init_local().
+
+Why
+- Build error: tss_init_local now requires 4 args (rsp0, ist1, ist2). AP path still passed 3.
+
+Test Commands
+PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh
+qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+  -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+  -cdrom ./out/tatertos64v3.iso \
+  -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+
+tail -n 50 logs/debugcon.log
+tail -n 50 logs/serial.log
+tail -n 100 logs/qemu.log

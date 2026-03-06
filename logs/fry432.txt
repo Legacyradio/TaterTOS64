@@ -1,0 +1,22 @@
+fry432 - Add Rule 15: mandatory hash verification before every fry log
+=======================================================================
+Date: 2026-03-01 18:32:49 UTC
+
+WHAT CHANGED (why)
+=======================================================================
+- `planv3.txt`
+  - Added Rule 15 under the RULES section:
+    - Require SHA-256 verification and recording before writing any fry log.
+    - Require source build ISO hash plus target/export ISO hash when target exists.
+  - Why: enforce freshness proof for artifacts and eliminate stale-ISO disputes.
+
+HASH VERIFICATION (performed before this log per Rule 15)
+=======================================================================
+- Source build ISO:
+  f1facdcadef9a3cad9ebfc7df87b8745a557b2782021bf34a6c701165eb3d496  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Target/export ISO:
+  3d0f7286bb7847d80da8b4961798454a3e19d04773d1ce104f59d9137e4b9573  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+NOTES
+=======================================================================
+- This step updates process rules only; no code build/run performed.

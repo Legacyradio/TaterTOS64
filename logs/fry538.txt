@@ -1,0 +1,79 @@
+========================================================================
+TaterTOS64v3 - fry538 — platform profile scaffold for model-aware quirks
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 12:38:03 UTC
+2026-03-05 06:38:03 CST
+
+CONTEXT
+-------
+- Follow-up to Dell Precision 7530 stabilization work.
+- Goal for this step: implement only the first item (platform fingerprint layer)
+  so later DMI/PCR/eSPI quirks can key off a formal profile instead of scattered
+  heuristics.
+
+WHY
+---
+- Needed a single runtime-detected platform profile source before adding any
+  Dell-specific behavior in ACPI EC/PCR paths.
+- This keeps hardware-specific quirks isolated behind detection logic, not
+  hardcoded globally.
+
+CHANGE APPLIED
+--------------
+- Added a platform profile API and state container:
+  - `platform_id_t`
+  - `platform_profile_t`
+  - `platform_detect()`
+  - `platform_get_profile()`
+  - `platform_id_name()`
+- Implemented conservative runtime fingerprinting in platform driver:
+  - ACPI OEM scan for Dell (`oem_id` starts with "DELL").
+  - LPC/eSPI bridge fingerprint from PCI (`class 06:01`, prefer `00:1f.0`).
+  - Profile mapping:
+    - `PLATFORM_ID_DELL_PRECISION_7530` when OEM is Dell + LPC `8086:A30E`.
+  - Added confidence scoring field for transparent uncertainty handling.
+- Wired detection into boot flow immediately after PCI enumeration.
+- Added boot diagnostic print for detected profile + confidence + key signals.
+
+FILES
+-----
+- `src/kernel/drivers/platform.h`
+- `src/kernel/drivers/platform.c`
+- `src/kernel/main.c`
+
+KEY AREAS IN CODE
+-----------------
+- `platform_detect_acpi_oem_dell()` in `platform.c`
+- `platform_find_lpc_id()` in `platform.c`
+- `platform_detect()` decision path in `platform.c`
+- Boot hook: `platform_detect();` after `pci_enum_all()` in `main.c`
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Full kernel build attempt
+   - `make -j4 kernel`
+   - RESULT: blocked in this environment (`x86_64-elf-gcc: No such file or directory`)
+2) Syntax validation with host GCC
+   - `gcc -std=gnu11 -Wall -Wextra -ffreestanding -I. -fsyntax-only src/kernel/drivers/platform.c src/kernel/main.c`
+   - RESULT: PASS
+
+HASH POLICY
+-----------
+- No SHA-256 verification recorded in this log because no user-requested rebuild
+  was performed in this step.
+
+NOT YET DONE
+------------
+- No model-specific behavior is consumed yet by ACPI EC/PCR code.
+- No SMBIOS-based machine identification exists yet (current detection is
+  intentionally conservative and signal-based).
+
+NEXT STEP (SEPARATE CHANGE)
+---------------------------
+- Consume `platform_get_profile()` inside ACPI extended DMI/PCR PID selection so
+  Dell Precision 7530 can use explicit model-aware ordering.
+
+========================================================================

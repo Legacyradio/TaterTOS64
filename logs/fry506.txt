@@ -1,0 +1,3 @@
+STEP 506
+TIME: 2026-03-03 15:58:42
+ACTION: Verified SHA-256 hashes after rebuild and confirmed ISO content matches build outputs (kernel.elf and efiboot.img extracted from ISO match local artifacts).

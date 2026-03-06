@@ -1,0 +1,6 @@
+DATE: 2026-02-21
+TIME: 08:52:00 -0600
+DESC: Map RSDP physical page into physmap before dereferencing in acpi_tables_init.
+WHY: debugcon shows crash immediately after RSDP mapping; avoid invalid pointer access.
+FILES:
+  - src/kernel/acpi/tables.c

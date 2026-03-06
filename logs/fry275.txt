@@ -1,0 +1,10 @@
+[2026-02-22 06:35:49 UTC] Restrict NVMe scan to MCFG bus ranges and add single scan start log.
+
+Changes:
+- src/drivers/storage/nvme.c: use MCFG ECAM ranges for bus scan; add "NVMe: scan start" line before scan.
+
+Why:
+- Boot hangs after "storage: nvme init" with no NVMe logs, indicating a stall inside nvme_find_controller. Limiting bus scans to valid ECAM ranges avoids pathological scans and provides a clear entry marker without spamming.
+
+Tests (not run):
+- bash build_iso.sh

@@ -1,0 +1,4 @@
+[2026-02-23 02:05:16 UTC] Step: Add minimal PS/2 input verification logs.
+Why: Need to confirm PS/2 IRQ is firing and keys are arriving after shell launch.
+Change: Log once on first key input and report if IRQ registration fails.
+Files: src/drivers/input/ps2_kbd.c

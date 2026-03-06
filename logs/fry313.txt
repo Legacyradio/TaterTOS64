@@ -1,0 +1,4 @@
+[2026-02-23 01:59:57 UTC] Step: Milestone - stable boot to shell prompt.
+Why: Record that core boot, NVMe, GPT/FAT32, VFS, and shell launch are now working without reboot loops.
+Change: Logged milestone state and next focus (input path verification).
+Files: logs/fry313.txt

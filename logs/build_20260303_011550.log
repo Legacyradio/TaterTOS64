@@ -1,0 +1,438 @@
+rm -f src/boot/efi_main.o src/boot/efi_entry.o src/boot/efi_boot.o src/boot/stack_switch.o src/boot/gdt.o src/boot/idt.o src/boot/idt_stubs.o src/boot/tss.o src/kernel/main.o src/kernel/kprint.o src/kernel/panic.o src/kernel/mm/pmm.o src/kernel/mm/vmm.o src/kernel/mm/heap.o src/kernel/acpi/tables.o src/kernel/acpi/madt.o src/kernel/acpi/fadt.o src/kernel/acpi/mcfg.o src/kernel/acpi/hpet_tbl.o src/kernel/acpi/namespace.o src/kernel/acpi/aml_types.o src/kernel/acpi/aml_parse.o src/kernel/acpi/aml_exec.o src/kernel/acpi/aml_ops.o src/kernel/acpi/notify.o src/kernel/acpi/ec.o src/kernel/acpi/extended.o src/kernel/acpi/resources.o src/kernel/acpi/events.o src/kernel/acpi/power.o src/kernel/irq/irqdesc.o src/kernel/irq/chip.o src/kernel/irq/manage.o src/kernel/drivers/bus.o src/kernel/drivers/device.o src/kernel/drivers/driver.o src/kernel/drivers/platform.o src/drivers/irqchip/pic8259.o src/drivers/irqchip/lapic.o src/drivers/irqchip/ioapic.o src/drivers/pci/pci_ecam.o src/drivers/pci/pci_core.o src/drivers/pci/msi.o src/drivers/acpi_bus/acpi_bus.o src/drivers/smp/smp.o src/drivers/smp/trampoline.o src/drivers/smp/spinlock.o src/drivers/timer/hpet.o src/drivers/timer/lapic_timer.o src/drivers/video/gop_fb.o src/drivers/input/ps2_ctrl.o src/drivers/input/ps2_kbd.o src/drivers/input/ps2_mouse.o src/drivers/usb/xhci.o src/drivers/usb/usb_core.o src/drivers/usb/usb_hub.o src/drivers/usb/usb_hid.o src/drivers/storage/nvme.o src/drivers/storage/vmd.o src/drivers/net/netcore.o src/drivers/net/e1000.o src/drivers/net/rtl8169.o src/drivers/net/wifi_9260.o src/drivers/net/iwlwifi_fw.o src/kernel/fs/part.o src/kernel/fs/fat32.o src/kernel/fs/totfs.o src/kernel/fs/ntfs.o src/kernel/fs/vfs.o src/kernel/proc/process.o src/kernel/proc/sched.o src/kernel/proc/elf.o src/kernel/proc/syscall.o src/user/libc/libc.o src/user/libc/gfx.o src/user/libc/gfx.o \
+  src/user/shell/shell.o src/user/gui/gui.o src/user/apps/sysinfo.o \
+  src/user/apps/uptime.o src/user/apps/ps.o src/user/apps/fileman.o \
+  kernel.elf shell.elf shell.tot shell.fry gui.elf gui.fry \
+  sysinfo.elf sysinfo.fry uptime.elf uptime.fry ps.elf ps.fry \
+  fileman.elf fileman.fry \
+  tools/mktotfs tools/totcopy
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/boot/efi_main.c -o src/boot/efi_main.o
+nasm -f elf64 src/boot/efi_entry.asm -o src/boot/efi_entry.o
+nasm -f elf64 src/boot/efi_boot.asm -o src/boot/efi_boot.o
+nasm -f elf64 src/boot/stack_switch.asm -o src/boot/stack_switch.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/boot/gdt.c -o src/boot/gdt.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/boot/idt.c -o src/boot/idt.o
+nasm -f elf64 src/boot/idt_stubs.asm -o src/boot/idt_stubs.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/boot/tss.c -o src/boot/tss.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/main.c -o src/kernel/main.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/kprint.c -o src/kernel/kprint.o
+src/kernel/kprint.c:174:13: warning: 'serial_read_char' defined but not used [-Wunused-function]
+  174 | static char serial_read_char(void) {
+      |             ^~~~~~~~~~~~~~~~
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/panic.c -o src/kernel/panic.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/mm/pmm.c -o src/kernel/mm/pmm.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/mm/vmm.c -o src/kernel/mm/vmm.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/mm/heap.c -o src/kernel/mm/heap.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/tables.c -o src/kernel/acpi/tables.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/madt.c -o src/kernel/acpi/madt.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/fadt.c -o src/kernel/acpi/fadt.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/mcfg.c -o src/kernel/acpi/mcfg.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/hpet_tbl.c -o src/kernel/acpi/hpet_tbl.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/namespace.c -o src/kernel/acpi/namespace.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/aml_types.c -o src/kernel/acpi/aml_types.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/aml_parse.c -o src/kernel/acpi/aml_parse.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/aml_exec.c -o src/kernel/acpi/aml_exec.o
+src/kernel/acpi/aml_exec.c: In function 'eval_object':
+src/kernel/acpi/aml_exec.c:973:61: warning: unused parameter 'ctx' [-Wunused-parameter]
+  973 | static struct acpi_object *eval_object(struct aml_exec_ctx *ctx, struct acpi_object *obj) {
+      |                                        ~~~~~~~~~~~~~~~~~~~~~^~~
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/aml_ops.c -o src/kernel/acpi/aml_ops.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/notify.c -o src/kernel/acpi/notify.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/ec.c -o src/kernel/acpi/ec.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/extended.c -o src/kernel/acpi/extended.o
+src/kernel/acpi/extended.c:618:12: warning: 'str_eq' defined but not used [-Wunused-function]
+  618 | static int str_eq(const char *a, const char *b) {
+      |            ^~~~~~
+src/kernel/acpi/extended.c:613:20: warning: 'obj_to_str' defined but not used [-Wunused-function]
+  613 | static const char *obj_to_str(struct acpi_object *o) {
+      |                    ^~~~~~~~~~
+src/kernel/acpi/extended.c:285:13: warning: 'pci_cf8_write32' defined but not used [-Wunused-function]
+  285 | static void pci_cf8_write32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint32_t val) {
+      |             ^~~~~~~~~~~~~~~
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/resources.c -o src/kernel/acpi/resources.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/events.c -o src/kernel/acpi/events.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/power.c -o src/kernel/acpi/power.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/irq/irqdesc.c -o src/kernel/irq/irqdesc.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/irq/chip.c -o src/kernel/irq/chip.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/irq/manage.c -o src/kernel/irq/manage.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/drivers/bus.c -o src/kernel/drivers/bus.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/drivers/device.c -o src/kernel/drivers/device.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/drivers/driver.c -o src/kernel/drivers/driver.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/drivers/platform.c -o src/kernel/drivers/platform.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/irqchip/pic8259.c -o src/drivers/irqchip/pic8259.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/irqchip/lapic.c -o src/drivers/irqchip/lapic.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/irqchip/ioapic.c -o src/drivers/irqchip/ioapic.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/pci/pci_ecam.c -o src/drivers/pci/pci_ecam.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/pci/pci_core.c -o src/drivers/pci/pci_core.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/pci/msi.c -o src/drivers/pci/msi.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/acpi_bus/acpi_bus.c -o src/drivers/acpi_bus/acpi_bus.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/smp/smp.c -o src/drivers/smp/smp.o
+nasm -f elf64 src/drivers/smp/trampoline.asm -o src/drivers/smp/trampoline.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/smp/spinlock.c -o src/drivers/smp/spinlock.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/timer/hpet.c -o src/drivers/timer/hpet.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/timer/lapic_timer.c -o src/drivers/timer/lapic_timer.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/video/gop_fb.c -o src/drivers/video/gop_fb.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/input/ps2_ctrl.c -o src/drivers/input/ps2_ctrl.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/input/ps2_kbd.c -o src/drivers/input/ps2_kbd.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/input/ps2_mouse.c -o src/drivers/input/ps2_mouse.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/usb/xhci.c -o src/drivers/usb/xhci.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/usb/usb_core.c -o src/drivers/usb/usb_core.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/usb/usb_hub.c -o src/drivers/usb/usb_hub.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/usb/usb_hid.c -o src/drivers/usb/usb_hid.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/storage/nvme.c -o src/drivers/storage/nvme.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/storage/vmd.c -o src/drivers/storage/vmd.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/net/netcore.c -o src/drivers/net/netcore.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/net/e1000.c -o src/drivers/net/e1000.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/net/rtl8169.c -o src/drivers/net/rtl8169.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/net/wifi_9260.c -o src/drivers/net/wifi_9260.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/net/iwlwifi_fw.c -o src/drivers/net/iwlwifi_fw.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/fs/part.c -o src/kernel/fs/part.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/fs/fat32.c -o src/kernel/fs/fat32.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/fs/totfs.c -o src/kernel/fs/totfs.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/fs/ntfs.c -o src/kernel/fs/ntfs.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/fs/vfs.c -o src/kernel/fs/vfs.o
+src/kernel/fs/vfs.c: In function 'fat32_readdir_vfs':
+src/kernel/fs/vfs.c:170:34: warning: cast between incompatible function types from 'void (*)(const char *, void *)' to 'void (*)(const char *, uint8_t,  void *)' {aka 'void (*)(const char *, unsigned char,  void *)'} [-Wcast-function-type]
+  170 |     return fat32_readdir(fs, cl, (void (*)(const char *, uint8_t, void *))cb, ctx);
+      |                                  ^
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/proc/process.c -o src/kernel/proc/process.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/proc/sched.c -o src/kernel/proc/sched.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/proc/elf.c -o src/kernel/proc/elf.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/proc/syscall.c -o src/kernel/proc/syscall.o
+src/kernel/proc/syscall.c: In function 'syscall_dispatch':
+src/kernel/proc/syscall.c:185:36: warning: unused parameter 'a4' [-Wunused-parameter]
+  185 |                           uint64_t a4, uint64_t a5) {
+      |                           ~~~~~~~~~^~
+src/kernel/proc/syscall.c:185:49: warning: unused parameter 'a5' [-Wunused-parameter]
+  185 |                           uint64_t a4, uint64_t a5) {
+      |                                        ~~~~~~~~~^~
+x86_64-elf-ld -T kernel_linker.ld -o kernel.elf src/boot/efi_main.o src/boot/efi_entry.o src/boot/efi_boot.o src/boot/stack_switch.o src/boot/gdt.o src/boot/idt.o src/boot/idt_stubs.o src/boot/tss.o src/kernel/main.o src/kernel/kprint.o src/kernel/panic.o src/kernel/mm/pmm.o src/kernel/mm/vmm.o src/kernel/mm/heap.o src/kernel/acpi/tables.o src/kernel/acpi/madt.o src/kernel/acpi/fadt.o src/kernel/acpi/mcfg.o src/kernel/acpi/hpet_tbl.o src/kernel/acpi/namespace.o src/kernel/acpi/aml_types.o src/kernel/acpi/aml_parse.o src/kernel/acpi/aml_exec.o src/kernel/acpi/aml_ops.o src/kernel/acpi/notify.o src/kernel/acpi/ec.o src/kernel/acpi/extended.o src/kernel/acpi/resources.o src/kernel/acpi/events.o src/kernel/acpi/power.o src/kernel/irq/irqdesc.o src/kernel/irq/chip.o src/kernel/irq/manage.o src/kernel/drivers/bus.o src/kernel/drivers/device.o src/kernel/drivers/driver.o src/kernel/drivers/platform.o src/drivers/irqchip/pic8259.o src/drivers/irqchip/lapic.o src/drivers/irqchip/ioapic.o src/drivers/pci/pci_ecam.o src/drivers/pci/pci_core.o src/drivers/pci/msi.o src/drivers/acpi_bus/acpi_bus.o src/drivers/smp/smp.o src/drivers/smp/trampoline.o src/drivers/smp/spinlock.o src/drivers/timer/hpet.o src/drivers/timer/lapic_timer.o src/drivers/video/gop_fb.o src/drivers/input/ps2_ctrl.o src/drivers/input/ps2_kbd.o src/drivers/input/ps2_mouse.o src/drivers/usb/xhci.o src/drivers/usb/usb_core.o src/drivers/usb/usb_hub.o src/drivers/usb/usb_hid.o src/drivers/storage/nvme.o src/drivers/storage/vmd.o src/drivers/net/netcore.o src/drivers/net/e1000.o src/drivers/net/rtl8169.o src/drivers/net/wifi_9260.o src/drivers/net/iwlwifi_fw.o src/kernel/fs/part.o src/kernel/fs/fat32.o src/kernel/fs/totfs.o src/kernel/fs/ntfs.o src/kernel/fs/vfs.o src/kernel/proc/process.o src/kernel/proc/sched.o src/kernel/proc/elf.o src/kernel/proc/syscall.o
+x86_64-elf-ld: warning: kernel.elf has a LOAD segment with RWX permissions
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -O2 -std=gnu11 -Wall -Wextra -c src/user/libc/libc.c -o src/user/libc/libc.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -O2 -std=gnu11 -Wall -Wextra -c src/user/libc/gfx.c -o src/user/libc/gfx.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -O2 -std=gnu11 -Wall -Wextra -c src/user/apps/fileman.c -o src/user/apps/fileman.o
+x86_64-elf-ld -T user_linker.ld -o fileman.elf src/user/libc/libc.o src/user/libc/gfx.o src/user/apps/fileman.o
+x86_64-elf-ld: warning: fileman.elf has a LOAD segment with RWX permissions
+./tools/frypack.py fileman.elf fileman.fry
++ set -euo pipefail
++++ dirname build_iso.sh
+++ cd .
+++ pwd
++ ROOT_DIR=/home/jjsako/TaterTOS64v3
++ OUT_DIR=/home/jjsako/TaterTOS64v3/out
++ ISO_DIR=/home/jjsako/TaterTOS64v3/out/isodir
++ EFI_DIR=/home/jjsako/TaterTOS64v3/out/isodir/EFI/BOOT
++ FS_IMG=/home/jjsako/TaterTOS64v3/out/fs.img
++ EFI_IMG=/home/jjsako/TaterTOS64v3/out/efiboot.img
++ NVME_IMG=/home/jjsako/TaterTOS64v3/out/tater_nvme.img
++ NVME_PART_OFFSET=1048576
++ '[' -d /opt/cross/bin ']'
++ export 'PATH=/opt/cross/bin:/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:/home/jjsako/.local/bin:/home/jjsako/.codex/tmp/arg0/codex-arg0UBXV5V:/home/jjsako/.nvm/versions/node/v22.22.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/path:/home/jjsako/.local/bin:/home/jjsako/.nvm/versions/node/v22.22.0/bin:/usr/lib/jvm/java-17-openjdk-amd64/bin:/home/jjsako/Android/Sdk/cmdline-tools/latest/bin:/home/jjsako/Android/Sdk/platform-tools:/home/jjsako/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/usr/lib/wsl/lib:/mnt/c/Program Files/WindowsApps/CanonicalGroupLimited.Ubuntu_2404.1.68.0_x64__79rhkp1fndgsc:/mnt/c/Windows/system32:/mnt/c/Windows:/mnt/c/Windows/System32/Wbem:/mnt/c/Windows/System32/WindowsPowerShell/v1.0/:/mnt/c/Windows/System32/OpenSSH/:/mnt/c/Program Files/usbipd-win/:/mnt/c/Users/jjsako/AppData/Local/Microsoft/WindowsApps:/snap/bin'
++ PATH='/opt/cross/bin:/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:/home/jjsako/.local/bin:/home/jjsako/.codex/tmp/arg0/codex-arg0UBXV5V:/home/jjsako/.nvm/versions/node/v22.22.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/path:/home/jjsako/.local/bin:/home/jjsako/.nvm/versions/node/v22.22.0/bin:/usr/lib/jvm/java-17-openjdk-amd64/bin:/home/jjsako/Android/Sdk/cmdline-tools/latest/bin:/home/jjsako/Android/Sdk/platform-tools:/home/jjsako/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/usr/lib/wsl/lib:/mnt/c/Program Files/WindowsApps/CanonicalGroupLimited.Ubuntu_2404.1.68.0_x64__79rhkp1fndgsc:/mnt/c/Windows/system32:/mnt/c/Windows:/mnt/c/Windows/System32/Wbem:/mnt/c/Windows/System32/WindowsPowerShell/v1.0/:/mnt/c/Windows/System32/OpenSSH/:/mnt/c/Program Files/usbipd-win/:/mnt/c/Users/jjsako/AppData/Local/Microsoft/WindowsApps:/snap/bin'
++ rm -rf /home/jjsako/TaterTOS64v3/out/isodir
++ mkdir -p /home/jjsako/TaterTOS64v3/out/isodir/EFI/BOOT
++ make -C /home/jjsako/TaterTOS64v3 clean
+make: Entering directory '/home/jjsako/TaterTOS64v3'
+rm -f src/boot/efi_main.o src/boot/efi_entry.o src/boot/efi_boot.o src/boot/stack_switch.o src/boot/gdt.o src/boot/idt.o src/boot/idt_stubs.o src/boot/tss.o src/kernel/main.o src/kernel/kprint.o src/kernel/panic.o src/kernel/mm/pmm.o src/kernel/mm/vmm.o src/kernel/mm/heap.o src/kernel/acpi/tables.o src/kernel/acpi/madt.o src/kernel/acpi/fadt.o src/kernel/acpi/mcfg.o src/kernel/acpi/hpet_tbl.o src/kernel/acpi/namespace.o src/kernel/acpi/aml_types.o src/kernel/acpi/aml_parse.o src/kernel/acpi/aml_exec.o src/kernel/acpi/aml_ops.o src/kernel/acpi/notify.o src/kernel/acpi/ec.o src/kernel/acpi/extended.o src/kernel/acpi/resources.o src/kernel/acpi/events.o src/kernel/acpi/power.o src/kernel/irq/irqdesc.o src/kernel/irq/chip.o src/kernel/irq/manage.o src/kernel/drivers/bus.o src/kernel/drivers/device.o src/kernel/drivers/driver.o src/kernel/drivers/platform.o src/drivers/irqchip/pic8259.o src/drivers/irqchip/lapic.o src/drivers/irqchip/ioapic.o src/drivers/pci/pci_ecam.o src/drivers/pci/pci_core.o src/drivers/pci/msi.o src/drivers/acpi_bus/acpi_bus.o src/drivers/smp/smp.o src/drivers/smp/trampoline.o src/drivers/smp/spinlock.o src/drivers/timer/hpet.o src/drivers/timer/lapic_timer.o src/drivers/video/gop_fb.o src/drivers/input/ps2_ctrl.o src/drivers/input/ps2_kbd.o src/drivers/input/ps2_mouse.o src/drivers/usb/xhci.o src/drivers/usb/usb_core.o src/drivers/usb/usb_hub.o src/drivers/usb/usb_hid.o src/drivers/storage/nvme.o src/drivers/storage/vmd.o src/drivers/net/netcore.o src/drivers/net/e1000.o src/drivers/net/rtl8169.o src/drivers/net/wifi_9260.o src/drivers/net/iwlwifi_fw.o src/kernel/fs/part.o src/kernel/fs/fat32.o src/kernel/fs/totfs.o src/kernel/fs/ntfs.o src/kernel/fs/vfs.o src/kernel/proc/process.o src/kernel/proc/sched.o src/kernel/proc/elf.o src/kernel/proc/syscall.o src/user/libc/libc.o src/user/libc/gfx.o src/user/libc/gfx.o \
+  src/user/shell/shell.o src/user/gui/gui.o src/user/apps/sysinfo.o \
+  src/user/apps/uptime.o src/user/apps/ps.o src/user/apps/fileman.o \
+  kernel.elf shell.elf shell.tot shell.fry gui.elf gui.fry \
+  sysinfo.elf sysinfo.fry uptime.elf uptime.fry ps.elf ps.fry \
+  fileman.elf fileman.fry \
+  tools/mktotfs tools/totcopy
+make: Leaving directory '/home/jjsako/TaterTOS64v3'
++ make -C /home/jjsako/TaterTOS64v3 kernel shell gui sysinfo uptime ps fileman
+make: Entering directory '/home/jjsako/TaterTOS64v3'
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/boot/efi_main.c -o src/boot/efi_main.o
+nasm -f elf64 src/boot/efi_entry.asm -o src/boot/efi_entry.o
+nasm -f elf64 src/boot/efi_boot.asm -o src/boot/efi_boot.o
+nasm -f elf64 src/boot/stack_switch.asm -o src/boot/stack_switch.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/boot/gdt.c -o src/boot/gdt.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/boot/idt.c -o src/boot/idt.o
+nasm -f elf64 src/boot/idt_stubs.asm -o src/boot/idt_stubs.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/boot/tss.c -o src/boot/tss.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/main.c -o src/kernel/main.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/kprint.c -o src/kernel/kprint.o
+src/kernel/kprint.c:174:13: warning: 'serial_read_char' defined but not used [-Wunused-function]
+  174 | static char serial_read_char(void) {
+      |             ^~~~~~~~~~~~~~~~
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/panic.c -o src/kernel/panic.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/mm/pmm.c -o src/kernel/mm/pmm.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/mm/vmm.c -o src/kernel/mm/vmm.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/mm/heap.c -o src/kernel/mm/heap.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/tables.c -o src/kernel/acpi/tables.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/madt.c -o src/kernel/acpi/madt.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/fadt.c -o src/kernel/acpi/fadt.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/mcfg.c -o src/kernel/acpi/mcfg.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/hpet_tbl.c -o src/kernel/acpi/hpet_tbl.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/namespace.c -o src/kernel/acpi/namespace.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/aml_types.c -o src/kernel/acpi/aml_types.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/aml_parse.c -o src/kernel/acpi/aml_parse.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/aml_exec.c -o src/kernel/acpi/aml_exec.o
+src/kernel/acpi/aml_exec.c: In function 'eval_object':
+src/kernel/acpi/aml_exec.c:973:61: warning: unused parameter 'ctx' [-Wunused-parameter]
+  973 | static struct acpi_object *eval_object(struct aml_exec_ctx *ctx, struct acpi_object *obj) {
+      |                                        ~~~~~~~~~~~~~~~~~~~~~^~~
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/aml_ops.c -o src/kernel/acpi/aml_ops.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/notify.c -o src/kernel/acpi/notify.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/ec.c -o src/kernel/acpi/ec.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/extended.c -o src/kernel/acpi/extended.o
+src/kernel/acpi/extended.c:618:12: warning: 'str_eq' defined but not used [-Wunused-function]
+  618 | static int str_eq(const char *a, const char *b) {
+      |            ^~~~~~
+src/kernel/acpi/extended.c:613:20: warning: 'obj_to_str' defined but not used [-Wunused-function]
+  613 | static const char *obj_to_str(struct acpi_object *o) {
+      |                    ^~~~~~~~~~
+src/kernel/acpi/extended.c:285:13: warning: 'pci_cf8_write32' defined but not used [-Wunused-function]
+  285 | static void pci_cf8_write32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint32_t val) {
+      |             ^~~~~~~~~~~~~~~
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/resources.c -o src/kernel/acpi/resources.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/events.c -o src/kernel/acpi/events.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/acpi/power.c -o src/kernel/acpi/power.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/irq/irqdesc.c -o src/kernel/irq/irqdesc.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/irq/chip.c -o src/kernel/irq/chip.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/irq/manage.c -o src/kernel/irq/manage.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/drivers/bus.c -o src/kernel/drivers/bus.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/drivers/device.c -o src/kernel/drivers/device.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/drivers/driver.c -o src/kernel/drivers/driver.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/drivers/platform.c -o src/kernel/drivers/platform.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/irqchip/pic8259.c -o src/drivers/irqchip/pic8259.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/irqchip/lapic.c -o src/drivers/irqchip/lapic.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/irqchip/ioapic.c -o src/drivers/irqchip/ioapic.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/pci/pci_ecam.c -o src/drivers/pci/pci_ecam.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/pci/pci_core.c -o src/drivers/pci/pci_core.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/pci/msi.c -o src/drivers/pci/msi.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/acpi_bus/acpi_bus.c -o src/drivers/acpi_bus/acpi_bus.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/smp/smp.c -o src/drivers/smp/smp.o
+nasm -f elf64 src/drivers/smp/trampoline.asm -o src/drivers/smp/trampoline.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/smp/spinlock.c -o src/drivers/smp/spinlock.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/timer/hpet.c -o src/drivers/timer/hpet.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/timer/lapic_timer.c -o src/drivers/timer/lapic_timer.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/video/gop_fb.c -o src/drivers/video/gop_fb.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/input/ps2_ctrl.c -o src/drivers/input/ps2_ctrl.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/input/ps2_kbd.c -o src/drivers/input/ps2_kbd.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/input/ps2_mouse.c -o src/drivers/input/ps2_mouse.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/usb/xhci.c -o src/drivers/usb/xhci.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/usb/usb_core.c -o src/drivers/usb/usb_core.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/usb/usb_hub.c -o src/drivers/usb/usb_hub.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/usb/usb_hid.c -o src/drivers/usb/usb_hid.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/storage/nvme.c -o src/drivers/storage/nvme.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/storage/vmd.c -o src/drivers/storage/vmd.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/net/netcore.c -o src/drivers/net/netcore.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/net/e1000.c -o src/drivers/net/e1000.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/net/rtl8169.c -o src/drivers/net/rtl8169.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/net/wifi_9260.c -o src/drivers/net/wifi_9260.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/drivers/net/iwlwifi_fw.c -o src/drivers/net/iwlwifi_fw.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/fs/part.c -o src/kernel/fs/part.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/fs/fat32.c -o src/kernel/fs/fat32.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/fs/totfs.c -o src/kernel/fs/totfs.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/fs/ntfs.c -o src/kernel/fs/ntfs.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/fs/vfs.c -o src/kernel/fs/vfs.o
+src/kernel/fs/vfs.c: In function 'fat32_readdir_vfs':
+src/kernel/fs/vfs.c:170:34: warning: cast between incompatible function types from 'void (*)(const char *, void *)' to 'void (*)(const char *, uint8_t,  void *)' {aka 'void (*)(const char *, unsigned char,  void *)'} [-Wcast-function-type]
+  170 |     return fat32_readdir(fs, cl, (void (*)(const char *, uint8_t, void *))cb, ctx);
+      |                                  ^
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/proc/process.c -o src/kernel/proc/process.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/proc/sched.c -o src/kernel/proc/sched.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/proc/elf.c -o src/kernel/proc/elf.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -c src/kernel/proc/syscall.c -o src/kernel/proc/syscall.o
+src/kernel/proc/syscall.c: In function 'syscall_dispatch':
+src/kernel/proc/syscall.c:185:36: warning: unused parameter 'a4' [-Wunused-parameter]
+  185 |                           uint64_t a4, uint64_t a5) {
+      |                           ~~~~~~~~~^~
+src/kernel/proc/syscall.c:185:49: warning: unused parameter 'a5' [-Wunused-parameter]
+  185 |                           uint64_t a4, uint64_t a5) {
+      |                                        ~~~~~~~~~^~
+x86_64-elf-ld -T kernel_linker.ld -o kernel.elf src/boot/efi_main.o src/boot/efi_entry.o src/boot/efi_boot.o src/boot/stack_switch.o src/boot/gdt.o src/boot/idt.o src/boot/idt_stubs.o src/boot/tss.o src/kernel/main.o src/kernel/kprint.o src/kernel/panic.o src/kernel/mm/pmm.o src/kernel/mm/vmm.o src/kernel/mm/heap.o src/kernel/acpi/tables.o src/kernel/acpi/madt.o src/kernel/acpi/fadt.o src/kernel/acpi/mcfg.o src/kernel/acpi/hpet_tbl.o src/kernel/acpi/namespace.o src/kernel/acpi/aml_types.o src/kernel/acpi/aml_parse.o src/kernel/acpi/aml_exec.o src/kernel/acpi/aml_ops.o src/kernel/acpi/notify.o src/kernel/acpi/ec.o src/kernel/acpi/extended.o src/kernel/acpi/resources.o src/kernel/acpi/events.o src/kernel/acpi/power.o src/kernel/irq/irqdesc.o src/kernel/irq/chip.o src/kernel/irq/manage.o src/kernel/drivers/bus.o src/kernel/drivers/device.o src/kernel/drivers/driver.o src/kernel/drivers/platform.o src/drivers/irqchip/pic8259.o src/drivers/irqchip/lapic.o src/drivers/irqchip/ioapic.o src/drivers/pci/pci_ecam.o src/drivers/pci/pci_core.o src/drivers/pci/msi.o src/drivers/acpi_bus/acpi_bus.o src/drivers/smp/smp.o src/drivers/smp/trampoline.o src/drivers/smp/spinlock.o src/drivers/timer/hpet.o src/drivers/timer/lapic_timer.o src/drivers/video/gop_fb.o src/drivers/input/ps2_ctrl.o src/drivers/input/ps2_kbd.o src/drivers/input/ps2_mouse.o src/drivers/usb/xhci.o src/drivers/usb/usb_core.o src/drivers/usb/usb_hub.o src/drivers/usb/usb_hid.o src/drivers/storage/nvme.o src/drivers/storage/vmd.o src/drivers/net/netcore.o src/drivers/net/e1000.o src/drivers/net/rtl8169.o src/drivers/net/wifi_9260.o src/drivers/net/iwlwifi_fw.o src/kernel/fs/part.o src/kernel/fs/fat32.o src/kernel/fs/totfs.o src/kernel/fs/ntfs.o src/kernel/fs/vfs.o src/kernel/proc/process.o src/kernel/proc/sched.o src/kernel/proc/elf.o src/kernel/proc/syscall.o
+x86_64-elf-ld: warning: kernel.elf has a LOAD segment with RWX permissions
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -O2 -std=gnu11 -Wall -Wextra -c src/user/libc/libc.c -o src/user/libc/libc.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -O2 -std=gnu11 -Wall -Wextra -c src/user/libc/gfx.c -o src/user/libc/gfx.o
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -O2 -std=gnu11 -Wall -Wextra -c src/user/shell/shell.c -o src/user/shell/shell.o
+x86_64-elf-ld -T user_linker.ld -o shell.elf src/user/libc/libc.o src/user/libc/gfx.o src/user/shell/shell.o
+x86_64-elf-ld: warning: shell.elf has a LOAD segment with RWX permissions
+./tools/totpack.py shell.elf shell.tot 0x0002
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -O2 -std=gnu11 -Wall -Wextra -c src/user/gui/gui.c -o src/user/gui/gui.o
+x86_64-elf-ld -T user_linker.ld -o gui.elf src/user/libc/libc.o src/user/libc/gfx.o src/user/gui/gui.o
+x86_64-elf-ld: warning: gui.elf has a LOAD segment with RWX permissions
+./tools/frypack.py gui.elf gui.fry
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -O2 -std=gnu11 -Wall -Wextra -c src/user/apps/sysinfo.c -o src/user/apps/sysinfo.o
+x86_64-elf-ld -T user_linker.ld -o sysinfo.elf src/user/libc/libc.o src/user/libc/gfx.o src/user/apps/sysinfo.o
+x86_64-elf-ld: warning: sysinfo.elf has a LOAD segment with RWX permissions
+./tools/frypack.py sysinfo.elf sysinfo.fry
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -O2 -std=gnu11 -Wall -Wextra -c src/user/apps/uptime.c -o src/user/apps/uptime.o
+x86_64-elf-ld -T user_linker.ld -o uptime.elf src/user/libc/libc.o src/user/libc/gfx.o src/user/apps/uptime.o
+x86_64-elf-ld: warning: uptime.elf has a LOAD segment with RWX permissions
+./tools/frypack.py uptime.elf uptime.fry
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -O2 -std=gnu11 -Wall -Wextra -c src/user/apps/ps.c -o src/user/apps/ps.o
+x86_64-elf-ld -T user_linker.ld -o ps.elf src/user/libc/libc.o src/user/libc/gfx.o src/user/apps/ps.o
+x86_64-elf-ld: warning: ps.elf has a LOAD segment with RWX permissions
+./tools/frypack.py ps.elf ps.fry
+x86_64-elf-gcc -ffreestanding -fno-stack-protector -O2 -std=gnu11 -Wall -Wextra -c src/user/apps/fileman.c -o src/user/apps/fileman.o
+x86_64-elf-ld -T user_linker.ld -o fileman.elf src/user/libc/libc.o src/user/libc/gfx.o src/user/apps/fileman.o
+x86_64-elf-ld: warning: fileman.elf has a LOAD segment with RWX permissions
+./tools/frypack.py fileman.elf fileman.fry
+make: Leaving directory '/home/jjsako/TaterTOS64v3'
++ rm -f /home/jjsako/TaterTOS64v3/out/fs.img
++ command -v dd
++ dd if=/dev/zero of=/home/jjsako/TaterTOS64v3/out/fs.img bs=1M count=16
++ command -v mkfs.fat
++ command -v mformat
++ mformat -i /home/jjsako/TaterTOS64v3/out/fs.img -F ::
++ command -v mcopy
++ mcopy -o -i /home/jjsako/TaterTOS64v3/out/fs.img /home/jjsako/TaterTOS64v3/shell.tot ::/SHELL.TOT
++ mcopy -o -i /home/jjsako/TaterTOS64v3/out/fs.img /home/jjsako/TaterTOS64v3/gui.fry ::/GUI.FRY
++ mcopy -o -i /home/jjsako/TaterTOS64v3/out/fs.img /home/jjsako/TaterTOS64v3/sysinfo.fry ::/SYSINFO.FRY
++ mcopy -o -i /home/jjsako/TaterTOS64v3/out/fs.img /home/jjsako/TaterTOS64v3/uptime.fry ::/UPTIME.FRY
++ mcopy -o -i /home/jjsako/TaterTOS64v3/out/fs.img /home/jjsako/TaterTOS64v3/ps.fry ::/PS.FRY
++ mcopy -o -i /home/jjsako/TaterTOS64v3/out/fs.img /home/jjsako/TaterTOS64v3/fileman.fry ::/FILEMAN.FRY
++ echo 'Building ToTFS host tools...'
+Building ToTFS host tools...
++ gcc -O2 -o /home/jjsako/TaterTOS64v3/tools/mktotfs /home/jjsako/TaterTOS64v3/tools/mktotfs.c
++ gcc -O2 -o /home/jjsako/TaterTOS64v3/tools/totcopy /home/jjsako/TaterTOS64v3/tools/totcopy.c
++ NVME_SIZE=104857600
++ NVME_PART_SIZE=103809024
++ '[' '!' -f /home/jjsako/TaterTOS64v3/out/tater_nvme.img ']'
++ command -v sgdisk
++ sgdisk --zap-all /home/jjsako/TaterTOS64v3/out/tater_nvme.img
++ sgdisk --new=1:2048:0 --typecode=1:46544F54-0053-5441-4552-544F53363400 --change-name=1:TaterTOS /home/jjsako/TaterTOS64v3/out/tater_nvme.img
++ echo 'GPT partition table created with ToTFS type GUID'
+GPT partition table created with ToTFS type GUID
++ echo 'Formatting ToTFS partition at offset 1048576...'
+Formatting ToTFS partition at offset 1048576...
++ /home/jjsako/TaterTOS64v3/tools/mktotfs /home/jjsako/TaterTOS64v3/out/tater_nvme.img 1048576 103809024
+mktotfs: formatted 25344 blocks (99 MB) at offset 1048576
+  free_blocks=25276 free_inodes=1022 root_inode=1
++ '[' -f /home/jjsako/TaterTOS64v3/shell.tot ']'
++ /home/jjsako/TaterTOS64v3/tools/totcopy /home/jjsako/TaterTOS64v3/out/tater_nvme.img 1048576 /home/jjsako/TaterTOS64v3/shell.tot /SHELL.TOT
+totcopy: /home/jjsako/TaterTOS64v3/shell.tot -> /SHELL.TOT (inode 2, 32840 bytes, 9 blocks, 1 extents)
++ for fry in gui sysinfo uptime ps fileman
+++ echo gui
+++ tr a-z A-Z
++ FRY_UPPER=GUI
++ '[' -f /home/jjsako/TaterTOS64v3/gui.fry ']'
++ /home/jjsako/TaterTOS64v3/tools/totcopy /home/jjsako/TaterTOS64v3/out/tater_nvme.img 1048576 /home/jjsako/TaterTOS64v3/gui.fry /GUI.FRY
+totcopy: /home/jjsako/TaterTOS64v3/gui.fry -> /GUI.FRY (inode 3, 31368 bytes, 8 blocks, 1 extents)
++ for fry in gui sysinfo uptime ps fileman
+++ echo sysinfo
+++ tr a-z A-Z
++ FRY_UPPER=SYSINFO
++ '[' -f /home/jjsako/TaterTOS64v3/sysinfo.fry ']'
++ /home/jjsako/TaterTOS64v3/tools/totcopy /home/jjsako/TaterTOS64v3/out/tater_nvme.img 1048576 /home/jjsako/TaterTOS64v3/sysinfo.fry /SYSINFO.FRY
+totcopy: /home/jjsako/TaterTOS64v3/sysinfo.fry -> /SYSINFO.FRY (inode 4, 22504 bytes, 6 blocks, 1 extents)
++ for fry in gui sysinfo uptime ps fileman
+++ echo uptime
+++ tr a-z A-Z
++ FRY_UPPER=UPTIME
++ '[' -f /home/jjsako/TaterTOS64v3/uptime.fry ']'
++ /home/jjsako/TaterTOS64v3/tools/totcopy /home/jjsako/TaterTOS64v3/out/tater_nvme.img 1048576 /home/jjsako/TaterTOS64v3/uptime.fry /UPTIME.FRY
+totcopy: /home/jjsako/TaterTOS64v3/uptime.fry -> /UPTIME.FRY (inode 5, 21216 bytes, 6 blocks, 1 extents)
++ for fry in gui sysinfo uptime ps fileman
+++ echo ps
+++ tr a-z A-Z
++ FRY_UPPER=PS
++ '[' -f /home/jjsako/TaterTOS64v3/ps.fry ']'
++ /home/jjsako/TaterTOS64v3/tools/totcopy /home/jjsako/TaterTOS64v3/out/tater_nvme.img 1048576 /home/jjsako/TaterTOS64v3/ps.fry /PS.FRY
+totcopy: /home/jjsako/TaterTOS64v3/ps.fry -> /PS.FRY (inode 6, 21328 bytes, 6 blocks, 1 extents)
++ for fry in gui sysinfo uptime ps fileman
+++ echo fileman
+++ tr a-z A-Z
++ FRY_UPPER=FILEMAN
++ '[' -f /home/jjsako/TaterTOS64v3/fileman.fry ']'
++ /home/jjsako/TaterTOS64v3/tools/totcopy /home/jjsako/TaterTOS64v3/out/tater_nvme.img 1048576 /home/jjsako/TaterTOS64v3/fileman.fry /FILEMAN.FRY
+totcopy: /home/jjsako/TaterTOS64v3/fileman.fry -> /FILEMAN.FRY (inode 7, 31656 bytes, 8 blocks, 1 extents)
++ echo 'NVMe ToTFS contents:'
+NVMe ToTFS contents:
++ /home/jjsako/TaterTOS64v3/tools/totcopy /home/jjsako/TaterTOS64v3/out/tater_nvme.img 1048576 --list /
+Directory: / (inode 1, 4096 bytes, 1 extents)
+  [DIR ] inode=   1 size=    4096  .
+  [DIR ] inode=   1 size=    4096  ..
+  [FILE] inode=   2 size=   32840  SHELL.TOT
+  [FILE] inode=   3 size=   31368  GUI.FRY
+  [FILE] inode=   4 size=   22504  SYSINFO.FRY
+  [FILE] inode=   5 size=   21216  UPTIME.FRY
+  [FILE] inode=   6 size=   21328  PS.FRY
+  [FILE] inode=   7 size=   31656  FILEMAN.FRY
++ echo 'NVMe image updated: /home/jjsako/TaterTOS64v3/out/tater_nvme.img'
+NVMe image updated: /home/jjsako/TaterTOS64v3/out/tater_nvme.img
++ command -v x86_64-w64-mingw32-ld
++ command -v x86_64-w64-mingw32-objcopy
++ x86_64-w64-mingw32-gcc -ffreestanding -fshort-wchar -fno-stack-protector -mno-red-zone -fno-asynchronous-unwind-tables -fno-unwind-tables -fno-ident -c /home/jjsako/TaterTOS64v3/src/boot/efi_loader.c -o /home/jjsako/TaterTOS64v3/out/efi_loader.o -O2 -Wall -Wextra -std=gnu11
+/home/jjsako/TaterTOS64v3/src/boot/efi_loader.c:351:14: warning: ‘gop_mask_size’ defined but not used [-Wunused-function]
+  351 | static UINT8 gop_mask_size(UINT32 mask) {
+      |              ^~~~~~~~~~~~~
+/home/jjsako/TaterTOS64v3/src/boot/efi_loader.c:345:14: warning: ‘gop_mask_pos’ defined but not used [-Wunused-function]
+  345 | static UINT8 gop_mask_pos(UINT32 mask) {
+      |              ^~~~~~~~~~~~
++ mkdir -p /home/jjsako/TaterTOS64v3/out/isodir/EFI/BOOT
++ x86_64-w64-mingw32-ld -mi386pep --subsystem 10 -e efi_main /home/jjsako/TaterTOS64v3/out/efi_loader.o -o /home/jjsako/TaterTOS64v3/out/isodir/EFI/BOOT/BOOTX64.EFI
++ x86_64-w64-mingw32-objcopy --remove-section .comment /home/jjsako/TaterTOS64v3/out/isodir/EFI/BOOT/BOOTX64.EFI
++ cat
++ rm -f /home/jjsako/TaterTOS64v3/out/efiboot.img
++ command -v dd
++ dd if=/dev/zero of=/home/jjsako/TaterTOS64v3/out/efiboot.img bs=1M count=64
++ command -v mkfs.fat
++ command -v mformat
++ mformat -i /home/jjsako/TaterTOS64v3/out/efiboot.img -F ::
++ command -v mmd
++ command -v mcopy
++ mmd -i /home/jjsako/TaterTOS64v3/out/efiboot.img ::/EFI
++ mmd -i /home/jjsako/TaterTOS64v3/out/efiboot.img ::/EFI/BOOT
++ mcopy -i /home/jjsako/TaterTOS64v3/out/efiboot.img /home/jjsako/TaterTOS64v3/out/isodir/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
++ mmd -i /home/jjsako/TaterTOS64v3/out/efiboot.img ::/boot
++ mcopy -i /home/jjsako/TaterTOS64v3/out/efiboot.img /home/jjsako/TaterTOS64v3/kernel.elf ::/boot/kernel.elf
++ mcopy -i /home/jjsako/TaterTOS64v3/out/efiboot.img /home/jjsako/TaterTOS64v3/out/isodir/startup.nsh ::/startup.nsh
++ mcopy -o -i /home/jjsako/TaterTOS64v3/out/efiboot.img /home/jjsako/TaterTOS64v3/gui.fry ::/GUI.FRY
++ mcopy -o -i /home/jjsako/TaterTOS64v3/out/efiboot.img /home/jjsako/TaterTOS64v3/shell.tot ::/SHELL.TOT
++ mcopy -o -i /home/jjsako/TaterTOS64v3/out/efiboot.img /home/jjsako/TaterTOS64v3/sysinfo.fry ::/SYSINFO.FRY
++ mcopy -o -i /home/jjsako/TaterTOS64v3/out/efiboot.img /home/jjsako/TaterTOS64v3/uptime.fry ::/UPTIME.FRY
++ mcopy -o -i /home/jjsako/TaterTOS64v3/out/efiboot.img /home/jjsako/TaterTOS64v3/ps.fry ::/PS.FRY
++ mcopy -o -i /home/jjsako/TaterTOS64v3/out/efiboot.img /home/jjsako/TaterTOS64v3/fileman.fry ::/FILEMAN.FRY
++ mmd -i /home/jjsako/TaterTOS64v3/out/efiboot.img ::/fry
++ mcopy -o -i /home/jjsako/TaterTOS64v3/out/efiboot.img /home/jjsako/TaterTOS64v3/gui.fry ::/fry/GUI.FRY
++ mcopy -o -i /home/jjsako/TaterTOS64v3/out/efiboot.img /home/jjsako/TaterTOS64v3/shell.tot ::/fry/SHELL.TOT
++ mcopy -o -i /home/jjsako/TaterTOS64v3/out/efiboot.img /home/jjsako/TaterTOS64v3/sysinfo.fry ::/fry/SYSINFO.FRY
++ mcopy -o -i /home/jjsako/TaterTOS64v3/out/efiboot.img /home/jjsako/TaterTOS64v3/uptime.fry ::/fry/UPTIME.FRY
++ mcopy -o -i /home/jjsako/TaterTOS64v3/out/efiboot.img /home/jjsako/TaterTOS64v3/ps.fry ::/fry/PS.FRY
++ mcopy -o -i /home/jjsako/TaterTOS64v3/out/efiboot.img /home/jjsako/TaterTOS64v3/fileman.fry ::/fry/FILEMAN.FRY
++ mkdir -p /home/jjsako/TaterTOS64v3/out/isodir/EFI
++ cp /home/jjsako/TaterTOS64v3/out/efiboot.img /home/jjsako/TaterTOS64v3/out/isodir/EFI/efiboot.img
++ mkdir -p /home/jjsako/TaterTOS64v3/out/isodir/boot
++ cp /home/jjsako/TaterTOS64v3/kernel.elf /home/jjsako/TaterTOS64v3/out/isodir/boot/kernel.elf
++ cp /home/jjsako/TaterTOS64v3/gui.fry /home/jjsako/TaterTOS64v3/out/isodir/GUI.FRY
++ cp /home/jjsako/TaterTOS64v3/shell.tot /home/jjsako/TaterTOS64v3/out/isodir/SHELL.TOT
++ cp /home/jjsako/TaterTOS64v3/sysinfo.fry /home/jjsako/TaterTOS64v3/out/isodir/SYSINFO.FRY
++ cp /home/jjsako/TaterTOS64v3/uptime.fry /home/jjsako/TaterTOS64v3/out/isodir/UPTIME.FRY
++ cp /home/jjsako/TaterTOS64v3/ps.fry /home/jjsako/TaterTOS64v3/out/isodir/PS.FRY
++ cp /home/jjsako/TaterTOS64v3/fileman.fry /home/jjsako/TaterTOS64v3/out/isodir/FILEMAN.FRY
++ mkdir -p /home/jjsako/TaterTOS64v3/out/isodir/fry
++ cp /home/jjsako/TaterTOS64v3/gui.fry /home/jjsako/TaterTOS64v3/out/isodir/fry/GUI.FRY
++ cp /home/jjsako/TaterTOS64v3/shell.tot /home/jjsako/TaterTOS64v3/out/isodir/fry/SHELL.TOT
++ cp /home/jjsako/TaterTOS64v3/sysinfo.fry /home/jjsako/TaterTOS64v3/out/isodir/fry/SYSINFO.FRY
++ cp /home/jjsako/TaterTOS64v3/uptime.fry /home/jjsako/TaterTOS64v3/out/isodir/fry/UPTIME.FRY
++ cp /home/jjsako/TaterTOS64v3/ps.fry /home/jjsako/TaterTOS64v3/out/isodir/fry/PS.FRY
++ cp /home/jjsako/TaterTOS64v3/fileman.fry /home/jjsako/TaterTOS64v3/out/isodir/fry/FILEMAN.FRY
++ command -v xorriso
++ xorriso -as mkisofs -o /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso --efi-boot EFI/efiboot.img -no-emul-boot -isohybrid-gpt-basdat -append_partition 2 0xEF /home/jjsako/TaterTOS64v3/out/efiboot.img -appended_part_as_gpt /home/jjsako/TaterTOS64v3/out/isodir
+xorriso 1.5.6 : RockRidge filesystem manipulator, libburnia project.
+
+Drive current: -outdev 'stdio:/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso'
+Media current: stdio file, overwriteable
+Media status : is blank
+Media summary: 0 sessions, 0 data blocks, 0 data,  938g free
+Added to ISO image: directory '/'='/home/jjsako/TaterTOS64v3/out/isodir'
+xorriso : UPDATE :      20 files added in 1 seconds
+xorriso : WARNING : Boot image load size exceeds 65535 blocks of 512 bytes. Will record 0 in El Torito to extend ESP to end-of-medium.
+xorriso : UPDATE :      20 files added in 1 seconds
+xorriso : UPDATE :  46.59% done
+ISO image produced: 66182 sectors
+Written to medium : 66182 sectors at LBA 0
+Writing to 'stdio:/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso' completed successfully.
+
++ echo 'ISO output: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso'
+ISO output: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
++ WIN_EXPORT=/mnt/c/Users/jjsako/Documents/tateriso
++ '[' -d /mnt/c/Users/jjsako/Documents ']'
++ mkdir -p /mnt/c/Users/jjsako/Documents/tateriso
++ cp /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+cp: cannot create regular file '/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso': Read-only file system
++ echo 'Warning: could not export ISO to /mnt/c/Users/jjsako/Documents/tateriso'
+Warning: could not export ISO to /mnt/c/Users/jjsako/Documents/tateriso

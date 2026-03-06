@@ -1,0 +1,4 @@
+[2026-02-20 18:44:13 UTC] Step: Ensure build script uses cross toolchain PATH.
+Why: build_iso.sh failed because x86_64-elf-ld was not in PATH.
+Change: Export /opt/cross/bin at script start and error if missing.
+Files: build_iso.sh

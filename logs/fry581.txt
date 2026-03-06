@@ -1,0 +1,86 @@
+========================================================================
+TaterTOS64v3 - fry581 - restore live NVMe visibility and expose shell storage diagnostics
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 02:53:21 UTC
+2026-03-05 20:53:21 CST
+
+CONTEXT
+-------
+- Bare-metal boot is now stable, and shutdown/reboot work on the Dell Precision
+  7530.
+- Remaining user-visible issue: File Manager showed no NVMe storage on real
+  hardware when booted from live media.
+- Follow-up request: make the storage/mount state queryable from the shell with
+  a clear command, not just hidden debug behavior.
+
+WHY
+---
+- Live boot kept `/` on ramdisk and explicitly skipped NVMe secondary
+  auto-mount, so File Manager had no `/nvme*` mountpoints to display even when
+  NVMe detection was working.
+- Storage state already existed behind syscalls, but the shell only exposed it
+  through the non-obvious `vfsdbg`/`nvmefix` commands.
+
+CHANGES APPLIED
+---------------
+- Files updated:
+  - `src/kernel/main.c`
+    - Replaced the live-mode "skip NVMe secondary auto-mount" path with
+      `vfs_mount_secondary(nvme_bd, "/nvme")`.
+    - Added explicit boot log outcomes:
+      - `init: live mode, NVMe secondary auto-mount ready`
+      - `init: live mode, NVMe secondary auto-mount unavailable`
+  - `src/user/shell/shell.c`
+    - Split storage and mount reporting into dedicated helpers.
+    - Added user-facing commands:
+      - `storage`
+      - `mounts`
+      - `mountdbg`
+    - Updated `help` output to list the new commands.
+    - Kept existing `vfsdbg [path]` and `nvmefix [path]` flows intact.
+
+EXPECTED BEHAVIOR
+-----------------
+- On live boot, supported secondary NVMe partitions (FAT32 / NTFS / ToTFS) are
+  now mounted under `/nvme`, `/nvme1`, ... while the root filesystem remains on
+  ramdisk.
+- File Manager can discover those mountpoints via `fry_mounts_info()`.
+- Shell diagnostics are now directly accessible:
+  - `storage`
+  - `mounts`
+  - `mountdbg`
+  - `vfsdbg`
+  - `nvmefix`
+
+VALIDATION (THIS SESSION)
+-------------------------
+1) Kernel-only compile after live NVMe mount change:
+   - `PATH="/opt/cross/bin:$PATH" make kernel`
+   - Result:
+     - PASS
+2) Shell-only compile after adding the new commands:
+   - `PATH="/opt/cross/bin:$PATH" make shell`
+   - Result:
+     - PASS
+3) Full rebuild / repack:
+   - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+   - Result:
+     - PASS
+     - ISO produced at `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+     - ISO exported to `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+NOTES
+-----
+- No SHA-256 recorded here per plan rule 16; this was not a user-requested hash
+  verification step.
+- Existing non-fatal compiler/linker warnings remain elsewhere in the tree.
+- If real hardware still fails to show NVMe after this change, the new shell
+  commands should distinguish:
+  - NVMe not detected
+  - NVMe detected but no secondary mount succeeded
+  - NVMe mounted successfully under `/nvme*`
+
+========================================================================

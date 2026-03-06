@@ -1,0 +1,3 @@
+STEP 22
+TIME: 2026-02-20 08:44:15
+ACTION: Expanded IRQ descriptor and chip definitions in src/kernel/irq/irqdesc.h and irqdesc.c to include name/flags/count plus ack/set_affinity, and updated irq_dispatch to ack before handler and eoi after, because robust IRQ handling needs bookkeeping and proper chip callbacks as specified in the plan.

@@ -1,0 +1,12 @@
+[2026-02-22 07:19:00 UTC] Enable PCI MMIO + bus master before NVMe MMIO.
+
+Changes:
+- src/drivers/pci/pci.h: add cached PCI command register field.
+- src/drivers/pci/pci_core.c: cache command register during enumeration.
+- src/drivers/storage/nvme.c: set MEM+BUS MASTER bits in PCI command before MMIO access.
+
+Why:
+- Some devices ignore MMIO reads/writes until PCI COMMAND.MEM and BUS MASTER are enabled. This is standard PCI bring-up and likely explains the hang after BAR discovery.
+
+Tests (not run):
+- bash build_iso.sh

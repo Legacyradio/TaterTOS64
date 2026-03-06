@@ -1,0 +1,58 @@
+fry451 - Success mark + uniform window handling across all apps
+===============================================================
+Date: 2026-03-02
+Timestamp (UTC): 2026-03-02 03:00:08 UTC
+
+HASH VERIFICATION (Rule 15)
+===============================================================
+- Source build ISO:
+  330ad92c3433cf3c3d094c9523057420ea69c9b8ef019f3e24195d662f4a4a19  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Target/export ISO:
+  330ad92c3433cf3c3d094c9523057420ea69c9b8ef019f3e24195d662f4a4a19  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- Result:
+  Source and target hashes match.
+
+STATUS
+===============================================================
+- Marked prior redraw-jitter fix as successful (per user confirmation).
+- Applied follow-up requirement: all windows are now handled with the same
+  geometry and resize policy in GUI.
+
+CHANGES APPLIED
+===============================================================
+File: /home/jjsako/TaterTOS64v3/src/user/gui/gui.c
+
+1) Added `clamp_window_pos(window_t *w)`.
+   - Keeps every window frame inside desktop bounds after create/resize/restore.
+Why:
+   - Enforces consistent placement behavior for all windows.
+
+2) Unified CREATE_WINDOW sizing policy.
+   - `TW_MSG_CREATE_WINDOW` now uses `clamp_client_size()` before SHM alloc.
+   - Frame size always derived from actual client SHM size.
+Why:
+   - Ensures create path follows the same bounds and frame derivation as resize.
+
+3) Unified RESIZE policy for maximized and non-maximized windows.
+   - While maximized, resize requests are normalized to full desktop client area.
+   - Non-maximized windows always derive frame from SHM dimensions and are clamped.
+Why:
+   - Removes mixed behavior where maximized windows updated saved sizes only.
+   - Makes window behavior deterministic and consistent across apps.
+
+4) Restore from maximize now derives frame from actual SHM dimensions.
+   - Uses `w->shm_w`/`w->shm_h` + frame chrome instead of stale saved frame values.
+Why:
+   - Keeps restore path consistent with creation/resizing and prevents drift.
+
+BUILD / EXPORT
+===============================================================
+Command executed:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make clean all && ./build_iso.sh
+
+Result:
+- Build succeeded.
+- ISO regenerated at:
+  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- Exported to:
+  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso

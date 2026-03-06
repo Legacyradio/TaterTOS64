@@ -1,0 +1,15 @@
+fry381 — Plan rule update: mandatory TaterWin protocol for apps
+Timestamp: 2026-02-28 14:41:33 UTC
+
+Why:
+  User requested an explicit rule in planv3 requiring all built/run apps to
+  use the TaterWin protocol.
+
+Change:
+  File: planv3.txt
+  - Added Rule 12 under RULES:
+    "All apps built and run must follow the TaterWin protocol."
+
+Notes:
+  - This is a planning/rules update only.
+  - No kernel or userspace code changes in this step.

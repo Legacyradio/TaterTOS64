@@ -1,0 +1,4 @@
+[2026-02-20 21:16:18 UTC] Step: Add multiboot2 handoff shim for UEFI-only GRUB boot.
+Why: _fry_start expects a UEFI fry_handoff; passing multiboot info directly caused crashes.
+Change: Added _mb_start to parse multiboot2 tags (mmap, framebuffer, ACPI RSDP), build fry_handoff, and call _fry_start.
+Files: src/boot/mb_handoff.c, src/boot/mb_entry.asm, Makefile

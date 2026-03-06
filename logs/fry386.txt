@@ -1,0 +1,45 @@
+fry386 — Hardware-agnostic ACPI battery/backlight discovery + percent normalization
+Timestamp: 2026-02-28 15:59:15 UTC
+
+Why:
+  Battery status regressed to "unavailable" and backlight remained 0 on real hardware.
+  The reporting path was too strict on device identity/discovery and treated raw AML
+  brightness values as already-percent values.
+
+Changes:
+  1) src/kernel/acpi/namespace.c
+     - Extended `ns_hid_match()` to also check `_CID` (string/integer/package forms),
+       not only `_HID`.
+     - This is hardware-agnostic and improves ACPI device matching across firmware
+       variants that report compatibility IDs via `_CID`.
+
+  2) src/kernel/acpi/extended.c
+     - Battery discovery now accepts nodes that either:
+       a) match battery ID (`PNP0C0A`) via `_HID/_CID`, or
+       b) expose battery method signature (`_BST` + `_BIF/_BIX`).
+     - Added `_BIX` probe/log fallback (not only `_BIF`) during battery init.
+     - Kept `_STA` handling compatible but generalized battery-presence bit4 handling
+       for method-signature battery nodes.
+     - Backlight selection now scores candidates by ACPI identity + method availability
+       (`_BCM/_BQC/_BCL`) + presence, instead of first-hit selection.
+     - Added BCL parsing that separates supported brightness levels and converts
+       raw AML brightness values to user-facing percent.
+     - `acpi_backlight_set(percent)` now maps percent -> nearest AML raw level before
+       invoking `_BCM`, keeping user API percent-based while firmware remains raw-level.
+     - Added more explicit boot logs for battery candidates and backlight raw/percent.
+
+Build/Test commands run (Rule 11 default rebuild mode):
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Result:
+  - Build succeeded.
+  - ISO produced: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  - NVMe image updated: /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+  - Non-fatal export warning persisted:
+    cp to /mnt/c/Users/jjsako/Documents/tateriso failed (read-only filesystem).
+
+Expected next boot diagnostics:
+  - Battery discovery lines should include hid/bst/bif/bix metadata per candidate.
+  - Backlight line should print raw value plus normalized percent:
+    `ACPI: backlight levels=... supported=... raw=... current=...%`

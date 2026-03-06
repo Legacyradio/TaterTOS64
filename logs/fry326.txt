@@ -1,0 +1,49 @@
+fry326.txt — 2026-02-25 CST
+TaterTOS64v3 session log
+
+=== Real-hardware freeze: ACPI tables above 4 GB ===
+
+Symptom:
+  Dell Precision 7530 boots from USB ISO, framebuffer shows "psdc"
+  (the tail of an ACPI table signature line), then freezes solid.
+
+Root cause confirmed:
+  vmm_init caps the physmap at boot_identity_limit (= 4 GB):
+    if (max_phys > early_identity_limit) max_phys = early_identity_limit;
+    map_range_2m(VMM_PHYSMAP_BASE, 0, max_phys, ...);
+  Dell UEFI places one or more ACPI table pointers above 4 GB in the XSDT.
+  acpi_tables_init called vmm_phys_to_virt(entries[i]) with no bounds check,
+  producing a virtual address beyond the mapped physmap.  Accessing
+  h->length (or checksum8) on that unmapped page → page fault → triple
+  fault → machine check → hard freeze.
+  The last kprint before the fault was printing the signature of the table
+  just before the bad pointer, ending in the 4 chars the user saw.
+
+Fix applied — src/kernel/acpi/tables.c:
+  1. Added acpi_ensure_mapped(phys, len) helper that calls
+     vmm_ensure_physmap() for every 2 MB block covering [phys, phys+len).
+     Why: vmm_ensure_physmap only maps one 2 MB region; tables can span
+     the boundary between two regions.
+
+  2. Before reading sdt->length on the XSDT/RSDT itself:
+     - acpi_ensure_mapped(sdt_phys, sizeof(struct acpi_sdt_header))
+     - Read length into sdt_len; sanity-check (must be >= header size,
+       <= 1 MB — no XSDT/RSDT is larger).
+     - acpi_ensure_mapped(sdt_phys, sdt_len) to cover full table before
+       checksum8.
+     - Use sdt_len everywhere instead of sdt->length.
+
+  3. In the XSDT loop (uint64_t entries):
+     - Skip zero entries.
+     - acpi_ensure_mapped(phys, sizeof(header)) before any dereference.
+     - Read h->length; sanity-check (<= 1 MB).
+     - acpi_ensure_mapped(phys, len) before checksum8.
+
+  4. Same three steps applied to the RSDT loop (uint32_t entries).
+     RSDT pointers are 32-bit so always < 4 GB, but the same guard
+     is correct for consistency.
+
+Build: kernel builds clean (only expected RWX linker warning).
+
+Next step: flash updated ISO to USB and retest on Dell Precision 7530.
+Next log: fry327.txt

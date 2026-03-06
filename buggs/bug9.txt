@@ -1,0 +1,68 @@
+========================================================================
+TaterTOS64v3 Bug Log - 2026-03-05
+========================================================================
+
+ISSUE
+-----
+Boot could hang immediately after:
+  - "TATER EFI: ramdisk built"
+or fail in loader with:
+  - "TATER EFI E14 mmap retry"
+
+CONTEXT
+-------
+- Boot path: UEFI loader -> kernel handoff
+- Affected file: src/boot/efi_loader.c
+- Reproduced in QEMU UEFI run before fix.
+
+ROOT CAUSE
+----------
+ExitBootServices retry handling used a fragile memory-map retry path:
+1) First ExitBootServices can fail with INVALID_PARAMETER when map key changed.
+2) Retry GetMemoryMap did not robustly handle map growth (BUFFER_TOO_SMALL)
+   with capacity tracking/reallocation.
+3) This caused handoff failure at E14 or apparent hang before kernel entry.
+
+FIX APPLIED
+-----------
+In src/boot/efi_loader.c:
+- Added EFI_INVALID_PARAMETER constant.
+- Reworked handoff map/ExitBootServices logic to:
+  - track map buffer capacity (map_cap),
+  - retry in a bounded loop (max 8 attempts),
+  - handle EFI_BUFFER_TOO_SMALL by allocating a larger map buffer and retrying,
+  - only retry ExitBootServices on EFI_INVALID_PARAMETER.
+- Avoided extra ConOut output between the GetMemoryMap call used for a given
+  map key and ExitBootServices, so the key remains valid.
+- Kept visible handoff markers:
+  - "handoff mmap size"
+  - "handoff mmap alloc"
+  - "handoff ExitBS"
+  - "handoff ExitBS retry" (only when needed)
+
+VERIFICATION
+------------
+Post-fix QEMU serial log:
+  logs/runtime_qemu_req_20260305_012133/serial.log
+
+Observed after fix:
+  - Reached "TATER EFI: handoff ExitBS"
+  - Continued into kernel:
+      K_START
+      K_GDT_IDT
+      K_TSS
+      K_PMM
+      K_VMM
+  - No E14 failure.
+
+SCOPE / NON-IMPACT
+------------------
+This fix is loader handoff-only and does not modify runtime storage paths.
+It does not change NVMe/NTFS read logic.
+
+ARTIFACT
+--------
+ISO SHA256 after fix:
+  4951d84ba94ed5270c185521969645aa1ef47325454c39a87f9fd66cfc4a82c5
+
+========================================================================

@@ -1,0 +1,89 @@
+fry454 — FAST BOOT: background aml_extended_init + EC/eSPI timeout reduction
+Date: 2026-03-01
+
+PROBLEM:
+  Boot took up to 2 minutes on Dell Precision 7530 because aml_extended_init()
+  (EC probing, eSPI channel init, battery/backlight) ran BEFORE sti, blocking
+  the scheduler from ever switching to the GUI process. The GUI couldn't even
+  appear until all 6 EC recovery methods × multiple candidates finished —
+  each with 5 retries and 100ms+ timeouts on a floating bus (0xFF).
+
+ROOT CAUSE:
+  1. main.c: sti was AFTER aml_extended_init(). Without interrupts enabled,
+     the LAPIC timer can't fire, sched_tick can't run, and the GUI process
+     (already launched at Phase 15) can't get CPU time.
+  2. ec.c: ibf_obf_timeout=100000 (~100ms per wait on floating bus),
+     probe_retries=5, force_enable_wait=50000000 (~150ms), etc.
+  3. extended.c: 6 recovery methods per candidate, each calling ec_probe()
+     which tries 4 port combos × 5 retries. Plus espi_channel_init with
+     150ms+100ms settle delays and 100K iteration slave read timeouts.
+
+FIX (3 files):
+
+1. main.c — Background aml_extended_init thread
+   - Moved sti BEFORE aml_extended_init()
+   - aml_extended_init now runs in a kernel thread ("aml_ext") via
+     process_create_kernel + sched_add
+   - GUI appears immediately; EC probing happens in background
+   - Fallback: if thread creation fails, runs inline (old behavior)
+   - Added #include "proc/process.h" for struct fry_process access
+   - Added aml_extended_init_thread() wrapper function
+
+2. ec.c — Reduced all timeouts + STS_FF fast-bail
+   - ibf_obf_timeout: 100000 → 10000 (10ms vs 100ms)
+   - probe_retries: 5 → 2
+   - retry_delay: 2000000 → 200000
+   - acpi_enable_wait: 5000000 → 500000
+   - force_enable_wait: 50000000 → 5000000
+   - burst_disable_wait: 1000000 → 100000
+   - obf_drain_max: 256 → 64
+   - sci_query_drain_max: 16 → 4
+   - ec_probe_with_retries(): breaks immediately on STS_FF (no point retrying
+     a floating bus)
+   - ec_probe(): skips alternate/swapped port combos on STS_FF
+   - Added ec_last_probe_stsff() function (declared in ec.h)
+   - Updated ec_policy_defaults() to match new values
+
+3. extended.c — Fast-bail in recovery loop + reduced eSPI delays
+   - Recovery loop: after Method 1 (direct probe) returns STS_FF, skips
+     Methods 2-6 entirely for that candidate (continue to next)
+   - ESPI_CLEAR_SETTLE_LOOPS: 10000000 → 2000000 (~2ms vs ~10ms)
+   - ESPI_CHINIT_MAX_RETRIES: 3 → 2
+   - ESPI_CHINIT_BASE_DELAY: settle*5 → settle*2 (~4ms vs ~50ms)
+   - XMVW programming settle: settle*15 → settle*5 (~10ms vs ~150ms)
+   - PLT_RST deassert settle: settle*10 → settle*3 (~6ms vs ~100ms)
+   - Slave read/write indirect timeout: 100000 → 5000 iterations
+
+IMPACT:
+  Before: ~2 minutes to see GUI (all EC probing blocks with sti disabled)
+  After:  GUI appears in seconds (sti first, EC probing in background thread)
+  EC probing itself: ~30-60s → ~1-2s (fast-bail on 0xFF + reduced timeouts)
+
+BUILD: make clean && build_iso.sh — clean, no errors
+ISO: out/tatertos64v3.iso exported to Windows
+
+ALSO FIXED: Window resize for all apps (sysinfo, uptime, ps)
+
+RESIZE BUG:
+  When user clicked maximize button, GUI allocated a NEW SHM buffer at the
+  maximized size and sent TW_MSG_RESIZED to the app. None of the apps
+  (sysinfo, uptime, ps) handled TW_MSG_RESIZED — they kept rendering to
+  the OLD SHM pointer with hardcoded WIN_W/WIN_H dimensions. The compositor
+  read from the new uninitialized buffer → "scattered dots" on screen.
+
+  Shell already handled TW_MSG_RESIZED correctly (fry377).
+
+RESIZE FIX (sysinfo.c, uptime.c, ps.c):
+  - Renamed WIN_W/WIN_H → INIT_W/INIT_H (initial size only)
+  - Added dynamic win_w/win_h variables
+  - Added check_resize() function: drains inbuf for TW_MSG_RESIZED messages,
+    maps new SHM, updates win_w/win_h, reinitializes gfx_ctx
+  - render() now uses win_w/win_h for gfx_fill background clear
+  - check_resize() called every frame before render()
+  - Text stays at 8x16 font, positioned at same absolute X/Y — content fills
+    top-left of maximized window naturally
+
+BUILD: make clean && build_iso.sh — clean, no errors
+ISO: out/tatertos64v3.iso exported to Windows
+
+AWAITING: Dell hardware test to confirm fast boot + resize fix

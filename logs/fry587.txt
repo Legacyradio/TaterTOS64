@@ -1,0 +1,11 @@
+2026-03-06 01:04:30 CST
+Step: Make packed live ramdisk expose directory-style runtime paths
+
+Completed:
+- Extended packed-ramdisk VFS handling so `open`, `stat`, and `readdir` can work with directory-like paths such as `/system/...` and `/apps/...` even when the live payload is still carried in the EFI-built packed ramdisk.
+- Updated EFI ramdisk metadata comments and loader packaging names so live media now populates `system/INIT.FRY`, `system/GUI.FRY`, and `apps/...` entries.
+- Adjusted FAT32 root scoring to recognize the canonical runtime layout during root selection.
+
+Why:
+- The old packed ramdisk only behaved like a flat file bag, which blocked any real rootfs-style hierarchy on live media.
+- Without this step, `/system` and `/apps` would work only on block-backed filesystems and not on the live EFI boot path.

@@ -1,0 +1,53 @@
+========================================================================
+TaterTOS64v3 - fry561 - contiguous low-memory allocation for NVMe buffers
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 23:29:33 UTC
+2026-03-05 17:29:33 CST
+
+CONTEXT
+-------
+- Review suggested replacing 7 independent low-page allocations in NVMe setup
+  with one contiguous chunk allocation below 4 GiB.
+
+WHY
+---
+- Single contiguous allocation reduces allocator churn/fragmentation risk and
+  provides a deterministic layout for queue/identify/PRP pages.
+
+CHANGE APPLIED
+--------------
+- Files updated:
+  - `src/kernel/mm/pmm.h`
+    - Added API:
+      `uint64_t pmm_alloc_pages_below(uint64_t count, uint64_t max_phys);`
+  - `src/kernel/mm/pmm.c`
+    - Implemented contiguous allocator below physical address ceiling:
+      `pmm_alloc_pages_below(count, max_phys)`
+    - Uses contiguous free-run search and marks all pages in one pass.
+  - `src/drivers/storage/nvme.c`
+    - `nvme_alloc_buffers()` now allocates one contiguous 7-page block:
+      `base_phys = pmm_alloc_pages_below(7, 0x100000000ULL)`
+    - Assigns page offsets from base for:
+      admin SQ/CQ, IO SQ/CQ, identify buffer, namespace list, PRP list.
+
+EFFECT
+------
+- NVMe per-device setup now gets a contiguous low-memory buffer region in one
+  allocation call instead of 7 separate calls.
+- Existing free path remains valid (page-wise free of known offsets).
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Kernel build validation:
+   - `PATH="/opt/cross/bin:$PATH" make -j"$(nproc)"`
+2) RESULT:
+   - PASS (build succeeded)
+
+NOTES
+-----
+- No hash recorded in this log (planv3 rule 16; no user-requested rebuild).
+
+========================================================================

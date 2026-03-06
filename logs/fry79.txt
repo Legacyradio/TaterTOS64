@@ -1,0 +1,3 @@
+STEP 79
+TIME: 2026-02-20 09:53:00
+ACTION: Implemented full .fry loader in src/kernel/proc/elf.c/.h with VFS read, CRC validation, address space creation, PT_LOAD mapping with flags, user stack allocation, and cleanup on failure, because Phase 14 requires complete user program loading.

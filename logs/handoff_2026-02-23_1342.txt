@@ -1,0 +1,57 @@
+Date: 2026-02-23 13:42 CST
+Owner: Claude (fry322 session)
+
+Summary
+- Fixed triple fault / hardware reset on app/shell launch (irq_saved_cr3 global -> %r15)
+- Added per-process stdout ring buffer + SYS_PROC_OUTPUT(21) syscall
+- GUI right panel now shows live app output with ANSI stripping and scroll
+- Keyboard suppressed in GUI while app is active so shell gets PS/2 input
+- User confirmed: "it works"
+- Added M29 to planv3.txt milestone checklist
+- Two clean builds; ISO exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- Session logged as fry322.txt
+
+What Changed (code)
+1) src/kernel/irq/irqdesc.c
+   - Removed global irq_saved_cr3
+   - common_isr now saves user CR3 in %r15 (callee-saved), restores after irq_dispatch
+   - Eliminates triple fault when context switch happens inside irq_dispatch
+
+2) src/kernel/proc/process.h
+   - Added PROC_OUTBUF=512, outbuf[]/outbuf_head/outbuf_tail to struct fry_process
+
+3) src/kernel/proc/syscall.c
+   - SYS_WRITE(fd=1): appends to per-process ring buffer in addition to serial
+   - Added SYS_PROC_OUTPUT=21: drains ring buffer to user; returns -2 when dead+empty
+
+4) src/user/libc/libc.c + libc.h
+   - Added SYS_PROC_OUTPUT=21 enum entry
+   - Added fry_proc_output(uint32_t pid, void *buf, size_t len)
+
+5) src/user/gui/gui.c
+   - Added WIN_X=224 content window: title bar (blue=running/gray=done) + scrolling text
+   - win_append(): ANSI escape stripper + line wrapper/scroller
+   - Main loop polls fry_proc_output each frame; clears active_pid on -2L
+   - GUI keyboard disabled (returns -1) while active_pid != 0
+
+Milestone Status
+Confirmed done: M01-M17, M20-M22, M26-M28, M29 (25 milestones)
+Unconfirmed (code exists, needs test):
+  M18/M19 - USB HID (real hardware)
+  M23     - e1000 QEMU network test
+  M24     - WiFi 9260 firmware (real hardware)
+  M25     - Thermal _TMP AML eval test
+
+Remaining Work
+- Verify M18, M19, M23, M25 (small sessions each)
+- M24 WiFi on real hardware (medium)
+- GUI polish: fonts, icons, window chrome
+- Boot splash
+- Shell QoL: command history, tab completion, colors
+- Installer: GPT partition, FAT32 format, copy files, write EFI boot entry
+
+Build artifacts
+- ISO: out/tatertos64v3.iso
+- Exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- NVMe: out/tater_nvme.img
+- Next fry log: fry323.txt

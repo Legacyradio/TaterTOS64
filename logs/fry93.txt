@@ -1,0 +1,3 @@
+STEP 93
+TIME: 2026-02-20 08:02:37
+ACTION: Implemented HPET driver with frequency/period calculation and counter access (drivers/timer/hpet.c, drivers/timer/hpet.h).

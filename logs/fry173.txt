@@ -1,0 +1,8 @@
+2026-02-20 22:36:03
+Change: Added early serial progress markers to isolate the crash stage.
+Why: QEMU log shows non-canonical RIP (#GP loop) but serial log lacks visibility into how far _mb_start/_fry_start progresses. Early COM1 prints provide a deterministic trace before kprint is up.
+Details:
+- Added src/boot/early_serial.h (COM1 init/putc/puts/hex).
+- mb_handoff.c: prints MB_START/MB_BAD_MAGIC/MB_HANDOFF.
+- main.c: prints K_START, K_GDT_IDT, K_TSS, K_PMM, K_VMM, K_HEAP, K_KPRINT.
+Next: rebuild ISO and rerun QEMU, then inspect serial.log to see the last marker reached.

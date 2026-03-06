@@ -1,0 +1,56 @@
+========================================================================
+TaterTOS64v3 - fry558 - formalize per-device state as struct nvme_device
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-05 23:20:14 UTC
+2026-03-05 17:20:14 CST
+
+CONTEXT
+-------
+- Request asked to add explicit device structure (`struct nvme_device`) holding
+  per-device queues/MMIO/capacity/block-device state.
+
+WHY
+---
+- Makes per-device ownership explicit and aligns naming with multi-device
+  architecture.
+- Reduces ambiguity from controller-type naming while preserving behavior.
+
+CHANGE APPLIED
+--------------
+- File updated: `src/drivers/storage/nvme.c`
+  - Renamed active per-device type:
+    - `struct nvme_ctrl` -> `struct nvme_device`
+  - Updated all direct references/casts/signatures to the new type, including:
+    - global registry pointers/arrays
+    - reset helper (`nvme_device_reset`)
+    - IRQ `dev_id` casts
+    - I/O context routing (`nvme_io_rw_for_ctrl`)
+    - block callback context casts (`bd->ctx`)
+    - init-time discovery/registration loops
+  - Kept existing per-device field set, including:
+    - `admin_q`, `io_q`
+    - `mmio`
+    - `total_sectors`, `sector_size`
+    - `bd`
+    - plus other per-device runtime state already in use.
+
+EFFECT
+------
+- Device-structure naming now explicitly matches requested model.
+- Preserves current multi-device plumbing and behavior.
+
+BUILD / VALIDATION (THIS SESSION)
+---------------------------------
+1) Kernel build validation:
+   - `PATH="/opt/cross/bin:$PATH" make -j"$(nproc)"`
+2) RESULT:
+   - PASS (build succeeded)
+
+NOTES
+-----
+- No hash recorded in this log (planv3 rule 16; no user-requested rebuild).
+
+========================================================================

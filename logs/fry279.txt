@@ -1,0 +1,10 @@
+[2026-02-22 06:53:09 UTC] Add NVMe BAR/MMIO mapping breadcrumbs.
+
+Changes:
+- src/drivers/storage/nvme.c: log raw BARs, MMIO map start/ok, and a marker before reading NVMe registers.
+
+Why:
+- Boot now hangs after ACPI DSM; next step is BAR/MMIO mapping. These three lines pinpoint whether we stall in vmm_ensure_physmap or on MMIO reads without flooding logs.
+
+Tests (not run):
+- bash build_iso.sh

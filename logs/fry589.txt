@@ -1,0 +1,33 @@
+fry589 - add post-stage31 timer and scheduler boot markers
+==========================================================
+
+Timestamp: 2026-03-06 02:08:00 CST
+
+Problem:
+  Bare-metal boots reaching 31 top-row squares no longer indicate EFI handoff
+  trouble; they only prove init reached the final pre-idle marker. That still
+  leaves three different failure buckets:
+  1. first LAPIC timer interrupt never arrives after `sti`
+  2. timer arrives but scheduler never performs a real context switch
+  3. scheduler switches, but userland never actually runs
+
+Changes:
+  1. src/drivers/timer/lapic_timer.c
+     - Added a one-shot post-boot diagnostic marker on the first BSP timer tick.
+     - Emits framebuffer stage 32 and serial line `K_FIRST_TICK`.
+     - Why: separates "stuck in idle with no interrupts" from later scheduler or
+       userspace failures.
+
+  2. src/kernel/proc/sched.c
+     - Added one-shot scheduler markers:
+       - framebuffer stage 33 + serial `K_FIRST_SWITCH` on first BSP context switch
+       - framebuffer stage 34 + serial `K_FIRST_USER` on first scheduled user process
+     - Why: separates "timer works but no scheduling" from "scheduler runs but
+       userland/GUI path is the real failure."
+
+Interpretation:
+  - 31 squares only: reached final init marker but no BSP timer tick observed.
+  - 32 squares only: first timer tick happened, but no real context switch occurred.
+  - 33 squares only: scheduler switched tasks, but never scheduled a user process.
+  - 34 squares: first user process was scheduled; failures are now in userland,
+    GUI handshake, or display/update behavior rather than EFI/handoff/scheduler.

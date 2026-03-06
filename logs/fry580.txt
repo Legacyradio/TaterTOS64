@@ -1,0 +1,54 @@
+FRY 580
+Timestamp: 2026-03-05 20:18:29 CST
+
+WHY
+- User clarified `planv3` is process guidance, not a frozen architecture target.
+- Current blocker after PMM bootstrap fix was a kernel page fault during ACPI/APIC bring-up at `CR2=FFFF8000FEC00000` (IOAPIC MMIO physmap alias).
+- User requested no shortcuts and no compatibility-regression-heavy fix.
+
+CHANGES
+- Narrowed PMM metadata sizing in `src/kernel/mm/pmm.c` so `max_phys` is derived from `EFI_CONVENTIONAL_MEMORY` only. This cleared the earlier `pmm_init()` metadata-placement failure (`debugcon 'B'`).
+- Switched MMIO consumers from low-address remap / WB physmap usage to the existing UC physmap path:
+  - `src/drivers/irqchip/ioapic.c`
+  - `src/drivers/irqchip/lapic.c`
+  - `src/drivers/timer/lapic_timer.c`
+  - `src/drivers/timer/hpet.c`
+  - `src/drivers/pci/pci_ecam.c`
+  - `src/kernel/acpi/power.c`
+- `ioapic_init()` no longer calls `vmm_map(m->addr, m->addr, ...)` against a region already covered by 2 MiB low identity mappings. It now ensures UC physmap coverage and accesses IOAPIC through `vmm_phys_to_virt(m->addr)`.
+- This avoids changing general RAM mapping behavior and keeps the fix limited to MMIO access semantics.
+
+VALIDATION
+- Clean rebuild command:
+  - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make clean && PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+- Rebuild result:
+  - Passed
+  - ISO: `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+  - SHA-256: `fe6d50588cd999f4c7ede15065adee0b5741c28aa85468d7fffd322e7e2cb011`
+- Fresh QEMU runtime before MMIO fix:
+  - `/home/jjsako/TaterTOS64v3/logs/runtime_qemu_pmmfix_20260305_201357`
+  - Reached `K_HEAP_OK` then faulted in `vmm_map()` with `CR2=FFFF8000FEC00000`
+- Fresh QEMU runtime after MMIO fix:
+  - `/home/jjsako/TaterTOS64v3/logs/runtime_qemu_mmio_uc_20260305_201714`
+  - QEMU command used:
+    - `timeout 45s qemu-system-x86_64 -m 4G -machine q35,accel=tcg -cpu qemu64 -boot order=d -net none -display none -no-reboot -no-shutdown -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -drive if=pflash,format=raw,file=<runtime>/OVMF_VARS.fd -cdrom /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso -serial file:<runtime>/serial.log -debugcon file:<runtime>/debugcon.log -d int,cpu_reset -D <runtime>/qemu.log`
+  - Result:
+    - No `FEC00000` page fault
+    - PMM relocation state remained valid
+    - Kernel passed ACPI/APIC bring-up
+    - QEMU stayed alive until timeout with periodic `INT=0x40`
+    - Trace shows execution in CPL=3 userspace, indicating userspace boot progress
+
+NOTES
+- Serial/debug strings still report the older build tag string already present in-tree; runtime behavior is from the current rebuilt ISO, not an old binary.
+- Temporary VMM/PMM debug markers are still present in this build for continued bring-up visibility.
+
+SANITY REBUILD
+- Timestamp: `2026-03-05 20:20:50 CST`
+- Command:
+  - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make clean && PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+- Result:
+  - Passed
+  - ISO: `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+  - SHA-256: `005e04564c49996212b0b38f950a421a38c2521fbafc8aef93827d56474126b8`
+  - Non-fatal existing warnings only, plus the usual read-only `/mnt/c/...` export warning

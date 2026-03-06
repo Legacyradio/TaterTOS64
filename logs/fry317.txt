@@ -1,0 +1,63 @@
+[2026-02-22 23:10 UTC] Step: Fix #PF storm caused by sched_yield() in syscall handler running on user stack.
+
+Root cause:
+  SYSCALL instruction does NOT switch the stack pointer. RSP stays at the
+  user-space value throughout syscall_entry and syscall_dispatch.
+
+  When SYS_READ (or SYS_SLEEP/SYS_WAIT) calls sched_yield() -> sched_tick()
+  -> context_switch(gui, idle), context_switch does pushfq + push 16 regs
+  onto whatever RSP is — the USER STACK (0x00007FFFFFFFFCC8).
+  It then saves this user RSP as gui->saved_rsp.
+
+  When the LAPIC timer fires and sched_tick() restores the GUI process:
+    mov gui->cr3, %cr3
+    context_switch(idle, gui)   -- loads saved_rsp = 0x7FFFFFFFFCC8
+  Now kernel code is running with RSP in user space. The user stack page at
+  that address is not present in the GUI's CR3 -> #PF. And since the #PF
+  handler also uses RSP (via TSS RSP0, which now points to the new process
+  kernel stack) but the IDT stub can't push the frame... it cascades into
+  the repeated #PF storm seen in serial.log.
+
+  QEMU log confirmed: vec=0E err=0000 RIP=0xFFFFFFFF8001520A RSP=CR2=0x00007FFFFFFFFCC8
+
+Fix:
+  Make syscall_entry switch to the per-process kernel stack on entry.
+  Each process already has kernel_stack_top (allocated in process_create_user).
+  A global g_syscall_kstack_top (updated by sched_tick on every BSP switch)
+  holds the current process's kernel stack top.
+
+  syscall_entry now:
+    1. IF=0 on entry (SFMASK=0x200 clears it). RSP=user RSP.
+    2. mov %rsp, g_syscall_user_rsp(%rip)   -- spill user RSP to scratch global
+    3. mov g_syscall_kstack_top(%rip), %rsp -- switch to kernel stack
+    4. push g_syscall_user_rsp(%rip)        -- save user RSP on kernel stack
+    5. push %rcx / %r11 / %rbp             -- save sysretq values
+    6. call syscall_dispatch
+    7. pop %rbp / %r11 / %rcx
+    8. pop %rsp                             -- restore user RSP
+    9. sysretq
+
+  With this fix, context_switch saves/restores the kernel RSP, not the
+  user RSP. sched_yield/sched_sleep/fry_sleep are all safe to call from
+  syscall_dispatch.
+
+Files changed:
+  src/kernel/proc/sched.c
+    - Added `uint64_t g_syscall_kstack_top` global.
+    - In sched_tick(), when cpu==0 set g_syscall_kstack_top = next->kernel_stack_top.
+  src/kernel/proc/syscall.c
+    - Added `extern uint64_t g_syscall_kstack_top` and `g_syscall_user_rsp` scratch.
+    - Rewrote syscall_entry asm to switch stacks on entry and restore on exit.
+    - syscall_init(): seeds g_syscall_kstack_top with current RSP as safe default.
+
+Build:
+  make clean all && ./build_iso.sh -> OK
+  ISO: out/tatertos64v3.iso
+  Exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+Expected after fix:
+  - No #PF storm in serial.log.
+  - GUI enters event loop ("gui: entering event loop" in serial).
+  - fry_sleep(16) works -> cursor redraws at ~60fps.
+  - PS/2 mouse IRQs accumulate position.
+  - PS/2 kbd IRQs deliver chars to ps2_kbd_read on next SYS_READ.

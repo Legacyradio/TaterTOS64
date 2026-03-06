@@ -1,0 +1,4 @@
+[2026-02-20 19:31:42 UTC] Step: Use FAT32 ESP image for UEFI boot.
+Why: UEFI shell did not detect a filesystem; ESP must be FAT32 to be reliably recognized.
+Change: Increased efiboot.img to 64MB and format as FAT32 (mkfs.fat -F 32 / mformat -F 32).
+Files: build_iso.sh

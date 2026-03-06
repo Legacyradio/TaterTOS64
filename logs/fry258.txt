@@ -1,0 +1,23 @@
+Handoff Follow-up - 2026-02-21
+
+Summary
+- Fixed width parsing in kprint to accept 0-leading widths (e.g., %04x, %02x).
+
+Change
+1) src/kernel/kprint.c
+   - Width parsing now accepts digits '0'..'9' (not just '1'..'9').
+
+Why
+- Serial output still showed literal "4x"/"2x", indicating %04x/%02x widths were not parsed.
+
+Test Commands
+PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh
+qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+  -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+  -cdrom ./out/tatertos64v3.iso \
+  -serial file:logs/serial.log -d int,cpu_reset -D logs/qemu.log
+
+tail -n 50 logs/debugcon.log
+tail -n 50 logs/serial.log
+tail -n 100 logs/qemu.log

@@ -1,0 +1,10 @@
+[2026-02-22 09:42:00 UTC] Step: Enable interrupts (STI) before idle loop; add shell launch result log.
+Why: Interrupts were never enabled after kernel init — no `sti` was ever called. The LAPIC
+     timer was configured and would fire, but with IF=0 all interrupts were held pending and
+     never delivered. The `for(;;) hlt` loop blocked forever without waking, so sched_tick()
+     was never called and the shell process never ran.
+Fix: Added `__asm__ volatile("sti")` before the idle hlt loop in kernel_main(). Interrupts
+     are now enabled after all subsystems are initialized, allowing the LAPIC timer to deliver
+     vector 0x40 and drive sched_tick().
+Also: Added kprint for process_launch success/failure to confirm shell PID or diagnose failure.
+Files: src/kernel/main.c

@@ -1,0 +1,54 @@
+========================================================================
+TaterTOS64v3 - fry524 — Fix SYS_EXIT self-free of live CR3 and stack
+========================================================================
+
+TIMESTAMP
+---------
+2026-03-04 02:12:56 CST
+
+WHY THIS LOG
+------------
+- User reported a critical process-exit bug causing use-after-free behavior.
+- `SYS_EXIT` was freeing the running task's own CR3 + kernel stack before
+  context switching away.
+
+BUG
+---
+- File: `src/kernel/proc/syscall.c`
+- Path: `SYS_EXIT` -> `proc_free(cur->pid)` -> `vmm_destroy_address_space` +
+  `free_kernel_stack` while still executing on that process context.
+- Impact: random crash/corruption on process exit due to live context teardown.
+
+FIX APPLIED
+-----------
+- In syscall layer, added a dedicated kernel-owned exit stack plus
+  `syscall_exit_current()` / `syscall_exit_finish()` trampoline:
+  - stores exit code
+  - switches to kernel CR3 (`vmm_get_kernel_pml4_phys()`)
+  - switches RSP to dedicated exit stack
+  - calls `proc_free(pid)` only after no longer executing on victim CR3/stack
+  - yields to scheduler and halts if control unexpectedly returns
+- Updated `SYS_EXIT` case to use the safe exit trampoline.
+- In `proc_free`, added safety guards that block self-free when caller is still
+  executing on the target process stack or active target CR3.
+
+WHY THIS FIX
+------------
+- Prevents freeing the currently active execution context.
+- Keeps existing process teardown logic intact (`proc_free`) with safe ordering.
+
+FILES CHANGED
+-------------
+- src/kernel/proc/process.c
+- src/kernel/proc/syscall.c
+
+BUILD / VERIFY COMMAND
+----------------------
+- `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make kernel`
+
+BUILD RESULT
+------------
+- PASS (exit code 0)
+- Observed warnings were pre-existing (`unused parameter a4/a5`, linker RWX).
+
+========================================================================

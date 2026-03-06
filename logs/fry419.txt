@@ -1,0 +1,116 @@
+fry419 - EC _REG I/O suppression — prevent EC desync during AML _REG evaluation
+=================================================================================
+Date: 2026-03-01 ~07:30 UTC
+
+DIAGNOSIS (from Dell Precision 7530 bare-metal fry418 results):
+  early=0x00     (EC alive BEFORE init)
+  postLPC=0x00   (EC alive after LPC decode config)
+  preREG=0x00    (EC alive right before _REG)
+  preProbe=0     (anomalous — fry418 code should set =1 when preREG!=0xFF)
+  probe: STS_FF sts=0xff try=5  (EC dead after _REG + probes)
+  rcv=0          (all 5 recovery methods failed)
+  Boot log: "EC PROBE #N FAIL: OBF TIMEOUT WAITING FOR DATA" x13+
+
+  fry418 removed the explicit pre-_REG ec_probe() call, but EC still dies.
+  The EC is alive (0x00) right up until _REG evaluation, then goes dead.
+
+ROOT CAUSE:
+  ec_setup_ports() (called before _REG) sets g_ec_ok=1 optimistically so
+  that ec_read/ec_write work during _REG evaluation.  But this is the
+  PROBLEM: when the AML _REG method runs, if it (or any method it calls)
+  accesses an EmbeddedControl (space=0x03) operation region field, the
+  handler in aml_ops.c:34 calls:
+    ec_read() → ec_read_raw() → outb(0x66, 0x80) + outb(0x62, addr)
+
+  These outb commands are sent DURING _REG evaluation, BEFORE the EC
+  firmware has finished processing the _REG(3,1) handshake.  This is the
+  exact same root cause as the pre-_REG probe — EC commands before the
+  handshake is complete desync the Dell EC state machine.
+
+  The removal of the explicit ec_probe() in fry418 wasn't enough because
+  the AML interpreter itself can trigger EC port I/O via the operation
+  region handler.
+
+FIX:
+  Added a "reg in progress" suppression flag to ec.c.  While set:
+  - ec_read() returns dummy 0 without touching any ports
+  - ec_write() silently succeeds without touching any ports
+  - A counter tracks how many calls were suppressed (diagnostic)
+
+  In extended.c, the _REG call is now bracketed:
+    ec_set_reg_in_progress(1);
+    eval_path_obj_args(ec_node, "REG", args, 2, &ret);
+    ec_set_reg_in_progress(0);
+
+  This ensures ZERO outb() calls reach EC ports during _REG evaluation.
+  After _REG returns and suppression is cleared, the post-_REG recovery
+  probes send real commands to an EC that has completed its handshake.
+
+  Also added ECAV/ECFL verification after _REG: looks up the flag in the
+  EC namespace to confirm _REG actually set it to 1.  If not, a warning
+  is printed so we know _REG didn't execute properly.
+
+  Sysinfo now shows "sup=N" — the count of EC I/O calls suppressed during
+  _REG.  If sup>0 on Dell, it PROVES this was the cause of EC death.
+
+FILES CHANGED:
+  src/kernel/acpi/ec.h       - Added ec_set_reg_in_progress(),
+                                ec_is_reg_in_progress(),
+                                ec_get_reg_suppressed_count()
+  src/kernel/acpi/ec.c       - Added g_ec_reg_in_progress flag and
+                                g_ec_reg_suppressed counter.
+                                ec_read/ec_write check flag before any I/O.
+                                Accessor functions at bottom.
+  src/kernel/acpi/extended.c - Bracket _REG call with suppression flag.
+                                Log _REG return code, suppressed count,
+                                and post-_REG status.
+                                ECAV/ECFL namespace verification after _REG.
+  src/kernel/acpi/extended.h - Added ec_reg_suppressed field to
+                                fry_acpi_diag struct (replaced 2 bytes of
+                                _pad6[3] → _pad6[1] + uint16_t, same size).
+  src/user/libc/libc.h       - Matching struct change for ec_reg_suppressed.
+  src/user/apps/sysinfo.c    - Display "sup=N" in EC diagnostics line.
+
+WHY:
+  The EC region handler (aml_ops.c read_region8/write_region8 for space 3)
+  uses ec_read/ec_write which send real port I/O.  During _REG evaluation,
+  these kill the Dell EC.  Suppressing EC port I/O during _REG prevents
+  any AML-triggered EC access from reaching hardware before the handshake
+  completes.
+
+BUILD:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+  Result: PASS — no new warnings in ec.c or extended.c
+
+ISO:
+  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  Exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+EXPECTED ON DELL AFTER FLASH:
+  - early=0x00    (EC alive before init, unchanged)
+  - postLPC=0x00  (EC alive after LPC config, unchanged)
+  - preREG=0x00   (EC alive before _REG, unchanged)
+  - preProbe=1    (status-only check: 0x00 != 0xFF → alive)
+  - sup=N         (N>0 if _REG AML accessed EC fields, 0 if _REG is simple)
+  - post-_REG sts=0x00  (EC still alive — no outb during _REG)
+  - Recovery method 1 (normal probe) should succeed
+  - rcv=1
+  - EC: OK ports=0x62/0x66
+  - Battery: non-zero mV/rate/remain
+  - Batt: STA != 0x00000000
+
+KEY DIAGNOSTIC:
+  If sup>0: _REG AML WAS doing EC I/O, and suppression prevented desync.
+  If sup=0 but EC still fails: _REG didn't trigger EC I/O, and the root
+    cause is elsewhere (likely _REG evaluation itself failing — check the
+    ECAV/ECFL log line and reg_rc return code).
+
+TEST ON DELL:
+  Flash tatertos64v3.iso to USB, boot Dell Precision 7530
+  Watch serial/sysinfo for:
+    "EC _REG done rc=X ret=X post-_REG sts=0xXX suppressed=N"
+    "EC ECAV/ECFL = X (expected 1)"
+    preProbe=1 rcv=N sup=N
+    EC: OK ports=0x62/0x66
+    Battery: >0 mV

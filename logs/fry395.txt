@@ -1,0 +1,66 @@
+fry395 — Expand LPC bridge PCI diagnostics + improve EC port-source tracing
+Timestamp: 2026-02-28 20:58:24 UTC
+
+PROBLEM:
+  New bare-metal sysinfo showed:
+    LPC IOE: 0x3f0f -> 0x3f0f
+  with EC probe still failing at STS_FF.
+  This means we needed deeper PCI-space visibility on the LPC/eSPI bridge
+  and better EC port provenance, while preserving strict multi-device safety.
+
+CHANGES:
+1) src/kernel/acpi/extended.c
+   - Added EC port-source telemetry:
+     g_ec_ports_source (0=default, 1=ECDT, 2=_CRS).
+   - Added extended LPC bridge telemetry globals:
+     bus/slot/func, vendor/device, class/subclass/prog_if, command register,
+     config dwords 0x80(before/after), 0x84, 0x88, and write-attempt flags.
+   - Added pick_lpc_bridge_candidate():
+     chooses a safe candidate from enumerated PCI devices (Intel class 06/01),
+     preferring root-bus 1f.0 when present; falls back to root-bus 1f.0 default.
+   - Reworked ec_enable_lpc_decode():
+     - Reads and records bridge identity/config first.
+     - Preserves strict compatibility gating for writes:
+       only writes IOE bit 13 when vendor=8086 and class/subclass=06/01.
+     - Keeps non-target hardware path read-only (diagnostics only, no writes).
+     - Logs richer config evidence (cmd, 0x80/0x84/0x88, write flags).
+   - acpi_get_diag() now exports the new fields.
+   - ec_reg_init() now resets/initializes all new diagnostics and records
+     EC port source when ECDT or _CRS supplies ports.
+
+2) src/kernel/acpi/resources.c
+   - Enhanced acpi_get_io_from_crs() to parse additional IO encodings:
+     - Small Fixed I/O descriptors (name 0x09).
+     - Large Generic Register descriptors (name 0x02, SystemIO GAS).
+   - This reduces false fallback to default EC ports when firmware uses
+     alternative but valid _CRS descriptor forms.
+
+3) src/kernel/acpi/extended.h
+4) src/user/libc/libc.h
+   - Extended fry_acpi_diag with matching ABI fields for:
+     ec_ports_source + detailed LPC bridge config diagnostics.
+
+5) src/user/apps/sysinfo.c
+   - Expanded ACPI diagnostics panel to show:
+     EC source, LPC bridge BDF/ID/class/cmd, cfg80 before/after, cfg84/cfg88,
+     and write attempt/performed indicators.
+   - Increased window height to preserve layout readability.
+
+WHY:
+  0x3f0f -> 0x3f0f can legitimately indicate "already enabled" for bit 13.
+  These changes make bridge state explicit so we can distinguish:
+  - already enabled decode,
+  - gated/no-write paths for non-target hardware,
+  - and remaining EC failures caused by factors other than IOE toggling.
+  Multi-device compatibility is preserved by keeping writes strictly gated.
+
+TEST COMMANDS:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+TEST RESULT:
+  PASS (both commands exit code 0)
+  ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  NVMe image: /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+  Non-fatal environment warning:
+    copy to /mnt/c/... failed (read-only filesystem in this environment)

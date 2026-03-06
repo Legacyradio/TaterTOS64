@@ -1,0 +1,14 @@
+[2026-02-22 20:43:00 UTC] Step: Fix find_mount root path matching so /SHELL.FRY can be opened.
+Why: process_launch("/SHELL.FRY") → elf_load_fry → vfs_open("/SHELL.FRY") → find_mount("/SHELL.FRY")
+     matched the '/' in mountpoint "/" at i=0, then found mp[1]='\0' with path[1]='S'.
+     The condition `path[i]==0 || path[i]=='/'` failed because 'S' is neither, so find_mount
+     returned NULL → vfs_open returned NULL → elf_load_fry returned -1 → "shell launch failed".
+     The root mountpoint "/" is special: after consuming its one '/' separator, the remaining
+     path character is the start of the filename, not another separator.
+Fix: Added `|| (i > 0 && mp[i-1] == '/')` to the find_mount match condition.
+     When the mountpoint string ends with '/', the separator has already been consumed and
+     any path character is a valid continuation. For "/" this fires at i=1 (mp[0]='/').
+     Verified: path "/SHELL.FRY" now matches mount "/", rel = "SHELL.FRY".
+     Verified: path "/foo/bar" still matches mount "/" (path[1]='f', mp[0]='/').
+     Verified: path "/foobar" still does NOT match mount "/foo" (mp[3]='o' not '/').
+Files: src/kernel/fs/vfs.c

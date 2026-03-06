@@ -1,0 +1,58 @@
+fry429 — EC bring-up hardening (pre-_REG safety + sideband write reduction)
+=======================================================================
+Date: 2026-03-01 17:47:18 UTC
+
+WHAT CHANGED (why)
+=======================================================================
+- `src/kernel/acpi/extended.c`
+  - Disabled fry422 early active EC probe commands by default
+    (pre-_REG `READ`/address transactions).
+  - Why: pre-_REG EC commands can desync firmware EC state machines and
+    poison later EC/battery bring-up on affected hardware.
+
+  - Removed forced PCR mirror writes when BIOS already has LPC IOE decode
+    enabled but PCR diag-read is invalid.
+  - Why: this path was performing speculative sideband writes in a case where
+    decode was already enabled, with risk of corrupting platform state.
+
+  - Removed P2SB dword blind-write fallback at 00:1f.1+0xE0 when byte unhide
+    fails; now falls back to read-only SBREG probing/default.
+  - Why: full-register writes can clobber unrelated firmware-controlled bits.
+
+  - Switched eSPI diagnostics to safe read-only mode:
+    - skip W1C error-clear writes
+    - skip SLV_CFG indirect command writes
+  - Why: avoid non-essential sideband writes during fragile EC bring-up.
+
+  - Moved `espi_diag_probe()` call to run after EC handshake/recovery path.
+  - Why: keep EC initialization first; diagnostics should not interfere with
+    initial EC bring-up.
+
+FILES TOUCHED
+=======================================================================
+- src/kernel/acpi/extended.c
+
+TESTING
+=======================================================================
+Commands run:
+1) PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/acpi/extended.o
+2) make clean
+3) PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Results:
+- 1) PASS
+- 2) PASS
+- 3) PASS (ISO built at `out/tatertos64v3.iso`)
+
+Notes:
+- Existing warnings remain (unchanged): unused helpers in `extended.c`,
+  RWX segment link warnings, and unrelated warnings in other units.
+- Windows export copy in `build_iso.sh` failed due read-only mount:
+  `/mnt/c/.../tatertos64v3.iso: Read-only file system`.
+
+NEXT HARDWARE CHECK
+=======================================================================
+- Boot `out/tatertos64v3.iso` on Dell Precision 7530 and capture:
+  - `EC:` line (expect probe mode change away from persistent STS_FF/OBF loop)
+  - `EC src` / `LPC IOE` / `PCR PID` / `eSPI err` diagnostics
+  - battery line (`mV`, `rate`, `remain`, `state`)

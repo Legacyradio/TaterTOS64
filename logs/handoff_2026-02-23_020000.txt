@@ -1,0 +1,42 @@
+Date: 2026-02-23 02:00
+Owner: Codex (handoff from Claude)
+
+Summary
+- User asked to continue diagnosing triple fault and disassemble GUI binary at 0x4013BB; also check TSS RSP0 issue.
+- Claude attempted to run objdump but failed due to tool availability and rate limits.
+
+Where I Was Cut Off
+- Command failed:
+  export PATH="/opt/cross/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"; \
+  x86_64-elf-objdump -d /home/jjsako/TaterTOS64v3/out/gui.elf > /tmp/gui.dump
+  exit=1
+- Then tried:
+  which x86_64-elf-objdump
+  (interrupted / rate limits)
+
+Context Gathered
+- Searched for TSS/RSP0 usage in kernel and SMP code:
+  - src/kernel/proc/sched.c
+  - src/drivers/smp/smp.c
+  - src/drivers/smp/smp.h
+  - (additional files in drivers/irq and boot paths were opened)
+
+Next Steps
+1) Verify tool availability:
+   - which x86_64-elf-objdump
+   - if missing, use objdump or llvm-objdump (if installed):
+     - objdump -d /home/jjsako/TaterTOS64v3/out/gui.elf | rg -n "4013bb"
+     - llvm-objdump -d /home/jjsako/TaterTOS64v3/out/gui.elf
+2) If no objdump is available, use nm + addr2line on gui.elf
+3) Inspect TSS RSP0 setup and per-CPU stack wiring in:
+   - src/drivers/smp/smp.c
+   - src/kernel/proc/sched.c
+   - src/boot/tss.c (if present)
+4) Correlate with QEMU log fault RIP and stack to see if #DF is tied to bad RSP0.
+
+Files Mentioned
+- /home/jjsako/TaterTOS64v3/out/gui.elf
+- src/kernel/proc/sched.c
+- src/drivers/smp/smp.c
+- src/drivers/smp/smp.h
+

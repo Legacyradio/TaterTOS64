@@ -1,0 +1,30 @@
+2026-02-26 19:49:43 UTC
+Step: Reduced boot log verbosity to errors only and added targeted launch-failure debug markers.
+Why: User requested less boot noise and a precise marker to pinpoint GUI/SHELL launch failure stage.
+
+Changes made:
+- src/kernel/kprint.c
+  - Added default `errors-only` filter in `kprint()`.
+  - Keeps only error-like lines (failed/error/panic/not found/timeout/etc.) and panic register dump lines.
+  - Left `kprint_write()` untouched so user process stdout still prints normally.
+- src/kernel/proc/elf.h
+  - Added explicit ELF loader error codes (`ELF_LOAD_ERR_*`).
+- src/kernel/proc/elf.c
+  - Returned stage-specific error codes instead of generic `-1` for load failures.
+- src/kernel/proc/process.h
+  - Added `process_last_launch_error()` API.
+  - Added `PROCESS_LAUNCH_ERR_CREATE_USER` launch error constant.
+- src/kernel/proc/process.c
+  - Captures last launch failure reason from `elf_load_fry()` (or process creation).
+- src/kernel/main.c
+  - Replaced generic launch failure prints with markers:
+    - `ERROR: DBG_MARKER GUI_LAUNCH_FAIL path=/GUI.FRY code=<err>`
+    - `ERROR: DBG_MARKER SHELL_LAUNCH_FAIL path=/SHELL.FRY code=<err>`
+
+Build/test commands run:
+- PATH="/opt/cross/bin:$PATH" make kernel
+
+Result:
+- Kernel build succeeded.
+- Existing warning remains unrelated to this change:
+  - `serial_read_char` defined but not used.

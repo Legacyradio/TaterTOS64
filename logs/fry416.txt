@@ -1,0 +1,42 @@
+fry416 - Fix EC Battery: Wrong PCR PID Selection on Dell Precision 7530
+========================================================================
+Date: 2026-02-28
+
+Problem:
+  sysinfo showed PCR PID=0x88 — wrong sideband port ID for Cannon Lake.
+  fry407 re-introduced 0x88 as priority for Dell A30E (device 0xA30E),
+  undoing fry399's fix. Correct PID is 0xEF (confirmed by coreboot
+  cannonlake/pcr_ids.h).
+
+  Failure chain:
+    Wrong PID → PCR mirror write goes to wrong address →
+    EC decode bits never enabled → EC returns 0xFF →
+    battery _STA=0x00000000 → all zeros in sysinfo.
+
+Changes:
+  1. src/kernel/acpi/extended.c — pcr_get_dmi_pid_candidates() (~line 663):
+     - BEFORE: Dell A30E branch had out[0]=PID_DMI_CANNONLAKE (0x88) first
+     - AFTER:  out[0]=PID_DMI_DEFAULT (0xEF) first, 0x88 demoted to fallback
+     - Updated comment: Coffee Lake i5-8300H / CM246 PCH (not "Cannon Lake")
+     - References coreboot cannonlake/pcr_ids.h for PID confirmation
+
+  2. src/kernel/acpi/extended.c — ec_mirror_pcr_ioe() probe loop (~line 933):
+     - Added tie-breaking: when score == best_score, prefer PID_DMI_DEFAULT
+       (0xEF) over other PIDs. Prevents wrong PID from winning by virtue of
+       being tried first when scores are equal.
+
+Why:
+  0xEF is the correct DMI port ID for all modern Intel PCHs including
+  Cannon Lake (confirmed by coreboot). 0x88 was a misidentification that
+  kept getting re-introduced. The tie-breaker ensures 0xEF wins even if
+  both PIDs produce equal scoring reads (e.g., both show decode bits off).
+
+Build: make clean + build_iso.sh — success
+ISO exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+Expected on Dell after flash:
+  - PCR PID=0xef (not 0x88)
+  - IOE: 0x0000XXXX -> 0x00003f0f (EC decode bits set)
+  - EC: OK (sts != 0xFF)
+  - Battery: non-zero mV/rate/remain
+  - Batt: STA != 0x00000000

@@ -1,0 +1,76 @@
+fry435 — eSPI W1C Error Clear + EC Re-Probe
+Date: 2026-03-01
+
+Goal:
+  Clear sticky eSPI Peripheral Channel / Link error registers (W1C)
+  before EC probe to unblock I/O cycle delivery on Dell Precision 7530.
+  If clearing errors helps, add recovery method 7 ("espi_clear").
+
+Root cause:
+  eSPI PCERR=0x00001280 and LNKERR=0x0060FF00 block port 0x62/0x66
+  I/O cycles from reaching the EC. These are sticky W1C registers
+  that espi_diag_probe() was only reading (espi_safe_read_only=1).
+
+Changes:
+
+1. extended.c — new static variables:
+   g_espi_pre_clear[4], g_espi_post_clear[4], g_espi_clear_run,
+   g_espi_clear_found, g_espi_clear_ok for tracking W1C clear results.
+
+2. extended.c — new function espi_clear_errors(int call_site):
+   Runtime-gated (PCBC bit 2 + SBREG_BAR check). Does PID discovery
+   (same 3-candidate probe as espi_diag_probe). Reads PCERR/VWERR/
+   FCERR/LNKERR, writes values back to clear (W1C), re-reads to verify.
+   call_site=0 saves pre-clear baseline, both save post-clear values.
+
+3. extended.c — call-site A (proactive):
+   espi_clear_errors(0) inserted in ec_reg_init() between the
+   post-LPC-decode status checkpoint and ec_setup_ports(). Clears
+   errors before any EC I/O attempt.
+
+4. extended.c — call-site B (recovery) + method 7:
+   After "All methods failed", espi_clear_errors(1) runs again,
+   followed by brief settle loop, ec_reset_state(), ec_reset_fail_count(),
+   and ec_probe(). If probe succeeds → g_ec_recovery_method = 7
+   ("espi_clear") and jumps to ec_recovery_done.
+
+5. extended.c — espi_diag_probe() safe mode disabled:
+   Changed espi_safe_read_only from 1 to 0. Safe because
+   espi_diag_probe() runs at ec_recovery_done: after all EC work
+   is complete. Enables SLV_CFG_CTL slave register read for
+   frequency/IO mode info. Redundant W1C writes in espi_diag_probe
+   now also active (provide final error snapshot).
+
+6. extended.c — acpi_get_diag() updated:
+   Copies espi_pre_clear[], espi_post_clear[], espi_clear_run,
+   espi_clear_found, espi_clear_ok into diagnostic struct.
+
+7. extended.h + libc.h — fry_acpi_diag struct extended:
+   Added espi_pre_clear[4], espi_post_clear[4], espi_clear_run,
+   espi_clear_found, espi_clear_ok, _pad8[1] after existing
+   espi_en/_pad7 fields.
+
+8. shell.c — output updates:
+   A. ec_recovery_name() case 7 → "espi_clear"
+   B. New verdict: "eSPI errors cleared but EC still unresponsive"
+      (when clear_found && clear_ok && !ec_ok)
+   C. New detail block after eSPI line: espi_clr run/found/ok +
+      pre/post error register values
+
+Build artifacts (SHA-256):
+  kernel.elf     ae947939b9de30581c4c33f4cd3407cdf082d53e201f5e991b1dd5b3ed0d9848
+  shell.fry      77454d6899e627cf15135adf8cb7dfccec97a06d53e8796fd1082e38d57c2175
+  gui.fry        cc3119651fbbaaab86ccd1e63f27c55c2e352a679a44169bfe1a148f98c6bf21
+  sysinfo.fry    1cc3ec36bcabbb5e4ddd12e3c7ef03faaafa359e4f449a3c713ccd467ecc545a
+  uptime.fry     be2d52f09c970a70bc6717d72898f26dc55269b50234293239e239ab6d6ea971
+  ps.fry         5161f67679f07f34afe9acd7579bda222f575b7c73b15f59f76cf4b3495a1c84
+  ISO            325beedefbd95bb0bdb25b647256560be0d6d771263b3a0a9b57a5fea89b51c0
+  NVMe           3af9b9739aee73860dfdc6f45c2851ae747053c2787ee2c535b65dcc07b14595
+
+Expected acpibreak output (Dell):
+  espi_clr run=0x03 found=1 ok=1|0
+    pre:  pc=00001280 vw=00000000 fc=00000000 ln=0060ff00
+    post: pc=00000000 vw=00000000 fc=00000000 ln=00000000  (if ok=1)
+  If method 7 succeeds: recov=espi_clear, battery STA should become non-zero
+
+Test: Boot ISO from USB on Dell Precision 7530, run `acpibreak` in shell.

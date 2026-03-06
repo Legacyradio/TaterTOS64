@@ -1,0 +1,75 @@
+========================================================================
+TaterTOS64v3 - fry596 - restore visual boot markers past stage 35
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 ~15:00 CST
+
+CONTEXT
+-------
+- fry595 fixed the QEMU triple fault (boot_diag_stage accessing FB via identity
+  map under user CR3). The fix REMOVED all boot_diag_stage calls from syscall.c
+  because the physmap (0xFFFF800000000000 + fb_base) also failed — FB is MMIO,
+  not covered by physmap.
+- QEMU boots fully (GUI appears), but Dell bare metal stops at 35 white squares.
+- Problem: 35 = K_FIRST_USER (scheduler picked user process). Stages 36-39
+  (first user syscall, init syscall, GUI spawn, GUI FB) had NO visible squares
+  because the calls were removed. The "stuck at 35" report may mean the system
+  is actually progressing further but we lost all visual feedback.
+
+ROOT CAUSE OF MISSING MARKERS
+------------------------------
+- fry595 tried physmap (0xFFFF800000000000 + fb_base) — crashed because FB MMIO
+  is not in the physmap range.
+- But VMM_FB_BASE (0xFFFFFFFFB0000000) was ALREADY mapped during vmm_init()
+  (vmm.c line 419-422) with vmm_map_range(). This address lives in PML4[511],
+  which is in the higher-half range (entries 256-511) that vmm_create_address_space()
+  copies to every user page table.
+- Therefore VMM_FB_BASE is accessible from syscall context under user CR3.
+
+FIX
+---
+- Changed boot_diag_stage() in syscall.c to use VMM_FB_BASE (0xFFFFFFFFB0000000)
+  instead of physmap or identity mapping.
+- Removed the identity-limit guard check (not needed for VMM_FB_BASE).
+- Re-enabled boot_diag_stage() calls in:
+  - note_user_boot_progress(): stage 36 (K_FIRST_USER_SYSCALL), stage 37 (K_INIT_SYSCALL)
+  - SYS_SPAWN: stage 38 (K_INIT_GUI_SPAWN)
+  - SYS_FB_INFO / SYS_FB_MAP: stage 39 (K_GUI_FB)
+
+UPDATED MARKER MAP
+------------------
+- 35 squares: first user process scheduled (sched.c, identity map, kernel CR3)
+- 36 squares: first user syscall received (syscall.c, VMM_FB_BASE, user CR3)
+- 37 squares: INIT.FRY reached syscall (syscall.c, VMM_FB_BASE, user CR3)
+- 38 squares: INIT spawned GUI.FRY (syscall.c, VMM_FB_BASE, user CR3)
+- 39 squares: GUI.FRY reached FB syscall (syscall.c, VMM_FB_BASE, user CR3)
+
+FILES CHANGED
+-------------
+- src/kernel/proc/syscall.c
+  - boot_diag_stage: use VMM_FB_BASE instead of physmap, remove identity limit check
+  - note_user_boot_progress: re-add boot_diag_stage(36) and boot_diag_stage(37)
+  - SYS_SPAWN: re-add boot_diag_stage(38)
+  - SYS_FB_INFO: re-add boot_diag_stage(39)
+  - SYS_FB_MAP: re-add boot_diag_stage(39)
+
+VALIDATION
+----------
+1) Build:
+   - make clean && PATH="..." /bin/bash -x build_iso.sh
+   - PASS — ISO produced and exported
+2) ISO exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+NEXT HARDWARE CHECK
+-------------------
+- Boot on Dell and count white squares:
+  - Still 35: user process faults before first syscall (page tables, ELF load, etc.)
+  - 36: user syscall works but INIT.FRY not recognized or different process runs first
+  - 37: INIT runs but fails to spawn GUI
+  - 38: GUI spawned but never reaches FB setup
+  - 39: GUI reached FB — display pipeline issue, not a crash
+  - >39 / GUI appears: full success
+
+========================================================================

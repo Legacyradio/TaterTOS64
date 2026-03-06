@@ -915,8 +915,9 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         efi_serial_putc('0' + (char)(fry_found & 0xF));
         efi_serial_puts("\n");
 
-        // Pass 2: if primary device had none, scan all SFS handles.
-        if (fry_found == 0) {
+        // Pass 2: if primary device was partial, keep scanning all SFS handles
+        // until every expected userspace payload is present.
+        if (fry_found < FRY_FILE_COUNT) {
             efi_serial_puts("EFI: fry scanning all SFS handles\n");
             typedef EFI_STATUS (EFIAPI *LocHB_t)(UINTN, EFI_GUID*, void*,
                                                   UINTN*, EFI_HANDLE**);

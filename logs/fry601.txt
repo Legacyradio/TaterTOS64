@@ -1,0 +1,58 @@
+========================================================================
+TaterTOS64v3 - fry601 - major milestone: confirmed boot, system alive
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 14:34:39 CST
+
+CONTEXT
+-------
+- User confirmed: "it boots!!! TaterTOS64v3 is alive!!!!"
+- This lands immediately after fry600, which moved VFS open-file objects off
+  the bump heap so boot-time open/close churn no longer burns the tiny early
+  heap.
+- The fry596-fry600 sequence had already narrowed the failure from "bare-metal
+  stops before userspace" down to "INIT alive, spawn/open path still failing."
+- This report is the first explicit confirmation that the system now gets
+  through that boot-blocker chain.
+
+MILESTONE
+---------
+- Major milestone recorded: TaterTOS64v3 now boots successfully and is alive.
+- Practical meaning:
+  - EFI handoff is working.
+  - Kernel survives PMM, VMM, heap setup, and first userspace bootstrap.
+  - INIT is alive.
+  - The previous launch/open-path blocker no longer prevents overall boot.
+
+SUPPORTING EVIDENCE
+-------------------
+- Latest local serial trace in `logs/serial.log` reaches:
+  - `K_INIT_SYSCALL`
+  - `init: pid=5`
+  - `K_INIT_GUI_SPAWN`
+- That is consistent with the user-reported alive/booted state and confirms the
+  machine is progressing well past the earlier white-square boot stalls.
+
+CHANGE APPLIED
+--------------
+- No code changes in this step.
+- Log-only update so this milestone is preserved in the sequential fry history.
+
+VALIDATION RECORDED
+-------------------
+1) Validation source:
+   - User-confirmed successful boot result on 2026-03-06 after fry600.
+2) Supporting local evidence:
+   - `logs/serial.log` shows the kernel reaching first userspace and GUI spawn.
+3) RESULT:
+   - PASS - major boot milestone confirmed.
+
+NEXT FOCUS
+----------
+- Preserve this state before taking the next risky changes.
+- Any remaining bugs should now be treated as post-boot/runtime follow-up, not
+  "the OS still does not boot."
+
+========================================================================

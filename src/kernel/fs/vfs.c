@@ -26,6 +26,9 @@ static int               g_nvme_recovering = 0;
 static struct block_device *g_storage_bd = 0;
 static uint8_t           g_root_from_ramdisk = 0;
 static spinlock_t        g_vfs_lock = {0};
+#define VFS_OPEN_FILE_POOL_SIZE 256u
+static struct vfs_file   g_vfs_file_pool[VFS_OPEN_FILE_POOL_SIZE];
+static uint8_t           g_vfs_file_pool_used[VFS_OPEN_FILE_POOL_SIZE];
 static int mountpoint_exists(const char *mountpoint);
 static int mountpoint_exists_locked(const char *mountpoint);
 static int vfs_try_recover_mount(const char *path);
@@ -56,6 +59,41 @@ static uint64_t vfs_lock_irqsave(void) {
 
 static void vfs_unlock_irqrestore(uint64_t flags) {
     spin_unlock_irqrestore(&g_vfs_lock, flags);
+}
+
+static void vfs_mem_zero(void *ptr, uint64_t len) {
+    uint8_t *p = (uint8_t *)ptr;
+    for (uint64_t i = 0; i < len; i++) p[i] = 0;
+}
+
+static struct vfs_file *vfs_file_alloc(void) {
+    uint64_t irqf = vfs_lock_irqsave();
+    for (uint32_t i = 0; i < VFS_OPEN_FILE_POOL_SIZE; i++) {
+        if (!g_vfs_file_pool_used[i]) {
+            g_vfs_file_pool_used[i] = 1;
+            vfs_unlock_irqrestore(irqf);
+            vfs_mem_zero(&g_vfs_file_pool[i], sizeof(g_vfs_file_pool[i]));
+            return &g_vfs_file_pool[i];
+        }
+    }
+    vfs_unlock_irqrestore(irqf);
+    return 0;
+}
+
+static void vfs_file_free(struct vfs_file *f) {
+    if (!f) return;
+    uintptr_t base = (uintptr_t)&g_vfs_file_pool[0];
+    uintptr_t end = (uintptr_t)(&g_vfs_file_pool[VFS_OPEN_FILE_POOL_SIZE]);
+    uintptr_t ptr = (uintptr_t)f;
+    if (ptr < base || ptr >= end) return;
+    uint64_t idx = (uint64_t)(ptr - base) / (uint64_t)sizeof(struct vfs_file);
+    if (idx >= VFS_OPEN_FILE_POOL_SIZE) return;
+    if ((base + idx * (uint64_t)sizeof(struct vfs_file)) != ptr) return;
+
+    uint64_t irqf = vfs_lock_irqsave();
+    g_vfs_file_pool_used[idx] = 0;
+    vfs_unlock_irqrestore(irqf);
+    vfs_mem_zero(&g_vfs_file_pool[idx], sizeof(g_vfs_file_pool[idx]));
 }
 
 static int rd_bd_read_sector(struct block_device *bd, uint64_t lba, void *buf) {
@@ -868,16 +906,16 @@ struct vfs_file *vfs_open(const char *path) {
     const char *rel = 0;
     struct vfs_mount *m = find_mount_ref(path, &rel);
     if (!m || !m->ops || !m->ops->open) return 0;
-    struct vfs_file *f = (struct vfs_file *)kmalloc(sizeof(struct vfs_file));
+    struct vfs_file *f = vfs_file_alloc();
     if (!f) {
+        kprint("VFS: open file pool exhausted path=%s\n", path);
         vfs_mount_put(m);
         return 0;
     }
-    for (uint32_t i = 0; i < sizeof(f->private); i++) f->private[i] = 0;
     f->mount = m;
     if (m->ops->open(m->fs_data, rel, f) != 0) {
         vfs_mount_put(m);
-        kfree(f);
+        vfs_file_free(f);
         return 0;
     }
     return f;
@@ -898,7 +936,7 @@ int vfs_close(struct vfs_file *f) {
         rc = m->ops->close(f);
     }
     vfs_mount_put(m);
-    kfree(f);
+    vfs_file_free(f);
     return rc;
 }
 uint32_t vfs_size(struct vfs_file *f) {

@@ -1,0 +1,88 @@
+========================================================================
+TaterTOS64v3 - fry600 - move VFS open-file objects off the bump heap
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 14:17:29 CST
+
+CONTEXT
+-------
+- Bare-metal report after fry599:
+  - row 3 shows 4 green squares and 2 red.
+- That row maps to:
+  - green: `/system/INIT.FRY`, `/system/GUI.FRY`, `/apps/SHELL.TOT`,
+    `/apps/SYSINFO.FRY`
+  - red: `/GUI.FRY`, `/SHELL.TOT`
+- Meaning:
+  - the canonical live-session payload paths are present in the mounted root
+  - the root-level fallback aliases are absent from the packed ramdisk layout
+- Since INIT launches through `/system/...` and `/apps/...` first, this report
+  moves the investigation away from "GUI/SHELL missing from live root" and
+  toward the remaining `ELF_LOAD_ERR_OPEN` path itself.
+
+ROOT CAUSE TARGETED
+-------------------
+- `vfs_open()` allocated each `struct vfs_file` with `kmalloc()`.
+- Kernel `kfree()` is still a no-op bump allocator free stub.
+- Result:
+  - every successful open/close permanently consumed heap,
+  - and all later opens still depended on whatever heap headroom remained.
+- That is a bad fit for the current boot path because userspace launch and file
+  open churn happen after a large amount of ACPI / driver initialization has
+  already consumed the tiny early heap.
+
+FIX
+---
+- File changed:
+  - `src/kernel/fs/vfs.c`
+- Replaced heap-backed `struct vfs_file` allocation with a reusable static pool
+  of 256 open-file objects guarded by the existing VFS lock.
+- `vfs_open()` now:
+  - allocates from the pool,
+  - zeros the slot before use,
+  - logs `VFS: open file pool exhausted path=...` if the pool is full.
+- `vfs_close()` now:
+  - returns the slot to the pool instead of calling no-op `kfree()`.
+
+WHY
+---
+- This removes one concrete reason `vfs_stat()` could succeed while
+  `vfs_open()` later fails in the live boot path.
+- It also stops open/close traffic from silently burning the limited bump heap.
+- The user-reported 4-green / 2-red row is still informative:
+  canonical files are there; if Dell still shows spawn-open failures after
+  this patch, the next suspect is no longer missing payload population.
+
+VALIDATION
+----------
+1) Targeted kernel rebuild:
+   - `PATH="/opt/cross/bin:$PATH" make kernel`
+   - Result:
+     - PASS
+2) Full rebuild / repack:
+   - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+   - Result:
+     - PASS
+   - Artifacts:
+     - `/home/jjsako/TaterTOS64v3/kernel.elf`
+     - `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+     - `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+3) Export:
+   - local build succeeded
+   - copy to `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+     failed in this session because `/mnt/c` is read-only
+
+NEXT HARDWARE READOUT
+---------------------
+- If Dell now reaches a green row-1 square or progresses past the previous
+  open-failure pattern, the heap-backed VFS file object path was the blocker.
+- If Dell still shows row-1 red with row-2 blue while row 3 remains
+  4 green / 2 red, the next step should be to split `ELF_LOAD_ERR_OPEN`
+  into:
+  - mount lookup failure
+  - per-filesystem open miss
+  - open-file-pool exhaustion
+  - copied-path corruption
+
+========================================================================

@@ -1,0 +1,112 @@
+========================================================================
+TaterTOS64v3 - fry598 - complete EFI userspace payload scan on partial SFS
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 13:18:27 CST
+
+CONTEXT
+-------
+- Hardware report: boot reaches 37 white squares, then shows many red spawn
+  squares (about 40 observed).
+- Per fry597, red row 1 squares mean INIT.FRY is alive and SYS_SPAWN keeps
+  failing while it retries GUI/SHELL launch paths.
+- INIT loops forever through 7 GUI paths and 7 shell paths, so many red
+  squares mean repeated launch failures, not a one-shot halt.
+
+DIAGNOSIS
+---------
+- EFI loader builds the live ramdisk from discovered userspace payload files.
+- Before this change, alternate EFI filesystem handles were scanned only if
+  pass 1 found zero files on the primary handle.
+- On firmware that exposes a partial primary handle, the loader can find
+  INIT.FRY there but miss GUI.FRY and SHELL.TOT even though those files exist
+  on another EFI filesystem handle.
+- That failure mode matches the Dell symptom exactly: INIT boots, then every
+  child spawn fails forever.
+
+FIX
+---
+- Updated src/boot/efi_loader.c so pass 2 scans alternate EFI Simple File
+  System handles whenever fry_found is less than the full expected payload
+  count, not only when fry_found is zero.
+- Why: a partial primary filesystem result must not block discovery of the
+  remaining live userspace payloads needed by INIT.
+
+FILES CHANGED
+-------------
+- src/boot/efi_loader.c
+  - Changed alternate SFS scan gate from "fry_found == 0" to
+    "fry_found < FRY_FILE_COUNT".
+
+VALIDATION
+----------
+1) Rebuild command:
+   - bash build_iso.sh
+2) Result:
+   - PASS — ISO rebuilt successfully
+3) Artifacts:
+   - out/tatertos64v3.iso
+   - exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+EXPECTED HARDWARE RESULT
+------------------------
+- If the partial-SFS diagnosis is correct, Dell should stop showing an all-red
+  spawn row and should eventually show a successful child launch.
+- If Dell still shows only red squares, next step is to expose the exact
+  process_launch()/elf_load_fry error code visually.
+
+RELATED FOLLOW-UP
+-----------------
+- User correctly pointed out that the error-class diagnostic should have been
+  bundled with the loader fix to avoid another blind bare-metal cycle.
+- Added that diagnostic in the same overall investigation log instead of
+  creating a separate fry log.
+
+FOLLOW-UP FIX
+-------------
+- Updated src/kernel/proc/syscall.c spawn diagnostics:
+  - Row 1 still shows entry/fail/success (yellow/red/green).
+  - Row 2 now color-codes spawn failure class:
+    - BLUE    = ELF_LOAD_ERR_OPEN (-101), path/open failure
+    - MAGENTA = bad FRY/ELF/CRC/header
+    - CYAN    = memory/address-space/process allocation failure
+    - ORANGE  = short read / bounds / translation class failure
+    - WHITE   = unexpected / uncategorized failure
+  - Serial spawn logs now include the actual numeric rc value.
+- Why: if Dell still fails after the partial-SFS loader fix, the next boot now
+  tells us whether the failure is still path lookup or has moved deeper into
+  ELF loading / memory setup.
+
+FOLLOW-UP VALIDATION
+--------------------
+1) Rebuild command:
+   - PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+2) Result:
+   - PASS — ISO rebuilt successfully
+3) Artifact:
+   - out/tatertos64v3.iso
+4) Export:
+   - attempted copy to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+   - WARNING — failed because /mnt/c/... was read-only in this session
+
+STANDARD-SCRIPT REBUILD / EXPORT
+--------------------------------
+- Re-ran the rebuild with the standard approved boot-script command:
+  - /bin/bash -lc 'PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh'
+- Result:
+  - PASS — rebuild completed and export succeeded
+- Exported ISO:
+  - /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+NEXT HARDWARE READOUT
+---------------------
+- Row 1 all red + Row 2 blue:
+  - live userspace payload still missing / open failure persists
+- Row 1 all red + Row 2 magenta/cyan/orange:
+  - file is present, failure moved past lookup into ELF/load/setup
+- Any green in Row 1:
+  - at least one child launch succeeded; failure is later in runtime
+
+========================================================================

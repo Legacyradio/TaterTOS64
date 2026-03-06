@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include "syscall.h"
 #include "process.h"
+#include "elf.h"
 #include "sched.h"
 #include "../fs/vfs.h"
 #include "../acpi/extended.h"
@@ -37,6 +38,7 @@ static uint8_t g_first_user_syscall_seen = 0;
 static uint8_t g_first_init_syscall_seen = 0;
 static uint8_t g_first_init_gui_spawn_seen = 0;
 static uint8_t g_first_gui_fb_seen = 0;
+static uint32_t g_spawn_attempt_count = 0;  /* visual spawn tracker */
 /*
  * SYS_EXIT must not free the currently active process CR3/stack while still
  * executing on them.  Use a dedicated kernel-owned stack for exit teardown.
@@ -140,7 +142,6 @@ static void boot_diag_stage(uint64_t stage) {
     struct fry_handoff *handoff = g_handoff;
     if (!handoff) return;
     if (!handoff->fb_base || !handoff->fb_width || !handoff->fb_height || !handoff->fb_stride) return;
-    if (!handoff->boot_identity_limit || handoff->fb_base >= handoff->boot_identity_limit) return;
 
     uint64_t x0 = stage * 20ULL;
     if (x0 >= handoff->fb_width) return;
@@ -151,12 +152,68 @@ static void boot_diag_stage(uint64_t stage) {
     if (remain_w < mw) mw = remain_w;
     if (handoff->fb_height < mh) mh = handoff->fb_height;
 
-    volatile uint32_t *fb = (volatile uint32_t *)(uintptr_t)handoff->fb_base;
+    /* Use VMM_FB_BASE (0xFFFFFFFFB0000000) — mapped during vmm_init, lives in
+       PML4[511] which is copied to every user address space.  Safe to access
+       from syscall context under user CR3. */
+    volatile uint32_t *fb = (volatile uint32_t *)0xFFFFFFFFB0000000ULL;
     for (uint64_t y = 0; y < mh; y++) {
         uint64_t row = y * handoff->fb_stride + x0;
         for (uint64_t x = 0; x < mw; x++) {
             fb[row + x] = 0x00F0F0F0u;
         }
+    }
+}
+
+/* Colored diagnostic square — same layout as boot_diag_stage but with
+   a caller-chosen color.  Row 0 = white boot markers, row 1 (y offset 20)
+   = spawn-attempt markers so they're visually separate. */
+static void boot_diag_color(uint64_t col, uint64_t row_idx, uint32_t color) {
+    struct fry_handoff *handoff = g_handoff;
+    if (!handoff) return;
+    if (!handoff->fb_base || !handoff->fb_width || !handoff->fb_height || !handoff->fb_stride) return;
+
+    uint64_t x0 = col * 20ULL;
+    uint64_t y0 = row_idx * 20ULL;
+    if (x0 + 12 > handoff->fb_width) return;
+    if (y0 + 12 > handoff->fb_height) return;
+
+    volatile uint32_t *fb = (volatile uint32_t *)0xFFFFFFFFB0000000ULL;
+    for (uint64_t y = 0; y < 12; y++) {
+        uint64_t row = (y0 + y) * handoff->fb_stride + x0;
+        for (uint64_t x = 0; x < 12; x++) {
+            fb[row + x] = color;
+        }
+    }
+}
+
+/* Spawn-failure classifier for bare-metal debugging:
+   blue   = open/path lookup failure
+   magenta= corrupt/invalid container or ELF
+   cyan   = memory / address-space / process allocation failure
+   orange = short read / bounds / translation style failure
+   white  = other / unexpected */
+static uint32_t boot_diag_spawn_error_color(int rc) {
+    switch (rc) {
+        case ELF_LOAD_ERR_OPEN:
+            return 0x000080FFu;
+        case ELF_LOAD_ERR_BAD_MAGIC:
+        case ELF_LOAD_ERR_BAD_CRC:
+        case ELF_LOAD_ERR_BAD_ELF_HEADER:
+        case ELF_LOAD_ERR_BAD_ELF_MAGIC:
+            return 0x00FF00FFu;
+        case ELF_LOAD_ERR_NOMEM:
+        case ELF_LOAD_ERR_VMM_SPACE:
+        case ELF_LOAD_ERR_SEG_ALLOC:
+        case ELF_LOAD_ERR_SEG_TRANSLATE:
+        case ELF_LOAD_ERR_STACK_ALLOC:
+        case PROCESS_LAUNCH_ERR_CREATE_USER:
+            return 0x0000FFFFu;
+        case ELF_LOAD_ERR_SHORT_HEADER:
+        case ELF_LOAD_ERR_READ:
+        case ELF_LOAD_ERR_BOUNDS:
+            return 0x00FF8000u;
+        default:
+            return 0x00FFFFFFu;
     }
 }
 
@@ -512,8 +569,34 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             return 0;
         case SYS_SPAWN: {
             char path[128];
-            if (copy_user_string(cur, a1, path, sizeof(path)) != 0) return (uint64_t)-1;
+            /* Row 1: yellow = spawn entered */
+            uint32_t col = g_spawn_attempt_count;
+            if (col < 80) boot_diag_color(col, 1, 0x00FFFF00u);
+            early_serial_puts("SPAWN_ENTER path=");
+            if (copy_user_string(cur, a1, path, sizeof(path)) != 0) {
+                /* Row 1: red = copy_user_string failed */
+                if (col < 80) boot_diag_color(col, 1, 0x00FF0000u);
+                if (col < 80) boot_diag_color(col, 2, 0x00FFFFFFu);
+                early_serial_puts("(copy_fail)\n");
+                kprint_serial_only("SPAWN_FAIL path=(copy_fail) rc=%d\n", -1);
+                g_spawn_attempt_count++;
+                return (uint64_t)-1;
+            }
+            early_serial_puts(path);
+            early_serial_puts("\n");
             int rc = process_launch(path);
+            if (rc >= 0) {
+                /* Row 1: green = spawn succeeded */
+                if (col < 80) boot_diag_color(col, 1, 0x0000FF00u);
+                if (col < 80) boot_diag_color(col, 2, 0x0000FF00u);
+                kprint_serial_only("SPAWN_OK path=%s pid=%d\n", path, rc);
+            } else {
+                /* Row 1: red = spawn failed (file not found or ELF error) */
+                if (col < 80) boot_diag_color(col, 1, 0x00FF0000u);
+                if (col < 80) boot_diag_color(col, 2, boot_diag_spawn_error_color(rc));
+                kprint_serial_only("SPAWN_FAIL path=%s rc=%d\n", path, rc);
+            }
+            g_spawn_attempt_count++;
             if (rc >= 0 &&
                 cur &&
                 !g_first_init_gui_spawn_seen &&

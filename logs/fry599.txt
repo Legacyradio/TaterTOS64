@@ -1,0 +1,74 @@
+========================================================================
+TaterTOS64v3 - fry599 - add visual live-root payload presence markers
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 13:44:00 CST
+
+CONTEXT
+-------
+- Bare-metal now shows repeated row-1 red spawn markers with row-2 blue
+  classifiers.
+- In the current diagnostic scheme that means:
+  - `INIT.FRY` is alive and calling `SYS_SPAWN`
+  - `process_launch()` is failing with `ELF_LOAD_ERR_OPEN`
+  - failure is still at path/open stage, not FRY/ELF parsing or memory setup
+- Serial is not available on the Dell during this failure, so the missing piece
+  is whether the live root actually contains the canonical payload paths before
+  `INIT.FRY` starts retrying GUI/SHELL launches.
+
+CHANGE
+------
+- File updated:
+  - `src/kernel/main.c`
+- Added `early_fb_color(...)` for pre-init framebuffer diagnostics while the
+  kernel is still running under its early boot mappings.
+- After VFS init and before launching `INIT.FRY`, the kernel now draws a new
+  row of presence markers on screen:
+  - row 3 / col 0 = `/system/INIT.FRY`
+  - row 3 / col 1 = `/system/GUI.FRY`
+  - row 3 / col 2 = `/apps/SHELL.TOT`
+  - row 3 / col 3 = `/apps/SYSINFO.FRY`
+  - row 3 / col 4 = `/GUI.FRY`
+  - row 3 / col 5 = `/SHELL.TOT`
+  - green = `vfs_stat(...)` succeeded
+  - red = `vfs_stat(...)` failed
+
+WHY
+---
+- This makes the next Dell boot answer the right question immediately:
+  did the EFI loader / live root expose the expected canonical app paths, or is
+  `INIT.FRY` retrying against files that never made it into the mounted root?
+- It keeps the live-session policy intact:
+  - root stays on ramdisk when present
+  - no `/nvme*` launcher fallback was reintroduced
+
+VALIDATION
+----------
+1) Targeted kernel rebuild:
+   - `PATH="/opt/cross/bin:$PATH" make kernel`
+   - Result:
+     - PASS
+2) Full rebuild / repack:
+   - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+   - Result:
+     - PASS
+   - Artifacts:
+     - `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+     - `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+   - Export:
+     - local ISO build succeeded
+     - copy to `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+       failed in this environment because `/mnt/c` is read-only
+
+NEXT BOOT READOUT
+-----------------
+- Row 1 red + row 2 blue still means open/path failure.
+- New row 3 will tell which canonical payloads are actually present in the
+  mounted live root before `INIT.FRY` starts spawning:
+  - green on cols 0/1/2 = INIT/GUI/SHELL canonical paths exist
+  - red on col 1 or 2 = loader/root population still missing GUI or SHELL
+  - all red except col 0 = likely "INIT only" ramdisk population failure
+
+========================================================================

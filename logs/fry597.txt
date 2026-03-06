@@ -1,0 +1,77 @@
+========================================================================
+TaterTOS64v3 - fry597 - colored spawn diagnostic markers
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 ~16:00 CST
+
+CONTEXT
+-------
+- Dell bare metal boots to 37 white squares (up from 35 before fry596).
+- 37 = INIT.FRY is alive and making syscalls (fry_getpid succeeded).
+- 38 (GUI spawn success) never appears — INIT tries all 7 GUI paths and
+  all 7 shell paths, all fail, then it sleeps forever.
+- No serial output on Dell, so we have zero visibility into WHY spawns fail.
+
+FIX: COLORED SPAWN DIAGNOSTIC SQUARES
+--------------------------------------
+Added a second row of colored 12x12 squares at y=20 (below the white boot
+marker row at y=0). Each SYS_SPAWN attempt draws one square at column N:
+
+  YELLOW = SYS_SPAWN entered (before copy_user_string)
+  RED    = spawn failed (copy_user_string failed OR process_launch returned <0)
+  GREEN  = spawn succeeded (process_launch returned valid PID)
+
+Also added boot_diag_color(col, row, color) helper alongside boot_diag_stage().
+Uses same VMM_FB_BASE approach (safe under user CR3).
+
+Serial output also added: "SPAWN_ENTER path=...", "SPAWN_OK", "SPAWN_FAIL"
+(visible in QEMU serial log for debugging).
+
+EXPECTED DELL RESULTS
+---------------------
+Row 0 (y=0):  37 white squares (same as before, boot stages 0-37)
+Row 1 (y=20): Colored squares showing spawn attempts:
+
+Case A: All red squares (7+ red)
+  = VFS can't find any of the GUI/SHELL paths on ramdisk
+  = Ramdisk VFS path resolution bug, or ramdisk not mounted
+  = Next step: add ramdisk file listing diagnostic
+
+Case B: Yellow square then crash (1 yellow, no red/green)
+  = copy_user_string or process_launch crashes the kernel
+  = Next step: investigate ELF loader / VMM on Dell memory layout
+
+Case C: Mix of red then green
+  = Some paths fail (expected), one succeeds
+  = 38th white square should also appear
+  = GUI.FRY loaded but dies before FB setup
+
+Case D: No colored squares at all
+  = INIT never reaches SYS_SPAWN — crashes during printf (SYS_WRITE)
+  = Next step: add SYS_WRITE diagnostic marker
+
+FILES CHANGED
+-------------
+- src/kernel/proc/syscall.c
+  - Added boot_diag_color(col, row_idx, color) — colored square at (col*20, row*20)
+  - Added g_spawn_attempt_count tracker
+  - SYS_SPAWN: yellow on entry, red on fail, green on success (row 1)
+  - Serial logging: SPAWN_ENTER/SPAWN_OK/SPAWN_FAIL with path
+
+VALIDATION
+----------
+1) Build: make clean && build_iso.sh — PASS
+2) ISO exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+HARDWARE TEST INSTRUCTIONS
+--------------------------
+1) Flash ISO to USB: rufus or dd
+2) Boot Dell from USB
+3) Count white squares in row 0 (should still be 37+)
+4) Look at ROW 1 (y=20, just below the white squares):
+   - Count colored squares and note colors (yellow/red/green)
+   - Report: "Row 1: N red, N green" or "Row 1: nothing"
+
+========================================================================

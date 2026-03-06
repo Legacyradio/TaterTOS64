@@ -98,18 +98,6 @@ static int dbg_vfs_emit_name(const char *name, void *ctx) {
     return 0;
 }
 
-static int try_launch_first(const char *const *paths, uint32_t count, const char **chosen_path) {
-    for (uint32_t i = 0; i < count; i++) {
-        int rc = process_launch(paths[i]);
-        if (rc >= 0) {
-            if (chosen_path) *chosen_path = paths[i];
-            return rc;
-        }
-    }
-    if (chosen_path) *chosen_path = count ? paths[count - 1] : 0;
-    return -1;
-}
-
 /* Draw a tiny top-row stage block for bare-metal handoff debugging. */
 static void early_fb_stage(struct fry_handoff *handoff, uint64_t stage) {
     if (!handoff) return;
@@ -130,6 +118,31 @@ static void early_fb_stage(struct fry_handoff *handoff, uint64_t stage) {
         uint64_t row = y * handoff->fb_stride + x0;
         for (uint64_t x = 0; x < mw; x++) {
             fb[row + x] = 0x00F0F0F0u;
+        }
+    }
+}
+
+static void early_fb_color(struct fry_handoff *handoff, uint64_t col, uint64_t row_idx, uint32_t color) {
+    if (!handoff) return;
+    if (!handoff->fb_base || !handoff->fb_width || !handoff->fb_height || !handoff->fb_stride) return;
+    if (!handoff->boot_identity_limit || handoff->fb_base >= handoff->boot_identity_limit) return;
+
+    uint64_t x0 = col * 20ULL;
+    uint64_t y0 = row_idx * 20ULL;
+    if (x0 >= handoff->fb_width || y0 >= handoff->fb_height) return;
+
+    uint64_t mw = 12ULL;
+    uint64_t mh = 12ULL;
+    uint64_t remain_w = handoff->fb_width - x0;
+    uint64_t remain_h = handoff->fb_height - y0;
+    if (remain_w < mw) mw = remain_w;
+    if (remain_h < mh) mh = remain_h;
+
+    volatile uint32_t *fb = (volatile uint32_t *)(uintptr_t)handoff->fb_base;
+    for (uint64_t y = 0; y < mh; y++) {
+        uint64_t row = (y0 + y) * handoff->fb_stride + x0;
+        for (uint64_t x = 0; x < mw; x++) {
+            fb[row + x] = color;
         }
     }
 }
@@ -318,6 +331,18 @@ static void after_vmm(struct fry_handoff *handoff) {
             kprint("DBG_VFS stat init=%d gui_system=%d shell_apps=%d sysinfo_apps=%d gui_root=%d sh_root=%d\n",
                    rc_system_init, rc_system_gui, rc_apps_shell,
                    rc_apps_sysinfo, rc_root_gui, rc_root_sh);
+            /*
+             * Row 3 is the live-root payload-presence row:
+             * col0=/system/INIT.FRY col1=/system/GUI.FRY col2=/apps/SHELL.TOT
+             * col3=/apps/SYSINFO.FRY col4=/GUI.FRY col5=/SHELL.TOT
+             * green=present red=missing
+             */
+            early_fb_color(handoff, 0, 3, (rc_system_init == 0) ? 0x0000FF00u : 0x00FF0000u);
+            early_fb_color(handoff, 1, 3, (rc_system_gui  == 0) ? 0x0000FF00u : 0x00FF0000u);
+            early_fb_color(handoff, 2, 3, (rc_apps_shell  == 0) ? 0x0000FF00u : 0x00FF0000u);
+            early_fb_color(handoff, 3, 3, (rc_apps_sysinfo == 0) ? 0x0000FF00u : 0x00FF0000u);
+            early_fb_color(handoff, 4, 3, (rc_root_gui    == 0) ? 0x0000FF00u : 0x00FF0000u);
+            early_fb_color(handoff, 5, 3, (rc_root_sh     == 0) ? 0x0000FF00u : 0x00FF0000u);
         }
         vfs_readdir("/", dbg_vfs_emit_name, 0);
         vfs_readdir("/system", dbg_vfs_emit_name, 0);
@@ -331,64 +356,18 @@ static void after_vmm(struct fry_handoff *handoff) {
         process_init();
         sched_init();
         syscall_init();
-        // Phase 15: User GUI shell
+        // Phase 15: Launch init — session policy lives in userspace now
         kprint("init: launch\n");
-        const char *launch_path = 0;
-        int launch_rc = -1;
-        const char *init_paths[] = {
-            "/system/INIT.FRY",
-            "/INIT.FRY"
-        };
-        const char *gui_paths[] = {
-            "/system/GUI.FRY",
-            "/GUI.FRY",
-            "/fry/GUI.FRY",
-            "/FRY/GUI.FRY",
-            "/EFI/fry/GUI.FRY",
-            "/EFI/FRY/GUI.FRY",
-            "/EFI/BOOT/GUI.FRY",
-            "/EFI/BOOT/fry/GUI.FRY",
-            "/EFI/BOOT/FRY/GUI.FRY"
-        };
-        const char *shell_paths[] = {
-            "/apps/SHELL.TOT",
-            "/SHELL.TOT",
-            "/fry/SHELL.TOT",
-            "/FRY/SHELL.TOT",
-            "/EFI/fry/SHELL.TOT",
-            "/EFI/FRY/SHELL.TOT",
-            "/EFI/BOOT/SHELL.TOT",
-            "/EFI/BOOT/fry/SHELL.TOT",
-            "/EFI/BOOT/FRY/SHELL.TOT"
-        };
-        launch_rc = try_launch_first(init_paths,
-                                     (uint32_t)(sizeof(init_paths) / sizeof(init_paths[0])),
-                                     &launch_path);
+        int launch_rc = process_launch("/system/INIT.FRY");
+        if (launch_rc < 0)
+            launch_rc = process_launch("/INIT.FRY");
         if (launch_rc < 0) {
-            kprint("ERROR: INIT launch failed path=%s code=%d\n",
-                   launch_path ? launch_path : "/system/INIT.FRY",
-                   process_last_launch_error());
-            launch_rc = try_launch_first(gui_paths,
-                                         (uint32_t)(sizeof(gui_paths) / sizeof(gui_paths[0])),
-                                         &launch_path);
-            if (launch_rc < 0) {
-                kprint("ERROR: GUI launch failed path=%s code=%d\n",
-                       launch_path ? launch_path : "/system/GUI.FRY",
-                       process_last_launch_error());
-                launch_rc = try_launch_first(shell_paths,
-                                             (uint32_t)(sizeof(shell_paths) / sizeof(shell_paths[0])),
-                                             &launch_path);
-            }
+            kprint("FATAL: no INIT.FRY found (code=%d)\n", process_last_launch_error());
+            kernel_panic("cannot launch /system/INIT.FRY or /INIT.FRY");
         }
-        if (launch_rc < 0) {
-            kprint("ERROR: SHELL fallback launch failed path=%s code=%d\n",
-                   launch_path ? launch_path : "/apps/SHELL.TOT",
-                   process_last_launch_error());
-        } else {
-            kprint("init: user pid=%d path=%s\n", launch_rc, launch_path ? launch_path : "(unknown)");
-            early_fb_stage(handoff, 32);
-            early_serial_puts("K_BOOT_USER_ENQUEUED\n");
-        }
+        kprint("init: user pid=%d\n", launch_rc);
+        early_fb_stage(handoff, 32);
+        early_serial_puts("K_BOOT_USER_ENQUEUED\n");
         early_fb_stage(handoff, 30);
     }
 

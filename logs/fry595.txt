@@ -1,0 +1,90 @@
+========================================================================
+TaterTOS64v3 - fry595 - fix boot crash: physmap FB + kernel launch cleanup
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 ~14:30 CST
+
+CONTEXT
+-------
+- fry590-594: bare-metal boot hangs at ~34 white squares (first user switch
+  seen, but userspace never makes a syscall).
+- QEMU serial log showed: K_BOOT_USER_ENQUEUED, K_FIRST_SWITCH, K_FIRST_USER,
+  K_FIRST_TICK — then nothing. No K_FIRST_USER_SYSCALL.
+- QEMU -d int log revealed triple fault:
+    #PF at IP=boot_diag_stage (syscall.c copy), CR2=0x80000b40 (framebuffer),
+    CR3=kernel PML4. Error code 0x0002 (write, not present).
+
+ROOT CAUSE
+----------
+- `syscall_entry` does NOT switch CR3 to kernel page tables. The entire
+  syscall runs under the USER process's CR3.
+- `vmm_create_address_space()` copies only PML4 entries 256-511 (higher half:
+  kernel code, physmap, heap) to user page tables. The identity map (entries
+  0-3, covering 0x0 to boot_identity_limit) is NOT copied.
+- `boot_diag_stage()` accesses the framebuffer via identity mapping:
+    `(volatile uint32_t *)(uintptr_t)handoff->fb_base`
+  where fb_base = 0x80000b40 (~2 GB physical).
+- Under user CR3, address 0x80000b40 is unmapped -> #PF -> double fault ->
+  triple fault -> QEMU reset.
+- The crash happens when the first user syscall triggers `note_user_boot_progress()`
+  which calls `boot_diag_stage(36)`.
+- sched.c and lapic_timer.c copies of boot_diag_stage worked because:
+  - sched.c: called before CR3 switch in sched_tick
+  - lapic_timer.c: IRQ handler has CR3 switch (fry322 irq_saved_cr3 fix)
+
+FIX
+---
+- Changed all three boot_diag_stage copies (syscall.c, sched.c, lapic_timer.c)
+  to access the framebuffer via physmap instead of identity mapping:
+    `(volatile uint32_t *)(uintptr_t)(0xFFFF800000000000ULL + handoff->fb_base)`
+  The physmap is in the higher half, always present in user page tables.
+
+ADDITIONAL CLEANUP
+------------------
+- `src/kernel/main.c`:
+  - Removed `try_launch_first()` helper, `gui_paths[]`, `shell_paths[]`
+  - Kernel now only tries `/system/INIT.FRY` and `/INIT.FRY`, panics otherwise
+  - Session policy (GUI/shell fallback, retries) is init.c's job
+
+FILES CHANGED
+-------------
+- `src/kernel/proc/syscall.c` — boot_diag_stage: identity -> physmap FB access
+- `src/kernel/proc/sched.c` — boot_diag_stage: identity -> physmap FB access
+- `src/drivers/timer/lapic_timer.c` — boot_diag_stage: identity -> physmap FB access
+- `src/kernel/main.c` — removed GUI/SHELL fallback, init-only launch + panic
+
+ITERATION
+---------
+- First attempt: changed all 3 boot_diag_stage copies to use physmap
+  (0xFFFF800000000000 + fb_base). Still crashed — FB is MMIO, not in physmap
+  either (physmap only covers EFI bootstrap memory types, not MMIO).
+- Second attempt: reverted sched.c and lapic_timer.c to identity mapping
+  (they run under kernel CR3 which has it). Removed all boot_diag_stage
+  CALLS from syscall.c (serial markers like K_FIRST_USER_SYSCALL kept).
+  The boot_diag_stage function body left in syscall.c (unused, compiler
+  will drop it).
+
+VALIDATION
+----------
+1) Build:
+   - `make clean && PATH="..." /bin/bash -x build_iso.sh`
+   - PASS — ISO produced and exported
+2) ISO exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+3) QEMU test: BOOTS SUCCESSFULLY. GUI appears. Boot issue resolved.
+
+NOTES
+-----
+- The deeper architectural issue remains: syscall_entry runs under user CR3.
+  This works because kernel code/data/heap/physmap are all in the higher half
+  (copied to user PML4). Only the identity map is missing. Long-term, adding
+  a CR3 switch to syscall_entry (KPTI-style) would be more robust.
+- The framebuffer physical address (~0x80000000 on QEMU) is identity-mapped
+  in kernel PML4 but NOT in user PML4 and NOT in the physmap. Any kernel code
+  running under user CR3 (i.e. syscall path) must not touch the FB via
+  identity or physmap. The GUI uses SHM-mapped FB at a user VA instead.
+- early_fb_stage() in main.c is NOT changed — it runs during early boot
+  before VMM, so it correctly uses identity mapping.
+
+========================================================================

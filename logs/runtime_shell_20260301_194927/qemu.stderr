@@ -1,1 +1,0 @@
-qemu-system-x86_64: -monitor unix:/tmp/tater_mon_20260301_194927.sock,server,nowait: Failed to bind socket to /tmp/tater_mon_20260301_194927.sock: Operation not permitted

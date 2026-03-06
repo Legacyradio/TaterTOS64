@@ -21,6 +21,10 @@ build/
 *.mp4
 *.jfif
 *:Zone.Identifier
+logs/qemu.log
+logs/**/qemu.log
+logs/**/qemu.stderr
+logs/**/qemu.stdout
 
 # Tooling scratch
 .claude/

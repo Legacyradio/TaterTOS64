@@ -26,7 +26,7 @@ struct fry_handoff {
 #define RAMDISK_MAXFILES 16
 
 struct ramdisk_entry {
-    char     name[32];   /* uppercase filename e.g. "GUI.FRY", null-terminated */
+    char     name[32];   /* case-insensitive relative path, e.g. "system/INIT.FRY" */
     uint64_t offset;     /* byte offset of file data from start of ramdisk buffer */
     uint64_t size;       /* file size in bytes */
 };

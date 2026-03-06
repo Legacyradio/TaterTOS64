@@ -189,7 +189,7 @@ static int ntfs_dev_read_bytes(struct block_device *bd, uint64_t part_lba,
     uint32_t remaining = len;
 
     if (in_sec != 0) {
-        sec = (uint8_t *)kmalloc((uint32_t)dev_sec_size);
+        sec = (uint8_t *)kmalloc(dev_sec_size);
         if (!sec) return -1;
         if (part_lba > UINT64_MAX - lba) {
             kfree(sec);
@@ -235,7 +235,7 @@ static int ntfs_dev_read_bytes(struct block_device *bd, uint64_t part_lba,
 
     if (remaining > 0) {
         if (!sec) {
-            sec = (uint8_t *)kmalloc((uint32_t)dev_sec_size);
+            sec = (uint8_t *)kmalloc(dev_sec_size);
             if (!sec) return -1;
         }
         if (part_lba > UINT64_MAX - lba) {
@@ -694,13 +694,29 @@ static struct ntfs_attr_header *ntfs_find_data_attr(void *mft_record,
 
 /* ── Data Run Decoding ──────────────────────────────────────────────────── */
 
+static int ntfs_lcn_apply_delta(uint64_t *cur_lcn, int64_t delta) {
+    if (!cur_lcn) return -1;
+    if (delta >= 0) {
+        uint64_t add = (uint64_t)delta;
+        if (*cur_lcn > UINT64_MAX - add) return -1;
+        *cur_lcn += add;
+        return 0;
+    }
+
+    /* Absolute value without signed overflow on INT64_MIN. */
+    uint64_t sub = (uint64_t)(-(delta + 1)) + 1;
+    if (*cur_lcn < sub) return -1;
+    *cur_lcn -= sub;
+    return 0;
+}
+
 int ntfs_decode_data_runs(const uint8_t *run_ptr, uint32_t max_len,
                            struct ntfs_data_run *runs, uint32_t max_runs) {
     if (!run_ptr || !runs || max_runs == 0) return -1;
 
     uint32_t count = 0;
     uint32_t pos = 0;
-    int64_t prev_lcn = 0;  /* data runs use delta encoding for LCN */
+    uint64_t prev_lcn = 0;  /* absolute LCN accumulator */
     int malformed = 0;
 
     while (pos < max_len && count < max_runs) {
@@ -724,20 +740,23 @@ int ntfs_decode_data_runs(const uint8_t *run_ptr, uint32_t max_len,
         if (run_length == 0) { malformed = 1; break; }
 
         /* Decode LCN offset (signed, delta from previous) */
-        int64_t lcn_delta = 0;
         if (off_size > 0) {
+            uint64_t raw_delta = 0;
             for (uint8_t i = 0; i < off_size; i++) {
-                lcn_delta |= (int64_t)(uint64_t)run_ptr[pos + i] << (i * 8);
+                raw_delta |= (uint64_t)run_ptr[pos + i] << (i * 8);
             }
             /* Sign extend */
             if (run_ptr[pos + off_size - 1] & 0x80) {
-                for (uint8_t i = off_size; i < 8; i++) {
-                    lcn_delta |= (int64_t)0xFFULL << (i * 8);
+                if (off_size < 8) {
+                    raw_delta |= (~0ULL) << (off_size * 8);
                 }
             }
+            int64_t lcn_delta = (int64_t)raw_delta;
             pos += off_size;
-            prev_lcn += lcn_delta;
-            if (prev_lcn < 0) { malformed = 1; break; }
+            if (ntfs_lcn_apply_delta(&prev_lcn, lcn_delta) != 0) {
+                malformed = 1;
+                break;
+            }
         } else {
             /* Sparse run (off_size == 0): LCN is meaningless, skip */
             runs[count].lcn = NTFS_LCN_SPARSE;
@@ -746,7 +765,7 @@ int ntfs_decode_data_runs(const uint8_t *run_ptr, uint32_t max_len,
             continue;
         }
 
-        runs[count].lcn = (uint64_t)prev_lcn;
+        runs[count].lcn = prev_lcn;
         runs[count].length = run_length;
         count++;
     }

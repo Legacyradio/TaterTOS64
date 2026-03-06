@@ -60,6 +60,7 @@ void acpi_reset(void) {
         return;
     }
     if (f->reset_reg_space == 0) { // SystemMemory
+        vmm_ensure_physmap_uc(f->reset_reg + 1);
         volatile uint8_t *p = (volatile uint8_t *)(uintptr_t)vmm_phys_to_virt(f->reset_reg);
         *p = f->reset_val;
         return;

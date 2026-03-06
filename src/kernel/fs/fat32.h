@@ -40,6 +40,6 @@ int fat32_readdir(struct fat32_fs *fs, uint32_t dir_cluster,
                   void *ctx);
 int fat32_stat(struct fat32_fs *fs, const char *path, uint32_t *size_out, uint8_t *attr_out);
 int fat32_probe_bpb(struct block_device *bd, uint64_t part_lba);
-int fat32_init(void);
+int fat32_init(struct block_device *bd);
 
 #endif

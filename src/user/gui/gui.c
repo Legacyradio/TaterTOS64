@@ -53,6 +53,9 @@ typedef struct {
     int msglen;
     char textbuf[1024];
     int textlen;
+    uint64_t launch_deadline_ms;
+    uint8_t launch_watchdog_fired;
+    uint8_t launch_progress_seen;
 } window_t;
 
 static window_t windows[MAX_WINDOWS];
@@ -74,6 +77,7 @@ static int g_desktop_h; /* screen height minus taskbar, set once in main */
 // App list for start menu
 // ---------------------------------------------------------------------------
 #define MAX_MENU_APPS 24
+#define LAUNCH_WATCHDOG_MS 5000ULL
 static char app_names[MAX_MENU_APPS][32];
 static char app_paths[MAX_MENU_APPS][96];
 static int app_count = 0;
@@ -84,6 +88,24 @@ static int app_count = 0;
 static int start_menu_open = 0;
 static int dragging_slot   = -1;
 static int drag_ox = 0, drag_oy = 0;
+
+static int window_has_process(const window_t *w) {
+    return w && w->pid >= 0;
+}
+
+static void append_window_text(window_t *w, const char *msg) {
+    int avail;
+    int n;
+    if (!w || !msg || !*msg) return;
+    avail = (int)sizeof(w->textbuf) - 1 - w->textlen;
+    n = (int)strlen(msg);
+    if (n > avail) n = avail;
+    if (n > 0) {
+        memcpy(w->textbuf + w->textlen, msg, (size_t)n);
+        w->textlen += n;
+        w->textbuf[w->textlen] = '\0';
+    }
+}
 
 static char ascii_upper(char c) {
     if (c >= 'a' && c <= 'z') return (char)(c - ('a' - 'A'));
@@ -132,6 +154,31 @@ static int str_eq_ci(const char *a, const char *b) {
     return *a == 0 && *b == 0;
 }
 
+static int path_is_nvme_prefix(const char *path) {
+    if (!path) return 0;
+    return path[0] == '/' &&
+           path[1] == 'n' &&
+           path[2] == 'v' &&
+           path[3] == 'm' &&
+           path[4] == 'e';
+}
+
+static int gui_path_is_primary_app_source(const char *path) {
+    /*
+     * Keep the desktop app model deterministic: the live/root app set comes
+     * only from the primary root view. Secondary mounts stay available for
+     * explicit browsing and install workflows, but the launcher never consults
+     * them as implicit app sources.
+     */
+    if (!path || !*path) return 0;
+    return !path_is_nvme_prefix(path);
+}
+
+static int path_is_system_dir(const char *path) {
+    if (!path) return 0;
+    return str_eq(path, "/system");
+}
+
 static int app_already_added(const char *name) {
     for (int i = 0; i < app_count; i++) {
         if (str_eq(app_names[i], name)) return 1;
@@ -144,6 +191,7 @@ static void add_app_entry(const char *dir, const char *entry) {
     char full[96];
     size_t len;
     if (!entry || !dir) return;
+    if (!gui_path_is_primary_app_source(dir)) return;
     if (has_fry_suffix(entry)) {
         len = strlen(entry) - 4; /* trim ".FRY" */
     } else if (has_tot_suffix(entry) && str_eq_ci(entry, "SHELL.TOT")) {
@@ -156,6 +204,7 @@ static void add_app_entry(const char *dir, const char *entry) {
     base[len] = 0;
     /* GUI is the compositor itself — never list it as a launchable app */
     if (str_eq(base, "GUI")) return;
+    if (str_eq(base, "INIT") && path_is_system_dir(dir)) return;
     if (app_already_added(base)) return;
     if (app_count >= MAX_MENU_APPS) return;
 
@@ -200,8 +249,9 @@ static void discover_apps_at(const char *path) {
     }
 }
 
-static void discover_apps(void) {
+static void discover_primary_apps(void) {
     static const char *dirs[] = {
+        "/apps",
         "/",
         "/fry",
         "/FRY",
@@ -211,20 +261,26 @@ static void discover_apps(void) {
         "/EFI/BOOT/fry",
         "/EFI/BOOT/FRY"
     };
-
-    app_count = 0;
-    for (int i = 0; i < (int)(sizeof(dirs) / sizeof(dirs[0])); i++) {
+    for (uint32_t i = 0; i < (uint32_t)(sizeof(dirs) / sizeof(dirs[0])); i++) {
         discover_apps_at(dirs[i]);
     }
+}
 
-    /* Safe fallback if directory listing is unavailable early in boot. */
-    if (app_count == 0) {
-        add_app_entry("/", "SHELL.TOT");
-        add_app_entry("/", "SYSINFO.FRY");
-        add_app_entry("/", "UPTIME.FRY");
-        add_app_entry("/", "PS.FRY");
-        add_app_entry("/", "FILEMAN.FRY");
-    }
+static void discover_apps(void) {
+    /*
+     * Keep boot UX deterministic: seed a minimal launch set first, then enrich
+     * from directory scans. This guarantees a usable menu even when storage is
+     * slow or unavailable.
+     */
+    app_count = 0;
+    add_app_entry("/apps", "SHELL.TOT");
+    add_app_entry("/apps", "SYSINFO.FRY");
+    add_app_entry("/apps", "UPTIME.FRY");
+    add_app_entry("/apps", "PS.FRY");
+    add_app_entry("/apps", "FILEMAN.FRY");
+    add_app_entry("/", "SHELL.TOT");
+
+    discover_primary_apps();
 }
 
 // ---------------------------------------------------------------------------
@@ -315,10 +371,21 @@ static void process_window_output(window_t *w) {
                         w->shm_ptr = (uint32_t *)(uintptr_t)ptr;
                         w->shm_w   = req_w;
                         w->shm_h   = req_h;
+                        w->launch_progress_seen = 1;
+                        w->launch_deadline_ms = 0;
                         w->w = w->shm_w + 2;
                         w->h = w->shm_h + TITLE_H + 1;
                         clamp_window_pos(w);
-                        strncpy(w->title, msg->title, 47);
+                        {
+                            size_t ti = 0;
+                            while (ti + 1 < sizeof(w->title) &&
+                                   ti < sizeof(msg->title) &&
+                                   msg->title[ti]) {
+                                w->title[ti] = msg->title[ti];
+                                ti++;
+                            }
+                            w->title[ti] = 0;
+                        }
                         tw_msg_win_created_t resp;
                         resp.hdr.type  = TW_MSG_WINDOW_CREATED;
                         resp.hdr.magic = TW_MAGIC;
@@ -453,7 +520,7 @@ static void draw_window_text(window_t *w) {
 // ---------------------------------------------------------------------------
 static void remove_window(int slot) {
     window_t *w = &windows[slot];
-    if (!w->done) {
+    if (!w->done && window_has_process(w)) {
         fry_kill(w->pid);
     }
     if (w->shm_id >= 0) {
@@ -470,11 +537,44 @@ static void remove_window(int slot) {
     if (dragging_slot == slot) dragging_slot = -1;
 }
 
+static void launch_watchdog_expire(window_t *w) {
+    const char *msg = "GUI: launch timeout (no app response)\n";
+    if (!w || w->launch_watchdog_fired || w->done) return;
+    w->launch_watchdog_fired = 1;
+    w->done = 1;
+    if (window_has_process(w)) fry_kill(w->pid);
+    append_window_text(w, msg);
+}
+
 // ---------------------------------------------------------------------------
 // Window launch
 // ---------------------------------------------------------------------------
-static long spawn_app_with_variants(const char *name, const char *ext) {
-    static const char *dirs[] = {
+static const char *launch_error_text(long rc) {
+    switch ((int)rc) {
+        case -100: return "bad launch arguments";
+        case -101: return "file open failed";
+        case -102: return "image header too short";
+        case -103: return "out of memory while loading image";
+        case -104: return "image read failed";
+        case -105: return "bad package magic";
+        case -106: return "image bounds check failed";
+        case -107: return "package CRC mismatch";
+        case -108: return "bad ELF header";
+        case -109: return "bad ELF magic";
+        case -110: return "address space allocation failed";
+        case -111: return "segment allocation failed";
+        case -112: return "segment mapping failed";
+        case -113: return "user stack allocation failed";
+        case -200: return "process creation failed";
+        default:   return "unknown launch failure";
+    }
+}
+
+static long spawn_app_with_variants(const char *name, const char *ext,
+                                    char *last_path, size_t last_path_len) {
+    static const char *primary_dirs[] = {
+        "/apps/",
+        "/system/",
         "/",
         "/fry/",
         "/FRY/",
@@ -485,17 +585,22 @@ static long spawn_app_with_variants(const char *name, const char *ext) {
         "/EFI/BOOT/FRY/"
     };
     char path[96];
+    long rc = -1;
     if (!name || !ext) return -1;
-    for (int i = 0; i < (int)(sizeof(dirs) / sizeof(dirs[0])); i++) {
-        if (dirs[i][0] == '/' && dirs[i][1] == 0) {
+    for (uint32_t i = 0; i < (uint32_t)(sizeof(primary_dirs) / sizeof(primary_dirs[0])); i++) {
+        if (primary_dirs[i][0] == '/' && primary_dirs[i][1] == 0) {
             snprintf(path, sizeof(path), "/%s.%s", name, ext);
         } else {
-            snprintf(path, sizeof(path), "%s%s.%s", dirs[i], name, ext);
+            snprintf(path, sizeof(path), "%s%s.%s", primary_dirs[i], name, ext);
         }
-        long pid = fry_spawn(path);
-        if (pid >= 0) return pid;
+        if (last_path && last_path_len > 0) {
+            strncpy(last_path, path, last_path_len - 1);
+            last_path[last_path_len - 1] = 0;
+        }
+        rc = fry_spawn(path);
+        if (rc >= 0) return rc;
     }
-    return -1;
+    return rc;
 }
 
 static void launch_app_index(int idx) {
@@ -509,18 +614,50 @@ static void launch_app_index(int idx) {
     if (idx < 0 || idx >= app_count) return;
     const char *name = app_names[idx];
     const char *path = app_paths[idx];
+    char attempted_path[96];
     long pid = -1;
-    if (path && path[0]) {
+    attempted_path[0] = 0;
+    if (path && path[0] && gui_path_is_primary_app_source(path)) {
+        strncpy(attempted_path, path, sizeof(attempted_path) - 1);
+        attempted_path[sizeof(attempted_path) - 1] = 0;
         pid = fry_spawn(path);
     }
     if (pid < 0) {
         if (str_eq(name, "SHELL")) {
-            pid = spawn_app_with_variants(name, "TOT");
+            pid = spawn_app_with_variants(name, "TOT", attempted_path, sizeof(attempted_path));
         } else {
-            pid = spawn_app_with_variants(name, "FRY");
+            pid = spawn_app_with_variants(name, "FRY", attempted_path, sizeof(attempted_path));
         }
     }
-    if (pid < 0) return;
+    if (pid < 0) {
+        char msg[256];
+        window_t *w = &windows[slot];
+        memset(w, 0, sizeof(*w));
+        w->used   = 1;
+        w->done   = 1;
+        w->pid    = -1;
+        w->shm_id = -1;
+        w->x = 50 + (slot % 6) * 40;
+        w->y = 40 + (slot % 5) * 30;
+        w->w = 460;
+        w->h = 180;
+        strncpy(w->title, name, 47);
+        w->textbuf[0] = '\0';
+        w->textlen = 0;
+        snprintf(msg, sizeof(msg),
+                 "Launch failed.\n"
+                 "App: %s\n"
+                 "Path: %s\n"
+                 "Error: %ld (%s)\n",
+                 name ? name : "(null)",
+                 attempted_path[0] ? attempted_path : "(none)",
+                 pid, launch_error_text(pid));
+        append_window_text(w, msg);
+        z_order[z_count++] = slot;
+        bring_to_front(slot);
+        start_menu_open = 0;
+        return;
+    }
 
     window_t *w = &windows[slot];
     memset(w, 0, sizeof(*w));
@@ -535,6 +672,12 @@ static void launch_app_index(int idx) {
     w->textlen = 0;
     strcpy(w->textbuf, "Starting app...\n");
     w->textlen = (int)strlen(w->textbuf);
+    w->launch_watchdog_fired = 0;
+    w->launch_progress_seen = 0;
+    {
+        long now_ms = fry_gettime();
+        w->launch_deadline_ms = (now_ms > 0) ? ((uint64_t)now_ms + LAUNCH_WATCHDOG_MS) : 0;
+    }
 
     z_order[z_count++] = slot;
     bring_to_front(slot);
@@ -667,7 +810,6 @@ static void draw_taskbar(int screen_w, int screen_h, int mx, int my,
     gfx_draw_text(&backbuffer, clk_x, ty+10, clk, COL_ACCENT2, COL_TRANSPARENT);
 }
 
-// ---------------------------------------------------------------------------
 // Start menu
 // ---------------------------------------------------------------------------
 #define MENU_ROW_H  24
@@ -773,7 +915,7 @@ int main(void) {
         if (ts >= 0 && windows[ts].used && !windows[ts].minimized) {
             char keybuf[16];
             long kn = fry_read(0, keybuf, sizeof(keybuf));
-            if (kn > 0) {
+            if (kn > 0 && window_has_process(&windows[ts])) {
                 for (long i = 0; i < kn; i++) {
                     tw_msg_key_t kmsg;
                     kmsg.hdr.type  = TW_MSG_KEY_EVENT;
@@ -822,6 +964,9 @@ int main(void) {
                     }
                     if (mx >= bx_max && mx < bx_max+BTN_SZ &&
                         my >= by_btn && my < by_btn+BTN_SZ) {
+                        if (!window_has_process(w)) {
+                            handled = 1; break;
+                        }
                         if (!w->maximized) {
                             w->saved_x=w->x; w->saved_y=w->y;
                             w->saved_w=w->w; w->saved_h=w->h;
@@ -868,7 +1013,7 @@ int main(void) {
                     if (mx >= w->x && mx < w->x+w->w &&
                         my >= w->y && my < w->y+w->h) {
                         bring_to_front(s);
-                        if (w->shm_ptr) {
+                        if (w->shm_ptr && window_has_process(w)) {
                             int local_x = mx - (w->x + 1);
                             int local_y = my - (w->y + TITLE_H);
                             if (local_x >= 0 && local_x < w->shm_w &&
@@ -886,6 +1031,7 @@ int main(void) {
                     }
                 }
             }
+
         }
 
         if (!(cur_btns & 1)) dragging_slot = -1;
@@ -895,12 +1041,17 @@ int main(void) {
         }
 
         /* --- poll process output --- */
+        long now_ms = fry_gettime();
         for (int i = 0; i < MAX_WINDOWS; i++) {
             window_t *w = &windows[i];
             if (!w->used) continue;
             uint8_t rawbuf[128];
-            long rn = fry_proc_output((uint32_t)w->pid, rawbuf, sizeof(rawbuf));
+            long rn = window_has_process(w)
+                    ? fry_proc_output((uint32_t)w->pid, rawbuf, sizeof(rawbuf))
+                    : 0;
             if (rn > 0) {
+                w->launch_progress_seen = 1;
+                w->launch_deadline_ms = 0;
                 int space = (int)sizeof(w->msgbuf) - w->msglen;
                 int copy  = (rn < (long)space) ? (int)rn : space;
                 memcpy(w->msgbuf + w->msglen, rawbuf, (size_t)copy);
@@ -910,6 +1061,18 @@ int main(void) {
                 w->done = 1;
                 int tlen = (int)strlen(w->title);
                 if (tlen < 40) strcat(w->title, " [done]");
+            }
+            if (w->shm_ptr) {
+                w->launch_progress_seen = 1;
+                w->launch_deadline_ms = 0;
+            }
+            if (!w->done &&
+                !w->launch_progress_seen &&
+                !w->launch_watchdog_fired &&
+                w->launch_deadline_ms != 0 &&
+                now_ms > 0 &&
+                (uint64_t)now_ms >= w->launch_deadline_ms) {
+                launch_watchdog_expire(w);
             }
         }
 

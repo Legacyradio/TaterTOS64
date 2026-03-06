@@ -16,6 +16,9 @@ stack_switch_and_call:
     out dx, al
     mov rsp, rdi
     and rsp, -16
+    ; Debug: mark new stack active/aligned
+    mov al, 'N'
+    out dx, al
     ; Debug: mark just before call
     mov al, 'C'
     out dx, al

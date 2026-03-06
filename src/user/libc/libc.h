@@ -235,12 +235,13 @@ struct fry_storage_info {
     uint8_t  nvme_detected;       /* 1 if NVMe controller found */
     uint8_t  root_fs_type;        /* 0=none, 1=FAT32, 2=ToTFS, 3=NTFS, 4=ramdisk */
     uint8_t  secondary_fs_type;   /* 0=none, 1=FAT32, 2=ToTFS, 3=NTFS, 4=ramdisk */
-    uint8_t  pad;
+    uint8_t  flags;               /* bit0=root source is ramdisk/live media */
     uint32_t sector_size;         /* NVMe sector size (512/4096) */
     uint64_t total_sectors;       /* NVMe total sectors */
     char     root_mount[16];      /* "/" */
     char     secondary_mount[16]; /* "/nvme" or empty */
 };
+#define FRY_STORAGE_FLAG_ROOT_RAMDISK_SOURCE 0x01u
 long fry_storage_info(struct fry_storage_info *out);
 
 struct fry_path_fs_info {
@@ -263,6 +264,21 @@ struct fry_mounts_info {
     struct fry_mount_info entries[FRY_MAX_MOUNT_INFO];
 };
 long fry_mounts_info(struct fry_mounts_info *out);
+
+struct fry_mount_dbg {
+    char     mount[64];
+    uint8_t  fs_type;      /* 0=none, 1=FAT32, 2=ToTFS, 3=NTFS, 4=ramdisk */
+    uint8_t  pad[3];
+    uint32_t sector_size;  /* logical sector size */
+    uint32_t block_size;   /* cluster/block size */
+    uint64_t part_lba;     /* partition start LBA */
+};
+
+struct fry_mounts_dbg {
+    uint32_t count;
+    struct fry_mount_dbg entries[FRY_MAX_MOUNT_INFO];
+};
+long fry_mounts_dbg(struct fry_mounts_dbg *out);
 
 // Non-blocking getchar: returns -1 if no key is ready.
 int getchar_nb(void);

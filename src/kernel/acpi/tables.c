@@ -8,10 +8,22 @@
 // Ensure every 2MB page covering [phys, phys+len) is mapped in the physmap.
 static void acpi_ensure_mapped(uint64_t phys, uint32_t len) {
     if (!phys || !len) return;
-    for (uint64_t off = 0; off < (uint64_t)len; off += 0x200000ULL) {
-        vmm_ensure_physmap(phys + off + 1);
+
+    uint64_t step = 0x200000ULL;
+    uint64_t first = phys & ~(step - 1ULL);
+    uint64_t last_addr;
+    if (phys > UINT64_MAX - ((uint64_t)len - 1ULL)) {
+        last_addr = UINT64_MAX;
+    } else {
+        last_addr = phys + (uint64_t)len - 1ULL;
     }
-    vmm_ensure_physmap(phys + len);
+    uint64_t last = last_addr & ~(step - 1ULL);
+
+    for (uint64_t base = first;; base += step) {
+        uint64_t phys_end = (base > UINT64_MAX - step) ? UINT64_MAX : (base + step);
+        vmm_ensure_physmap(phys_end); // end-exclusive: maps chunk containing (phys_end - 1)
+        if (base == last) break;
+    }
 }
 
 void kprint(const char *fmt, ...);

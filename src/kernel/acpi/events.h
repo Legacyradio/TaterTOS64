@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 void acpi_events_init(void);
+void acpi_events_start_worker(void);
 void acpi_sci_handler(uint32_t vector, void *ctx, void *dev_id, uint64_t error);
 
 typedef void (*acpi_gpe_handler_t)(uint32_t gpe);

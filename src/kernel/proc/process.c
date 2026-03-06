@@ -1,6 +1,7 @@
 // Process management
 
 #include "process.h"
+#include "syscall.h"
 #include "sched.h"
 #include "elf.h"
 #include "../fs/vfs.h"
@@ -34,6 +35,18 @@ static void copy_name(char dst[32], const char *src) {
     dst[i] = 0;
 }
 
+static uint64_t read_rsp(void) {
+    uint64_t v;
+    __asm__ volatile("mov %%rsp, %0" : "=r"(v));
+    return v;
+}
+
+static uint64_t read_cr3(void) {
+    uint64_t v;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(v));
+    return v;
+}
+
 static int alloc_kernel_stack(struct fry_process *p) {
     if (!p) return -1;
     uint32_t pages = (uint32_t)(KSTACK_SIZE / PAGE_SIZE);
@@ -47,9 +60,7 @@ static int alloc_kernel_stack(struct fry_process *p) {
 
 static void free_kernel_stack(struct fry_process *p) {
     if (!p || !p->kernel_stack_phys || !p->kernel_stack_pages) return;
-    for (uint32_t i = 0; i < p->kernel_stack_pages; i++) {
-        pmm_free_page(p->kernel_stack_phys + (uint64_t)i * PAGE_SIZE);
-    }
+    pmm_free_pages(p->kernel_stack_phys, p->kernel_stack_pages);
     p->kernel_stack_phys = 0;
     p->kernel_stack_pages = 0;
     p->kernel_stack_top = 0;
@@ -189,10 +200,37 @@ void proc_set_current(struct fry_process *p) {
 }
 
 void proc_free(uint32_t pid) {
+    struct fry_process *cur = proc_current();
+    uint64_t active_rsp = read_rsp();
+    uint64_t active_cr3 = read_cr3();
+
     for (uint32_t i = 0; i < PROC_MAX; i++) {
         if (procs[i].pid == pid &&
             procs[i].state != PROC_UNUSED &&
             procs[i].state != PROC_DEAD) {
+            if (cur && cur->pid == pid) {
+                uint64_t stack_bytes = (uint64_t)procs[i].kernel_stack_pages * PAGE_SIZE;
+                uint64_t stack_lo = (stack_bytes > 0 && procs[i].kernel_stack_top >= stack_bytes)
+                                  ? (procs[i].kernel_stack_top - stack_bytes)
+                                  : 0;
+                if (stack_bytes > 0 &&
+                    active_rsp >= stack_lo &&
+                    active_rsp < procs[i].kernel_stack_top) {
+                    kprint("proc_free: blocked unsafe self-free on active stack pid=%u\n", pid);
+                    return;
+                }
+                if (!procs[i].is_kernel &&
+                    procs[i].cr3 &&
+                    procs[i].cr3 != vmm_get_kernel_pml4_phys() &&
+                    active_cr3 == procs[i].cr3) {
+                    kprint("proc_free: blocked unsafe self-free on active CR3 pid=%u\n", pid);
+                    return;
+                }
+            }
+
+            /* Drop SHM ownership/mappings before tearing down the address space. */
+            syscall_shm_process_exit(pid);
+
             if (!procs[i].is_kernel && procs[i].cr3 &&
                 procs[i].cr3 != vmm_get_kernel_pml4_phys()) {
                 vmm_destroy_address_space(procs[i].cr3);
@@ -231,13 +269,14 @@ int process_launch(const char *path) {
     int elf_rc = elf_load_fry(path, &cr3, &entry, &user_rsp);
     if (elf_rc != 0) {
         g_process_last_launch_error = elf_rc;
-        return -1;
+        kprint("PROC: launch fail path=%s elf_rc=%d\n", path ? path : "(null)", elf_rc);
+        return elf_rc;
     }
     p = process_create_user(cr3, entry, user_rsp, path);
     if (!p) {
         vmm_destroy_address_space(cr3);
         g_process_last_launch_error = PROCESS_LAUNCH_ERR_CREATE_USER;
-        return -1;
+        return PROCESS_LAUNCH_ERR_CREATE_USER;
     }
     g_process_last_launch_error = 0;
     sched_add(p->pid);

@@ -104,7 +104,8 @@ char *itoa(int value, char *buf, int base) {
     }
     if (value < 0 && base == 10) {
         buf[0] = '-';
-        utoa((unsigned int)(-value), buf + 1, base);
+        unsigned int mag = (unsigned int)(-(value + 1)) + 1U;
+        utoa(mag, buf + 1, base);
         return buf;
     }
     return utoa((unsigned int)value, buf, base);
@@ -228,7 +229,8 @@ enum {
     SYS_STORAGE_INFO = 32,
     SYS_PATH_FS_INFO = 33,
     SYS_MOUNTS_INFO = 34,
-    SYS_READDIR_EX = 35
+    SYS_READDIR_EX = 35,
+    SYS_MOUNTS_DEBUG = 36
 };
 
 long fry_write(int fd, const void *buf, size_t len) {
@@ -360,6 +362,10 @@ long fry_path_fs_info(const char *path, struct fry_path_fs_info *out) {
 
 long fry_mounts_info(struct fry_mounts_info *out) {
     return syscall1(SYS_MOUNTS_INFO, (long)out);
+}
+
+long fry_mounts_dbg(struct fry_mounts_dbg *out) {
+    return syscall1(SYS_MOUNTS_DEBUG, (long)out);
 }
 
 long fry_create(const char *path, uint16_t type) {
@@ -604,8 +610,11 @@ struct malloc_block {
 static struct malloc_block *free_list = NULL;
 
 void *malloc(size_t size) {
+    size_t max_size_t = (size_t)-1;
     if (size == 0) return NULL;
+    if (size > max_size_t - 15) return NULL;
     size = (size + 15) & ~15; // 16-byte alignment
+    if (size > max_size_t - sizeof(struct malloc_block)) return NULL;
     struct malloc_block *prev = NULL;
     struct malloc_block *curr = free_list;
     while (curr) {
@@ -635,6 +644,8 @@ void free(void *ptr) {
 }
 
 void *calloc(size_t nmemb, size_t size) {
+    size_t max_size_t = (size_t)-1;
+    if (nmemb != 0 && size > max_size_t / nmemb) return NULL;
     size_t total = nmemb * size;
     void *p = malloc(total);
     if (p) memset(p, 0, total);

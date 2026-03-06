@@ -62,6 +62,8 @@ static char *screen_row(int r) {
     return screen_buf + r * SCREEN_STRIDE;
 }
 
+static void build_path(const char *in, char *out, size_t max);
+
 static char *sb_line(int idx) {
     /* idx: 0 = oldest, sb_count-1 = newest */
     int real = (sb_head + idx) % SCROLLBACK_MAX;
@@ -352,6 +354,134 @@ static int tokenize(char *line, char *argv[], int max) {
     return argc;
 }
 
+static const char *fs_type_name(uint8_t t) {
+    switch (t) {
+        case 1: return "FAT32";
+        case 2: return "ToTFS";
+        case 3: return "NTFS";
+        case 4: return "ramdisk";
+        default: return "none";
+    }
+}
+
+static void print_mount_dbg(void) {
+    struct fry_mounts_dbg md;
+    if (fry_mounts_dbg(&md) != 0) {
+        term_printf("mounts: debug unavailable\n");
+        return;
+    }
+    term_printf("mounts dbg (%u):\n", (unsigned)md.count);
+    for (uint32_t i = 0; i < md.count && i < FRY_MAX_MOUNT_INFO; i++) {
+        struct fry_mount_dbg *m = &md.entries[i];
+        term_printf("  %-10s %-6s lba=%llu sector=%u block=%u\n",
+                    m->mount,
+                    fs_type_name(m->fs_type),
+                    (unsigned long long)m->part_lba,
+                    (unsigned)m->sector_size,
+                    (unsigned)m->block_size);
+    }
+}
+
+static void print_storage_info(void) {
+    struct fry_storage_info si;
+    if (fry_storage_info(&si) == 0) {
+        term_printf("storage: nvme=%u sector=%u total=%llu root=%s (%s%s) secondary=%s (%s)\n",
+                    (unsigned)si.nvme_detected,
+                    (unsigned)si.sector_size,
+                    (unsigned long long)si.total_sectors,
+                    si.root_mount,
+                    fs_type_name(si.root_fs_type),
+                    (si.flags & FRY_STORAGE_FLAG_ROOT_RAMDISK_SOURCE) ? ", live" : "",
+                    si.secondary_mount,
+                    fs_type_name(si.secondary_fs_type));
+    } else {
+        term_printf("storage: unavailable\n");
+    }
+}
+
+static void print_mounts_info(void) {
+    struct fry_mounts_info mi;
+    if (fry_mounts_info(&mi) == 0) {
+        term_printf("mounts (%u):\n", (unsigned)mi.count);
+        for (uint32_t i = 0; i < mi.count && i < FRY_MAX_MOUNT_INFO; i++) {
+            term_printf("  %-12s %s\n", mi.entries[i].mount, fs_type_name(mi.entries[i].fs_type));
+        }
+    } else {
+        term_printf("mounts: unavailable\n");
+    }
+}
+
+static void print_storage_and_mounts(void) {
+    print_storage_info();
+    print_mounts_info();
+    print_mount_dbg();
+}
+
+static void cmd_storage(void) {
+    print_storage_info();
+}
+
+static void cmd_mounts(void) {
+    print_mounts_info();
+    print_mount_dbg();
+}
+
+static void vfs_print_stat(const char *path) {
+    struct fry_stat st;
+    long rc = fry_stat(path, &st);
+    term_printf("  %-20s : %s", path, (rc == 0) ? "ok" : "missing");
+    if (rc == 0) {
+        term_printf(" size=%llu attr=0x%02x", (unsigned long long)st.size, (unsigned)st.attr);
+    }
+    term_putc('\n');
+}
+
+static void vfs_readdir_brief(const char *path) {
+    char buf[2048];
+    long n = fry_readdir_ex(path, buf, sizeof(buf));
+    if (n < 0) {
+        term_printf("  readdir %s: fail\n", path);
+        return;
+    }
+    term_printf("  dir %s (%ld bytes)\n", path, n);
+    uint32_t off = 0;
+    int shown = 0;
+    while (off + sizeof(struct fry_dirent) <= (uint32_t)n && shown < 40) {
+        struct fry_dirent *de = (struct fry_dirent *)(buf + off);
+        if (de->rec_len < sizeof(struct fry_dirent)) break;
+        if (off + (uint32_t)de->rec_len > (uint32_t)n) break;
+        uint32_t payload = (uint32_t)de->rec_len - (uint32_t)sizeof(struct fry_dirent);
+        if ((uint32_t)de->name_len + 1u > payload) {
+            off += de->rec_len;
+            continue;
+        }
+        char type = (de->attr & 0x10) ? 'd' : 'f';
+        char name[128];
+        uint32_t len = de->name_len;
+        if (len >= sizeof(name)) len = sizeof(name) - 1;
+        for (uint32_t i = 0; i < len; i++) name[i] = de->name[i];
+        name[len] = 0;
+        term_printf("    %c %-24s size=%llu attr=0x%02x\n",
+                    type, name, (unsigned long long)de->size, (unsigned)de->attr);
+        off += de->rec_len;
+        shown++;
+    }
+    if (off < (uint32_t)n) term_printf("    ... (truncated)\n");
+}
+
+static void nvmefix_probe(const char *path, const char *tag) {
+    struct fry_path_fs_info pfi;
+    term_printf("%s:\n", tag);
+    if (fry_path_fs_info(path, &pfi) == 0) {
+        term_printf("  pathfs %-16s -> mount=%s fs=%s\n",
+                    path, pfi.mount, fs_type_name(pfi.fs_type));
+    } else {
+        term_printf("  pathfs %-16s -> unavailable\n", path);
+    }
+    vfs_print_stat(path);
+    vfs_readdir_brief(path);
+}
+
 static void build_path(const char *in, char *out, size_t max) {
     if (!in || !out || max == 0) return;
     if (strcmp(in, ".") == 0) {
@@ -431,6 +561,63 @@ static int str_eq_nocase(const char *a, const char *b) {
 
 static int is_shell_tot_path(const char *path) {
     return str_eq_nocase(path_basename(path), "SHELL.TOT");
+}
+
+static long try_spawn_candidate(const char *path) {
+    long fd;
+    if (!path || !*path) return -1;
+    fd = fry_open(path, 0);
+    if (fd < 0) return -1;
+    fry_close((int)fd);
+    return fry_spawn(path);
+}
+
+static long spawn_command_path(const char *cmd, char *resolved, size_t resolved_len) {
+    static const char *app_dirs[] = { "/apps/", "/system/" };
+    char path[128];
+    size_t cmd_len;
+    int has_slash;
+    long pid;
+    if (!cmd || !*cmd) return -1;
+    has_slash = 0;
+    for (cmd_len = 0; cmd[cmd_len]; cmd_len++) {
+        if (cmd[cmd_len] == '/') has_slash = 1;
+    }
+    build_path(cmd, path, sizeof(path));
+    if (!has_suffix_nocase(path, ".fry") && !has_suffix_nocase(path, ".tot")) {
+        if (str_eq_nocase(cmd, "shell")) {
+            if (strlen(path) + 4 < sizeof(path)) strcat(path, ".tot");
+        } else {
+            if (strlen(path) + 4 < sizeof(path)) strcat(path, ".fry");
+        }
+    }
+    if (has_suffix_nocase(path, ".tot") && !is_shell_tot_path(path)) return -1;
+    pid = try_spawn_candidate(path);
+    if (pid >= 0) {
+        if (resolved && resolved_len > 0) {
+            strncpy(resolved, path, resolved_len - 1);
+            resolved[resolved_len - 1] = 0;
+        }
+        return pid;
+    }
+    if (has_slash) return -1;
+    for (uint32_t i = 0; i < (uint32_t)(sizeof(app_dirs) / sizeof(app_dirs[0])); i++) {
+        if (str_eq_nocase(cmd, "shell")) {
+            snprintf(path, sizeof(path), "%sSHELL.TOT", app_dirs[i]);
+        } else {
+            snprintf(path, sizeof(path), "%s%s.FRY", app_dirs[i], cmd);
+        }
+        if (has_suffix_nocase(path, ".tot") && !is_shell_tot_path(path)) continue;
+        pid = try_spawn_candidate(path);
+        if (pid >= 0) {
+            if (resolved && resolved_len > 0) {
+                strncpy(resolved, path, resolved_len - 1);
+                resolved[resolved_len - 1] = 0;
+            }
+            return pid;
+        }
+    }
+    return -1;
 }
 
 #define ESPI_PCERR_STATUS_MASK  ((1u << 24) | (1u << 12) | (1u << 4))
@@ -592,6 +779,7 @@ static void execute_command(void) {
     if (strcmp(argv[0], "help") == 0) {
         term_printf("commands: ls cd cat echo mkdir rm touch write\n");
         term_printf("          clear reboot shutdown help pwd acpibreak exit quit\n");
+        term_printf("          storage mounts mountdbg vfsdbg [path] nvmefix [path]\n");
         term_printf("scroll: Ctrl+U = page up, Ctrl+D = page down\n");
     } else if (strcmp(argv[0], "exit") == 0 || strcmp(argv[0], "quit") == 0) {
         fry_exit(0);
@@ -653,6 +841,57 @@ static void execute_command(void) {
                 fry_close((int)fd);
             }
         }
+    } else if (strcmp(argv[0], "storage") == 0) {
+        cmd_storage();
+    } else if (strcmp(argv[0], "mounts") == 0) {
+        cmd_mounts();
+    } else if (strcmp(argv[0], "mountdbg") == 0) {
+        print_mount_dbg();
+    } else if (strcmp(argv[0], "vfsdbg") == 0) {
+        print_storage_and_mounts();
+
+        term_puts("paths:\n");
+        static const char *paths[] = {
+            "/",
+            "/system",
+            "/apps",
+            "/nvme",
+            "/fry",
+            "/FRY",
+            "/EFI",
+            "/EFI/BOOT",
+            "/system/INIT.FRY",
+            "/system/GUI.FRY",
+            "/apps/SHELL.TOT",
+            "/GUI.FRY",
+            "/SHELL.TOT",
+            "/nvme/GUI.FRY",
+            "/nvme/SHELL.TOT",
+            "/EFI/BOOT/GUI.FRY",
+            "/EFI/BOOT/SHELL.TOT"
+        };
+        for (uint32_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+            vfs_print_stat(paths[i]);
+        }
+
+        if (argc > 1) {
+            char path[128];
+            build_path(argv[1], path, sizeof(path));
+            vfs_readdir_brief(path);
+        }
+    } else if (strcmp(argv[0], "nvmefix") == 0) {
+        char path[128];
+        if (argc > 1) build_path(argv[1], path, sizeof(path));
+        else strcpy(path, "/nvme");
+
+        term_printf("nvmefix target=%s\n", path);
+        if (strcmp(path, "/nvme") != 0 && strcmp(path, "/nvme/") != 0) {
+            term_puts("note: automatic /nvme recovery triggers on exact /nvme path.\n");
+        }
+        print_storage_and_mounts();
+        nvmefix_probe(path, "probe 1");
+        nvmefix_probe(path, "probe 2");
+        print_storage_and_mounts();
     } else if (strcmp(argv[0], "pwd") == 0) {
         term_printf("%s\n", cwd);
     } else if (strcmp(argv[0], "mkdir") == 0) {
@@ -708,31 +947,11 @@ static void execute_command(void) {
     } else {
         /* Try spawning user program */
         char path[128];
-        build_path(argv[0], path, sizeof(path));
-
-        if (!has_suffix_nocase(path, ".fry") && !has_suffix_nocase(path, ".tot")) {
-            if (str_eq_nocase(argv[0], "shell")) {
-                if (strlen(path) + 4 < sizeof(path)) strcat(path, ".tot");
-            } else {
-                if (strlen(path) + 4 < sizeof(path)) strcat(path, ".fry");
-            }
-        }
-
-        /* Security split: TOT is reserved for SHELL.TOT only. */
-        if (has_suffix_nocase(path, ".tot") && !is_shell_tot_path(path)) {
-            term_printf("command not found: %s\n", argv[0]);
-            return;
-        }
-
-        long fd = fry_open(path, 0);
-        if (fd < 0) {
+        long pid = spawn_command_path(argv[0], path, sizeof(path));
+        if (pid < 0) {
             term_printf("command not found: %s\n", argv[0]);
         } else {
-            fry_close((int)fd);
-            long pid = fry_spawn(path);
-            if (pid < 0) {
-                term_printf("spawn failed: %s\n", argv[0]);
-            } else if (!background) {
+            if (!background) {
                 render_and_update();
                 fry_wait((uint32_t)pid);
             }

@@ -257,7 +257,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     }
 
     // Prepare handoff
-    struct fry_handoff handoff;
+    struct fry_handoff handoff = (struct fry_handoff){0};
     if (gop) {
         handoff.fb_base = (uint64_t)gop->Mode->FrameBufferBase;
         handoff.fb_width = (uint64_t)gop->Mode->Info->HorizontalResolution;
@@ -277,6 +277,8 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     handoff.mmap_size = (uint64_t)mmap_size;
     handoff.mmap_desc_size = (uint64_t)desc_size;
     handoff.boot_identity_limit = 0x100000000ULL;
+    handoff.ramdisk_base = 0;
+    handoff.ramdisk_size = 0;
 
     // Jump to kernel entry
     efi_start(&handoff);

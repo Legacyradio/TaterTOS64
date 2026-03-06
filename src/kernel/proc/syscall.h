@@ -4,5 +4,6 @@
 #include <stdint.h>
 
 void syscall_init(void);
+void syscall_shm_process_exit(uint32_t pid);
 
 #endif

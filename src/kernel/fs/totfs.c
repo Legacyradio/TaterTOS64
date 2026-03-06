@@ -35,16 +35,23 @@ int totfs_write_block(struct totfs_fs *fs, uint64_t block_num, const void *buf) 
 /* ── Probe / Mount ──────────────────────────────────────────────────────── */
 
 int totfs_probe(struct block_device *bd, uint64_t part_lba) {
-    /* Read the first sector (512 bytes) and check for TOTF magic */
-    uint8_t sector[512];
+    if (!bd || bd->sector_size == 0) return 0;
+    if ((TOTFS_BLOCK_SIZE % bd->sector_size) != 0) return 0;
+
+    /* Read the first sector (up to 4096 bytes) and check for TOTF magic */
+    uint8_t sector[TOTFS_BLOCK_SIZE];
     if (bd->read(bd->ctx, part_lba, sector, 1) != 0) return 0;
-    uint32_t magic = *(uint32_t *)sector;
+    uint32_t magic = *(uint32_t *)sector;  /* safe: sector_size divides 4096 */
     return magic == TOTFS_MAGIC;
 }
 
 int totfs_mount(struct totfs_fs *fs, struct block_device *bd, uint64_t part_lba) {
     fs->bd = bd;
     fs->part_lba = part_lba;
+    if (!bd || bd->sector_size == 0 || (TOTFS_BLOCK_SIZE % bd->sector_size) != 0) {
+        kprint("ToTFS: unsupported sector size %u\n", (unsigned)bd->sector_size);
+        return -1;
+    }
     fs->sectors_per_block = TOTFS_BLOCK_SIZE / (uint32_t)bd->sector_size;
 
     /* Read superblock */

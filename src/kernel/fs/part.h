@@ -3,13 +3,7 @@
 
 #include <stdint.h>
 
-struct block_device {
-    uint64_t sector_size;
-    uint64_t total_sectors;
-    int (*read)(void *ctx, uint64_t lba, void *buf, uint32_t count);
-    int (*write)(void *ctx, uint64_t lba, const void *buf, uint32_t count);
-    void *ctx;
-};
+struct block_device;
 
 struct gpt_part {
     uint8_t type_guid[16];

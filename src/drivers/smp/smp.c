@@ -102,6 +102,13 @@ uint8_t smp_cpu_apic_id(uint32_t idx) {
     return cpus[idx].apic_id;
 }
 
+uint32_t smp_bsp_index(void) {
+    for (uint32_t i = 0; i < cpu_count; i++) {
+        if (cpus[i].is_bsp) return i;
+    }
+    return 0;
+}
+
 struct tss64 *smp_get_tss(uint32_t cpu) {
     if (cpu >= cpu_count) return 0;
     return cpu_tss[cpu];

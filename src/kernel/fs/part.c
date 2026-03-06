@@ -1,5 +1,6 @@
 // GPT partition parser
 
+#include "vfs.h"
 #include "part.h"
 
 void kprint(const char *fmt, ...);
@@ -57,11 +58,11 @@ static int header_sane(const struct gpt_header *h, uint64_t sector_size) {
 }
 
 static int gpt_read_header_at(struct block_device *bd, uint64_t lba, struct gpt_header *out) {
-    if (!bd || !out || !bd->read) return -1;
+    if (!bd || !out) return -1;
     if (bd->sector_size < 512 || bd->sector_size > 4096) return -1;
 
     uint8_t buf[4096];
-    if (bd->read(bd->ctx, lba, buf, 1) != 0) {
+    if (block_device_read(bd, lba, buf, 1) != 0) {
         return -1;
     }
     *out = *(const struct gpt_header *)buf;
@@ -82,7 +83,7 @@ static int gpt_info_from_header(const struct gpt_header *h, uint64_t found_lba, 
 }
 
 int gpt_read_header(struct block_device *bd, struct gpt_info *info) {
-    if (!bd || !bd->read || !info || bd->sector_size < 512 || bd->sector_size > 4096) {
+    if (!bd || !info || bd->sector_size < 512 || bd->sector_size > 4096) {
         return -1;
     }
 
@@ -116,7 +117,7 @@ int gpt_read_header(struct block_device *bd, struct gpt_info *info) {
 }
 
 int gpt_read_part(struct block_device *bd, const struct gpt_info *info, uint32_t index, struct gpt_part *out) {
-    if (!bd || !bd->read || !info || !out) {
+    if (!bd || !info || !out) {
         return -1;
     }
     if (index >= info->part_count || info->part_size < 128 || info->part_size > bd->sector_size) {
@@ -134,7 +135,7 @@ int gpt_read_part(struct block_device *bd, const struct gpt_info *info, uint32_t
     if (bd->sector_size > sizeof(buf)) {
         return -1;
     }
-    if (bd->read(bd->ctx, lba, buf, 1) != 0) {
+    if (block_device_read(bd, lba, buf, 1) != 0) {
         return -1;
     }
 
@@ -145,7 +146,8 @@ int gpt_read_part(struct block_device *bd, const struct gpt_info *info, uint32_t
     out->first_lba = *(uint64_t *)(p + 32);
     out->last_lba = *(uint64_t *)(p + 40);
     out->attrs = *(uint64_t *)(p + 48);
-    for (int i = 0; i < 72; i++) out->name_utf16[i] = (char)p[56 + i * 2];
+    /* GPT name field is exactly 72 bytes (36 UTF-16LE chars) at offset 56. */
+    for (int i = 0; i < 72; i++) out->name_utf16[i] = (char)p[56 + i];
 
     return 0;
 }
@@ -187,7 +189,7 @@ int gpt_find_by_type(struct block_device *bd, const uint8_t type_guid[16], struc
 
 int part_init(void) {
     struct block_device *bd = nvme_get_block_device();
-    if (!bd || !bd->read) {
+    if (!bd) {
         kprint("GPT: no block device\n");
         return -1;
     }

@@ -13,7 +13,7 @@ uint32_t vfs_size(struct vfs_file *f);
 
 #define FRY_MAGIC 0x30595246u // "FRY0"
 #define TOT_MAGIC 0x31544F54u // "TOT1"
-#define USER_STACK_TOP 0x0000800000000000ULL
+#define USER_STACK_TOP USER_VA_TOP
 #define USER_STACK_PAGES 8
 
 struct fry_header {
@@ -136,9 +136,7 @@ static uint8_t *temp_alloc_pages(uint32_t size, uint64_t *phys_out, uint64_t *pa
 
 static void temp_free_pages(uint64_t phys, uint64_t pages) {
     if (!phys || !pages) return;
-    for (uint64_t i = 0; i < pages; i++) {
-        pmm_free_page(phys + i * 4096ULL);
-    }
+    pmm_free_pages(phys, pages);
 }
 
 static uint64_t pml4_virt_to_phys(uint64_t pml4_phys, uint64_t virt) {
@@ -217,6 +215,23 @@ int elf_load_fry(const char *path, uint64_t *cr3_out, uint64_t *entry_out, uint6
     uint64_t pml4_phys = vmm_create_address_space();
     if (!pml4_phys) { temp_free_pages(tmp_phys, tmp_pages); return elf_fail(ELF_LOAD_ERR_VMM_SPACE); }
 
+    if (eh->e_phentsize != sizeof(struct elf64_phdr)) {
+        vmm_destroy_address_space(pml4_phys);
+        temp_free_pages(tmp_phys, tmp_pages);
+        return elf_fail(ELF_LOAD_ERR_BAD_ELF_HEADER);
+    }
+    if (eh->e_phoff > h->payload_size) {
+        vmm_destroy_address_space(pml4_phys);
+        temp_free_pages(tmp_phys, tmp_pages);
+        return elf_fail(ELF_LOAD_ERR_BOUNDS);
+    }
+    uint64_t ph_table_size = (uint64_t)eh->e_phnum * (uint64_t)eh->e_phentsize;
+    if (ph_table_size > (uint64_t)h->payload_size - eh->e_phoff) {
+        vmm_destroy_address_space(pml4_phys);
+        temp_free_pages(tmp_phys, tmp_pages);
+        return elf_fail(ELF_LOAD_ERR_BOUNDS);
+    }
+
     const struct elf64_phdr *ph = (const struct elf64_phdr *)(payload + eh->e_phoff);
     for (uint16_t i = 0; i < eh->e_phnum; i++) {
         if (ph[i].p_type != PT_LOAD) continue;
@@ -224,9 +239,40 @@ int elf_load_fry(const char *path, uint64_t *cr3_out, uint64_t *entry_out, uint6
         uint64_t memsz = ph[i].p_memsz;
         uint64_t filesz = ph[i].p_filesz;
         uint64_t off = ph[i].p_offset;
+        if (vaddr >= USER_VA_TOP) {
+            vmm_destroy_address_space(pml4_phys);
+            temp_free_pages(tmp_phys, tmp_pages);
+            return elf_fail(ELF_LOAD_ERR_BOUNDS);
+        }
+        if (filesz > memsz) {
+            vmm_destroy_address_space(pml4_phys);
+            temp_free_pages(tmp_phys, tmp_pages);
+            return elf_fail(ELF_LOAD_ERR_BOUNDS);
+        }
+        if (off > h->payload_size || filesz > (uint64_t)h->payload_size - off) {
+            vmm_destroy_address_space(pml4_phys);
+            temp_free_pages(tmp_phys, tmp_pages);
+            return elf_fail(ELF_LOAD_ERR_BOUNDS);
+        }
+        if (memsz > UINT64_MAX - vaddr) {
+            vmm_destroy_address_space(pml4_phys);
+            temp_free_pages(tmp_phys, tmp_pages);
+            return elf_fail(ELF_LOAD_ERR_BOUNDS);
+        }
+        if (memsz > USER_VA_TOP - vaddr) {
+            vmm_destroy_address_space(pml4_phys);
+            temp_free_pages(tmp_phys, tmp_pages);
+            return elf_fail(ELF_LOAD_ERR_BOUNDS);
+        }
+        uint64_t seg_end = vaddr + memsz;
+        if (seg_end > UINT64_MAX - 0xFFFULL) {
+            vmm_destroy_address_space(pml4_phys);
+            temp_free_pages(tmp_phys, tmp_pages);
+            return elf_fail(ELF_LOAD_ERR_BOUNDS);
+        }
 
         uint64_t start = vaddr & ~0xFFFULL;
-        uint64_t end = (vaddr + memsz + 0xFFFULL) & ~0xFFFULL;
+        uint64_t end = (seg_end + 0xFFFULL) & ~0xFFFULL;
 
         uint64_t flags = VMM_FLAG_USER;
         if (ph[i].p_flags & PF_W) flags |= VMM_FLAG_WRITE;
@@ -255,6 +301,12 @@ int elf_load_fry(const char *path, uint64_t *cr3_out, uint64_t *entry_out, uint6
                 remaining -= to_copy;
             }
         }
+    }
+
+    if (eh->e_entry >= USER_VA_TOP) {
+        vmm_destroy_address_space(pml4_phys);
+        temp_free_pages(tmp_phys, tmp_pages);
+        return elf_fail(ELF_LOAD_ERR_BOUNDS);
     }
 
     uint64_t stack_base = USER_STACK_TOP - USER_STACK_PAGES * 4096ULL;

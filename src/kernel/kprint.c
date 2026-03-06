@@ -513,12 +513,17 @@ static int kprint_is_error_line(const char *line) {
 }
 
 static int kprint_should_emit(const char *line) {
-    if (!g_kprint_errors_only) return 1;
-    return kprint_is_error_line(line);
+    (void)g_kprint_errors_only;  // output is hard-suppressed
+    if (!line || !*line) return 0;
+    if (str_contains_ci(line, "panic")) return 1;
+    if (str_contains_ci(line, "fault")) return 1;
+    return 0;  // drop everything else
 }
 
 void kprint_set_errors_only(int enabled) {
-    g_kprint_errors_only = enabled ? 1 : 0;
+    (void)enabled;
+    // kprint is locked to panic/fault-only output
+    g_kprint_errors_only = 1;
 }
 
 static uint32_t parse_uint(const char *s, uint32_t *idx, uint32_t max) {
@@ -707,6 +712,18 @@ void kprint_serial_only(const char *fmt, ...) {
     vkformat_buf(buf, (int)sizeof(buf), fmt, ap);
     va_end(ap);
     kprint_string(buf);
+    spin_unlock_irqrestore(&kprint_lock, flags);
+}
+
+void kprint_serial_write(const char *buf, uint64_t len) {
+    uint64_t flags = spin_lock_irqsave(&kprint_lock);
+    if (!buf || len == 0) {
+        spin_unlock_irqrestore(&kprint_lock, flags);
+        return;
+    }
+    for (uint64_t i = 0; i < len; i++) {
+        serial_write_char(buf[i]);
+    }
     spin_unlock_irqrestore(&kprint_lock, flags);
 }
 

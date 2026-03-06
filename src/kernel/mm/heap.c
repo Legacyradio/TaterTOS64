@@ -38,6 +38,7 @@ void heap_init(void) {
 
     early_serial_puts("K_HEAP_ENTER\n");
     early_debug_puts("K_HEAP_ENTER\n");
+    pmm_debug_dump_state("PMM_AT_HEAP", 8);
 
     // Try to allocate an initial contiguous heap region
     uint64_t sizes[] = {256, 128, 64, 32, 16, 8, 4, 2, 1};

@@ -159,6 +159,22 @@ static const char *fs_name(uint8_t fs_type) {
     }
 }
 
+static int path_is_nvme_prefix(const char *path) {
+    if (!path) return 0;
+    return path[0] == '/' &&
+           path[1] == 'n' &&
+           path[2] == 'v' &&
+           path[3] == 'm' &&
+           path[4] == 'e';
+}
+
+static int live_root_is_ramdisk(void) {
+    struct fry_storage_info sto;
+    memset(&sto, 0, sizeof(sto));
+    if (fry_storage_info(&sto) != 0) return 0;
+    return (sto.flags & FRY_STORAGE_FLAG_ROOT_RAMDISK_SOURCE) != 0;
+}
+
 static void format_size(uint64_t bytes, char *out, size_t out_len) {
     const uint64_t kb = 1024ULL;
     const uint64_t mb = kb * 1024ULL;
@@ -271,7 +287,9 @@ static void rebuild_places(void) {
     place_count = 0;
     place_unverified_count = 0;
     add_place_if_dir("Root", "/");
-    add_place_if_dir("Apps", "/fry");
+    add_place_if_dir("System", "/system");
+    add_place_if_dir("Apps", "/apps");
+    add_place_if_dir("Legacy", "/fry");
 
     memset(&mi, 0, sizeof(mi));
     if (fry_mounts_info(&mi) == 0) {
@@ -427,11 +445,15 @@ static void open_selected(void) {
 
     if (has_suffix_nocase(entries[selected].name, ".FRY") ||
         is_shell_tot_name(entries[selected].name)) {
+        if (live_root_is_ramdisk() && path_is_nvme_prefix(full)) {
+            set_status("live mode: launch blocked from secondary storage");
+            return;
+        }
         pid = fry_spawn(full);
         if (pid >= 0) {
             set_status("launched %s (pid=%ld)", entries[selected].name, pid);
         } else {
-            set_status("spawn failed: %s", entries[selected].name);
+            set_status("spawn failed: %s (rc=%ld)", entries[selected].name, pid);
         }
     } else {
         char sz[24];

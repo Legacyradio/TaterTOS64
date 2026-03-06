@@ -108,7 +108,7 @@ void pci_enum_all(void) {
     }
 }
 
-struct pci_device_info *pci_get_devices(uint32_t *count) {
+const struct pci_device_info *pci_get_devices(uint32_t *count) {
     if (count) *count = pci_dev_count;
     return pci_info;
 }

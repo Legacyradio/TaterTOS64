@@ -146,6 +146,15 @@ static void handle_gpe_block(uint32_t base, uint8_t len, uint32_t gpe_base_index
     }
 }
 
+void acpi_events_start_worker(void) {
+    if (gpe_worker_started) return;
+    struct fry_process *p = process_create_kernel(gpe_worker_thread, 0, "acpi_gpe");
+    if (p) {
+        sched_add(p->pid);
+        gpe_worker_started = 1;
+    }
+}
+
 void acpi_sci_handler(uint32_t vector, void *ctx, void *dev_id, uint64_t error) {
     (void)ctx; (void)dev_id; (void)error;
     (void)vector;
@@ -179,13 +188,6 @@ void acpi_events_init(void) {
         for (uint32_t i = 0; i < 256; i++) gpe_levels[i] = 1;
         for (uint32_t i = 0; i < 4; i++) gpe_pending[i] = 0;
         gpe_inited = 1;
-    }
-    if (!gpe_worker_started) {
-        struct fry_process *p = process_create_kernel(gpe_worker_thread, 0, "acpi_gpe");
-        if (p) {
-            sched_add(p->pid);
-            gpe_worker_started = 1;
-        }
     }
     uint8_t sci_irq = fadt_get_sci_irq();
     if (sci_irq) {

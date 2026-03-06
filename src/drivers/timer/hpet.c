@@ -47,7 +47,7 @@ void hpet_init(void) {
         kprint("HPET: no table base\n");
         return;
     }
-    vmm_ensure_physmap(base + 0x1000);
+    vmm_ensure_physmap_uc(base + 0x1000);
     hpet = (volatile struct hpet_regs *)(uintptr_t)vmm_phys_to_virt(base);
 
     uint64_t cap = hpet->cap_id;

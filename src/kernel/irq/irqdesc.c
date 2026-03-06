@@ -3,10 +3,14 @@
 #include <stdint.h>
 #include "irqdesc.h"
 #include "../../boot/early_serial.h"
+#include "../proc/process.h"
+#include "../proc/sched.h"
 
 void kprint(const char *fmt, ...);
+void kernel_panic(const char *msg);
 
 static struct irq_desc irq_descs[256];
+static uint8_t g_pf_exit_stack[16384] __attribute__((aligned(16)));
 
 // Kernel CR3 for interrupt handlers; set once by irq_cr3_init() before sti.
 // common_isr saves the current (possibly user) CR3 in the callee-saved
@@ -61,6 +65,52 @@ static inline uint64_t read_cr3_irq(void) {
     uint64_t v; __asm__ volatile("mov %%cr3, %0" : "=r"(v)); return v;
 }
 
+__attribute__((noreturn))
+static void pf_kill_finish(uint32_t pid) {
+    proc_free(pid);
+    sched_yield();
+    for (;;) {
+        __asm__ volatile("hlt");
+    }
+}
+
+__attribute__((noreturn))
+static void pf_kill_current_user(uint64_t vector, uint64_t error, void *ctx) {
+    struct fry_process *cur = proc_current();
+    if (!cur || cur->is_kernel) {
+        kernel_panic("page fault in invalid current context");
+    }
+
+    uint64_t *frame = (uint64_t *)ctx;
+    uint64_t rip = frame[17];
+    uint64_t cr2 = read_cr2_irq();
+    uint32_t pid = cur->pid;
+
+    kprint("USER FAULT: pid=%u vec=%llu err=0x%llx rip=0x%llx cr2=0x%llx\n",
+           (unsigned)pid,
+           (unsigned long long)vector,
+           (unsigned long long)error,
+           (unsigned long long)rip,
+           (unsigned long long)cr2);
+
+    cur->exit_code = 139; /* SIGSEGV-like exit code */
+
+    uint64_t kcr3 = irq_kernel_cr3 ? irq_kernel_cr3 : read_cr3_irq();
+    uint64_t exit_sp = ((uint64_t)(uintptr_t)&g_pf_exit_stack[sizeof(g_pf_exit_stack)]) & ~0xFULL;
+    __asm__ volatile(
+        "mov %0, %%cr3\n"
+        "mov %1, %%rsp\n"
+        "mov %2, %%edi\n"
+        "call *%3\n"
+        :
+        : "r"(kcr3),
+          "r"(exit_sp),
+          "r"(pid),
+          "r"(pf_kill_finish)
+        : "rdi", "memory");
+    __builtin_unreachable();
+}
+
 void irq_dispatch(uint64_t vector, uint64_t error, void *ctx) {
     // Early serial telemetry: always emitted for CPU exceptions (< 32).
     // Works before kprint_init because it uses only I/O port instructions.
@@ -89,6 +139,20 @@ void irq_dispatch(uint64_t vector, uint64_t error, void *ctx) {
         early_serial_puts(" CR3=");
         early_serial_puthex64(cr3);
         early_serial_puts("\n");
+    }
+
+    /*
+     * If user mode triggers #PF and no dedicated page-fault handler is
+     * installed, terminate only that process instead of stalling the kernel.
+     */
+    if (vector == 14 && !irq_descs[14].handler) {
+        uint64_t *frame = (uint64_t *)ctx;
+        uint64_t cs = frame[18];
+        if ((cs & 3ULL) == 3ULL) {
+            pf_kill_current_user(vector, error, ctx);
+        } else {
+            kernel_panic("unhandled kernel page fault");
+        }
     }
 
     if (vector < 256 && irq_descs[vector].chip && irq_descs[vector].chip->ack) {

@@ -15,7 +15,7 @@ static inline volatile uint32_t *pci_ecam_addr(uint16_t segment, uint8_t bus, ui
         + ((uint64_t)func << 12)
         + (offset & 0xFFF);
 
-    vmm_ensure_physmap(addr + 0x1000);
+    vmm_ensure_physmap_uc(addr + 0x1000);
     return (volatile uint32_t *)(uintptr_t)vmm_phys_to_virt(addr);
 }
 

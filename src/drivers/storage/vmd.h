@@ -12,10 +12,13 @@
 void vmd_init(void);
 
 int      vmd_ready(void);
+uint8_t  vmd_controller_count(void);
+int      vmd_select_controller(uint8_t index);
+uint8_t  vmd_selected_controller(void);
 uint64_t vmd_cfgbar_base(void);
 uint64_t vmd_cfgbar_size(void);
 uint8_t  vmd_bus_start(void);
-uint8_t  vmd_bus_count(void);
+uint16_t vmd_bus_count(void);
 
 uint32_t vmd_cfg_read32 (uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
 void     vmd_cfg_write32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint32_t value);

@@ -17,6 +17,7 @@ void tss_init(uint64_t rsp0_top);
 
 void pmm_init(struct fry_handoff *handoff);
 void pmm_relocate_bitmap(void);
+void pmm_debug_dump_state(const char *tag, uint64_t order);
 void vmm_init(struct fry_handoff *handoff);
 void heap_init(void);
 
@@ -36,8 +37,10 @@ void lapic_init(void);
 void ioapic_init(void);
 void aml_parse_tables(void);
 void acpi_events_init(void);
+void acpi_events_start_worker(void);
 void acpi_power_init(void);
 void platform_init(void);
+void platform_detect(void);
 void pci_enum_all(void);
 void acpi_bus_init(void);
 void smp_init(void);
@@ -56,14 +59,17 @@ void e1000_init(void);
 void rtl8169_init(void);
 void wifi_9260_init(void);
 int part_init(void);
-int fat32_init(void);
+int fat32_init(struct block_device *bd);
 int vfs_init(struct block_device *bd);
 int vfs_init_ramdisk(uint64_t phys_base, uint64_t size);
+void vfs_set_storage_device(struct block_device *bd);
 int process_init(void);
 int sched_init(void);
+void sched_tick(void);
 void syscall_init(void);
 void aml_extended_init(void);
 void hpet_init(void);
+void hpet_sleep_ms(uint64_t ms);
 void lapic_timer_init(void);
 void gop_fb_init(void);
 int process_launch(const char *path);
@@ -78,7 +84,7 @@ __attribute__((aligned(16), section(".stack")))
 uint8_t kernel_stack[262144];
 
 #define TATER_BUILD_TAG __DATE__ " " __TIME__
-#define TATER_BUILD_ID  "2026-02-26-vfsprobe2"
+#define TATER_BUILD_ID  "2026-03-04-fry531-rollback"
 
 static void aml_extended_init_thread(void *arg) {
     (void)arg;
@@ -92,16 +98,57 @@ static int dbg_vfs_emit_name(const char *name, void *ctx) {
     return 0;
 }
 
+static int try_launch_first(const char *const *paths, uint32_t count, const char **chosen_path) {
+    for (uint32_t i = 0; i < count; i++) {
+        int rc = process_launch(paths[i]);
+        if (rc >= 0) {
+            if (chosen_path) *chosen_path = paths[i];
+            return rc;
+        }
+    }
+    if (chosen_path) *chosen_path = count ? paths[count - 1] : 0;
+    return -1;
+}
+
+/* Draw a tiny top-row stage block for bare-metal handoff debugging. */
+static void early_fb_stage(struct fry_handoff *handoff, uint64_t stage) {
+    if (!handoff) return;
+    if (!handoff->fb_base || !handoff->fb_width || !handoff->fb_height || !handoff->fb_stride) return;
+    if (!handoff->boot_identity_limit || handoff->fb_base >= handoff->boot_identity_limit) return;
+
+    uint64_t x0 = stage * 20ULL;
+    if (x0 >= handoff->fb_width) return;
+
+    uint64_t mw = 12ULL;
+    uint64_t mh = 12ULL;
+    uint64_t remain_w = handoff->fb_width - x0;
+    if (remain_w < mw) mw = remain_w;
+    if (handoff->fb_height < mh) mh = handoff->fb_height;
+
+    volatile uint32_t *fb = (volatile uint32_t *)(uintptr_t)handoff->fb_base;
+    for (uint64_t y = 0; y < mh; y++) {
+        uint64_t row = y * handoff->fb_stride + x0;
+        for (uint64_t x = 0; x < mw; x++) {
+            fb[row + x] = 0x00F0F0F0u;
+        }
+    }
+}
+
 static void after_vmm(struct fry_handoff *handoff) {
-    (void)handoff;
+    early_fb_stage(handoff, 13);
+    early_serial_puts("K_AFTER_VMM_ENTRY\n");
+    early_fb_stage(handoff, 14);
+    early_debug_putc('a');
     // Emit a stage marker to both debugcon and serial so live QEMU output matches logs.
     #define STAGE(c) do { early_debug_putc(c); early_serial_putc(c); } while (0)
     STAGE('S');
     // Restore normal console path after VMM is live.
     kprint_init(handoff);
+    early_fb_stage(handoff, 15);
     STAGE('P');
     kprint("TaterTOS64v3 starting\n");
     kprint("build: %s\n", TATER_BUILD_TAG);
+    early_fb_stage(handoff, 16);
     heap_init();
     // Copy handoff into kernel heap so it's accessible even under user CR3.
     struct fry_handoff *handoff_copy = (struct fry_handoff *)kmalloc(sizeof(*handoff_copy));
@@ -110,6 +157,7 @@ static void after_vmm(struct fry_handoff *handoff) {
         g_handoff = handoff_copy;
         handoff = handoff_copy;
     }
+    early_fb_stage(handoff, 17);
 
     // Phase 2: ACPI table layer
     STAGE('T');
@@ -129,6 +177,7 @@ static void after_vmm(struct fry_handoff *handoff) {
     mcfg_init();
     STAGE('g');
     hpet_tbl_init();
+    early_fb_stage(handoff, 18);
     #undef STAGE
 
     // Phase 3: IRQ infrastructure
@@ -137,11 +186,13 @@ static void after_vmm(struct fry_handoff *handoff) {
     pic8259_init();
     lapic_init();
     ioapic_init();
+    early_fb_stage(handoff, 19);
 
     // Phase 4: AML interpreter
     aml_parse_tables();
     acpi_events_init();
     acpi_power_init();
+    early_fb_stage(handoff, 20);
 
     // Phase 5: Driver model
     platform_init();
@@ -149,8 +200,12 @@ static void after_vmm(struct fry_handoff *handoff) {
     // Phase 6: PCI bus driver
     pci_enum_all();
 
+    // Phase 6b: platform fingerprint/profile detection
+    platform_detect();
+
     // Phase 7: ACPI bus driver
     acpi_bus_init();
+    early_fb_stage(handoff, 21);
 
     // Phase 9: Timers must be initialized before SMP so APs can use HPET
     // for LAPIC timer calibration in ap_entry().
@@ -161,6 +216,7 @@ static void after_vmm(struct fry_handoff *handoff) {
 
     // BSP LAPIC timer (APs set up their own in ap_entry)
     lapic_timer_init();
+    early_fb_stage(handoff, 22);
 
     // Phase 9: Input drivers
     kprint("init: ps2\n");
@@ -171,6 +227,7 @@ static void after_vmm(struct fry_handoff *handoff) {
     // Phase 9: Video
     kprint("init: gop\n");
     gop_fb_init();
+    early_fb_stage(handoff, 23);
 
     // Phase 10: USB subsystem
     kprint("init: usb\n");
@@ -178,14 +235,18 @@ static void after_vmm(struct fry_handoff *handoff) {
     xhci_init();
     usb_hub_init();
     usb_hid_init();
+    early_fb_stage(handoff, 24);
 
     // Phase 11: Storage
     kprint("init: storage\n");
+    early_fb_stage(handoff, 25);
     kprint("storage: vmd init\n");
     vmd_init();
+    early_fb_stage(handoff, 26);
     kprint("storage: nvme init\n");
     nvme_init();
     kprint("storage: done\n");
+    early_fb_stage(handoff, 27);
 
     // Phase 12: Network
     kprint("init: net\n");
@@ -193,41 +254,46 @@ static void after_vmm(struct fry_handoff *handoff) {
     e1000_init();
     rtl8169_init();
     wifi_9260_init();
+    early_fb_stage(handoff, 28);
 
     // Phase 13: VFS + filesystem
     kprint("init: vfs\n");
     kprint("init: ramdisk base=0x%llx size=%llu\n",
            (unsigned long long)(handoff ? handoff->ramdisk_base : 0ULL),
            (unsigned long long)(handoff ? handoff->ramdisk_size : 0ULL));
-    int vfs_uses_ramdisk = 0;
-    part_init();
-    fat32_init();
+    enum {
+        ROOT_SRC_NONE = 0,
+        ROOT_SRC_RAMDISK = 1,
+        ROOT_SRC_BLOCK = 2
+    };
+    int root_source = ROOT_SRC_NONE;
+    int have_ramdisk = (handoff && handoff->ramdisk_base && handoff->ramdisk_size);
+    struct block_device *nvme_bd = nvme_get_block_device();
+    vfs_set_storage_device(nvme_bd);
+    if (nvme_bd && !have_ramdisk) {
+        part_init();
+        fat32_init(nvme_bd);
+    }
     {
-        int have_ramdisk = (handoff && handoff->ramdisk_base && handoff->ramdisk_size);
-        struct block_device *nvme_bd = nvme_get_block_device();
-
-        // Live-media behavior: if a boot ramdisk exists, prefer it over host NVMe.
+        // Choose root source once at boot and keep it fixed for this session.
         if (have_ramdisk) {
             kprint("init: vfs ramdisk primary\n");
             if (vfs_init_ramdisk(handoff->ramdisk_base, handoff->ramdisk_size) == 0) {
-                vfs_uses_ramdisk = 1;
-                /* Mount NVMe as secondary alongside ramdisk */
+                root_source = ROOT_SRC_RAMDISK;
                 if (nvme_bd) {
-                    kprint("init: mounting NVMe secondary at /nvme\n");
-                    if (vfs_mount_secondary(nvme_bd, "/nvme") != 0) {
-                        kprint("init: NVMe secondary mount failed (no supported FS)\n");
+                    if (vfs_mount_secondary(nvme_bd, "/nvme") == 0) {
+                        kprint("init: live mode, NVMe secondary auto-mount ready\n");
+                    } else {
+                        kprint("init: live mode, NVMe secondary auto-mount unavailable\n");
                     }
                 }
-            } else if (nvme_bd) {
-                kprint("init: vfs ramdisk failed, trying nvme\n");
-                if (vfs_init(nvme_bd) != 0) {
-                    kprint("init: vfs nvme failed after ramdisk\n");
-                }
             } else {
-                kprint("init: vfs ramdisk failed, no device\n");
+                kprint("init: vfs ramdisk failed\n");
             }
         } else if (nvme_bd) {
-            if (vfs_init(nvme_bd) != 0) {
+            if (vfs_init(nvme_bd) == 0) {
+                root_source = ROOT_SRC_BLOCK;
+            } else {
                 kprint("init: vfs nvme failed, no ramdisk\n");
             }
         } else {
@@ -235,42 +301,46 @@ static void after_vmm(struct fry_handoff *handoff) {
         }
 
         kprint("DBG_VFS source=%s have_rd=%d rd_base=0x%llx rd_size=%llu nvme=%d\n",
-               vfs_uses_ramdisk ? "ramdisk" : "block",
+               (root_source == ROOT_SRC_RAMDISK) ? "ramdisk" :
+               ((root_source == ROOT_SRC_BLOCK) ? "block" : "none"),
                have_ramdisk ? 1 : 0,
                (unsigned long long)(handoff ? handoff->ramdisk_base : 0ULL),
                (unsigned long long)(handoff ? handoff->ramdisk_size : 0ULL),
                nvme_bd ? 1 : 0);
         {
             struct vfs_stat st;
+            int rc_system_init = vfs_stat("/system/INIT.FRY", &st);
+            int rc_system_gui = vfs_stat("/system/GUI.FRY", &st);
+            int rc_apps_shell = vfs_stat("/apps/SHELL.TOT", &st);
+            int rc_apps_sysinfo = vfs_stat("/apps/SYSINFO.FRY", &st);
             int rc_root_gui = vfs_stat("/GUI.FRY", &st);
-            int rc_dir_gui = vfs_stat("/fry/GUI.FRY", &st);
-            int rc_dir_gui_uc = vfs_stat("/FRY/GUI.FRY", &st);
-            int rc_efi_gui = vfs_stat("/EFI/FRY/GUI.FRY", &st);
             int rc_root_sh = vfs_stat("/SHELL.TOT", &st);
-            int rc_dir_sh = vfs_stat("/fry/SHELL.TOT", &st);
-            int rc_dir_sh_uc = vfs_stat("/FRY/SHELL.TOT", &st);
-            int rc_efi_sh = vfs_stat("/EFI/FRY/SHELL.TOT", &st);
-            kprint("DBG_VFS stat gui_root=%d gui_dir=%d gui_dir_uc=%d gui_efi=%d sh_root=%d sh_dir=%d sh_dir_uc=%d sh_efi=%d\n",
-                   rc_root_gui, rc_dir_gui, rc_dir_gui_uc, rc_efi_gui,
-                   rc_root_sh, rc_dir_sh, rc_dir_sh_uc, rc_efi_sh);
+            kprint("DBG_VFS stat init=%d gui_system=%d shell_apps=%d sysinfo_apps=%d gui_root=%d sh_root=%d\n",
+                   rc_system_init, rc_system_gui, rc_apps_shell,
+                   rc_apps_sysinfo, rc_root_gui, rc_root_sh);
         }
         vfs_readdir("/", dbg_vfs_emit_name, 0);
+        vfs_readdir("/system", dbg_vfs_emit_name, 0);
+        vfs_readdir("/apps", dbg_vfs_emit_name, 0);
         vfs_readdir("/fry", dbg_vfs_emit_name, 0);
         vfs_readdir("/FRY", dbg_vfs_emit_name, 0);
-        vfs_readdir("/EFI", dbg_vfs_emit_name, 0);
-        vfs_readdir("/EFI/FRY", dbg_vfs_emit_name, 0);
-        vfs_readdir("/EFI/BOOT", dbg_vfs_emit_name, 0);
-        vfs_readdir("/EFI/BOOT/FRY", dbg_vfs_emit_name, 0);
+        early_fb_stage(handoff, 29);
 
         // Phase 14: Process + userspace
         kprint("init: proc\n");
         process_init();
         sched_init();
         syscall_init();
-
         // Phase 15: User GUI shell
         kprint("init: launch\n");
+        const char *launch_path = 0;
+        int launch_rc = -1;
+        const char *init_paths[] = {
+            "/system/INIT.FRY",
+            "/INIT.FRY"
+        };
         const char *gui_paths[] = {
+            "/system/GUI.FRY",
             "/GUI.FRY",
             "/fry/GUI.FRY",
             "/FRY/GUI.FRY",
@@ -281,6 +351,7 @@ static void after_vmm(struct fry_handoff *handoff) {
             "/EFI/BOOT/FRY/GUI.FRY"
         };
         const char *shell_paths[] = {
+            "/apps/SHELL.TOT",
             "/SHELL.TOT",
             "/fry/SHELL.TOT",
             "/FRY/SHELL.TOT",
@@ -290,52 +361,52 @@ static void after_vmm(struct fry_handoff *handoff) {
             "/EFI/BOOT/fry/SHELL.TOT",
             "/EFI/BOOT/FRY/SHELL.TOT"
         };
-        int launch_rc = -1;
-        const char *launch_path = 0;
-        for (uint32_t i = 0; i < (uint32_t)(sizeof(gui_paths) / sizeof(gui_paths[0])) && launch_rc < 0; i++) {
-            launch_path = gui_paths[i];
-            launch_rc = process_launch(launch_path);
-            if (launch_rc < 0 &&
-                !vfs_uses_ramdisk &&
-                process_last_launch_error() == ELF_LOAD_ERR_OPEN &&
-                handoff && handoff->ramdisk_base && handoff->ramdisk_size &&
-                vfs_init_ramdisk(handoff->ramdisk_base, handoff->ramdisk_size) == 0) {
-                vfs_uses_ramdisk = 1;
-                kprint("init: GUI open failed on primary VFS, ramdisk retry\n");
-                launch_rc = process_launch(launch_path);
-            }
-        }
+        launch_rc = try_launch_first(init_paths,
+                                     (uint32_t)(sizeof(init_paths) / sizeof(init_paths[0])),
+                                     &launch_path);
         if (launch_rc < 0) {
-            kprint("ERROR: GUI launch failed path=%s code=%d\n",
-                   launch_path ? launch_path : "/GUI.FRY",
+            kprint("ERROR: INIT launch failed path=%s code=%d\n",
+                   launch_path ? launch_path : "/system/INIT.FRY",
                    process_last_launch_error());
-            for (uint32_t i = 0; i < (uint32_t)(sizeof(shell_paths) / sizeof(shell_paths[0])) && launch_rc < 0; i++) {
-                launch_path = shell_paths[i];
-                launch_rc = process_launch(launch_path);
-                if (launch_rc < 0 &&
-                    !vfs_uses_ramdisk &&
-                    process_last_launch_error() == ELF_LOAD_ERR_OPEN &&
-                    handoff && handoff->ramdisk_base && handoff->ramdisk_size &&
-                    vfs_init_ramdisk(handoff->ramdisk_base, handoff->ramdisk_size) == 0) {
-                    vfs_uses_ramdisk = 1;
-                    kprint("init: SHELL open failed on primary VFS, ramdisk retry\n");
-                    launch_rc = process_launch(launch_path);
-                }
+            launch_rc = try_launch_first(gui_paths,
+                                         (uint32_t)(sizeof(gui_paths) / sizeof(gui_paths[0])),
+                                         &launch_path);
+            if (launch_rc < 0) {
+                kprint("ERROR: GUI launch failed path=%s code=%d\n",
+                       launch_path ? launch_path : "/system/GUI.FRY",
+                       process_last_launch_error());
+                launch_rc = try_launch_first(shell_paths,
+                                             (uint32_t)(sizeof(shell_paths) / sizeof(shell_paths[0])),
+                                             &launch_path);
             }
         }
         if (launch_rc < 0) {
-            kprint("ERROR: SHELL launch failed path=%s code=%d\n",
-                   launch_path ? launch_path : "/SHELL.TOT",
+            kprint("ERROR: SHELL fallback launch failed path=%s code=%d\n",
+                   launch_path ? launch_path : "/apps/SHELL.TOT",
                    process_last_launch_error());
         } else {
-            kprint("init: user pid=%d\n", launch_rc);
+            kprint("init: user pid=%d path=%s\n", launch_rc, launch_path ? launch_path : "(unknown)");
+            early_fb_stage(handoff, 32);
+            early_serial_puts("K_BOOT_USER_ENQUEUED\n");
         }
+        early_fb_stage(handoff, 30);
     }
 
-    // Enable interrupts now — scheduler needs LAPIC timer to run GUI.
-    // Phase 16 (aml_extended_init) runs in a background kernel thread
-    // so it doesn't block the GUI from appearing.
+    /*
+     * Do one direct scheduler handoff before enabling the rest of background
+     * kernel work. On bare metal this removes dependence on the first LAPIC
+     * timer tick for the initial jump into userspace.
+     */
+    sched_tick();
+
+    // Enable interrupts now — scheduler needs LAPIC timer to keep userspace moving.
     __asm__ volatile("sti");
+
+    /*
+     * Start deferred kernel workers only after the process/scheduler layer is
+     * live and the first boot userspace handoff has had a chance to run.
+     */
+    acpi_events_start_worker();
 
     // Phase 16: Extended AML coverage (background — EC probing is slow)
     kprint("init: aml_ext (background)\n");
@@ -349,6 +420,7 @@ static void after_vmm(struct fry_handoff *handoff) {
             aml_extended_init();
         }
     }
+    early_fb_stage(handoff, 31);
 
     for (;;) {
         __asm__ volatile("hlt");
@@ -356,6 +428,7 @@ static void after_vmm(struct fry_handoff *handoff) {
 }
 
 void _fry_start(struct fry_handoff *handoff) {
+    early_fb_stage(handoff, 4);
     early_serial_init();
     early_serial_puts("K_START\n");
     early_serial_puts("K_BUILD " TATER_BUILD_ID "\n");
@@ -365,23 +438,38 @@ void _fry_start(struct fry_handoff *handoff) {
     // Low-level CPU tables
     gdt_init();
     idt_init();
+    early_fb_stage(handoff, 5);
     early_serial_puts("K_GDT_IDT\n");
     early_debug_putc('g');
 
     // TSS setup with kernel stack
     uint64_t rsp0_top = (uint64_t)(kernel_stack + sizeof(kernel_stack));
     tss_init(rsp0_top);
+    early_fb_stage(handoff, 6);
     early_serial_puts("K_TSS\n");
     early_debug_putc('t');
 
     // Memory managers
     pmm_init(handoff);
+    early_fb_stage(handoff, 7);
     early_serial_puts("K_PMM\n");
     early_debug_putc('p');
     vmm_init(handoff);
+    early_fb_stage(handoff, 8);
+    early_serial_puts("K_PMM_RELOCATE_BEGIN\n");
+    early_debug_putc('r');
     pmm_relocate_bitmap();
+    early_serial_puts("K_PMM_RELOCATE_END\n");
+    early_debug_putc('R');
+    pmm_debug_dump_state("PMM_AFTER_RELOC", 8);
+    early_fb_stage(handoff, 9);
+    early_fb_stage(handoff, 10);
     early_serial_puts("K_VMM\n");
+    early_fb_stage(handoff, 11);
     early_debug_putc('v');
+    early_fb_stage(handoff, 12);
+    early_serial_puts("K_STACK_SWITCH_CALL\n");
+    early_debug_putc('w');
     stack_switch_and_call((uint64_t)(kernel_stack + sizeof(kernel_stack)), after_vmm, handoff);
     early_debug_putc('r');
     for (;;) {

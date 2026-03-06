@@ -110,7 +110,7 @@ void lapic_init(void) {
     if (!phys) return;
 
     lapic_phys = phys;
-    vmm_ensure_physmap(phys + 0x1000);
+    vmm_ensure_physmap_uc(phys + 0x1000);
     lapic_base = (volatile uint32_t *)(uintptr_t)vmm_phys_to_virt(phys);
 
     // Enable LAPIC, spurious vector 0xFF

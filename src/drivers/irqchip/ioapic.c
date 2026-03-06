@@ -88,8 +88,8 @@ void ioapic_init(void) {
     uint32_t count = madt_get_ioapic_count();
     for (uint32_t i = 0; i < count && i < 16; i++) {
         const struct madt_ioapic *m = madt_get_ioapic(i);
-        vmm_map(m->addr, m->addr, VMM_FLAG_WRITE | VMM_FLAG_CACHE_DISABLE | VMM_FLAG_WRITE_THROUGH);
-        ioapics[ioapic_count].base = (volatile uint32_t *)(uintptr_t)m->addr;
+        vmm_ensure_physmap_uc(m->addr + 0x1000);
+        ioapics[ioapic_count].base = (volatile uint32_t *)(uintptr_t)vmm_phys_to_virt(m->addr);
         ioapics[ioapic_count].gsi_base = m->gsi_base;
 
         uint32_t id = (ioapic_read(&ioapics[ioapic_count], 0x00) >> 24) & 0xF;

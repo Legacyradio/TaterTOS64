@@ -6,18 +6,58 @@
 #include "hpet.h"
 #include "../../kernel/irq/irqdesc.h"
 #include "../../kernel/mm/vmm.h"
+#include "../../boot/efi_handoff.h"
+#include "../../boot/early_serial.h"
 
 void kprint(const char *fmt, ...);
 void sched_tick(void);
+extern struct fry_handoff *g_handoff;
+
+static uint8_t g_first_bsp_tick_seen;
+
+static void boot_diag_stage(uint64_t stage) {
+    struct fry_handoff *handoff = g_handoff;
+    if (!handoff) return;
+    if (!handoff->fb_base || !handoff->fb_width || !handoff->fb_height || !handoff->fb_stride) return;
+    if (!handoff->boot_identity_limit || handoff->fb_base >= handoff->boot_identity_limit) return;
+
+    uint64_t x0 = stage * 20ULL;
+    if (x0 >= handoff->fb_width) return;
+
+    uint64_t mw = 12ULL;
+    uint64_t mh = 12ULL;
+    uint64_t remain_w = handoff->fb_width - x0;
+    if (remain_w < mw) mw = remain_w;
+    if (handoff->fb_height < mh) mh = handoff->fb_height;
+
+    volatile uint32_t *fb = (volatile uint32_t *)(uintptr_t)handoff->fb_base;
+    for (uint64_t y = 0; y < mh; y++) {
+        uint64_t row = y * handoff->fb_stride + x0;
+        for (uint64_t x = 0; x < mw; x++) {
+            fb[row + x] = 0x00F0F0F0u;
+        }
+    }
+}
 
 static void lapic_timer_handler(uint32_t vector, void *ctx, void *dev_id, uint64_t error) {
     (void)vector; (void)ctx; (void)dev_id; (void)error;
     uint32_t count = smp_cpu_count();
+    uint32_t bsp = smp_bsp_index();
     if (count == 0) {
+        if (!g_first_bsp_tick_seen) {
+            g_first_bsp_tick_seen = 1;
+            boot_diag_stage(33);
+            early_serial_puts("K_FIRST_TICK\n");
+        }
         sched_tick();
         return;
     }
-    if (lapic_get_id() == smp_cpu_apic_id(0)) {
+    if (bsp < count && lapic_get_id() == smp_cpu_apic_id(bsp)) {
+        if (!g_first_bsp_tick_seen) {
+            g_first_bsp_tick_seen = 1;
+            boot_diag_stage(33);
+            early_serial_puts("K_FIRST_TICK\n");
+        }
         sched_tick();
     }
 }
@@ -65,7 +105,7 @@ void lapic_timer_init(void) {
         kprint("LAPIC timer: no LAPIC\n");
         return;
     }
-    vmm_ensure_physmap(base + 0x1000);
+    vmm_ensure_physmap_uc(base + 0x1000);
     lapic = (volatile uint32_t *)(uintptr_t)vmm_phys_to_virt(base);
 
     lapic_timer_calibrate();

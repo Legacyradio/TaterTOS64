@@ -2,7 +2,46 @@
 #define TATER_VFS_H
 
 #include <stdint.h>
-#include "part.h"
+
+struct block_device {
+    uint64_t sector_size;
+    uint64_t total_sectors;
+    int (*read_sector)(struct block_device *bd, uint64_t lba, void *buf);
+    int (*write_sector)(struct block_device *bd, uint64_t lba, const void *buf);
+    /*
+     * Compatibility callbacks for legacy multi-sector callers.
+     * New code should prefer read_sector/write_sector.
+     */
+    int (*read)(void *ctx, uint64_t lba, void *buf, uint32_t count);
+    int (*write)(void *ctx, uint64_t lba, const void *buf, uint32_t count);
+    void *ctx;
+};
+
+static inline int block_device_read(struct block_device *bd, uint64_t lba, void *buf, uint32_t count) {
+    if (!bd || !buf) return -1;
+    if (count == 0) return 0;
+    if (bd->read) return bd->read(bd->ctx, lba, buf, count);
+    if (!bd->read_sector) return -1;
+    if (bd->sector_size == 0) return -1;
+    uint8_t *p = (uint8_t *)buf;
+    for (uint32_t i = 0; i < count; i++) {
+        if (bd->read_sector(bd, lba + i, p + (uint64_t)i * bd->sector_size) != 0) return -1;
+    }
+    return 0;
+}
+
+static inline int block_device_write(struct block_device *bd, uint64_t lba, const void *buf, uint32_t count) {
+    if (!bd || !buf) return -1;
+    if (count == 0) return 0;
+    if (bd->write) return bd->write(bd->ctx, lba, buf, count);
+    if (!bd->write_sector) return -1;
+    if (bd->sector_size == 0) return -1;
+    const uint8_t *p = (const uint8_t *)buf;
+    for (uint32_t i = 0; i < count; i++) {
+        if (bd->write_sector(bd, lba + i, p + (uint64_t)i * bd->sector_size) != 0) return -1;
+    }
+    return 0;
+}
 
 struct vfs_stat {
     uint64_t size;
@@ -30,6 +69,9 @@ struct vfs_mount {
     char mountpoint[64];
     struct fs_ops *ops;
     void *fs_data;
+    uint32_t open_refs;
+    uint8_t active;
+    uint8_t _pad[3];
     struct vfs_mount *next;
 };
 
@@ -43,12 +85,14 @@ struct vfs_storage_info {
     uint8_t  nvme_detected;
     uint8_t  root_fs_type;        /* 0=none, 1=FAT32, 2=ToTFS, 3=NTFS, 4=ramdisk */
     uint8_t  secondary_fs_type;   /* 0=none, 1=FAT32, 2=ToTFS, 3=NTFS, 4=ramdisk */
-    uint8_t  pad;
+    uint8_t  flags;               /* bit0=root source is ramdisk/live media */
     uint32_t sector_size;
     uint64_t total_sectors;
     char     root_mount[16];
     char     secondary_mount[16];
 };
+
+#define VFS_STORAGE_FLAG_ROOT_RAMDISK_SOURCE 0x01u
 
 struct vfs_path_fs_info {
     uint8_t  fs_type;             /* 0=none, 1=FAT32, 2=ToTFS, 3=NTFS, 4=ramdisk */
@@ -69,8 +113,23 @@ struct vfs_mounts_info {
     struct vfs_mount_info entries[VFS_MAX_MOUNT_INFO];
 };
 
+struct vfs_mount_dbg {
+    char     mount[64];
+    uint8_t  fs_type;             /* 0=none, 1=FAT32, 2=ToTFS, 3=NTFS, 4=ramdisk */
+    uint8_t  pad[3];
+    uint32_t sector_size;         /* logical sector size for backing device */
+    uint32_t block_size;          /* cluster/block size in bytes (0 if n/a) */
+    uint64_t part_lba;            /* starting LBA of the partition (0 if ramdisk) */
+};
+
+struct vfs_mounts_dbg {
+    uint32_t count;
+    struct vfs_mount_dbg entries[VFS_MAX_MOUNT_INFO];
+};
+
 int vfs_init(struct block_device *bd);
 int vfs_init_ramdisk(uint64_t phys_base, uint64_t size);
+void vfs_set_storage_device(struct block_device *bd);
 int vfs_mount(const char *mountpoint, struct fs_ops *ops, void *fs_data);
 int vfs_umount(const char *mountpoint);
 struct vfs_file *vfs_open(const char *path);
@@ -90,5 +149,6 @@ int vfs_mount_secondary(struct block_device *bd, const char *mountpoint);
 int vfs_get_storage_info(struct vfs_storage_info *out);
 int vfs_get_path_fs_info(const char *path, struct vfs_path_fs_info *out);
 int vfs_get_mounts_info(struct vfs_mounts_info *out);
+int vfs_get_mounts_dbg(struct vfs_mounts_dbg *out);
 
 #endif

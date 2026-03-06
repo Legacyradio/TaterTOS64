@@ -1,9 +1,9 @@
 // FAT32 filesystem with LFN support
 
+#include "vfs.h"
 #include "fat32.h"
 
 void kprint(const char *fmt, ...);
-struct block_device *nvme_get_block_device(void);
 
 #define FAT32_MAX_SECTOR 4096
 
@@ -53,16 +53,20 @@ static uint32_t fat32_chain_step_limit(const struct fat32_fs *fs) {
 }
 
 static uint64_t fat32_cluster_to_lba(struct fat32_fs *fs, uint32_t cluster) {
-    return fs->data_lba + (uint64_t)(cluster - 2) * fs->sectors_per_cluster;
+    uint64_t cluster_index = (cluster >= 2) ? ((uint64_t)cluster - 2ULL) : 0ULL;
+    return fs->data_lba + cluster_index * (uint64_t)fs->sectors_per_cluster;
 }
 
 static int read_sector(struct fat32_fs *fs, uint64_t lba, void *buf) {
-    return fs->bd->read(fs->bd->ctx, lba, buf, 1);
+    if (!fs || !fs->bd || !buf) return -1;
+    if (fs->bd->read_sector) return fs->bd->read_sector(fs->bd, lba, buf);
+    return block_device_read(fs->bd, lba, buf, 1);
 }
 
 static int write_sector(struct fat32_fs *fs, uint64_t lba, const void *buf) {
-    if (!fs->bd->write) return -1;
-    return fs->bd->write(fs->bd->ctx, lba, buf, 1);
+    if (!fs || !fs->bd || !buf) return -1;
+    if (fs->bd->write_sector) return fs->bd->write_sector(fs->bd, lba, buf);
+    return block_device_write(fs->bd, lba, buf, 1);
 }
 
 static uint32_t read_fat_entry(struct fat32_fs *fs, uint32_t cluster) {
@@ -99,7 +103,9 @@ static int write_fat_entry(struct fat32_fs *fs, uint32_t cluster, uint32_t value
 
 static uint32_t alloc_cluster(struct fat32_fs *fs, uint32_t prev) {
     if (fs->total_clusters == 0) return 0;
-    for (uint32_t c = 2; c < fs->total_clusters + 2; c++) {
+    uint64_t cluster_limit = (uint64_t)fs->total_clusters + 2ULL;
+    for (uint64_t c64 = 2; c64 < cluster_limit; c64++) {
+        uint32_t c = (uint32_t)c64;
         if (read_fat_entry(fs, c) == 0) {
             if (write_fat_entry(fs, c, 0x0FFFFFFF) != 0) return 0;
             if (prev) {
@@ -145,10 +151,10 @@ static int fat32_boot_sig_ok(const uint8_t *sector, uint32_t bytes_per_sector) {
 }
 
 int fat32_probe_bpb(struct block_device *bd, uint64_t part_lba) {
-    if (!bd || !bd->read) return 0;
+    if (!bd) return 0;
     if (bd->sector_size < 512 || bd->sector_size > FAT32_MAX_SECTOR) return 0;
     uint8_t sector[FAT32_MAX_SECTOR];
-    if (bd->read(bd->ctx, part_lba, sector, 1) != 0) return 0;
+    if (block_device_read(bd, part_lba, sector, 1) != 0) return 0;
     const struct fat32_bpb *bpb = (const struct fat32_bpb *)sector;
     if (!is_fat32_bpb(bpb)) return 0;
     if (bpb->bytes_per_sector != bd->sector_size) return 0;
@@ -160,7 +166,7 @@ int fat32_mount(struct fat32_fs *fs, struct block_device *bd, uint64_t part_lba)
     if (!fs || !bd) return -1;
     if (bd->sector_size < 512 || bd->sector_size > FAT32_MAX_SECTOR) return -1;
     uint8_t sector[FAT32_MAX_SECTOR];
-    if (bd->read(bd->ctx, part_lba, sector, 1) != 0) return -1;
+    if (block_device_read(bd, part_lba, sector, 1) != 0) return -1;
 
     struct fat32_bpb *bpb = (struct fat32_bpb *)sector;
     if (!is_fat32_bpb(bpb)) return -1;
@@ -190,9 +196,8 @@ int fat32_mount(struct fat32_fs *fs, struct block_device *bd, uint64_t part_lba)
     return 0;
 }
 
-int fat32_init(void) {
-    struct block_device *bd = nvme_get_block_device();
-    if (!bd || !bd->read) {
+int fat32_init(struct block_device *bd) {
+    if (!bd) {
         kprint("FAT32: no block device\n");
         return -1;
     }
@@ -496,10 +501,12 @@ int fat32_read(struct fat32_file *f, void *buf, uint32_t len) {
     uint8_t *out = (uint8_t *)buf;
     uint32_t remaining = len;
     uint32_t cluster = f->first_cluster;
-    uint32_t cluster_size = f->fs->sectors_per_cluster * f->fs->bytes_per_sector;
-    uint32_t skip = f->pos;
+    uint64_t cluster_size = (uint64_t)f->fs->sectors_per_cluster *
+                            (uint64_t)f->fs->bytes_per_sector;
+    uint64_t skip = f->pos;
     uint32_t chain_steps = 0;
     uint32_t chain_limit = fat32_chain_step_limit(f->fs);
+    if (cluster_size == 0) return -1;
 
     while (skip >= cluster_size) {
         if (chain_steps++ >= chain_limit) return (len - remaining);
@@ -511,12 +518,15 @@ int fat32_read(struct fat32_file *f, void *buf, uint32_t len) {
     while (remaining > 0 && cluster < 0x0FFFFFF8) {
         if (chain_steps++ >= chain_limit) break;
         uint64_t lba = fat32_cluster_to_lba(f->fs, cluster);
+        uint32_t skip_sectors = (uint32_t)(skip / f->fs->bytes_per_sector);
+        uint32_t skip_bytes = (uint32_t)(skip % f->fs->bytes_per_sector);
         for (uint32_t s = 0; s < f->fs->sectors_per_cluster; s++) {
             uint8_t sector[FAT32_MAX_SECTOR];
+            if (s < skip_sectors) continue;
             if (f->fs->bytes_per_sector > sizeof(sector)) return (len - remaining);
             if (read_sector(f->fs, lba + s, sector) != 0) return (len - remaining);
 
-            uint32_t off = (s == 0) ? skip : 0;
+            uint32_t off = (s == skip_sectors) ? skip_bytes : 0;
             uint32_t avail = f->fs->bytes_per_sector - off;
             uint32_t take = (remaining < avail) ? remaining : avail;
 
@@ -525,9 +535,9 @@ int fat32_read(struct fat32_file *f, void *buf, uint32_t len) {
             }
 
             remaining -= take;
-            skip = 0;
             if (remaining == 0) break;
         }
+        skip = 0;
         if (remaining == 0) break;
         cluster = read_fat_entry(f->fs, cluster);
     }
@@ -554,10 +564,12 @@ int fat32_write(struct fat32_file *f, const void *buf, uint32_t len) {
     const uint8_t *in = (const uint8_t *)buf;
     uint32_t remaining = len;
     uint32_t cluster = f->first_cluster;
-    uint32_t cluster_size = f->fs->sectors_per_cluster * f->fs->bytes_per_sector;
-    uint32_t skip = f->pos;
+    uint64_t cluster_size = (uint64_t)f->fs->sectors_per_cluster *
+                            (uint64_t)f->fs->bytes_per_sector;
+    uint64_t skip = f->pos;
     uint32_t chain_steps = 0;
     uint32_t chain_limit = fat32_chain_step_limit(f->fs);
+    if (cluster_size == 0) return -1;
 
     uint32_t prev = 0;
     while (skip >= cluster_size) {
@@ -579,11 +591,14 @@ int fat32_write(struct fat32_file *f, const void *buf, uint32_t len) {
             if (!cluster) break;
         }
         uint64_t lba = fat32_cluster_to_lba(f->fs, cluster);
+        uint32_t skip_sectors = (uint32_t)(skip / f->fs->bytes_per_sector);
+        uint32_t skip_bytes = (uint32_t)(skip % f->fs->bytes_per_sector);
         for (uint32_t s = 0; s < f->fs->sectors_per_cluster; s++) {
             uint8_t sector[FAT32_MAX_SECTOR];
+            if (s < skip_sectors) continue;
             if (f->fs->bytes_per_sector > sizeof(sector)) return (len - remaining);
             if (read_sector(f->fs, lba + s, sector) != 0) return (len - remaining);
-            uint32_t off = (s == 0) ? skip : 0;
+            uint32_t off = (s == skip_sectors) ? skip_bytes : 0;
             uint32_t avail = f->fs->bytes_per_sector - off;
             uint32_t take = (remaining < avail) ? remaining : avail;
             for (uint32_t i = 0; i < take; i++) {
@@ -591,9 +606,9 @@ int fat32_write(struct fat32_file *f, const void *buf, uint32_t len) {
             }
             if (write_sector(f->fs, lba + s, sector) != 0) return (len - remaining);
             remaining -= take;
-            skip = 0;
             if (remaining == 0) break;
         }
+        skip = 0;
         prev = cluster;
         if (remaining == 0) break;
         cluster = read_fat_entry(f->fs, cluster);

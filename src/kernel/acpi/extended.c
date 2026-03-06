@@ -824,7 +824,7 @@ static void pick_lpc_bridge_candidate(uint8_t preferred_bus,
     uint8_t slot = 0x1Fu;
     uint8_t func = 0u;
     uint32_t count = 0;
-    struct pci_device_info *devs = pci_get_devices(&count);
+    const struct pci_device_info *devs = pci_get_devices(&count);
     int found = 0;
 
     if (devs) {
@@ -2231,7 +2231,7 @@ static void acpi_pci_prt_init(void) {
 
     uint32_t base_bus = pci_get_base_bus(root);
     uint32_t pci_count = 0;
-    struct pci_device_info *devs = pci_get_devices(&pci_count);
+    const struct pci_device_info *devs = pci_get_devices(&pci_count);
     if (!devs) return;
 
     for (uint32_t i = 0; i < prt->v.package.count; i++) {

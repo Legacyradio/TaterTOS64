@@ -81,6 +81,7 @@ KERNEL_OBJS = \
   src/kernel/proc/syscall.o
 
 LIBC_OBJ = src/user/libc/libc.o src/user/libc/gfx.o
+INIT_OBJS = $(LIBC_OBJ) src/user/init/init.o
 SHELL_OBJS = $(LIBC_OBJ) src/user/shell/shell.o
 GUI_OBJS = $(LIBC_OBJ) src/user/gui/gui.o
 SYSINFO_OBJS = $(LIBC_OBJ) src/user/apps/sysinfo.o
@@ -88,7 +89,23 @@ UPTIME_OBJS = $(LIBC_OBJ) src/user/apps/uptime.o
 PS_OBJS = $(LIBC_OBJ) src/user/apps/ps.o
 FILEMAN_OBJS = $(LIBC_OBJ) src/user/apps/fileman.o
 
-all: kernel shell gui sysinfo uptime ps fileman hosttools
+all: kernel init shell gui sysinfo uptime ps fileman hosttools
+
+test-elf-bounds: out/elf_loader_bounds_test
+	./out/elf_loader_bounds_test
+
+test-storage-fuzz: out/storage_meta_fuzz
+	./out/storage_meta_fuzz
+
+out/elf_loader_bounds_test: tools/elf_loader_bounds_test.c src/kernel/proc/elf.c src/kernel/proc/elf.h
+	mkdir -p out
+	gcc -O2 -std=gnu11 -Wall -Wextra -I. tools/elf_loader_bounds_test.c src/kernel/proc/elf.c -o out/elf_loader_bounds_test
+
+out/storage_meta_fuzz: tools/storage_meta_fuzz.c src/kernel/fs/part.c src/kernel/fs/part.h src/kernel/fs/ntfs.c src/kernel/fs/ntfs.h src/kernel/fs/vfs.h
+	mkdir -p out
+	gcc -O2 -std=gnu11 -Wall -Wextra -ffunction-sections -fdata-sections -I. \
+	  tools/storage_meta_fuzz.c src/kernel/fs/part.c src/kernel/fs/ntfs.c \
+	  -Wl,--gc-sections -o out/storage_meta_fuzz
 
 hosttools:
 	gcc -O2 -o tools/mktotfs tools/mktotfs.c
@@ -124,6 +141,10 @@ src/user/%.o: src/user/%.c
 kernel: $(KERNEL_OBJS)
 	$(LD) -T kernel_linker.ld -o kernel.elf $(KERNEL_OBJS)
 
+init: $(INIT_OBJS)
+	$(LD) -T user_linker.ld -o init.elf $(INIT_OBJS)
+	./tools/frypack.py init.elf init.fry
+
 shell: $(SHELL_OBJS)
 	$(LD) -T user_linker.ld -o shell.elf $(SHELL_OBJS)
 	./tools/totpack.py shell.elf shell.tot 0x0002
@@ -150,9 +171,9 @@ fileman: $(FILEMAN_OBJS)
 
 clean:
 	rm -f $(KERNEL_OBJS) $(LIBC_OBJ) src/user/libc/gfx.o \
-	  src/user/shell/shell.o src/user/gui/gui.o src/user/apps/sysinfo.o \
+	  src/user/init/init.o src/user/shell/shell.o src/user/gui/gui.o src/user/apps/sysinfo.o \
 	  src/user/apps/uptime.o src/user/apps/ps.o src/user/apps/fileman.o \
-	  kernel.elf shell.elf shell.tot shell.fry gui.elf gui.fry \
+	  kernel.elf init.elf init.fry shell.elf shell.tot shell.fry gui.elf gui.fry \
 	  sysinfo.elf sysinfo.fry uptime.elf uptime.fry ps.elf ps.fry \
 	  fileman.elf fileman.fry \
 	  tools/mktotfs tools/totcopy

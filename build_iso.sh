@@ -23,7 +23,7 @@ mkdir -p "$EFI_DIR"
 
 # Build kernel and user apps
 make -C "$ROOT_DIR" clean
-make -C "$ROOT_DIR" kernel shell gui sysinfo uptime ps fileman
+make -C "$ROOT_DIR" kernel init shell gui sysinfo uptime ps fileman
 
 # Create FAT32 image for userspace files
 rm -f "$FS_IMG"
@@ -42,6 +42,18 @@ fi
 
 # Copy shell.tot + app .fry files into fs.img if mtools is available
 if command -v mcopy >/dev/null 2>&1; then
+  if command -v mmd >/dev/null 2>&1; then
+    mmd -i "$FS_IMG" ::/system 2>/dev/null || true
+    mmd -i "$FS_IMG" ::/apps 2>/dev/null || true
+  fi
+  mcopy -o -i "$FS_IMG" "$ROOT_DIR/init.fry" ::/system/INIT.FRY || true
+  mcopy -o -i "$FS_IMG" "$ROOT_DIR/init.fry" ::/INIT.FRY || true
+  mcopy -o -i "$FS_IMG" "$ROOT_DIR/gui.fry" ::/system/GUI.FRY || true
+  mcopy -o -i "$FS_IMG" "$ROOT_DIR/shell.tot" ::/apps/SHELL.TOT || true
+  mcopy -o -i "$FS_IMG" "$ROOT_DIR/sysinfo.fry" ::/apps/SYSINFO.FRY || true
+  mcopy -o -i "$FS_IMG" "$ROOT_DIR/uptime.fry" ::/apps/UPTIME.FRY || true
+  mcopy -o -i "$FS_IMG" "$ROOT_DIR/ps.fry" ::/apps/PS.FRY || true
+  mcopy -o -i "$FS_IMG" "$ROOT_DIR/fileman.fry" ::/apps/FILEMAN.FRY || true
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/shell.tot" ::/SHELL.TOT || true
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/gui.fry" ::/GUI.FRY || true
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/sysinfo.fry" ::/SYSINFO.FRY || true
@@ -85,9 +97,13 @@ echo "Formatting ToTFS partition at offset $NVME_PART_OFFSET..."
 "$ROOT_DIR/tools/mktotfs" "$NVME_IMG" "$NVME_PART_OFFSET" "$NVME_PART_SIZE"
 
 # Copy shell.tot + app .fry files into ToTFS partition
-if [ -f "$ROOT_DIR/shell.tot" ]; then
+  if [ -f "$ROOT_DIR/shell.tot" ]; then
   "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
     "$ROOT_DIR/shell.tot" "/SHELL.TOT"
+fi
+if [ -f "$ROOT_DIR/init.fry" ]; then
+  "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
+    "$ROOT_DIR/init.fry" "/INIT.FRY"
 fi
 for fry in gui sysinfo uptime ps fileman; do
   FRY_UPPER=$(echo "$fry" | tr 'a-z' 'A-Z')
@@ -142,21 +158,34 @@ if command -v mmd >/dev/null 2>&1 && command -v mcopy >/dev/null 2>&1; then
   mmd -i "$EFI_IMG" ::/boot
   mcopy -i "$EFI_IMG" "$ROOT_DIR/kernel.elf" ::/boot/kernel.elf
   mcopy -i "$EFI_IMG" "$ISO_DIR/startup.nsh" ::/startup.nsh
-  # Keep userspace binaries at EFI root for firmware/path-compatibility fallbacks.
-  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/gui.fry"     ::/GUI.FRY     || true
-  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/shell.tot"   ::/SHELL.TOT   || true
-  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/sysinfo.fry" ::/SYSINFO.FRY || true
-  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/uptime.fry"  ::/UPTIME.FRY  || true
-  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/ps.fry"      ::/PS.FRY      || true
-  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/fileman.fry" ::/FILEMAN.FRY || true
-  # Embed userspace binaries so the OS can boot without a separate NVMe image
-  mmd -i "$EFI_IMG" ::/fry || true
-  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/gui.fry"     ::/fry/GUI.FRY     || true
-  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/shell.tot"   ::/fry/SHELL.TOT   || true
-  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/sysinfo.fry" ::/fry/SYSINFO.FRY || true
-  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/uptime.fry"  ::/fry/UPTIME.FRY  || true
-  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/ps.fry"      ::/fry/PS.FRY      || true
-  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/fileman.fry" ::/fry/FILEMAN.FRY || true
+  mmd -i "$EFI_IMG" ::/system 2>/dev/null || true
+  mmd -i "$EFI_IMG" ::/apps 2>/dev/null || true
+  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/init.fry"    ::/system/INIT.FRY   || true
+  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/init.fry"    ::/INIT.FRY          || true
+  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/gui.fry"     ::/system/GUI.FRY    || true
+  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/shell.tot"   ::/apps/SHELL.TOT    || true
+  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/sysinfo.fry" ::/apps/SYSINFO.FRY  || true
+  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/uptime.fry"  ::/apps/UPTIME.FRY   || true
+  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/ps.fry"      ::/apps/PS.FRY       || true
+  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/fileman.fry" ::/apps/FILEMAN.FRY  || true
+  # Keep userspace binaries in every primary-root directory the loader/gui
+  # actually probe on live media.
+  efi_app_dirs=("/" "/fry" "/FRY" "/EFI/fry" "/EFI/FRY" "/EFI/BOOT" "/EFI/BOOT/fry" "/EFI/BOOT/FRY")
+  for dir in "${efi_app_dirs[@]}"; do
+    if [ "$dir" != "/" ]; then
+      mmd -i "$EFI_IMG" "::${dir}" 2>/dev/null || true
+      mcopy_dir="::${dir}"
+    else
+      mcopy_dir="::"
+    fi
+    mcopy -o -i "$EFI_IMG" "$ROOT_DIR/init.fry"    "$mcopy_dir/INIT.FRY"    || true
+    mcopy -o -i "$EFI_IMG" "$ROOT_DIR/gui.fry"     "$mcopy_dir/GUI.FRY"     || true
+    mcopy -o -i "$EFI_IMG" "$ROOT_DIR/shell.tot"   "$mcopy_dir/SHELL.TOT"   || true
+    mcopy -o -i "$EFI_IMG" "$ROOT_DIR/sysinfo.fry" "$mcopy_dir/SYSINFO.FRY" || true
+    mcopy -o -i "$EFI_IMG" "$ROOT_DIR/uptime.fry"  "$mcopy_dir/UPTIME.FRY"  || true
+    mcopy -o -i "$EFI_IMG" "$ROOT_DIR/ps.fry"      "$mcopy_dir/PS.FRY"      || true
+    mcopy -o -i "$EFI_IMG" "$ROOT_DIR/fileman.fry" "$mcopy_dir/FILEMAN.FRY" || true
+  done
 else
   echo "Missing mtools (mmd/mcopy) for efiboot.img."
   exit 1
@@ -169,23 +198,35 @@ cp "$EFI_IMG" "$ISO_DIR/EFI/efiboot.img"
 # Copy kernel
 mkdir -p "$ISO_DIR/boot"
 cp "$ROOT_DIR/kernel.elf" "$ISO_DIR/boot/kernel.elf"
+mkdir -p "$ISO_DIR/system" "$ISO_DIR/apps"
+cp "$ROOT_DIR/init.fry"    "$ISO_DIR/system/INIT.FRY"
+cp "$ROOT_DIR/init.fry"    "$ISO_DIR/INIT.FRY"
+cp "$ROOT_DIR/gui.fry"     "$ISO_DIR/system/GUI.FRY"
+cp "$ROOT_DIR/shell.tot"   "$ISO_DIR/apps/SHELL.TOT"
+cp "$ROOT_DIR/sysinfo.fry" "$ISO_DIR/apps/SYSINFO.FRY"
+cp "$ROOT_DIR/uptime.fry"  "$ISO_DIR/apps/UPTIME.FRY"
+cp "$ROOT_DIR/ps.fry"      "$ISO_DIR/apps/PS.FRY"
+cp "$ROOT_DIR/fileman.fry" "$ISO_DIR/apps/FILEMAN.FRY"
 
-# Copy SHELL.TOT + .FRY app binaries into the ISO 9660 tree at root and /fry.
-# On Dell (and similar firmware) li->DeviceHandle gives the ISO 9660 SFS, not
-# the FAT32 efiboot.img, so the EFI loader must find userspace files here.
-cp "$ROOT_DIR/gui.fry"     "$ISO_DIR/GUI.FRY"
-cp "$ROOT_DIR/shell.tot"   "$ISO_DIR/SHELL.TOT"
-cp "$ROOT_DIR/sysinfo.fry" "$ISO_DIR/SYSINFO.FRY"
-cp "$ROOT_DIR/uptime.fry"  "$ISO_DIR/UPTIME.FRY"
-cp "$ROOT_DIR/ps.fry"      "$ISO_DIR/PS.FRY"
-cp "$ROOT_DIR/fileman.fry" "$ISO_DIR/FILEMAN.FRY"
-mkdir -p "$ISO_DIR/fry"
-cp "$ROOT_DIR/gui.fry"     "$ISO_DIR/fry/GUI.FRY"
-cp "$ROOT_DIR/shell.tot"   "$ISO_DIR/fry/SHELL.TOT"
-cp "$ROOT_DIR/sysinfo.fry" "$ISO_DIR/fry/SYSINFO.FRY"
-cp "$ROOT_DIR/uptime.fry"  "$ISO_DIR/fry/UPTIME.FRY"
-cp "$ROOT_DIR/ps.fry"      "$ISO_DIR/fry/PS.FRY"
-cp "$ROOT_DIR/fileman.fry" "$ISO_DIR/fry/FILEMAN.FRY"
+# Copy userspace payloads into every primary-root directory the live runtime
+# probes. On Dell (and similar firmware) li->DeviceHandle can expose the ISO
+# 9660 tree instead of efiboot.img, so this layout must match runtime fallbacks.
+iso_app_dirs=("/" "/fry" "/FRY" "/EFI/fry" "/EFI/FRY" "/EFI/BOOT" "/EFI/BOOT/fry" "/EFI/BOOT/FRY")
+for dir in "${iso_app_dirs[@]}"; do
+  if [ "$dir" = "/" ]; then
+    target_dir="$ISO_DIR"
+  else
+    target_dir="$ISO_DIR$dir"
+    mkdir -p "$target_dir"
+  fi
+  cp "$ROOT_DIR/init.fry"    "$target_dir/INIT.FRY"
+  cp "$ROOT_DIR/gui.fry"     "$target_dir/GUI.FRY"
+  cp "$ROOT_DIR/shell.tot"   "$target_dir/SHELL.TOT"
+  cp "$ROOT_DIR/sysinfo.fry" "$target_dir/SYSINFO.FRY"
+  cp "$ROOT_DIR/uptime.fry"  "$target_dir/UPTIME.FRY"
+  cp "$ROOT_DIR/ps.fry"      "$target_dir/PS.FRY"
+  cp "$ROOT_DIR/fileman.fry" "$target_dir/FILEMAN.FRY"
+done
 
 # No GRUB, pure UEFI BOOTX64.EFI
 
@@ -205,6 +246,39 @@ else
 fi
 
 echo "ISO output: $OUT_DIR/tatertos64v3.iso"
+
+echo "Verifying packaged live-app fallbacks..."
+for path in \
+  "::/INIT.FRY" \
+  "::/system/INIT.FRY" \
+  "::/system/GUI.FRY" \
+  "::/apps/SHELL.TOT" \
+  "::/SHELL.TOT" \
+  "::/fry/SHELL.TOT" \
+  "::/FRY/SHELL.TOT" \
+  "::/EFI/fry/SHELL.TOT" \
+  "::/EFI/FRY/SHELL.TOT" \
+  "::/EFI/BOOT/SHELL.TOT" \
+  "::/EFI/BOOT/fry/SHELL.TOT" \
+  "::/EFI/BOOT/FRY/SHELL.TOT"; do
+  mdir -i "$EFI_IMG" "$path" >/dev/null
+done
+
+for path in \
+  /INIT.FRY \
+  /system/INIT.FRY \
+  /system/GUI.FRY \
+  /apps/SHELL.TOT \
+  /SHELL.TOT \
+  /fry/SHELL.TOT \
+  /FRY/SHELL.TOT \
+  /EFI/fry/SHELL.TOT \
+  /EFI/FRY/SHELL.TOT \
+  /EFI/BOOT/SHELL.TOT \
+  /EFI/BOOT/fry/SHELL.TOT \
+  /EFI/BOOT/FRY/SHELL.TOT; do
+  xorriso -indev "$OUT_DIR/tatertos64v3.iso" -ls "$path" >/dev/null 2>&1
+done
 
 # Optional: export ISO to Windows path if available
 WIN_EXPORT="/mnt/c/Users/jjsako/Documents/tateriso"

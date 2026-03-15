@@ -1,0 +1,17 @@
+fry625 - Disable boot stage markers (clean boot)
+Date: 2026-03-07
+
+Status: TATER_BOOT_VISUAL_DEBUG set back to 0.
+
+Changes:
+- src/kernel/main.c: TATER_BOOT_VISUAL_DEBUG 1 -> 0
+
+Why: Dell boots to GUI successfully (confirmed fry624). Boot stage
+markers are no longer needed for diagnostics and add visual noise.
+User prefers a clean boot with no debug squares.
+
+Note: Boot is slightly slower than pre-firmware-embed builds because
+kernel grew from ~700KB to ~2.1MB (1.4MB embedded Intel 9260 firmware
+blob in .rodata). This is expected — larger UEFI load time is normal.
+
+ISO built and exported to Windows.

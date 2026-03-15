@@ -1,0 +1,60 @@
+fry673 - 2026-03-09 00:04:48 CDT - Shell: add one-shot WiFi diagnostic command and rebuild ISO
+
+SESSION CONTEXT:
+  User asked for a faster way to dump the useful WiFi diagnostics without
+  manually running multiple commands, then explicitly asked to rebuild the
+  whole ISO after the shell change.
+
+WHY:
+  The existing shell already exposed `wl`, `wh`, and `wc`, but using them one
+  by one is still friction when doing repeated Dell Precision 7530 bring-up
+  loops. A single command lowers the cost of collecting the right data and
+  reduces the odds of missing one of the important dumps.
+
+FILES CHANGED:
+  - src/user/shell/shell.c
+
+CODE CHANGES:
+  1. Added small shell helpers for:
+     - WiFi init log
+     - WiFi handoff dump
+     - WiFi CPU status dump
+  2. Added `cmd_wifi_diag()` which prints:
+     - `=== wl ===`
+     - `=== wh ===`
+     - `=== wc ===`
+     and then runs the existing dump paths in sequence.
+  3. Added `wifi diag` subcommand.
+  4. Added `wdiag` alias.
+  5. Updated shell help text to advertise `wifi ... diag` and `wdiag`.
+
+RATIONALE:
+  This does not invent a new diagnostic format. It simply composes the
+  existing built-in WiFi introspection endpoints into one operator command so
+  the low-level transport / ALIVE / CPU evidence comes out in one shot.
+
+COMMANDS RUN:
+  Code / validation:
+    - `PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh`
+
+RESULT:
+  - full clean rebuild: PASS
+  - kernel/user artifacts rebuilt
+  - ISO output:
+      `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+  - NVMe image updated:
+      `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+  - Windows ISO export skipped because `/mnt/c/Users/jjsako/Documents` was not writable
+
+NEXT HARDWARE TEST:
+  Boot the rebuilt ISO on the Dell Precision 7530 and run:
+    1. `wdiag`
+
+  Equivalent manual sequence:
+    1. `wl`
+    2. `wh`
+    3. `wc`
+
+NOTES:
+  - This log exists to satisfy `planv3.txt` rule 5 and rule 6.
+  - No SHA-256 hashes recorded here per `planv3.txt` rule 16.

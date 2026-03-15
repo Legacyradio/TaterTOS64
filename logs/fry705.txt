@@ -1,0 +1,55 @@
+fry705 - Add LMPM_SECURE_UCODE_LOAD_CPU1_HDR_ADDR for gen1 FW upload
+Date: 2026-03-12
+
+PROBLEM:
+  fry704 Dell test: CPU2 SYSASSERT fix worked (no SW_ERR), but ALIVE never
+  arrives. CPU1 stuck at LMAC_PC=0x605dc, no interrupts (CSR_INT=0 throughout).
+  FH_UCODE_LOAD_STATUS=0x0000FFFF (CPU1 done only).
+  RFH DMA_CFG=0x02940000 with DMA_EN bit (31) cleared - firmware likely
+  modified RFH during its own init but got stuck before re-enabling.
+  Firmware uploaded correctly (all 9 SRAM sections verified exp=stg=now).
+
+ROOT CAUSE ANALYSIS:
+  Linux iwl_pcie_load_cpu_sections_8000() writes LMPM_SECURE_UCODE_LOAD_CPU1_HDR_ADDR
+  = 0x420000 (LMPM_SECURE_CPU1_HDR_MEM_SPACE) at the START of CPU1 section upload.
+  This tells the boot ROM where the CPU1 secure header lives in SRAM.
+
+  Our gen1 upload path (iwl_upload_firmware) never wrote this register.
+  In fry661 (where ALIVE worked), this was masked because we also wrote
+  0xFFFFFFFF to FH_UCODE_LOAD_STATUS which started CPU2. The CPU2 startup
+  (even though it crashed) apparently provided signals that CPU1 needed to
+  proceed through initialization.
+
+  In fry704, with CPU2 done marker skipped, CPU1 firmware appears to wait
+  for CPU2-related events that never come, spinning at PC=0x605dc.
+  The LMPM_SECURE register likely tells the firmware whether this is a
+  single-CPU or dual-CPU boot, allowing CPU1 to proceed without CPU2.
+
+  For INIT image: only CPU1 header written (single-CPU signal).
+  For RT image: both CPU1 and CPU2 headers written (dual-CPU).
+
+FIX:
+  src/drivers/net/wifi_9260.c iwl_upload_firmware():
+  - Added iwl_write_prph(LMPM_SECURE_UCODE_LOAD_CPU1_HDR_ADDR,
+                          LMPM_SECURE_CPU1_HDR_MEM_SPACE) before CPU1 upload
+  - Added iwl_write_prph(LMPM_SECURE_UCODE_LOAD_CPU2_HDR_ADDR,
+                          LMPM_SECURE_CPU2_HDR_MEM_SPACE) before CPU2 upload
+    (only when separator found = dual-CPU image)
+  - Readback verification + debug logging for both
+  - Corrected misleading comment about LMPM_SECURE being "removed"
+
+  Kept fry704 logic: skip CPU2 done marker for single-CPU images (INIT).
+
+EXPECTED OUTCOMES ON DELL:
+  - If ALIVE fires + no SW_ERR: INIT firmware is alive, proceed to hcmd
+  - If still stuck at same PC: LMPM_SECURE was not the issue, need to
+    investigate the actual firmware code at 0x605dc
+  - If ALIVE + SW_ERR: different crash, would need new analysis
+
+ALSO NOTED:
+  - DMA_CFG=0x02940000 (DMA_EN cleared) is likely because firmware modifies
+    RFH config during its init, not because our initial RFH setup failed.
+    If firmware un-sticks, it should re-enable DMA and send ALIVE.
+  - SRAM section probes show sections 1+2 and 6+7 at overlapping addresses.
+    The "now" reads return inconsistent data for overlapping sections -
+    possibly firmware-modified SRAM or a probe display artifact.

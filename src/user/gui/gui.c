@@ -278,6 +278,7 @@ static void discover_apps(void) {
     add_app_entry("/apps", "UPTIME.FRY");
     add_app_entry("/apps", "PS.FRY");
     add_app_entry("/apps", "FILEMAN.FRY");
+    add_app_entry("/apps", "NETMGR.FRY");
     add_app_entry("/", "SHELL.TOT");
 
     discover_primary_apps();
@@ -1057,7 +1058,7 @@ int main(void) {
                 memcpy(w->msgbuf + w->msglen, rawbuf, (size_t)copy);
                 w->msglen += copy;
                 process_window_output(w);
-            } else if (rn == -2 && !w->done) {
+            } else if (rn < 0 && rn != -EAGAIN && !w->done) {
                 w->done = 1;
                 int tlen = (int)strlen(w->title);
                 if (tlen < 40) strcat(w->title, " [done]");

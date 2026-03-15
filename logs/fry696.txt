@@ -1,0 +1,318 @@
+fry696 - 2026-03-10 23:42:13 CDT - WiFi 9260: retain ALIVE wait reason markers and fix step stamping after fry695 showed INIT ALIVE failure on both attempts
+
+SESSION CONTEXT:
+  The user booted the fry695 image and captured real hardware output with:
+    - `wcmd`
+    - `wc`
+    - `wh`
+    - `wd3`
+
+  That run no longer matched the old fry694 "wcmd is empty" branch.
+  It instead produced retained phase markers:
+    - `retained=2 total=2 hostcmd=0 step=9 rc=-1`
+    - `no host-command trace recorded; retained phase markers only`
+    - `#0 ord=1 phase step=4 tag=init-alive-fail arg=1 rc=-1 cl=0x0000 csr=0x00000000`
+    - `#1 ord=2 phase step=9 tag=init-alive-fail arg=2 rc=-1 cl=0x0000 csr=0x00000000`
+
+  The surrounding hardware output stayed in the same outer failure class:
+    - `wc`:
+      - `step=9 rc=-1 irq=2`
+      - `CPU1_ST=0x00000003`
+      - `CPU2_ST=0x00002320`
+      - `UMAC_PC=0x00000000->0xc0000000`
+      - `LMAC_PC=0x00000000->0x00000000`
+      - `VERDICT: CPU STUCK`
+      - `RFH_ACT=0x00010001 W=0x00000000 R=0x00000000 U=0x00000000`
+      - `rx_closed=0x00000000 rx_fin=0x00000000`
+      - UMAC error table still began with:
+        - `0x0000dead`
+        - `0x0000002e`
+        - `0x7e3e4b69`
+    - `wh`:
+      - `diag cpu-stuck-no-rx-progress`
+      - same CPU/RFH/no-RX shape
+    - `wd3`:
+      - first attempt visibly reached:
+        - `alive-wait`
+        - `alive-kick`
+        - `alive-rekick`
+        - `alive-timeout`
+      - second attempt visibly reached at least:
+        - `alive-wait`
+        - `alive-kick`
+      - but the boot trace truncated at 24 entries, so the second attempt's
+        later ALIVE-wait outcome was not fully preserved in `wd3`
+      - live PRPH still showed RFH programmed:
+        - `RFH_DMA_CFG=0x87940000`
+        - `RFH_GEN_CFG=0x00000013`
+        - `RFH_GEN_STATUS=0xe0000000`
+      - RX status still showed no usable progress:
+        - `closed_rb=0x00000000`
+        - `finished_rb=0x00000000`
+      - RXBDs were present, but RXUSED remained all zero in the captured dump
+
+WHY THIS PATCH:
+  `eventually7` said that if fry695 came back with:
+    - `init-alive-fail`
+  then the lead shifts back to the INIT boot / ALIVE exit boundary.
+
+  The real hardware run sharpened that branch further:
+    - both retained entries were `init-alive-fail`
+    - `hostcmd=0`
+    - no `init-prep-enter` marker existed
+    - no usable RX progress appeared
+    - `wd3` already showed the ALIVE wait machinery itself reaching
+      `alive-rekick` / `alive-timeout`
+
+  So the next patch should not instrument post-ALIVE control flow first.
+  It should make the ALIVE wait itself retain the decisive reason category:
+    - re-kick occurred
+    - timeout
+    - SW error
+    - HW error
+    - bad ALIVE status
+
+  There was also one instrumentation defect to correct:
+    - the first retained `init-alive-fail` showed `step=4`
+    - but the actual failure class was still step 9 / ALIVE
+    - that meant phase markers were inheriting stale `g_iwl_init_step`
+      during boot-attempt substeps
+
+SOURCE REFERENCES USED:
+  Current source:
+    - `src/drivers/net/wifi_9260.c`
+
+  Continuation record:
+    - `eventually/eventually7.txt`
+
+  Real hardware shell output supplied after fry695:
+    - `wcmd`
+    - `wc`
+    - `wh`
+    - `wd3`
+
+EXACT CODE CHANGES:
+  File:
+    - `src/drivers/net/wifi_9260.c`
+
+  1. Expanded retained phase ids for ALIVE-wait outcomes.
+     Relevant lines after patch:
+       - `494-674`
+
+     Added retained phase names:
+       - `init-alive-rekick`
+       - `init-alive-timeout`
+       - `init-alive-sw-err`
+       - `init-alive-hw-err`
+       - `init-alive-bad-status`
+       - `rt-alive-rekick`
+       - `rt-alive-timeout`
+       - `rt-alive-sw-err`
+       - `rt-alive-hw-err`
+       - `rt-alive-bad-status`
+
+  2. Increased boot trace capacity so both retry attempts fit.
+     Relevant lines after patch:
+       - `494-516`
+
+     Change:
+       - `IWL_BOOT_TRACE_MAX`:
+         - from `24`
+         - to `32`
+
+     Why this matters:
+       - the fry695 `wd3` dump truncated the second attempt before its final
+         ALIVE-wait outcome could be preserved
+
+  3. Fixed live step stamping during boot-attempt substeps.
+     Relevant lines after patch:
+       - `2603-2722`
+
+     New behavior:
+       - `g_iwl_init_step` is updated as each bring-up substep advances:
+         - NIC reset
+         - DMA alloc
+         - TFH init
+         - MSI
+         - firmware upload
+         - ALIVE wait
+
+     Why this matters:
+       - retained phase markers now carry the current bring-up step instead of
+         a stale outer state
+
+  4. Threaded attempt context into the ALIVE wait helper.
+     Relevant lines after patch:
+       - `2710`
+       - `2734-3008`
+
+     Change:
+       - `iwl_wait_alive()` now receives:
+         - whether the attempt is INIT or runtime
+         - which attempt number is active
+
+     Why this matters:
+       - retained ALIVE reason markers now preserve the correct attempt number
+         in `arg=`
+
+  5. Marked ALIVE re-kick explicitly in the retained `wcmd` ring.
+     Relevant lines after patch:
+       - `2814-2823`
+
+     New behavior:
+       - when ALIVE wait sees no RX progress and re-kicks RFH,
+         `wcmd` retains:
+         - `init-alive-rekick`
+         - or `rt-alive-rekick`
+
+  6. Marked bad ALIVE payload / status explicitly.
+     Relevant lines after patch:
+       - `2853-2899`
+
+     New behavior:
+       - if an ALIVE packet is too short or has non-OK status,
+         `wcmd` retains:
+         - `init-alive-bad-status`
+         - or `rt-alive-bad-status`
+
+  7. Marked timeout vs SW_ERR vs HW_ERR explicitly on ALIVE failure.
+     Relevant lines after patch:
+       - `2912-3008`
+
+     New behavior:
+       - after the existing diagnostic dump, `wcmd` now retains exactly one of:
+         - `init-alive-timeout`
+         - `init-alive-sw-err`
+         - `init-alive-hw-err`
+         - or runtime equivalents
+
+     Return codes now distinguish the class:
+       - bad status:
+         - `-2`
+       - SW error:
+         - `-3`
+       - HW error:
+         - `-4`
+       - timeout:
+         - `-5`
+
+  8. Aligned `wd3` capture tags with the retained ALIVE reason class.
+     Relevant lines after patch:
+       - `2870-2899`
+       - `2985-2989`
+
+     New behavior:
+       - `wd3` now captures:
+         - `alive-bad-status`
+         - `alive-swerr`
+         - `alive-hwerr`
+         - or `alive-timeout`
+
+WHAT THIS PATCH INTENTIONALLY DID NOT CHANGE:
+  - no RFH register programming
+  - no ALIVE command/group constants
+  - no host-command send/response logic
+  - no INIT prep ordering
+  - no runtime handoff ordering
+  - no shell command surface
+  - no claim that the real firmware blocker is solved
+
+IMPORTANT INTERPRETATION:
+  fry696 is still a diagnostic narrowing patch, not a functional WiFi fix.
+
+  The fry695 run already proved:
+    - the lead is earlier than `iwl_prepare_init_phase()`
+    - the failure sits inside the INIT ALIVE wait path on both attempts
+
+  fry696 now makes the next real hardware run answer a sharper question:
+    - did ALIVE wait re-kick and then time out?
+    - did SW_ERR or HW_ERR fire?
+    - did an ALIVE packet arrive with bad status?
+
+  That is the minimum next distinction needed before changing RFH/interrupt
+  logic or post-ALIVE control flow.
+
+COMMANDS RUN:
+  Evidence / source inspection:
+    - `rg -n "init-alive-fail|iwl_fw_boot_attempt|iwl_wait_alive|iwl_prepare_init_phase|wifi_9260_init\\(" src/drivers/net/wifi_9260.c`
+    - `sed -n '2580,3025p' src/drivers/net/wifi_9260.c`
+    - `sed -n '4568,4685p' src/drivers/net/wifi_9260.c`
+    - `sed -n '1,220p' logs/fry695.txt`
+    - `sed -n '1,220p' eventually/eventually7.txt`
+
+  Verification:
+    - `make -C /home/jjsako/TaterTOS64v3 -j2`
+    - `bash build_iso.sh`
+    - `sha256sum /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /home/jjsako/TaterTOS64v3/out/tater_nvme.img /home/jjsako/TaterTOS64v3/out/efiboot.img`
+    - `stat -c '%n|%s|%y' /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /home/jjsako/TaterTOS64v3/out/tater_nvme.img /home/jjsako/TaterTOS64v3/out/efiboot.img`
+
+BUILD RESULT:
+  Targeted tree rebuild:
+    - PASS
+
+  Full rebuild / image packaging:
+    - PASS
+
+  Rebuild warnings unchanged from earlier steps:
+    - `src/kernel/acpi/aml_exec.c:973` unused parameter `ctx`
+    - `src/kernel/acpi/extended.c:618` `str_eq` unused
+    - `src/kernel/acpi/extended.c:613` `obj_to_str` unused
+    - `src/kernel/acpi/extended.c:285` `pci_cf8_write32` unused
+    - `src/boot/efi_loader.c:352` `gop_mask_size` unused
+    - `src/boot/efi_loader.c:346` `gop_mask_pos` unused
+
+  ISO packaging warning unchanged:
+    - `xorriso`: boot image load size exceeded 65535 blocks of 512 bytes, so
+      El Torito recorded `0` to extend the ESP to end-of-medium
+
+ARTIFACTS:
+  - `out/tatertos64v3.iso`
+    - sha256 `fa531b439a65f7b7431b2616bfebbfc685d4734a5414e179946db86eb4f5b85b`
+    - size `151416832`
+    - mtime `2026-03-10 23:39:56 -0500`
+
+  - `out/tater_nvme.img`
+    - sha256 `883b8ad8e5d5140e1c1f7f3978055d67382a336ca1475753c0b2cb6c7eed3d51`
+    - size `104857600`
+    - mtime `2026-03-10 23:39:55 -0500`
+
+  - `out/efiboot.img`
+    - sha256 `0454647dcf51d5b04362817299734b7c101299b2fe28d48588ca0fe00e979c88`
+    - size `67108864`
+    - mtime `2026-03-10 23:39:55 -0500`
+
+EXPECTED NEXT HARDWARE TEST:
+  Boot the fry696 image and capture:
+    1. `wcmd`
+    2. `wd3`
+    3. `wc`
+    4. `wh`
+
+WHAT TO LOOK FOR IN `wcmd`:
+  Strong narrowing signals now include:
+    - `init-alive-rekick`, then `init-alive-timeout`, then `init-alive-fail`
+      Meaning:
+        - ALIVE wait is making the re-kick attempt but still gets no usable
+          RX/ALIVE completion
+    - `init-alive-sw-err`
+      Meaning:
+        - firmware or interrupt state is explicitly surfacing a software error
+          during ALIVE wait
+    - `init-alive-hw-err`
+      Meaning:
+        - hardware error is now explicit during ALIVE wait
+    - `init-alive-bad-status`
+      Meaning:
+        - ALIVE packet reached RX parsing, but the payload/status was not OK
+    - `init-alive-ok`
+      Meaning:
+        - the project can move forward into the post-ALIVE markers from
+          `fry695`
+
+SHORTEST HONEST SUMMARY:
+  fry695 proved that the retained phase-marker path works and that both INIT
+  bring-up attempts are dying inside ALIVE wait before `init-prep-enter`.
+
+  fry696 therefore keeps the same evidence path but makes the ALIVE wait retain
+  its actual failure reason, while also fixing the stale step stamp and keeping
+  enough `wd3` slots for both retries.

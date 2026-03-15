@@ -1,0 +1,80 @@
+fry667 - 2026-03-08 21:42:54 CDT - WiFi shell: add compact handoff command
+
+SESSION CONTEXT:
+  User pointed out that `wd2` is already too noisy and the shell is not
+  dynamic enough to rely on larger debug dumps fitting cleanly.
+
+WHY:
+  The current WiFi debug commands were split for shell fit, but the remaining
+  ALIVE-stage debugging still required using `wd2`, which includes more live
+  register and SRAM output than needed for the current failure.
+
+  The immediate debugging need is a compact view of the upload-to-ALIVE
+  handoff:
+    - boot / reset / IRQ state
+    - `FH_UCODE_LOAD_STATUS`
+    - `UREG_UCODE_LOAD_STATUS`
+    - CPU status + PC movement
+    - RFH queue progress
+    - RX closed / finished counters
+
+  That information needs to fit the existing shell constraints without adding
+  more noise to `wd2`.
+
+CHANGES:
+  Files changed:
+    - `src/drivers/net/wifi_9260.c`
+    - `src/kernel/proc/syscall.c`
+    - `src/user/libc/libc.c`
+    - `src/user/libc/libc.h`
+    - `src/user/shell/shell.c`
+
+  Code updates:
+    1. Added `wifi_9260_get_handoff_status()` in `wifi_9260.c`.
+    2. Added new syscall `SYS_WIFI_HANDOFF = 44`.
+    3. Added libc wrapper `fry_wifi_handoff()`.
+    4. Added shell command `wh`.
+    5. Included `UREG_UCODE_LOAD_STATUS` readback in the new compact report.
+
+RATIONALE:
+  This keeps the existing debug commands intact while adding a purpose-built
+  ALIVE handoff view that is short enough for the shell. It is a tooling /
+  observability improvement, not a Dell-specific behavior change.
+
+COMMANDS RUN:
+  Investigation:
+    - `sed -n '1,260p' /home/jjsako/TaterTOS64v3/planv3.txt`
+    - `rg -n "wd2|wifi_debug2|SYS_WIFI_DEBUG2|wc\\b|wifi_debug|wifi_cpu_status|wl\\b" /home/jjsako/TaterTOS64v3/src`
+    - `nl -ba /home/jjsako/TaterTOS64v3/src/user/shell/shell.c | sed -n '1108,1168p'`
+    - `nl -ba /home/jjsako/TaterTOS64v3/src/kernel/proc/syscall.c | sed -n '380,460p'`
+    - `nl -ba /home/jjsako/TaterTOS64v3/src/kernel/proc/syscall.c | sed -n '1050,1108p'`
+    - `nl -ba /home/jjsako/TaterTOS64v3/src/user/libc/libc.c | sed -n '232,422p'`
+    - `nl -ba /home/jjsako/TaterTOS64v3/src/drivers/net/wifi_9260.c | sed -n '3520,3655p'`
+
+  Build / verification:
+    - `bash build_iso.sh`
+
+RESULT:
+  - `build_iso.sh`: PASS
+  - Output ISO:
+      `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+  - Windows export:
+      `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+NEXT BARE-METAL TEST:
+  Boot the rebuilt ISO on the Dell Precision 7530, then run:
+    1. `wh`
+    2. `wc`
+    3. `wd`   (only if broader boot-state context is still needed)
+    4. `wd2`  (only if `wh` shows the handoff is still ambiguous)
+
+  Expected signal:
+    - `wh` should fit cleanly in the current shell
+    - it should show whether the failure is:
+      `cpu-never-started`, `cpu-stuck-no-rx-progress`,
+      `cpu-stuck-rx-no-used`, or `fw-running`
+
+NOTES:
+  - This log was added after the code/build work to bring the turn into
+    compliance with `planv3.txt` rule 5 and rule 6.
+  - No SHA-256 was recorded because it was not requested.

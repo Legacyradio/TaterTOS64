@@ -4,6 +4,7 @@
 #include "vmm.h"
 #include "pmm.h"
 #include "../../boot/early_serial.h"
+#include "../../include/tater_trace.h"
 
 #define PAGE_SIZE 4096ULL
 #define PAGE_SIZE_2M (2ULL * 1024ULL * 1024ULL)
@@ -33,18 +34,32 @@ static uint8_t early_table_pool[EARLY_TABLE_POOL_PAGES * PAGE_SIZE]
     __attribute__((aligned(PAGE_SIZE)));
 
 static void vmm_stage(const char *tag, char marker) {
-    early_serial_puts(tag);
-    early_serial_puts("\n");
+    if (TATER_BOOT_SERIAL_TRACE) {
+        early_serial_puts(tag);
+        early_serial_puts("\n");
+    }
     early_debug_putc(marker);
 }
 
 extern char __kernel_start;
 extern char __kernel_end;
 extern char __kernel_lma_start;
+extern char __text_start;
+extern char __text_end;
+extern char __text_lma_start;
+extern char __rodata_start;
+extern char __rodata_end;
+extern char __rodata_lma_start;
+extern char __data_start;
+extern char __bss_end;
+extern char __data_lma_start;
 extern char __kernel_stack_base;
 extern char __kernel_stack_top;
 extern char __kernel_stack_lma_start;
 extern char __kernel_stack_lma_end;
+extern char __ist_stacks_start;
+extern char __ist_stacks_end;
+extern char __ist_stacks_lma_start;
 
 static inline void write_cr3(uint64_t phys) {
     __asm__ volatile("mov %0, %%cr3" : : "r"(phys));
@@ -54,6 +69,45 @@ static inline uint64_t read_cr3(void) {
     uint64_t v;
     __asm__ volatile("mov %%cr3, %0" : "=r"(v));
     return v;
+}
+
+static inline uint64_t read_cr0(void) {
+    uint64_t v;
+    __asm__ volatile("mov %%cr0, %0" : "=r"(v));
+    return v;
+}
+
+static inline void write_cr0(uint64_t v) {
+    __asm__ volatile("mov %0, %%cr0" : : "r"(v) : "memory");
+}
+
+static inline uint64_t read_msr(uint32_t msr) {
+    uint32_t lo, hi;
+    __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static inline void write_msr(uint32_t msr, uint64_t v) {
+    uint32_t lo = (uint32_t)v;
+    uint32_t hi = (uint32_t)(v >> 32);
+    __asm__ volatile("wrmsr" : : "c"(msr), "a"(lo), "d"(hi));
+}
+
+static void enable_cpu_page_protections(void) {
+    uint64_t efer = read_msr(0xC0000080u);
+    efer |= (1ULL << 11); /* EFER.NXE */
+    write_msr(0xC0000080u, efer);
+
+    uint64_t cr0 = read_cr0();
+    cr0 |= (1ULL << 16); /* CR0.WP */
+    write_cr0(cr0);
+}
+
+static void map_kernel_region(uint64_t virt, uint64_t phys, uint64_t size, uint64_t flags) {
+    if (!size) {
+        return;
+    }
+    vmm_map_range(virt, phys, (size + PAGE_SIZE - 1) / PAGE_SIZE, flags);
 }
 
 uint64_t vmm_phys_to_virt(uint64_t phys) {
@@ -133,6 +187,33 @@ static uint64_t *get_or_alloc_table(uint64_t *parent, uint64_t idx, uint64_t fla
     return phys_to_virt(parent[idx] & 0x000FFFFFFFFFF000ULL);
 }
 
+static uint64_t *vmm_lookup_user_pte(uint64_t pml4_phys, uint64_t virt) {
+    if (!pml4_phys || virt >= USER_VA_TOP) return 0;
+
+    uint64_t *pml4 = phys_to_virt(pml4_phys);
+    uint64_t pml4_i = (virt >> 39) & 0x1FF;
+    uint64_t pdpt_i = (virt >> 30) & 0x1FF;
+    uint64_t pd_i   = (virt >> 21) & 0x1FF;
+    uint64_t pt_i   = (virt >> 12) & 0x1FF;
+
+    if (!(pml4[pml4_i] & VMM_FLAG_PRESENT)) return 0;
+    uint64_t *pdpt = phys_to_virt(pml4[pml4_i] & 0x000FFFFFFFFFF000ULL);
+    if (!(pdpt[pdpt_i] & VMM_FLAG_PRESENT)) return 0;
+
+    uint64_t pdpe = pdpt[pdpt_i];
+    if (pdpe & VMM_FLAG_LARGE) return 0;
+
+    uint64_t *pd = phys_to_virt(pdpe & 0x000FFFFFFFFFF000ULL);
+    if (!(pd[pd_i] & VMM_FLAG_PRESENT)) return 0;
+
+    uint64_t pde = pd[pd_i];
+    if (pde & VMM_FLAG_LARGE) return 0;
+
+    uint64_t *pt = phys_to_virt(pde & 0x000FFFFFFFFFF000ULL);
+    if (!(pt[pt_i] & VMM_FLAG_PRESENT)) return 0;
+    return &pt[pt_i];
+}
+
 void vmm_map(uint64_t virt, uint64_t phys, uint64_t flags) {
     uint64_t pml4_i = (virt >> 39) & 0x1FF;
     uint64_t pdpt_i = (virt >> 30) & 0x1FF;
@@ -147,7 +228,7 @@ void vmm_map(uint64_t virt, uint64_t phys, uint64_t flags) {
     uint64_t *pt = get_or_alloc_table(pd, pd_i, flags);
     if (!pt) return;
 
-    pt[pt_i] = (phys & 0x000FFFFFFFFFF000ULL) | (flags & 0xFFFULL) | VMM_FLAG_PRESENT;
+    pt[pt_i] = (phys & 0x000FFFFFFFFFF000ULL) | (flags & VMM_PTE_FLAG_MASK) | VMM_FLAG_PRESENT;
 }
 
 void vmm_map_range(uint64_t virt, uint64_t phys, uint64_t pages, uint64_t flags) {
@@ -167,7 +248,7 @@ static void vmm_map_2m(uint64_t virt, uint64_t phys, uint64_t flags) {
     uint64_t *pd = get_or_alloc_table(pdpt, pdpt_i, flags);
     if (!pd) return;
 
-    pd[pd_i] = (phys & 0x000FFFFFFFFFF000ULL) | (flags & 0xFFFULL) | VMM_FLAG_PRESENT | VMM_FLAG_LARGE;
+    pd[pd_i] = (phys & 0x000FFFFFFFFFF000ULL) | (flags & VMM_PTE_FLAG_MASK) | VMM_FLAG_PRESENT | VMM_FLAG_LARGE;
 }
 
 static void map_range_2m(uint64_t virt, uint64_t phys, uint64_t bytes, uint64_t flags) {
@@ -209,7 +290,6 @@ uint64_t vmm_create_address_space(void) {
 
 void vmm_map_user(uint64_t pml4_phys, uint64_t virt, uint64_t phys, uint64_t flags) {
     if (virt >= USER_VA_TOP) return;
-    if (!(flags & VMM_FLAG_USER)) return;
 
     uint64_t *pml4 = phys_to_virt(pml4_phys);
     uint64_t pml4_i = (virt >> 39) & 0x1FF;
@@ -224,7 +304,7 @@ void vmm_map_user(uint64_t pml4_phys, uint64_t virt, uint64_t phys, uint64_t fla
     uint64_t *pt = get_or_alloc_table(pd, pd_i, flags);
     if (!pt) return;
 
-    pt[pt_i] = (phys & 0x000FFFFFFFFFF000ULL) | (flags & 0xFFFULL) | VMM_FLAG_PRESENT;
+    pt[pt_i] = (phys & 0x000FFFFFFFFFF000ULL) | (flags & VMM_PTE_FLAG_MASK) | VMM_FLAG_PRESENT;
 }
 
 uint64_t vmm_virt_to_phys_user(uint64_t pml4_phys, uint64_t virt) {
@@ -259,6 +339,12 @@ uint64_t vmm_virt_to_phys_user(uint64_t pml4_phys, uint64_t virt) {
     return (pt[pt_i] & 0x000FFFFFFFFFF000ULL) + (virt & 0xFFFULL);
 }
 
+uint64_t vmm_query_user_flags(uint64_t pml4_phys, uint64_t virt) {
+    uint64_t *pte = vmm_lookup_user_pte(pml4_phys, virt);
+    if (!pte) return 0;
+    return *pte & VMM_PTE_FLAG_MASK;
+}
+
 void vmm_unmap_user(uint64_t pml4_phys, uint64_t virt) {
     if (!pml4_phys) return;
     if (virt >= USER_VA_TOP) return;
@@ -282,6 +368,22 @@ void vmm_unmap_user(uint64_t pml4_phys, uint64_t virt) {
     if ((read_cr3() & 0x000FFFFFFFFFF000ULL) == (pml4_phys & 0x000FFFFFFFFFF000ULL)) {
         __asm__ volatile("invlpg (%0)" : : "r"(virt) : "memory");
     }
+}
+
+int vmm_protect_user(uint64_t pml4_phys, uint64_t virt, uint64_t flags) {
+    uint64_t *pte = vmm_lookup_user_pte(pml4_phys, virt);
+    if (!pte) return -1;
+
+    uint64_t entry = *pte;
+    entry &= ~(VMM_FLAG_USER | VMM_FLAG_WRITE | VMM_FLAG_NO_EXECUTE);
+    entry |= VMM_FLAG_PRESENT;
+    entry |= (flags & (VMM_FLAG_USER | VMM_FLAG_WRITE | VMM_FLAG_NO_EXECUTE));
+    *pte = entry;
+
+    if ((read_cr3() & 0x000FFFFFFFFFF000ULL) == (pml4_phys & 0x000FFFFFFFFFF000ULL)) {
+        __asm__ volatile("invlpg (%0)" : : "r"(virt) : "memory");
+    }
+    return 0;
 }
 
 void vmm_unmap(uint64_t virt) {
@@ -393,12 +495,20 @@ void vmm_init(struct fry_handoff *handoff) {
     physmap_max = mapped_max;
     vmm_stage("VMM_03_PHYSMAP", '3');
 
-    // Map kernel higher-half (excluding separate stack section)
-    uint64_t kstart = (uint64_t)(uintptr_t)&__kernel_start;
-    uint64_t kend = (uint64_t)(uintptr_t)&__kernel_end;
-    uint64_t kphys = (uint64_t)(uintptr_t)&__kernel_lma_start;
-    uint64_t ksize = kend - kstart;
-    map_range_2m(kstart, kphys, ksize, VMM_FLAG_WRITE);
+    // Map kernel sections with explicit permissions instead of one RWX blob.
+    uint64_t text_start = (uint64_t)(uintptr_t)&__text_start;
+    uint64_t text_end = (uint64_t)(uintptr_t)&__text_end;
+    uint64_t text_phys = (uint64_t)(uintptr_t)&__text_lma_start;
+    uint64_t ro_start = (uint64_t)(uintptr_t)&__rodata_start;
+    uint64_t ro_end = (uint64_t)(uintptr_t)&__rodata_end;
+    uint64_t ro_phys = (uint64_t)(uintptr_t)&__rodata_lma_start;
+    uint64_t data_start = (uint64_t)(uintptr_t)&__data_start;
+    uint64_t data_end = (uint64_t)(uintptr_t)&__bss_end;
+    uint64_t data_phys = (uint64_t)(uintptr_t)&__data_lma_start;
+    map_kernel_region(text_start, text_phys, text_end - text_start, 0);
+    map_kernel_region(ro_start, ro_phys, ro_end - ro_start, VMM_FLAG_NO_EXECUTE);
+    map_kernel_region(data_start, data_phys, data_end - data_start,
+                      VMM_FLAG_WRITE | VMM_FLAG_NO_EXECUTE);
     vmm_stage("VMM_04_KERNEL", '4');
 
     // Map kernel stack separately using 4KB pages, leave a guard page at the base.
@@ -411,15 +521,27 @@ void vmm_init(struct fry_handoff *handoff) {
         uint64_t guard = PAGE_SIZE;
         uint64_t map_size = s_size - guard;
         vmm_map_range(s_virt_base + guard, s_phys_base + guard,
-                      (map_size + PAGE_SIZE - 1) / PAGE_SIZE, VMM_FLAG_WRITE);
+                      (map_size + PAGE_SIZE - 1) / PAGE_SIZE,
+                      VMM_FLAG_WRITE | VMM_FLAG_NO_EXECUTE);
     }
     vmm_stage("VMM_05_STACK", '5');
+
+    uint64_t ist_virt_start = (uint64_t)(uintptr_t)&__ist_stacks_start;
+    uint64_t ist_virt_end = (uint64_t)(uintptr_t)&__ist_stacks_end;
+    uint64_t ist_phys_start = (uint64_t)(uintptr_t)&__ist_stacks_lma_start;
+    if (ist_virt_end > ist_virt_start) {
+        map_kernel_region(ist_virt_start, ist_phys_start,
+                          ist_virt_end - ist_virt_start,
+                          VMM_FLAG_WRITE | VMM_FLAG_NO_EXECUTE);
+    }
 
 
     // Map framebuffer at known virtual address
     if (handoff && handoff->fb_base && handoff->fb_width && handoff->fb_height) {
         uint64_t fb_size = handoff->fb_stride * handoff->fb_height * 4ULL;
-        vmm_map_range(VMM_FB_BASE, handoff->fb_base, (fb_size + PAGE_SIZE - 1) / PAGE_SIZE, VMM_FLAG_WRITE);
+        vmm_map_range(VMM_FB_BASE, handoff->fb_base,
+                      (fb_size + PAGE_SIZE - 1) / PAGE_SIZE,
+                      VMM_FLAG_WRITE | VMM_FLAG_NO_EXECUTE);
     }
     vmm_stage("VMM_06_FB", '6');
 
@@ -434,6 +556,7 @@ void vmm_init(struct fry_handoff *handoff) {
 
     vmm_stage("VMM_08_CR3_WRITE", '8');
     write_cr3(kernel_pml4_phys);
+    enable_cpu_page_protections();
     vmm_stage("VMM_09_CR3_DONE", '9');
     vmm_ready = 1;
     kernel_pml4 = (uint64_t *)(uintptr_t)vmm_phys_to_virt(kernel_pml4_phys);

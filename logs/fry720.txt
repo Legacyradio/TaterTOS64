@@ -1,0 +1,60 @@
+fry720 — 2026-03-14 — CSR_RESET=0 CPU release fix
+
+ROOT CAUSE FOUND: Missing iwl_write32(CSR_RESET, 0) after firmware upload
+
+Analysis of fry719 Dell test results:
+  - step=9 rc=-3 irq=2 (ALIVE timeout, SW_ERR interrupt)
+  - Staging: ALL 9 sections staged=ok (sentinel fix from fry718 confirmed working)
+  - Live SRAM: 8/9 ok, only section[1] offset+0 changed (0x00000000 -> 0x0000dead)
+  - Error table: valid=0xDEAD but all other fields are firmware template data (0x2E etc.)
+  - CPU PCs: UMAC=0xc0000000 (base), LMAC1=0xe8 (stuck very early), LMAC2=0x00000000
+  - CSR_RESET=0x00000010 (bit 4 set — never cleared because we never wrote CSR_RESET=0)
+
+Comparison with Linux 7.0-rc2 iwl_pcie_load_given_ucode_8000():
+
+  Linux (correct):
+    1. grab_nic_access
+    2. Load CPU1 sections (enable_ints + done marker 0x0000FFFF inside)
+    3. Load CPU2 sections (enable_ints + done marker 0xFFFFFFFF inside)
+    4. iwl_enable_interrupts()
+    5. iwl_write32(CSR_RESET, 0)   // comment: "release CPU reset"
+    6. return 0
+
+  Our code (WRONG):
+    1. grab_nic_access
+    2. iwl_write_prph(RELEASE_CPU_RESET, BIT(24))  // WRONG register, BEFORE upload!
+    3. Load CPU1 sections
+    4. Load CPU2 sections
+    5. (nothing — return 0)  // MISSING CSR_RESET=0!
+
+Two bugs:
+  BUG 1: RELEASE_CPU_RESET (PRPH 0x300C) is for pre-8000 devices. For 8000+,
+         Linux uses CSR_RESET (0x020) write of 0. We were writing the wrong
+         register to release the CPU.
+  BUG 2: CSR_RESET=0 was removed in fry708 based on incorrect lesson #7
+         ("CSR_RESET=0 is NOT written in the 8000+ path"). THIS WAS WRONG.
+         Linux 7.0-rc2 clearly ends iwl_pcie_load_given_ucode_8000 with
+         iwl_write32(CSR_RESET, 0). Without it, the CPU stays held in reset
+         and firmware never starts (no ALIVE).
+
+Fix applied:
+  - REMOVED: iwl_write_prph(RELEASE_CPU_RESET, BIT(24)) before upload
+  - ADDED: iwl_enable_interrupts() + iwl_write32(CSR_RESET, 0) after both
+           CPU section loaders return (matching Linux exactly)
+
+Corrected lesson #7: CSR_RESET=0 IS written in the 8000+ path. It is the
+CPU release mechanism for 8000+ devices. The old RELEASE_CPU_RESET (PRPH
+0x300C) is only for pre-8000 devices.
+
+Why fry661 had ALIVE but nothing since fry708:
+  fry661 likely still had CSR_RESET=0 in the upload path. fry708 removed it
+  along with LMPM and SRAM reads ("Match Linux 8000+ upload path exactly").
+  The LMPM and SRAM read removals were correct, but removing CSR_RESET=0
+  was wrong.
+
+File changed: src/drivers/net/wifi_9260.c
+  - iwl_pcie_load_given_ucode_8000(): removed RELEASE_CPU_RESET, added
+    iwl_enable_interrupts() + iwl_write32(CSR_RESET, 0) after CPU2 upload
+
+Build: OK
+Test: awaiting Dell hardware test

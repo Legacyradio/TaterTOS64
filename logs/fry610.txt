@@ -1,0 +1,145 @@
+fry610 - WiFi Driver: WPA2 / Security — EAPOL Four-Way Handshake + AES-CCMP
+=============================================================================
+Date: 2026-03-06
+Plan: eventually/eventually1.txt step 8
+
+WHAT WAS DONE
+-------------
+Implemented step 8: WPA2 / Security — complete crypto stack and EAPOL four-way
+handshake for connecting to WPA2-PSK protected WiFi networks.
+
+New Files:
+  - src/drivers/net/iwl_crypto.h: API for all crypto primitives
+  - src/drivers/net/iwl_crypto.c: Full crypto implementation (~600 lines)
+  - src/drivers/net/iwl_wpa2.h: WPA2 context, EAPOL frame structs, key hierarchy
+  - src/drivers/net/iwl_wpa2.c: EAPOL four-way handshake + key management
+
+AES-128 Block Cipher (iwl_crypto.c):
+  - Full S-box and inverse S-box (256 bytes each)
+  - Key expansion (10 rounds → 176 bytes of round keys)
+  - Encrypt: SubBytes → ShiftRows → MixColumns → AddRoundKey (×10)
+  - Decrypt: InvShiftRows → InvSubBytes → AddRoundKey → InvMixColumns (×9+1)
+  - GF(2^8) multiplication helpers (×2, ×3, ×9, ×11, ×13, ×14)
+  - Column-major state layout (standard FIPS 197)
+
+SHA-1 Hash (iwl_crypto.c):
+  - Full SHA-1: init, update (streaming), final with padding
+  - 80-round compression function with 4 stages
+  - Big-endian word packing/unpacking
+  - One-shot sha1() convenience wrapper
+
+HMAC-SHA1 (iwl_crypto.c):
+  - Key padding to 64 bytes (hash if > 64)
+  - Inner hash: SHA1(K XOR ipad || data)
+  - Outer hash: SHA1(K XOR opad || inner)
+  - Produces 20-byte output
+
+PRF (IEEE 802.11i Pseudo-Random Function) (iwl_crypto.c):
+  - PRF-N: HMAC-SHA1(key, label || 0x00 || data || counter)
+  - Counter increments from 0 until N bits generated
+  - Used for PTK derivation (PRF-384 → 48 bytes)
+
+PBKDF2-SHA1 (iwl_crypto.c):
+  - PBKDF2 with HMAC-SHA1 inner function
+  - Supports arbitrary iterations (4096 for WPA2-PSK)
+  - Processes multiple HMAC-SHA1 blocks: U1 XOR U2 XOR ... XOR Uc
+  - Used to derive PMK from passphrase + SSID
+
+AES-CCMP (802.11i encryption) (iwl_crypto.c):
+  - CCM mode: CBC-MAC for integrity + CTR for encryption
+  - Nonce construction: priority(1) + A2(6) + PN(6) = 13 bytes
+  - B0 block: flags(0x59) + nonce + payload_length
+  - AAD from 802.11 header: FC masked + addresses + SC masked
+  - Handles 3-addr and 4-addr headers, QoS headers
+  - ccmp_encrypt: CBC-MAC → CTR encrypt → MIC encrypt with S0
+  - ccmp_decrypt: CTR decrypt → CBC-MAC verify → MIC check
+  - 8-byte MIC (t=8 as per 802.11i CCMP)
+  - Constant-time MIC comparison via crypto_memcmp
+
+AES Key Unwrap (RFC 3394) (iwl_crypto.c):
+  - Unwraps keys encrypted by AP in EAPOL message 3
+  - 6 rounds × n blocks, AES-128 decrypt
+  - IV verification (0xA6A6A6A6A6A6A6A6)
+  - Used to extract GTK from wrapped key data
+
+PRNG (iwl_crypto.c):
+  - xorshift128+ seeded from RDTSC
+  - Multiple RDTSC reads with delay for entropy mixing
+  - Used to generate SNonce (32 bytes) for each association
+
+RSN IE Builder (iwl_wpa2.c):
+  - 22-byte RSN IE for WPA2-PSK with CCMP
+  - Group cipher: CCMP, Pairwise cipher: CCMP, AKM: PSK
+  - Used in association request for WPA2 networks
+
+WPA2 Context (iwl_wpa2.h/c):
+  - struct wpa2_ctx: holds PMK, ANonce, SNonce, KCK, KEK, TK, GTK
+  - TX/RX packet numbers for CCMP replay protection
+  - Handshake state machine (idle → msg1 → msg2 → msg3 → complete)
+  - wpa2_set_passphrase(): PBKDF2-SHA1 PMK derivation
+  - wpa2_set_pmk(): direct PMK installation
+
+PTK Derivation (iwl_wpa2.c):
+  - PRF-384(PMK, "Pairwise key expansion",
+            min(AA,SA) || max(AA,SA) || min(ANonce,SNonce) || max(ANonce,SNonce))
+  - Splits 48-byte PTK into KCK(16) + KEK(16) + TK(16)
+
+EAPOL-Key Processing (iwl_wpa2.c):
+  - Message 1 handler: saves ANonce, generates SNonce, derives PTK
+  - Message 3 handler: verifies MIC, checks ANonce match, checks replay counter,
+    unwraps GTK via AES Key Unwrap, parses GTK KDE (OUI 00-0F-AC type 1)
+  - MIC computation: HMAC-SHA1(KCK, frame_with_mic_zeroed)[0..15]
+  - Message 2 builder: SNonce + RSN IE + MIC
+  - Message 4 builder: ACK + Secure + MIC
+
+CCMP Data Encryption/Decryption (iwl_wpa2.c):
+  - wpa2_encrypt_data(): builds CCMP header (8 bytes with PN and ExtIV),
+    encrypts payload with TK, appends 8-byte MIC, increments TX PN
+  - wpa2_decrypt_data(): extracts PN from CCMP header, replay protection
+    (PN must be strictly increasing), decrypts and verifies MIC
+
+EAPOL TX (iwl_mac80211.c):
+  - iwl_tx_eapol(): wraps EAPOL body in LLC/SNAP (0x888E) + 802.11 data header
+  - ToDS=1 frame format: A1=BSSID, A2=SA, A3=DA
+
+WPA2 Association (iwl_mac80211.c):
+  - iwl_associate_wpa2(): same as iwl_associate() but includes RSN IE in
+    association request, signaling WPA2-PSK capability to the AP
+  - Open System auth is still used (WPA2 always uses open auth at 802.11 level)
+
+FILES CHANGED
+-------------
+- src/drivers/net/iwl_crypto.c (NEW) - AES, SHA-1, HMAC, PRF, PBKDF2, CCMP, Key Unwrap
+- src/drivers/net/iwl_crypto.h (NEW) - Crypto API
+- src/drivers/net/iwl_wpa2.c (NEW) - WPA2 EAPOL handshake + key management
+- src/drivers/net/iwl_wpa2.h (NEW) - WPA2 types and API
+- src/drivers/net/iwl_mac80211.c - Added iwl_associate_wpa2() + iwl_tx_eapol()
+- src/drivers/net/iwl_mac80211.h - Added iwl_associate_wpa2/iwl_tx_eapol declarations
+- src/drivers/net/wifi_9260.c - Added #include iwl_wpa2.h
+- Makefile - Added iwl_crypto.o, iwl_wpa2.o
+
+BUILD
+-----
+- Compiles clean (no warnings, no errors)
+- Full ISO built and exported to Windows
+
+EAPOL HANDSHAKE FLOW (expected on Dell)
+---------------------------------------
+1. iwl_associate_wpa2() → auth + assoc with RSN IE
+2. AP sends EAPOL message 1 (ANonce) as 802.11 data frame
+3. Driver receives frame, detects EtherType 0x888E
+4. wpa2_process_eapol(msg1) → saves ANonce, generates SNonce, derives PTK
+5. wpa2_build_msg2() → sends SNonce + MIC via iwl_tx_eapol()
+6. AP sends EAPOL message 3 (encrypted GTK + MIC)
+7. wpa2_process_eapol(msg3) → verifies MIC, unwraps GTK
+8. wpa2_build_msg4() → sends ACK + MIC via iwl_tx_eapol()
+9. Handshake complete: PTK + GTK installed, CCMP encryption active
+
+NOTE: The EAPOL message receive path (detecting 802.1X frames in the RX queue)
+is NOT yet wired into the main WiFi driver loop. This will be done as part of
+step 9 (Data Path) when the RX processing infrastructure is implemented.
+
+NEXT STEP
+---------
+Step 9: Data Path — actual packet TX/RX through DMA rings, EAPOL RX processing,
+frame aggregation (A-MPDU)

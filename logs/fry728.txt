@@ -1,0 +1,47 @@
+fry728 — 2026-03-14
+Phase one VM ABI: add guard pages, close phase one
+
+WHAT:
+- Added FRY_MAP_GUARD (0x100) flag for creating guard page regions
+- Guard pages are tracked as FRY_VM_REGION_GUARD: no backing pages, no commit
+  allowed, any userspace access faults with "guard" diagnostic and kills the
+  process
+- Added vm_map_guard_region() kernel path, hooked into SYS_MMAP
+- Added fry_mguard() libc wrapper
+- Extended vmtest with guard page coverage:
+  - Allocate single guard page, verify mcommit is rejected, verify munmap works
+  - Allocate 3-page guard region, verify munmap works
+- Tests use exit codes 55-59
+
+WHY:
+- FRY_VM_REGION_GUARD was defined in process.h and handled in mprotect/fault
+  paths but had no userspace-facing creation path — dead code in the ABI
+- Guard pages are the standard mechanism for stack overflow detection and heap
+  corruption fencing; the ABI is incomplete without them
+- This is the last missing feature in phase one scope
+
+PHASE ONE: CLOSED
+Every feature in the phase-one VM ABI is now implemented, tested, and building:
+  - Anonymous private mappings (mmap/munmap/mprotect)
+  - Anonymous shared mappings
+  - Reserve + staged commit via mprotect
+  - Guard pages (new this pass)
+  - Subrange mprotect/munmap with region split/merge
+  - Multi-region munmap across contiguous split regions
+  - Private file-backed mappings
+  - Large-allocation libc mmap path
+  - VM-aware userspace fault diagnostics and kill path
+  - W^X enforcement
+  - Build/image packaging for VM apps and fixtures
+
+VERIFICATION:
+- make -C /home/jjsako/TaterTOS64v3 kernel init vmtest vmfault: PASS (0 errors)
+- build_iso.sh with TATERTOS_AUTOTEST_VM=1 TATERTOS_AUTOTEST_VMFAULT=1: PASS
+- ISO exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+FILES CHANGED:
+- src/kernel/proc/syscall.c (FRY_MAP_GUARD flag, vm_flags_supported update,
+  vm_map_guard_region, SYS_MMAP guard dispatch)
+- src/user/libc/libc.h (FRY_MAP_GUARD define, fry_mguard declaration)
+- src/user/libc/libc.c (fry_mguard implementation)
+- src/user/apps/vmtest.c (run_guard_page_tests)

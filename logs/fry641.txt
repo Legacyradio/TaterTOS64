@@ -1,0 +1,17 @@
+Date: Saturday, March 7, 2026
+Project: TaterTOS64v3
+Log: fry641.txt
+
+Update:
+- Added debug hex dump loop to `iwlwifi_fw_parse_tlv` in `src/drivers/net/iwlwifi_fw.c`.
+- The loop prints the TLV header (type, length) and the first 16 bytes of the payload for every section encountered during parsing.
+
+Reason:
+- The parser is currently finding only 11 firmware sections, but the Intel 9260 hardware reports 13.
+- The firmware load fails with "ALIVE TIMEOUT" because the paging sections (likely the missing ones) aren't being loaded.
+- This debug dump will allow us to see if the parser is hitting an early exit condition, seeing a malformed length, or simply misinterpreting the section types.
+
+Next Steps:
+- Boot the newly built ISO (`tatertos64v3.iso`).
+- Capture the serial log output.
+- Analyze the TLV hex dump to locate the missing sections (Types 19/20 or others).

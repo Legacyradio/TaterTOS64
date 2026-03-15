@@ -1,0 +1,24 @@
+fry731 — BSP Bootstrap Scheduler Fix
+====================================
+Timestamp: 2026-03-14 20:55:07 CDT
+
+Completed step:
+- Reworked the BSP bootstrap scheduler setup in `src/kernel/proc/sched.c`.
+
+What changed:
+- Renamed the BSP bootstrap holder from a runnable boot task to a non-runnable
+  bootstrap context.
+- Stopped enqueuing the BSP bootstrap context on the runqueue.
+- Restored creation of a real BSP idle task so the live scheduler always has
+  a proper fallback task when no userspace task is runnable.
+
+Why:
+- The previous bootstrap object was being scheduled later from a stale snapshot
+  of the live boot stack, which matched the observed return into low memory at
+  `RIP=0x100B`.
+- Keeping the bootstrap context out of the runqueue makes the first handoff
+  one-way in practice while preserving a real, professional live environment
+  with a scheduler-owned BSP idle task.
+
+Test status:
+- Rebuild and QEMU verification pending.

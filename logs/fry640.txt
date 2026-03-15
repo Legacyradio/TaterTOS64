@@ -1,0 +1,23 @@
+[2026-03-07 13:17:38 CST] Step: Add repo-local host tool shims so the build no
+longer depends on shell PATH state for nonstandard tools.
+Why: The user asked to keep necessary tool resolution inside the project
+directory. Prior failures came from host PATH differences and nonstandard tool
+locations like /opt/cross/bin and /usr/sbin.
+Change:
+- Added tools/host/env.sh to prepend repo-local tool shims and required system
+  sbin directories.
+- Added tools/host/bin/x86_64-elf-gcc and x86_64-elf-ld wrappers that resolve
+  the cross toolchain from /opt/cross/bin first.
+- Added tools/host/bin/mkfs.fat wrapper that prefers the real host binary and
+  falls back to mformat when dosfstools is unavailable.
+- Updated Makefile to use repo-local cross-tool wrappers and HOSTCC.
+- Updated build_iso.sh to source tools/host/env.sh.
+Files: build_iso.sh, Makefile, tools/host/env.sh,
+tools/host/libexec/resolve-cross-tool.sh,
+tools/host/bin/x86_64-elf-gcc, tools/host/bin/x86_64-elf-ld,
+tools/host/bin/mkfs.fat
+Tests:
+- bash -lc '. /home/jjsako/TaterTOS64v3/tools/host/env.sh; command -v x86_64-elf-gcc; command -v mkfs.fat; command -v sgdisk'
+- make -C /home/jjsako/TaterTOS64v3 -n kernel
+- timeout -k 10s 300s env SKIP_WIN_EXPORT=1 bash ./build_iso.sh
+- Result: exit 0, ISO built at /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso

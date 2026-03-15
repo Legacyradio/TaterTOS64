@@ -1,0 +1,32 @@
+fry652 — 2026-03-07
+WiFi Intel 9260: Add UREG_CPU_INIT_RUN kick + gen2 init fixes
+
+ROOT CAUSE from fry651 Dell test:
+  - step=9 (alive) rc=-1 — firmware never sends ALIVE
+  - HW_IF_CONFIG=0x00480000 (NIC_READY + HAP_WAKE set — good)
+  - CTXT_INFO_BA reads 0xd55555d5 (not latching — suspicious)
+  - FW_STATUS=0x5a5a9999 (firmware not running)
+
+ANALYSIS (cross-referenced with Linux 7.0-rc2 iwlwifi gen2 path):
+  Linux's iwl_trans_pcie_gen2_start_fw() does this AFTER writing CSR_CTXT_INFO_BA:
+    iwl_write_prph(trans, UREG_CPU_INIT_RUN, 1);  // prph 0xa05c44
+  This tells the NIC CPU to begin executing — read context info, load FW, start.
+  TaterTOS was MISSING this CPU kick entirely. Without it, ALIVE never arrives.
+
+  Also: LMPM_SECURE_UCODE registers (0xA01000/0xA01100) are gen1-only.
+  Linux does NOT write these for 9000-series gen2 context-info boot path.
+  Writing them may confuse the boot ROM. Removed.
+
+CHANGES:
+  src/drivers/net/wifi_9260.c:
+  1. Added UREG_CPU_INIT_RUN (prph 0xa05c44) = 1 write after CSR_CTXT_INFO_BA
+     — THE critical missing CPU kick for gen2
+  2. Removed LMPM_SECURE_UCODE_LOAD_CPU1/2_HDR_ADDR writes (gen1-only)
+  3. Added CSR_DBG_HPET_MEM_REG (0x240) = 0xFFFF0000 in APM init
+  4. Added CSR_HW_IF_CONFIG_REG HAP_WAKE (0x80000) in APM init
+  5. Added rfkill clear writes (CSR_UCODE_DRV_GP1_CLR = 0x05C)
+  6. Added CSR_MAC_SHADOW_REG_CTRL (0x0A8) = 0x800FFFFF shadow register enable
+  7. Added new register defines for all above
+
+BUILD: clean + build_iso.sh OK
+TEST: Boot Dell with fry652 ISO, run `wd` — expect ALIVE to arrive now

@@ -5,6 +5,7 @@
 #include "vmm.h"
 #include "../../drivers/smp/spinlock.h"
 #include "../../boot/early_serial.h"
+#include "../../include/tater_trace.h"
 
 void kprint(const char *fmt, ...);
 
@@ -648,6 +649,7 @@ void pmm_relocate_bitmap(void) {
 }
 
 void pmm_debug_dump_state(const char *tag, uint64_t order) {
+    if (!TATER_BOOT_SERIAL_TRACE) return;
     early_serial_puts(tag ? tag : "PMM_DEBUG");
     early_serial_puts(" meta=");
     early_serial_puthex64(pmm_metadata_phys);
@@ -702,6 +704,16 @@ uint64_t pmm_alloc_pages(uint64_t count) {
     }
     uint64_t irqf = spin_lock_irqsave(&g_pmm_lock);
     uint64_t phys = alloc_pages_range_locked(count, PAGE_SIZE, UINT64_MAX);
+    spin_unlock_irqrestore(&g_pmm_lock, irqf);
+    return phys;
+}
+
+uint64_t pmm_alloc_pages_range(uint64_t count, uint64_t min_phys, uint64_t max_phys) {
+    if (count == 0 || min_phys >= max_phys) {
+        return 0;
+    }
+    uint64_t irqf = spin_lock_irqsave(&g_pmm_lock);
+    uint64_t phys = alloc_pages_range_locked(count, min_phys, max_phys);
     spin_unlock_irqrestore(&g_pmm_lock, irqf);
     return phys;
 }

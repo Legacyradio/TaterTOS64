@@ -1,0 +1,41 @@
+fry631 - 2026-03-07 - WiFi 9260 RFH RX: Add URBDCB + fix RB_SIZE + fix RBDCB_SIZE
+
+Problem:
+  FW running (FW_STATUS=0x5a5a9999) but ALIVE notification never delivered.
+  CSR_INT=0x00000000, RX closed_rb=0 — RX DMA path completely non-functional.
+
+Root cause (3 bugs in RFH RX init):
+
+  1. MISSING URBDCB (Used Ring BD Circular Buffer)
+     9000-series RFH requires TWO rings:
+       - FRBDCB (Free Ring): host donates RX buffers to device (was set up)
+       - URBDCB (Used Ring): device writes completion entries when buffer filled (MISSING!)
+     Without URBDCB, device cannot complete RX DMA — never updates status writeback.
+     Registers: RFH_Q0_URBDCB_BA_LSB=0xA08400, MSB=0xA08404, WIDX=0xA08480.
+
+  2. WRONG RB_SIZE encoding
+     Had: RFH_RXF_DMA_RB_SIZE_4K = (12u << 16)  -- this is 24KB!
+     Fix: RFH_RXF_DMA_RB_SIZE_4K = (4u << 16)   -- correct 4KB value
+     Encoding is enumerated (1=1K,2=2K,4=4K,8=8K), NOT log2.
+     The 12u value told hardware each buffer is 24KB but we allocate 4KB.
+
+  3. WRONG RBDCB_SIZE (ring descriptor count)
+     Had: RBDCB_SIZE_512 = (9u << 20) for 512-entry ring
+     Fix: RBDCB_SIZE_256 = (8u << 20) for 256-entry ring
+     Our IWL_RX_QUEUE_SIZE is 256, not 512.
+
+Changes (src/drivers/net/wifi_9260.c):
+  - Added RFH_Q0_URBDCB_BA_LSB/MSB/WIDX register defines
+  - Fixed RFH_RXF_DMA_RB_SIZE_4K: (12u<<16) -> (4u<<16)
+  - Fixed RBDCB_SIZE: 512 -> 256
+  - Added IWL_DMA_RXUSED_PAGES (1 page for 256 x 4-byte used ring entries)
+  - Added rx_used_ring / rx_used_ring_phys to g_iwl_dma struct
+  - Allocated + zeroed used ring in iwl_dma_alloc (total pages: 281 -> 282)
+  - Programmed URBDCB BA registers in iwl_dma_init_tfh
+  - Flushed used ring in init
+  - Fixed ALL RX polling paths (iwl_wait_alive, iwl_wait_resp, rx poll):
+    * Mask closed_rb_num with 0x0FFF (9000-series: lower 12 bits only)
+    * Read used ring entry to find actual RX buffer index (rb_id = used[idx] & 0xFFF)
+  - Added RFH_USED_WIDX to wd debug dump
+
+Next: Boot Dell with fry631 ISO, run `wd` — expect ALIVE to succeed now.

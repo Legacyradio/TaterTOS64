@@ -1,0 +1,616 @@
+fry710 — 2026-03-13T07:45:00Z
+RESEARCH: Full init sequence audit — every difference vs Linux 7.0-rc2
+STATUS: Research notes only, NO code changes yet.
+
+===========================================================================
+EXECUTIVE SUMMARY
+===========================================================================
+The SYSASSERT has persisted since fry661.  We have been treating the 9260
+as generic "8000+" and using iwl_pcie_load_given_ucode_8000() as the ONLY
+reference.  But the 9260 is IWL_DEVICE_FAMILY_9000, and Linux has MULTIPLE
+code paths that do 9000-specific things we are NOT doing.  The upload path
+itself is now correct.  The bugs are in the surrounding init sequence.
+
+This note documents EVERY difference found between our init and Linux's,
+organized by severity.  Nothing is omitted.
+
+===========================================================================
+SECTION 1:  9000-SPECIFIC BUGS WE ARE MISSING  (HIGH PRIORITY)
+===========================================================================
+
+--- BUG A: PERSISTENCE BIT NOT CLEARED (9000-specific) ---
+
+Linux file: pcie/gen1_2/trans.c line 1734-1762
+Function:   iwl_trans_pcie_clear_persistence_bit()
+Called from: _iwl_trans_pcie_start_hw() at line 1799
+When:        BEFORE sw_reset, BEFORE apm_init — very early in boot
+
+Linux code (paraphrased):
+  if (device_family == IWL_DEVICE_FAMILY_9000) {
+      wprot = PREG_PRPH_WPROT_9000;  // 0xA04CE0
+  }
+  hpm = iwl_read_umac_prph(HPM_DEBUG);  // prph 0xA03440
+  if (hpm & PERSISTENCE_BIT) {          // BIT(12) = 0x1000
+      wprot_val = iwl_read_umac_prph(wprot);
+      if (wprot_val & PREG_WFPM_ACCESS) {
+          ERROR "can not clear persistence bit";
+          return -EPERM;
+      }
+      iwl_write_umac_prph(HPM_DEBUG, hpm & ~PERSISTENCE_BIT);
+  }
+
+Our code: NOTHING.  We never read HPM_DEBUG, never clear PERSISTENCE_BIT.
+
+Why this matters:
+  The persistence bit preserves power management state across resets.
+  If UEFI (Dell Precision 7530 UEFI firmware) or a previous boot left
+  this bit set, the 9260 firmware sees stale power management state
+  during init.  The firmware's early self-check may ASSERT because the
+  hardware state doesn't match what a clean boot should look like.
+
+  This is ONLY done for DEVICE_FAMILY_9000 and DEVICE_FAMILY_22000.
+  Not for 8000 or older.  By treating the 9260 as generic "8000+" we
+  completely missed this.
+
+Register addresses:
+  HPM_DEBUG          = 0xA03440 (UMAC peripheral register)
+  PERSISTENCE_BIT    = BIT(12) = 0x00001000
+  PREG_PRPH_WPROT_9000 = 0xA04CE0 (write protection check)
+  PREG_WFPM_ACCESS   = (need to look up exact bit, but it's a guard)
+
+
+--- BUG B: CSR_GIO_CHICKEN_BITS DIS_L0S_EXIT_TIMER (8000+ skip) ---
+
+Linux file: pcie/gen1_2/trans.c line 243-246
+Function:   iwl_pcie_apm_init()
+
+Linux code:
+  if (trans->mac_cfg->device_family < IWL_DEVICE_FAMILY_8000)
+      iwl_set_bit(CSR_GIO_CHICKEN_BITS, DIS_L0S_EXIT_TIMER);  // BIT(29)
+
+Our code (wifi_9260.c line 1026-1027):
+  iwl_set_bit(CSR_GIO_CHICKEN_BITS, DIS_L0S_EXIT_TIMER);  // ALWAYS
+
+The 9260 is FAMILY_9000 which is >= FAMILY_8000, so Linux SKIPS this.
+We write it unconditionally.
+
+NOTE: fry709 already addressed this partially by making DIS_L0S_EXIT_TIMER
+a fallback rather than default.  But fry709 still attempts it on retry.
+The correct behavior is to NEVER set it for 9000-series.
+
+Why this matters:
+  DIS_L0S_EXIT_TIMER disables the L0s power state exit timer on the
+  PCIe link.  For 8000+ devices, Intel changed the L0s handling and
+  this timer disable can interfere with PCIe link state transitions.
+  Setting it on a 9000-series device may cause the PCIe link to
+  behave incorrectly during DMA transfers, potentially corrupting
+  the firmware's ALIVE notification DMA or causing bus errors that
+  trigger SYSASSERT.
+
+Register: CSR_GIO_CHICKEN_BITS = 0x100, bit 29 = 0x20000000
+
+
+--- BUG C: RFKILL_WAKE_L1A_EN NOT SET (9000+ specific) ---
+
+Linux file: pcie/gen1_2/internal.h line 1035-1043
+Function:   iwl_enable_rfkill_int()
+
+Linux code:
+  if (trans->mac_cfg->device_family >= IWL_DEVICE_FAMILY_9000) {
+      iwl_set_bit(CSR_GP_CNTRL, CSR_GP_CNTRL_REG_FLAG_RFKILL_WAKE_L1A_EN);
+  }
+
+Our code: We never set RFKILL_WAKE_L1A_EN.
+
+CSR_GP_CNTRL_REG_FLAG_RFKILL_WAKE_L1A_EN = 0x04000000 = BIT(26)
+
+Why this matters:
+  Comment in Linux says "On 9000-series devices this bit isn't enabled
+  by default, so when we power down the device we need set the bit to
+  allow it to wake up the PCI-E bus for RF-kill interrupts."
+
+  Without this bit, the device may not properly handle RF-kill state
+  transitions.  While this alone probably doesn't cause SYSASSERT,
+  it's part of the 9000-specific init that we're skipping entirely.
+
+  Called in iwl_enable_rfkill_int() which runs during _start_hw,
+  BEFORE firmware upload.
+
+
+===========================================================================
+SECTION 2:  INIT SEQUENCE ORDERING DIFFERENCES  (MEDIUM PRIORITY)
+===========================================================================
+
+--- DIFFERENCE D: Linux calls nic_config BEFORE RX/TX init ---
+
+Linux order (in iwl_pcie_nic_init, trans.c ~line 485-520):
+  1. iwl_pcie_apm_init()          → APM clock + power
+  2. iwl_op_mode_nic_config()     → CSR_HW_IF_CONFIG_REG (radio type, SI bits)
+  3. iwl_pcie_rx_init()           → RFH setup, RX queues
+  4. iwl_pcie_tx_init()           → FH channels, SCD, KW buffer
+
+Our order (in iwl_fw_boot_attempt, wifi_9260.c ~line 2850-2960):
+  1. iwl_nic_reset()              → APM + MAC access
+  2. iwl_dma_alloc()              → buffer allocation
+  3. iwl_dma_init_tfh()           → TX + RX combined
+  4. iwl_nic_config()             → CSR_HW_IF_CONFIG_REG ← AFTER RX/TX!
+
+Our nic_config is called AFTER RFH init.  Linux calls it BEFORE.
+If the RFH hardware or the firmware reads CSR_HW_IF_CONFIG_REG during
+RFH bring-up, it would find unconfigured values in our case.
+
+The SI (step/integration) bits in CSR_HW_IF_CONFIG_REG tell the hardware
+what radio/PHY configuration to use.  If these are wrong during RFH
+DMA setup, the hardware may misconfigure the DMA path.
+
+
+--- DIFFERENCE E: Linux calls APM init TWICE ---
+
+Linux boot flow has TWO phases:
+  Phase 1: _iwl_trans_pcie_start_hw()
+    - prepare_card_hw
+    - clear_persistence_bit        ← 9000-specific
+    - sw_reset(retake_ownership)   ← includes prepare_card_hw again
+    - apm_init                     ← FIRST APM init
+    - init_msix
+    - enable_rfkill_int            ← 9000-specific L1A bit
+
+  Phase 2: iwl_trans_pcie_start_fw()
+    - iwl_pcie_nic_init():
+      - apm_init                   ← SECOND APM init
+      - nic_config
+      - rx_init
+      - tx_init
+    - shadow_reg_enable
+    - fw_load_int
+    - clear_rfkill
+    - upload_firmware
+    - wait_alive
+
+Our boot flow has ONE phase:
+  iwl_fw_boot_attempt():
+    - iwl_nic_reset (includes apm_init ONCE, no persistence bit clear)
+    - iwl_dma_alloc
+    - iwl_dma_init_tfh
+    - iwl_nic_config
+    - iwl_enable_msi
+    - clear rfkill
+    - clear interrupts
+    - shadow_reg
+    - fw_load_int
+    - clear rfkill again
+    - upload_firmware
+    - wait_alive
+
+We skip the entire Phase 1.  Linux's Phase 1 does persistence bit
+clearing, an extra SW reset + prepare_card_hw, and RFKILL L1A enable.
+
+
+--- DIFFERENCE F: Missing sleep after SW_RESET ---
+
+Linux's iwl_trans_pcie_sw_reset() (trans.c line 78-95):
+  For non-BZ family (i.e., 9260):
+    iwl_set_bit(CSR_RESET, CSR_RESET_REG_FLAG_SW_RESET);
+    usleep_range(5000, 6000);   ← 5-6ms sleep!
+    if (retake_ownership)
+        return iwl_pcie_prepare_card_hw();
+
+Our iwl_sw_reset() (wifi_9260.c line 1065-1066):
+  iwl_set_bit(CSR_RESET, CSR_RESET_REG_FLAG_SW_RESET);
+  // NO SLEEP — returns immediately!
+
+The hardware may need 5ms to complete the software reset.  Proceeding
+immediately could mean we're configuring the NIC before it has fully
+reset, leading to undefined register states.
+
+
+===========================================================================
+SECTION 3:  CONFIRMED CORRECT (upload path + RFH values)
+===========================================================================
+
+These items have been verified correct and should NOT be changed:
+
+  ✓ FH_UCODE_LOAD_STATUS done markers: 0xFFFF then 0xFFFFFFFF
+  ✓ Full interrupt mask (CSR_INI_SET_MASK) enabled BEFORE done markers
+  ✓ WFPM_GP2 = 0x01010101 before CPU reset release
+  ✓ RELEASE_CPU_RESET = BIT(24)
+  ✓ No LMPM_SECURE writes (removed in fry708, correct for 8000+ path)
+  ✓ No SRAM reads after done markers (removed in fry708)
+  ✓ No CSR_RESET=0 after upload (removed in fry708)
+  ✓ RFH_RXF_DMA_CFG = 0x87940000 (EN|4K|512|MIN_4_8|DROP_LARGE)
+  ✓ RFH_Q_FRBDCB_WIDX_TRG writes just write_actual (no upper-16 dup)
+  ✓ FH TX channels 0-9 stopped before upload
+  ✓ SCD 31 queues deactivated before upload
+  ✓ HBUS_TARG_MBX_C = 0x64 (RB timeout for 9000)
+  ✓ MAC_SI + RADIO_SI cleared in nic_config (added fry708)
+  ✓ Shadow reg CSR_MAC_SHADOW_REG_CTRL = 0x800FFFFF
+  ✓ RFKILL cleared twice (CSR_UCODE_DRV_GP1_CLR = 0x02 and 0x04)
+  ✓ FW load int = CSR_INT_BIT_FH_TX only during upload
+  ✓ RFH_GEN_CFG = SERVICE_DMA_SNOOP | RFH_DMA_SNOOP | RB_CHUNK_SIZE_128
+    (RB_CHUNK_SIZE_128 is CORRECT for 9260: it's a discrete M.2 card,
+     NOT integrated. Only 9560 CNVi variants are integrated.)
+
+  ✓ Upload path matches Linux iwl_pcie_load_given_ucode_8000() exactly
+  ✓ Per-section FH_UCODE_LOAD_STATUS bits match Linux
+  ✓ CPU2 pass runs even for single-CPU INIT (writes 0xFFFFFFFF)
+
+
+===========================================================================
+SECTION 4:  RFH_GEN_CFG CHUNK SIZE DETAIL
+===========================================================================
+
+User question: is 9260 integrated or discrete?
+
+From Linux cfg/9000.c:
+  iwl9000_mac_cfg  → NO .integrated field → defaults to false  → 9260
+  iwl9560_mac_cfg  → .integrated = true                        → 9560
+
+9260 PCI device ID 0x2526 maps to iwl9000_mac_cfg (discrete PCIe M.2).
+9560 uses CNVi (integrated into PCH via IOSF bus).
+
+RFH_GEN_CFG chunk size:
+  Linux: trans->mac_cfg->integrated ? RB_CHUNK_SIZE_64 : RB_CHUNK_SIZE_128
+  For 9260 (not integrated): RB_CHUNK_SIZE_128 = BIT(4)
+  Our code: RB_CHUNK_SIZE_128 = BIT(4)
+  → MATCHES.  This is correct.
+
+RFH_GEN_CFG final value comparison:
+  Linux (9260): RFH_DMA_SNOOP(0x02) | DEFAULT_RXQ_NUM=0 | SERVICE_DMA_SNOOP(0x01) | CHUNK_128(0x10) = 0x13
+  Ours:         SERVICE_DMA_SNOOP(0x01) | RFH_DMA_SNOOP(0x02) | CHUNK_128(0x10) = 0x13
+  → MATCHES.
+
+
+===========================================================================
+SECTION 5:  CSR_GP_CNTRL MAC_ACCESS_REQ STATUS
+===========================================================================
+
+User asked about CSR_GP_CNTRL (0x024) and MAC_ACCESS_REQ handshake.
+
+Our code handles this in iwl_grab_nic_access() (wifi_9260.c line 1843):
+  - Sets CSR_GP_CNTRL_REG_FLAG_MAC_ACCESS_REQ (BIT(3))
+  - Polls CSR_GP_CNTRL for CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY (BIT(0))
+  - If poll fails, logs "grab_nic_access FAILED GP_CNTRL=0x%08x"
+
+Also in iwl_nic_reset() (line 1094-1097):
+  - Sets MAC_ACCESS_REQ after APM init
+  - Polls for MAC_CLOCK_READY
+
+This matches Linux.  The handshake is implemented correctly.
+If MAC_CLOCK_READY doesn't come up, our code logs and returns error.
+We've never seen this fail on the Dell (it always succeeds).
+
+
+===========================================================================
+SECTION 6:  SWM_CHICKEN REGISTER (0x00000CA0)
+===========================================================================
+
+User mentioned "SWM_CHICKEN" at 0xCA0 with bits 1 and 4 for DMA reset.
+
+This register name does NOT appear in the Linux iwlwifi driver source.
+Searched all of linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/ for
+"SWM_CHICKEN", "0xCA0", and "0x00000CA0" — zero matches.
+
+The iwlwifi driver does have these "chicken bit" registers:
+  - CSR_GIO_CHICKEN_BITS (0x100) — PCIe link state chicken bits
+  - FH_TX_CHICKEN_BITS_REG (0x1E98) — FH TX auto-retry enable
+  - CSR_HOST_CHICKEN (0x204) — PM idle source disable
+
+If 0xCA0 is from a different Intel driver (e.g., e1000e Ethernet) or
+from a non-public Intel document, it doesn't apply to iwlwifi.
+However, there may be undocumented registers not in the open-source
+driver — would need Intel datasheet to confirm.
+
+
+===========================================================================
+SECTION 7:  FH_TX_CHICKEN_BITS (POST-ALIVE — future fix)
+===========================================================================
+
+Linux file: pcie/gen1_2/tx.c line 526-528
+Function:   iwl_pcie_tx_start() — called AFTER ALIVE
+
+Linux code:
+  reg_val = iwl_read_direct32(FH_TX_CHICKEN_BITS_REG);   // 0x1E98
+  iwl_write_direct32(FH_TX_CHICKEN_BITS_REG,
+                     reg_val | FH_TX_CHICKEN_BITS_SCD_AUTO_RETRY_EN);  // BIT(1)
+
+Our code: Never touches FH_TX_CHICKEN_BITS_REG.
+
+Also in iwl_pcie_tx_start() — Linux enables all FH TX DMA channels:
+  for (chan 0..9):
+      iwl_write_direct32(FH_TCSR_CHNL_TX_CONFIG_REG(chan),
+                         DMA_CHNL_ENABLE | DMA_CREDIT_ENABLE);
+
+Our code: We stop channels before upload but never re-enable after ALIVE.
+
+These are POST-ALIVE operations.  They can't cause the pre-ALIVE SYSASSERT
+but will be needed once we get past ALIVE.
+
+
+===========================================================================
+SECTION 8:  TLV PARSER — SILENTLY SKIPPED TYPES
+===========================================================================
+
+Our parser (iwlwifi_fw.c) handles these TLV types:
+  1 (INST), 2 (DATA), 3 (INIT), 4 (INIT_DATA),
+  19 (SEC_RT), 20 (SEC_INIT), 24 (SECURE_SEC_RT), 25 (SECURE_SEC_INIT),
+  27 (NUM_OF_CPU), 23 (PHY_SKU), 32 (PAGING), 36 (FW_VERSION)
+
+Silently skipped (present in firmware but ignored):
+  18 (FLAGS) — 0xfbfb4b7f in our firmware.  Contains capability bits.
+  29 (API_CHANGES_SET) — API compatibility mask
+  30 (ENABLED_CAPABILITIES) — feature caps
+  48 (CMD_VERSIONS) — host command version table
+  51 (FW_MEM_SEG) — memory segment configuration
+
+For basic boot + ALIVE these are probably not needed.  But if the firmware
+checks for specific driver capabilities that we never acknowledged, it
+could assert.  Lower probability but worth noting.
+
+
+===========================================================================
+SECTION 9:  LINUX 9000-SPECIFIC CODE PATHS FOUND
+===========================================================================
+
+Every place Linux checks for DEVICE_FAMILY_9000 in pcie/ directory:
+
+1. internal.h:1035 — iwl_enable_rfkill_int():
+   if (family >= 9000) set RFKILL_WAKE_L1A_EN
+   → WE DON'T DO THIS (BUG C)
+
+2. trans.c:582 — iwl_pcie_prepare_card_hw():
+   if (family != 9000) error about SAP not supported
+   → SAP/MEI not relevant to us, no action needed
+
+3. trans.c:1607 — MSI-X allocation:
+   if (family <= 9000) max_rx_queues = IWL_9000_MAX_RX_HW_QUEUES
+   → We use MSI not MSI-X, not relevant
+
+4. trans.c:1739 — iwl_trans_pcie_clear_persistence_bit():
+   case IWL_DEVICE_FAMILY_9000: wprot = PREG_PRPH_WPROT_9000
+   → WE DON'T DO THIS (BUG A)
+
+5. trans.c:4211 — RF_ID extraction for blank OTP:
+   if (family >= 9000 && !RF_ID) map_crf_id()
+   → One-time device identification, already done by UEFI
+
+
+===========================================================================
+SECTION 10:  COMPLETE INIT SEQUENCE — LINUX vs OURS (side by side)
+===========================================================================
+
+LINUX (for 9260, DEVICE_FAMILY_9000):
+
+  _iwl_trans_pcie_start_hw():
+    L1.  iwl_pcie_prepare_card_hw()           — NIC_READY + PCI_OWN_SEM
+    L2.  iwl_trans_pcie_clear_persistence_bit()— HPM_DEBUG &= ~BIT(12)
+    L3.  iwl_trans_pcie_sw_reset(retake=true)  — CSR_RESET |= SW_RESET, sleep 5ms, re-prepare_card_hw
+    L4.  iwl_pcie_apm_init()                   — GIO_CHICKEN (NO L0S_TIMER for 9000!), L1A_NO_L0S, HPET, HAP_WAKE, apm_config(L0S_DIS in GIO_REG), INIT_DONE, poll MAC_CLK
+    L5.  iwl_pcie_init_msix()                  — MSI-X vectors (falls back to MSI for 9000)
+    L6.  iwl_enable_rfkill_int()               — CSR_INT_MASK = RF_KILL only, +RFKILL_WAKE_L1A_EN for 9000+
+
+  iwl_trans_pcie_start_fw():
+    L7.  iwl_pcie_nic_init():
+      L7a.  iwl_pcie_apm_init()                — APM init AGAIN (second time!)
+      L7b.  iwl_op_mode_nic_config()           — CSR_HW_IF_CONFIG_REG + CSR_GIO_REG L0S
+      L7c.  iwl_pcie_rx_init():
+        L7c1. Allocate RX buffers
+        L7c2. iwl_pcie_rx_mq_hw_init():
+          - grab_nic_access
+          - Stop RFH DMA (RFH_RXF_DMA_CFG=0, RFH_RXF_RXQ_ACTIVE=0)
+          - For each queue: set BA_LSB/MSB, URBDCB, STTS, zero indices
+          - Enable RFH DMA (0x87940000)
+          - RFH_GEN_CFG (snoop + chunk_128 for 9260 discrete)
+          - RFH_RXF_RXQ_ACTIVE = enabled bits
+          - release_nic_access
+          - CSR_INT_COALESCING = 0x40
+        L7c3. Restock RX ring (iwl_pcie_rxmq_restock → doorbell kick)
+      L7d.  iwl_pcie_tx_init():
+        L7d1. Stop FH TX channels (0-9 → write 0)
+        L7d2. For each queue: reset read/write ptrs, set CBBC addr
+        L7d3. FH_KW_MEM_ADDR_REG = kw_phys >> 4
+        L7d4. SCD base + SCD_TXFACT = 0
+    L8.  shadow_reg_enable (CSR_MAC_SHADOW_REG_CTRL = 0x800FFFFF)
+    L9.  iwl_enable_fw_load_int()              — CSR_INT_MASK = FH_TX only
+    L10. Clear CSR_UCODE_DRV_GP1_CLR (0x02 rfkill, 0x04 cmd_blocked)
+    L11. Clear CSR_INT = 0xFFFFFFFF
+    L12. Upload firmware (iwl_pcie_load_given_ucode_8000)
+    L13. Wait for ALIVE
+
+  iwl_trans_pcie_fw_alive():  (AFTER ALIVE)
+    L14. iwl_pcie_reset_ict()                  — ICT table for INTA mode
+    L15. iwl_pcie_tx_start():
+      L15a. Enable tx cmd queue
+      L15b. iwl_scd_activate_fifos()
+      L15c. Enable FH TX DMA channels 0-9 (DMA_CHNL_ENABLE | DMA_CREDIT_ENABLE)
+      L15d. FH_TX_CHICKEN_BITS_REG |= SCD_AUTO_RETRY_EN
+
+
+OURS (wifi_9260.c iwl_fw_boot_attempt):
+
+  O1.  iwl_nic_reset():
+    O1a. Read HW_REV, STEP_DASH, RF_ID
+    O1b. iwl_apm_stop_master() — CSR_RESET |= STOP_MASTER, poll MASTER_DISABLED
+    O1c. iwl_sw_reset()        — CSR_RESET |= SW_RESET  (NO sleep after!)
+    O1d. iwl_pcie_prepare_card_hw() — NIC_READY + PCI_OWN_SEM
+    O1e. Clear CSR_INT, CSR_INT_MASK, CSR_FH_INT_STATUS
+    O1f. iwl_apm_init():
+      - GIO_CHICKEN: DIS_L0S_EXIT_TIMER ← BUG (should skip for 9000!)
+      - GIO_CHICKEN: L1A_NO_L0S_RX ← correct
+      - HPET_MEM_REG ← correct
+      - HAP_WAKE ← correct
+      - INIT_DONE, poll MAC_CLK ← correct
+      *** MISSING: iwl_pcie_apm_config() (GIO_REG L0S disable is done
+          later in nic_config — OK but out of order)
+    O1g. Re-read HW_REV
+    O1h. MAC_ACCESS_REQ, poll MAC_CLOCK_READY
+
+  *** MISSING: persistence bit clear (BUG A)
+  *** MISSING: sleep after SW_RESET (Linux sleeps 5-6ms!)
+  *** MISSING: second prepare_card_hw after SW_RESET
+  *** MISSING: RFKILL_WAKE_L1A_EN (BUG C)
+
+  O2.  iwl_dma_alloc() — allocate RX/TX ring buffers
+
+  O3.  iwl_dma_init_tfh():
+    O3a. grab_nic_access
+    O3b. Stop FH TX channels 0-9 ← correct (fry707)
+    O3c. FH_KW_MEM_ADDR_REG ← correct
+    O3d. SCD_TXFACT = 0 ← correct
+    O3e. Deactivate 31 SCD queues ← correct (fry707)
+    O3f. FH_MEM_CBBC queue 0 ← correct
+    O3g. SCD_GP_CTRL AUTO_ACTIVE + 31_QUEUES ← correct
+    O3h. Populate RXBD ring ← correct
+    O3i. Cache flush RXBD ← correct (but shouldn't be needed on x86 w/ snoop)
+    O3j. Stop RFH DMA, poll RFH_GEN_STATUS idle ← correct
+    O3k. Set queue 0 addresses (BA_LSB/MSB, URBDCB, STTS) ← correct
+    O3l. Zero ring indices ← correct
+    O3m. Enable RFH DMA (0x87940000) ← correct
+    O3n. RFH_GEN_CFG (0x13 = snoop + chunk_128) ← correct for 9260 discrete
+    O3o. RFH_RXF_RXQ_ACTIVE = BIT(0)|BIT(16) ← correct
+    O3p. CSR_INT_COALESCING ← correct
+    O3q. HBUS_TARG_MBX_C = 0x64 (RB timeout) ← correct (fry707)
+    O3r. Doorbell kick ← correct
+
+  O4.  iwl_nic_config()  ← this comes AFTER RFH init (Linux does it BEFORE)
+    O4a. grab_nic_access
+    O4b. CSR_HW_IF_CONFIG_REG with radio type/step/dash, clear SI bits
+    O4c. CSR_GIO_REG L0S disabled
+
+  O5.  iwl_enable_msi() ← correct
+
+  O6.  CSR_UCODE_DRV_GP1_CLR = 0x02, 0x04 ← correct (rfkill clear)
+  O7.  CSR_INT = 0xFFFFFFFF ← correct (ack pending)
+  O8.  CSR_MAC_SHADOW_REG_CTRL = 0x800FFFFF ← correct
+  O9.  iwl_enable_fw_load_int() → CSR_INT_MASK = FH_TX ← correct
+  O10. CSR_UCODE_DRV_GP1_CLR = 0x02, 0x04 ← correct (second rfkill clear)
+  O11. iwl_upload_firmware() ← correct (verified in fry708)
+  O12. iwl_wait_alive() ← correct logic
+
+
+===========================================================================
+SECTION 11:  WHAT TO FIX IN ORDER OF PRIORITY
+===========================================================================
+
+FIX 1 (HIGHEST PRIORITY — 9000-specific):
+  Add persistence bit clearing BEFORE sw_reset in iwl_nic_reset().
+  Read HPM_DEBUG (prph 0xA03440), if BIT(12) set, check write-protection
+  at PREG_PRPH_WPROT_9000 (prph 0xA04CE0), then clear BIT(12).
+  Requires grab_nic_access to read/write UMAC prph.
+
+FIX 2 (HIGH PRIORITY — wrong for 8000+):
+  Remove DIS_L0S_EXIT_TIMER write in iwl_apm_init() entirely.
+  The 9260 is family 9000, Linux NEVER sets this for >= 8000.
+  fry709 made it a fallback, but it should be REMOVED completely.
+  Only set L1A_NO_L0S_RX (which IS set for all families).
+
+FIX 3 (HIGH PRIORITY — 9000-specific):
+  Set RFKILL_WAKE_L1A_EN in CSR_GP_CNTRL.
+  CSR_GP_CNTRL |= 0x04000000 (BIT(26)).
+  Do this after enabling rfkill interrupt, before firmware upload.
+
+FIX 4 (MEDIUM PRIORITY — missing sleep):
+  Add 5ms sleep after sw_reset before continuing.
+  Linux's iwl_trans_pcie_sw_reset() does usleep_range(5000, 6000).
+  Our iwl_sw_reset() (line 1065-1066) just sets the bit and returns.
+  The hardware may need time to complete the reset.
+
+FIX 5 (MEDIUM PRIORITY — ordering):
+  Move iwl_nic_config() call to BEFORE iwl_dma_init_tfh().
+  Match Linux's order: apm_init → nic_config → rx_init → tx_init.
+
+FIX 6 (LOW PRIORITY — post-ALIVE, for later):
+  After ALIVE: enable FH TX DMA channels 0-9 with
+  FH_TCSR_TX_CONFIG_REG = DMA_CHNL_ENABLE | DMA_CREDIT_ENABLE.
+  Set FH_TX_CHICKEN_BITS_SCD_AUTO_RETRY_EN.
+
+
+===========================================================================
+SECTION 12:  WHY "8000+" WAS WRONG
+===========================================================================
+
+The user correctly identified that we've been treating the 9260 as
+generic "8000+ series" everywhere.  The firmware UPLOAD path is indeed
+shared (iwl_pcie_load_given_ucode_8000 is used by both 8000 and 9000).
+But the SURROUNDING INIT has 9000-specific differences:
+
+1. Persistence bit clearing — ONLY for 9000 and 22000, not 8000
+2. RFKILL_WAKE_L1A_EN — ONLY for >= 9000, not 8000
+3. DIS_L0S_EXIT_TIMER — skipped for >= 8000 but we didn't skip it
+4. PREG_PRPH_WPROT uses a 9000-specific address
+5. MSI-X max RX queues has a 9000-specific limit
+
+By focusing exclusively on the 8000+ upload path, we missed all the
+9000-specific initialization that Linux does in the surrounding code.
+
+The SYSASSERT has been the same since fry661 — meaning the root cause
+has NEVER been in the upload path.  It's in the init that SURROUNDS
+the upload.  The persistence bit and L0s timer are the two most likely
+culprits because they affect DMA and power state at boot time.
+
+
+===========================================================================
+SECTION 13:  DELL TEST PREDICTIONS AFTER FIXES APPLIED
+===========================================================================
+
+If persistence bit + L0s timer fix resolves the SYSASSERT:
+  → ALIVE fires, NO SW_ERR
+  → closed_rb should advance (RFH DMA delivers ALIVE data)
+  → Can proceed to host command exchange (NVM_ACCESS, etc.)
+
+If ALIVE + SW_ERR still:
+  → The assert has a root cause we haven't identified
+  → Need to decode the UMAC error table more carefully
+  → May need to investigate the 0x2E error code vs firmware version 46
+  → Check if our UMAC error table base address (0x800000) is correct
+
+If no ALIVE at all:
+  → One of the fixes broke something (unlikely since we're only
+    removing a wrong write and adding a missing clear)
+  → Re-check init ordering impact
+
+
+===========================================================================
+SECTION 14:  REGISTER REFERENCE TABLE
+===========================================================================
+
+Registers we need to add/modify:
+
+  HPM_DEBUG              = 0xA03440 (UMAC peripheral, needs grab_nic_access)
+  PERSISTENCE_BIT        = BIT(12) = 0x00001000
+  PREG_PRPH_WPROT_9000   = 0xA04CE0 (UMAC peripheral)
+  PREG_WFPM_ACCESS       = BIT(12) in wprot register (need to verify exact bit)
+  CSR_GP_CNTRL           = 0x024
+  RFKILL_WAKE_L1A_EN     = BIT(26) = 0x04000000
+  CSR_GIO_CHICKEN_BITS   = 0x100
+  DIS_L0S_EXIT_TIMER     = BIT(29) = 0x20000000
+  FH_TX_CHICKEN_BITS_REG = 0x1E98 (FH_MEM_LOWER_BOUND + 0xE98)
+  SCD_AUTO_RETRY_EN      = BIT(1) = 0x00000002
+
+
+===========================================================================
+SECTION 15:  9260 DEVICE CONFIG FROM LINUX cfg/9000.c
+===========================================================================
+
+iwl9000_mac_cfg (used by 9260 discrete M.2, PCI ID 0x2526):
+  device_family          = IWL_DEVICE_FAMILY_9000
+  mq_rx_supported        = true
+  integrated             = false (not set, defaults to false)
+
+iwl9000_base (shared parameters):
+  num_of_queues          = 31
+  max_tfd_queue_size     = 256
+  shadow_ram_support     = true
+  shadow_reg_enable      = true
+  pcie_l1_allowed        = true
+  apmg_not_supported     = true
+  smem_offset            = 0x400000
+  smem_len               = 0x68000
+  mac_addr_from_csr      = 0x380
+  nvm_hw_section_num     = 10
+  ucode_api_max          = 46
+  ucode_api_min          = 30
+
+
+===========================================================================
+END OF RESEARCH NOTES — NO CODE CHANGES MADE IN THIS FRY
+===========================================================================

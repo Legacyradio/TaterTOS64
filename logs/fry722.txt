@@ -1,0 +1,23 @@
+fry722 — Fix I219 Ethernet: wrong PCI device IDs + missing MMIO mapping
+Date: 2026-03-14
+
+Problem:
+  `eth` command showed "NOT INITIALIZED (MMIO not mapped)" — driver never found the NIC.
+
+Root cause (two bugs):
+  1. Wrong PCI device IDs: Driver only checked 0x15B7 (SPT-H) and 0x15B8 (SPT-H),
+     but the Dell 7530 Coffee Lake uses the CNP variant (likely 0x15BB or 0x15BD).
+  2. Missing MMIO page table mapping: vmm_phys_to_virt() just does arithmetic
+     (VMM_PHYSMAP_BASE + phys) but does NOT create page table entries. The physmap
+     only covers RAM; MMIO BAR regions are unmapped. First register access would
+     page-fault even if the device was found.
+
+Fixes in src/drivers/net/i219.c:
+  - Replaced two hardcoded device IDs with a table of 18 known I219 variants
+    (SPT, CNP-H, CNP-LP, ADP, RPL, MTL).
+  - Added class-code fallback: if no ID matches, match any Intel device with
+    class 02:00 (Ethernet controller).
+  - Added vmm_ensure_physmap_uc() calls to map the BAR0 MMIO region with
+    uncacheable (CD+WT) page table flags before first access.
+
+Build: clean compile, ISO exported.

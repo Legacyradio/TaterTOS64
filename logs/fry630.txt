@@ -1,0 +1,50 @@
+fry630 - Switch RX DMA from old FH to RFH (Receive Frame Handler) for 9000-series
+Date: 2026-03-07
+
+Problem: fry629 debug output from Dell shows FW_STATUS=0x5a5a9999 (firmware IS
+running) but CSR_INT=0x00000000 and RX queue completely empty (rd=0 cl=0 fin=0).
+Firmware is alive but cannot DMA the ALIVE notification into our RX ring.
+
+Root cause: The RX DMA was programmed using old FH CSR registers (0x1Bxx) which
+are for pre-9000 devices. The Intel 9260 is a gen2 device that uses the RFH
+(Receive Frame Handler) with PRPH-space registers (0xA0xxxx). The old FH RX
+registers are simply ignored by the 9000-series hardware.
+
+Changes:
+1. src/drivers/net/wifi_9260.c:
+   - Replaced old FH RX register defines (FH_RSCSR_*, FH_RCSR_*, FH_MEM_RSSR_*)
+     with correct RFH PRPH register defines:
+       RFH_Q0_FRBDCB_BA_LSB/MSB (0xA08000/04) - free ring base address
+       RFH_Q0_FRBDCB_WIDX (0xA08080) - free ring write index
+       RFH_Q0_URBD_STTS_WPTR_LSB/MSB (0xA08100/04) - status writeback address
+       RFH_RXF_DMA_CFG (0xA09820) - DMA config
+       RFH_GEN_CFG (0xA09800) - general config (snooping)
+       RFH_GEN_STATUS (0xA09808) - DMA idle check
+       RFH_RXF_RXQ_ACTIVE (0xA0980C) - queue activation
+
+   - Rewrote RX init in iwl_dma_init_tfh():
+     * Stop RFH DMA, wait for idle
+     * Program free ring base address via iwl_write_prph()
+     * Program status writeback address via iwl_write_prph()
+     * Enable RFH DMA with 4K buffers, 512-entry ring, single-frame mode
+     * Activate RX queue 0
+     * Enable DMA snooping for cache coherence
+     * Set free ring write index to tell device buffers are available
+
+   - Added forward declarations for iwl_write_prph/iwl_read_prph
+     (defined later in file, now needed earlier by RFH init)
+
+   - Enhanced wd debug dump: now also shows RFH_DMA_CFG, RFH_STATUS,
+     RFH_RXQ_ACT, RFH_Q0_WIDX registers (read via iwl_read_prph)
+
+Why: The 9000-series ignores old FH registers for RX. Without RFH programming,
+the firmware has nowhere to DMA the ALIVE notification, so the RX queue stays
+empty and ALIVE times out despite firmware actually running.
+
+Testing: Boot ISO on Dell, run "wd" to verify:
+  - RFH_DMA_CFG should be non-zero (DMA enabled)
+  - RFH_RXQ_ACT should be 0x00000001 (queue 0 active)
+  - RX closed_rb should advance (ALIVE notification received)
+  - Expect "FIRMWARE IS ALIVE" in debug log
+
+Build: clean + build_iso.sh OK, ISO exported.

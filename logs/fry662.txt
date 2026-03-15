@@ -1,0 +1,59 @@
+fry662 — Fix CSR_INT ACK handshake + improve ALIVE diagnostics
+================================================================
+Date: 2026-03-08
+Status: BUILT, ready for Dell test
+
+ROOT CAUSE (from fry661):
+  ALIVE+SW_ERR fires (CSR_INT=0x02000001) but interrupt ACK handshake
+  was broken.  The ALIVE wait loop polled RX ring but never directly
+  read+cleared CSR_INT on each iteration, leaving HW state machine
+  frozen (CSR_RESET bit 4 stuck set).
+
+CHANGES IN wifi_9260.c:
+
+1. CSR_INT_COALESCING (Step 2 of plan)
+   - Added #define CSR_INT_COALESCING 0x004
+   - Added #define IWL_HOST_INT_TIMEOUT_DEF 0x40
+   - Write CSR_INT_COALESCING = 0x40 in RFH init (after RXQ_ACTIVE)
+   - Matches Linux iwl_pcie_rx_mq_hw_init: 2048us coalescing timer
+   WHY: Missing coalescing timer could affect interrupt delivery timing
+
+2. ALIVE wait loop rewrite (Step 1 of plan)
+   - Mask now includes SW_ERR + FH_TX in addition to ALIVE + FH_RX
+     (was: ALIVE | FH_RX only, meaning SW_ERR couldn't fire as MSI)
+   - Clear CSR_INT before entering poll loop (write 0xFFFFFFFF)
+   - On EACH poll iteration: read CSR_INT, if non-zero write it back
+     to clear (the critical ACK handshake fix)
+   - Track saw_alive_bit and saw_sw_err flags
+   - If SW_ERR detected, break early after 50ms (no point waiting 2s)
+   - Log CSR_INT + CSR_RESET values when non-zero during polling
+   WHY: The HW needs SW to read+write CSR_INT to acknowledge the
+   interrupt.  Without this ACK, CSR_RESET bit 4 stays set and the
+   HW state machine is frozen.
+
+3. Improved diagnostics (Step 3 of plan)
+   - Timeout dump now shows CSR_RESET (was missing)
+   - Shows saw_alive_bit / saw_sw_err flags
+   - Hex dump of first 32 bytes of RX[0] buffer
+   - RFH queue state dump (WIDX, RIDX, UWID, ACTIVE, DMA_CFG, GEN_STATUS)
+   - Always dumps SRAM error table on failure (not just when SW_ERR in final CSR_INT)
+   - Error table dump enhanced:
+     * More candidate addresses (0x800200, 0x000400, 0x000200)
+     * Named fields (err_id, PC, caller, ilink1/2, data1/2/3)
+     * Scans 0x000000-0x080000 in 0x400 steps for DEAD markers
+   WHY: Need to know WHY firmware crashes — error table has PC + error code
+
+BUILD:
+  make clean && build_iso.sh — SUCCESS
+  ISO at out/tatertos64v3.iso, exported to Windows
+
+TEST PLAN:
+  1. Flash ISO to USB
+  2. Boot Dell, run `wd` command
+  3. Look for:
+     - CSR_INT values during ALIVE poll (did ALIVE bit appear? SW_ERR?)
+     - CSR_RESET during poll (does bit 4 clear after we ACK?)
+     - RFH queue state (did HW consume any RBDs?)
+     - SRAM error table (err_id + PC tells us WHY FW crashed)
+  4. Key question: Does the ACK fix allow CSR_RESET bit 4 to drop,
+     enabling FW to complete initialization and DMA ALIVE?

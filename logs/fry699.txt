@@ -1,0 +1,243 @@
+fry699 - 2026-03-11 17:37:52 CDT - WiFi 9260: re-advertise RX immediately on first ALIVE and give post-rekick SW_ERR a bounded grace window after fry698 retained cleaner ALIVE+SW_ERR with full handoff mask active
+
+SESSION CONTEXT:
+  The fry698 hardware run finally answered the exact branch that
+  `eventually10` left open and that `eventually11` now records in detail.
+
+  The decisive retained `wcmd` shape from the user-supplied hardware output
+  was:
+    - `retained=6 total=6 hostcmd=0 step=9 rc=-3`
+    - `#1 ord=2 phase step=9 tag=init-alive-sw-err arg=1 rc=-3 ms=6 cl=0x0000 csr=0x02000001 fh=0x00000000`
+    - `#4 ord=5 phase step=9 tag=init-alive-sw-err arg=2 rc=-3 ms=6 cl=0x0000 csr=0x02000001 fh=0x00000000`
+
+  The surrounding hardware output stayed in the same outer failure class:
+    - `hostcmd=0`
+    - `last_isr_csr=0x00000000`
+    - `last_isr_fh=0x00000000`
+    - `RFH_ACT=0x00010001 W=0x00000000 R=0x00000000 U=0x00000000`
+    - `rx_closed=0x00000000 rx_fin=0x00000000`
+    - same UMAC assert signature:
+      - `0x0000dead`
+      - `0x0000002e`
+      - `0x7e3e4b69`
+    - same stuck PC shape:
+      - `UMAC_PC=0xc0000000->0xc0000000`
+      - `LMAC_PC=0x000000e8->0x000000e8`
+
+  But the fry698 run also proved something new and concrete:
+    - `wd3` showed:
+      - `alive_int_mask=0xba00000f`
+    - so the broadened Linux-style handoff mask from `fry698` was actually
+      active at the failing boundary
+    - and the retained first-seen snapshot changed materially:
+      - from `0x02088801`
+      - to `0x02000001`
+
+  The continuation conclusion written first in
+  `eventually/eventually11.txt` was:
+    - the handoff-mask alignment did matter
+    - but mask alignment alone was not the whole blocker
+    - the branch is now a cleaner explicit:
+      - `ALIVE + SW_ERR`
+      - `fh=0`
+      - no host-command path
+      - no usable RX progress
+    - the next patch should inspect the immediate first-ALIVE restock / drain
+      boundary only
+
+WHY THIS PATCH:
+  The fry698 hardware run removed the old mask-policy doubt.
+  The next live source mismatch was narrower and concrete:
+
+  1. the broader handoff mask was already active:
+     - `alive_int_mask=0xba00000f`
+  2. the retained first-seen snapshot had already changed materially:
+     - `csr=0x02000001`
+  3. but the current ALIVE wait path still did not do anything new at the
+     first observed `ALIVE` edge itself
+  4. the loop still preserved the SW_ERR snapshot and cleared `CSR_INT`, but
+     it did not immediately re-advertise RX at that first `ALIVE` moment
+  5. the later `alive-rekick` still got no bounded extra chance to matter
+     before the saved SW_ERR/HW_ERR path aborted
+
+  So the next patch should not change:
+    - mask bits again
+    - RFH base address programming again
+    - context-info theory
+    - or later host-command flow first
+
+  It should change only the exact first-ALIVE handoff sub-boundary that the
+  fry698 hardware run had now made visible.
+
+SOURCE REFERENCES USED:
+  Hardware continuation:
+    - `eventually/eventually10.txt`
+    - `eventually/eventually11.txt`
+
+  Current source:
+    - `src/drivers/net/wifi_9260.c`
+
+  Linux comparison point:
+    - `linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/rx.c`
+
+EXACT CODE CHANGES:
+  File:
+    - `src/drivers/net/wifi_9260.c`
+
+  1. Added explicit first-ALIVE restock tracking inside `iwl_wait_alive()`.
+     Relevant lines after patch:
+       - `2772-2804`
+
+     New behavior:
+       - the ALIVE wait path now tracks:
+         - `alive_seen_restock`
+       - on the first observed `CSR_INT_BIT_ALIVE`, it now:
+         - logs:
+           - `IWL9260: ALIVE seen, re-advertising RX free ring`
+         - calls:
+           - `iwl_rfh_kick_rx_free_ring("alive-seen-kick")`
+         - records the action for `wd3` boot trace visibility
+
+     Why this matters:
+       - Linux treats the first ALIVE interrupt as the point where RX can be
+         restocked safely
+       - the fry698 hardware run now says the live lead is no longer the mask
+         policy itself, but the first-ALIVE handoff after that mask is active
+
+  2. Made the early SW_ERR/HW_ERR abort use an explicit bounded deadline.
+     Relevant lines after patch:
+       - `2783-2784`
+       - `2844-2848`
+
+     New behavior:
+       - the loop now uses:
+         - `err_break_deadline_us`
+       - instead of only a fixed hard-coded threshold comparison
+
+     Why this matters:
+       - the code can now preserve the same saved first-seen SWERR snapshot
+         while still giving a narrow post-kick window a chance to matter
+
+  3. Extended the post-`alive-rekick` grace window by 10ms.
+     Relevant lines after patch:
+       - `2862-2874`
+
+     New behavior:
+       - after the later `alive-rekick`, the loop now sets:
+         - `err_break_deadline_us = elapsed + 10000u`
+
+     Why this matters:
+       - if the live bug is a narrow restock/drain race at the ALIVE boundary,
+         the later re-kick now gets a bounded chance to produce RX visibility
+         before the saved SWERR path aborts
+
+WHAT THIS PATCH INTENTIONALLY DID NOT CHANGE:
+  - no interrupt-mask bit definitions
+  - no `iwl_full_int_mask()` composition
+  - no `iwl_enable_fw_alive_ints()` policy from `fry698`
+  - no RFH base-address programming
+  - no first-seen snapshot retention plumbing
+  - no host-command flow
+  - no context-info theory
+  - no claim that the WiFi functional blocker is solved
+
+IMPORTANT INTERPRETATION:
+  fry699 is still a targeted ALIVE-boundary patch, not a WiFi fix claim.
+
+  The fry698 hardware run already said:
+    - the broader handoff mask is active
+    - the retained snapshot is now a cleaner:
+      - `ALIVE + SW_ERR`
+      - `fh=0`
+    - no host-command path is reached
+    - no usable RX progress appears
+
+  fry699 therefore changes only the next source mismatch honestly selected by
+  that evidence:
+    - the immediate first-ALIVE restock / drain boundary
+
+  This file is intentionally a dry follow-up summary of the code change and
+  build result only.
+  No fry699 hardware output exists yet.
+
+COMMANDS RUN:
+  Evidence / source inspection:
+    - `ls -1 /home/jjsako/TaterTOS64v3/eventually`
+    - `ls -1 /home/jjsako/TaterTOS64v3/logs | rg '^fry[0-9]+\\.txt$' | sort -V | tail -n 15`
+    - `sed -n '1,260p' /home/jjsako/TaterTOS64v3/eventually/eventually10.txt`
+    - `sed -n '261,760p' /home/jjsako/TaterTOS64v3/eventually/eventually10.txt`
+    - `sed -n '1,260p' /home/jjsako/TaterTOS64v3/logs/fry698.txt`
+    - `nl -ba /home/jjsako/TaterTOS64v3/src/drivers/net/wifi_9260.c | sed -n '1552,1624p;819,845p;2772,2878p;4702,4736p'`
+    - `nl -ba /home/jjsako/TaterTOS64v3/linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/rx.c | sed -n '1994,2006p'`
+
+  Verification / packaging:
+    - `make -C /home/jjsako/TaterTOS64v3 src/drivers/net/wifi_9260.o`
+    - `bash build_iso.sh`
+    - `sha256sum /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /home/jjsako/TaterTOS64v3/out/tater_nvme.img /home/jjsako/TaterTOS64v3/out/efiboot.img`
+    - `stat -c '%n|%s|%y' /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /home/jjsako/TaterTOS64v3/out/tater_nvme.img /home/jjsako/TaterTOS64v3/out/efiboot.img /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+BUILD RESULT:
+  Targeted object rebuild:
+    - PASS
+
+  Full rebuild / packaging:
+    - PASS
+
+  Export to Windows ISO drop path:
+    - PASS
+
+  Rebuild warnings unchanged from earlier steps:
+    - `src/kernel/acpi/aml_exec.c:973` unused parameter `ctx`
+    - `src/kernel/acpi/extended.c:618` `str_eq` unused
+    - `src/kernel/acpi/extended.c:613` `obj_to_str` unused
+    - `src/kernel/acpi/extended.c:285` `pci_cf8_write32` unused
+    - `src/boot/efi_loader.c:352` `gop_mask_size` unused
+    - `src/boot/efi_loader.c:346` `gop_mask_pos` unused
+
+  ISO packaging warning unchanged:
+    - `xorriso`: boot image load size exceeded 65535 blocks of 512 bytes, so
+      El Torito recorded `0` to extend the ESP to end-of-medium
+
+ARTIFACTS:
+  - `out/tatertos64v3.iso`
+    - sha256 `bd93308457e1eaa6b457fab0b0906b66b4d69df86f1303bf21a5ae7bc834a7b8`
+    - size `151416832`
+    - mtime `2026-03-11 17:37:50 -0500`
+
+  - `out/tater_nvme.img`
+    - sha256 `2cb9513775b4d4299efb09fe5febcd490271ad040b01094f6b0690583e4562e0`
+    - size `104857600`
+    - mtime `2026-03-11 17:37:49 -0500`
+
+  - `out/efiboot.img`
+    - sha256 `2b9787d4836e1a2719b1495654024c10991767b26b146e38de8f44870b94be12`
+    - size `67108864`
+    - mtime `2026-03-11 17:37:49 -0500`
+
+  - `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+    - size `151416832`
+    - mtime `2026-03-11 17:37:52 -0500`
+
+EXPECTED NEXT HARDWARE TEST:
+  Boot the fry699 image and capture:
+    1. `wcmd`
+    2. `wd3`
+    3. `wc`
+    4. `wh`
+
+  First things that now matter most:
+    - whether `wd3` shows:
+      - `alive-seen-kick`
+    - whether the retained SWERR branch still shows the same:
+      - `ms=6`
+      - `csr=0x02000001`
+      - `fh=0`
+    - whether any usable RX progress appears:
+      - `rx_closed`
+      - `rx_fin`
+      - RXUSED
+    - whether `hostcmd=0` still remains true
+    - whether the outer failure class stays:
+      - step 9
+      - rc -3
+      - same `0xdead / 0x2e / 0x7e3e4b69`

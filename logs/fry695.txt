@@ -1,0 +1,298 @@
+fry695 - 2026-03-10 23:17:48 CDT - WiFi 9260: add retained phase-boundary tracing to wcmd after fry694 showed zero host-command entries
+
+SESSION CONTEXT:
+  The user booted the fry694 image and captured real hardware output with:
+    - `wcmd`
+    - `wc`
+    - `wh`
+    - `wd3`
+
+  That output matched the old outer failure shape again, but with one new
+  decisive fact:
+    - `wcmd` reported:
+      - `retained=0 total=0 step=9 rc=-1`
+      - `no host-command trace recorded`
+
+  The rest of the hardware output remained in the same old class:
+    - `wc`:
+      - `step=9 rc=-1 irq=2`
+      - `FH_LOAD=0xffffffff`
+      - `LOAD_ST=0x00000000`
+      - `CPU1_ST=0x00000003`
+      - `CPU2_ST=0x00002320`
+      - `UMAC_PC=0xc0000000->0xc0000000`
+      - `LMAC_PC=0x000000e8->0x000000e8`
+      - `VERDICT: CPU STUCK`
+      - `RFH_ACT=0x00010001 W=0x00000000 R=0x00000000 U=0x00000000`
+      - `rx_closed=0x00000000 rx_fin=0x00000000`
+      - UMAC error table still began with:
+        - `0x0000dead`
+        - `0x0000002e`
+        - `0x7e3e4b69`
+    - `wh`:
+      - `step=9 rc=-1 irq=2`
+      - `diag cpu-stuck-no-rx-progress`
+      - same CPU/RFH/no-RX shape
+    - `wd3`:
+      - visible step-9 phase trace again reached:
+        - `alive-wait`
+        - `alive-kick`
+      - live PRPH / RFH config still looked programmed
+      - RX used/status state still showed no usable progress
+
+  The new diagnostic meaning is not merely:
+    - "the firmware still died at step 9"
+
+  It is also:
+    - no traced `iwl_send_cmd_sync()` path was entered at all during the init
+      attempt
+    - therefore the active blind spot is now before the first retained
+      host-command event, not inside an already-proven command exchange
+
+WHY THIS PATCH:
+  `eventually6` already said exactly what to do if fry694 came back with no
+  retained command entries:
+    - instrument explicit phase boundaries around:
+      - end of INIT ALIVE
+      - `iwl_prepare_init_phase()`
+      - `iwl_wait_init_complete()`
+      - runtime boot handoff
+
+  That branch is now confirmed by real hardware.
+
+  Command-level tracing alone is no longer enough because the fry694 run did
+  not say:
+    - which command timed out
+    - whether async notifications were stolen
+    - whether a command exchange looked clean before the assert
+
+  It instead said:
+    - no retained host-command event existed to inspect
+
+  So fry695 adds retained phase markers to the same `wcmd` evidence path.
+
+SOURCE REFERENCES USED:
+  Current source:
+    - `src/drivers/net/wifi_9260.c`
+
+  Continuation record:
+    - `eventually/eventually6.txt`
+
+  Real hardware shell output supplied after fry694:
+    - `wcmd`
+    - `wc`
+    - `wh`
+    - `wd3`
+
+EXACT CODE CHANGES:
+  File:
+    - `src/drivers/net/wifi_9260.c`
+
+  1. Extended the retained `wcmd` ring with explicit phase events.
+     Relevant lines after patch:
+       - `521-655`
+
+     Added:
+       - new retained trace kind:
+         - `phase`
+       - named retained phase ids:
+         - `init-alive-ok`
+         - `init-alive-fail`
+         - `init-prep-enter`
+         - `init-prep-ok`
+         - `init-prep-fail`
+         - `init-wait-enter`
+         - `init-wait-ok`
+         - `init-wait-fail`
+         - `phy-db-enter`
+         - `phy-db-ok`
+         - `phy-db-fail`
+         - `rt-boot-enter`
+         - `rt-alive-ok`
+         - `rt-alive-fail`
+         - `hcmd-enter`
+         - `hcmd-ok`
+         - `hcmd-fail`
+
+     Added retained helper behavior:
+       - snapshot current `closed_rb`
+       - snapshot current `CSR_INT`
+       - preserve a small phase argument field in the existing `seq` slot
+
+  2. Marked ALIVE outcome for each firmware boot attempt.
+     Relevant lines after patch:
+       - `2673-2687`
+
+     New behavior:
+       - on INIT ALIVE success/fail:
+         - retain `init-alive-ok` or `init-alive-fail`
+       - on runtime ALIVE success/fail:
+         - retain `rt-alive-ok` or `rt-alive-fail`
+       - retained `arg=` carries:
+         - boot attempt number
+
+  3. Marked INIT wait entry and outcome.
+     Relevant lines after patch:
+       - `2951-3027`
+
+     New behavior:
+       - retain `init-wait-enter` when the code starts waiting for
+         `INIT_COMPLETE` / `PHY_DB`
+       - retain `init-wait-ok` if `INIT_COMPLETE` arrives
+       - retain `init-wait-fail` on parse failure or timeout
+       - retained `arg=` carries:
+         - PHY DB notification count seen so far
+
+  4. Marked runtime PHY DB replay boundary.
+     Relevant lines after patch:
+       - `3483-3529`
+
+     New behavior:
+       - retain `phy-db-enter` before replay starts
+       - retain `phy-db-ok` after replay completes
+       - retain `phy-db-fail` on the first failing section send
+       - retained `arg=` carries:
+         - failing PHY DB section type on failure
+
+  5. Marked INIT prep and runtime HCMD entry/exit.
+     Relevant lines after patch:
+       - `3697-3715`
+       - `3719-3747`
+
+     New behavior:
+       - retain `init-prep-enter` / `init-prep-ok` / `init-prep-fail`
+       - retain `hcmd-enter` / `hcmd-ok` / `hcmd-fail`
+
+     Why this matters:
+       - if the next run still has `hostcmd=0`, the retained phase markers can
+         still prove whether control ever reached these boundaries
+
+  6. Updated `wcmd` output to summarize host-command vs phase-only evidence.
+     Relevant lines after patch:
+       - `4711-4825`
+
+     Output changes:
+       - header now includes:
+         - `hostcmd=<count>`
+       - if only phase markers were retained:
+         - `wcmd` says so explicitly
+       - phase entries print:
+         - `tag=<name>`
+         - optional `arg=<value>`
+         - optional `rc=<value>`
+         - `cl=0x...`
+         - `csr=0x...`
+
+  7. Marked runtime boot handoff before each runtime firmware attempt.
+     Relevant lines after patch:
+       - `5451-5456`
+
+     New behavior:
+       - retain `rt-boot-enter`
+       - retained `arg=` carries:
+         - runtime boot attempt number
+
+WHAT THIS PATCH INTENTIONALLY DID NOT CHANGE:
+  - no ALIVE command/group constants
+  - no INIT/runtime ordering changes
+  - no RFH programming changes
+  - no `wd3` / `wc` / `wh` logic changes
+  - no new syscall
+  - no new shell command
+  - no claim that the real blocker is solved
+
+IMPORTANT INTERPRETATION:
+  fry695 is diagnostic narrowing, not a WiFi fix claim.
+
+  The point of this patch is:
+    - if `wcmd` still has no ordinary host-command entries,
+    - the next run must still say which phase boundary was last reached
+
+  That is materially stronger than the fry694 result, which could only say:
+    - the traced host-command helper never left retained evidence
+
+COMMANDS RUN:
+  Evidence / source inspection:
+    - `rg -n "static int iwl_fw_boot_attempt|iwl_prepare_init_phase|iwl_wait_init_complete|iwl_send_phy_db_data|iwl_hcmd_init|wifi_9260_get_cmd_trace|IWL_CMD_TRACE" src/drivers/net/wifi_9260.c`
+    - `sed -n '520,660p;2610,2925p;3430,3675p;4708,4825p;5446,5464p' src/drivers/net/wifi_9260.c`
+    - `nl -ba src/drivers/net/wifi_9260.c | sed -n '520,660p;2918,3028p;3430,3529p;3692,3748p;4711,4825p;5451,5456p'`
+
+  Verification:
+    - `make -C /home/jjsako/TaterTOS64v3 src/drivers/net/wifi_9260.o`
+    - `/bin/bash -lc 'PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh'`
+    - `sha256sum /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /home/jjsako/TaterTOS64v3/out/tater_nvme.img /home/jjsako/TaterTOS64v3/out/efiboot.img`
+    - `stat -c '%n|%s|%y' /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /home/jjsako/TaterTOS64v3/out/tater_nvme.img /home/jjsako/TaterTOS64v3/out/efiboot.img`
+
+BUILD RESULT:
+  Targeted driver compile:
+    - PASS
+
+  Full rebuild / image packaging:
+    - PASS
+
+  Rebuild warnings unchanged from earlier steps:
+    - `src/kernel/acpi/aml_exec.c:973` unused parameter `ctx`
+    - `src/kernel/acpi/extended.c:618` `str_eq` unused
+    - `src/kernel/acpi/extended.c:613` `obj_to_str` unused
+    - `src/kernel/acpi/extended.c:285` `pci_cf8_write32` unused
+    - `src/boot/efi_loader.c:352` `gop_mask_size` unused
+    - `src/boot/efi_loader.c:346` `gop_mask_pos` unused
+
+  ISO packaging warning unchanged:
+    - `xorriso`: boot image load size exceeded 65535 blocks of 512 bytes, so
+      El Torito recorded `0` to extend the ESP to end-of-medium
+
+ARTIFACTS:
+  - `out/tatertos64v3.iso`
+    - sha256 `2817a79a2bb3251e11d2f1280bc7889e8b75a7e4765967295290c7ef945be4bf`
+    - size `151412736`
+    - mtime `2026-03-10 23:17:48 -0500`
+
+  - `out/tater_nvme.img`
+    - sha256 `95b8be054203a34ce2449b2f2c58fcb66bfc738e01c17a150671f79e588512b9`
+    - size `104857600`
+    - mtime `2026-03-10 23:17:46 -0500`
+
+  - `out/efiboot.img`
+    - sha256 `a0fab13f1f278f84897e5963ad81296adb3f1f4442a21a449ce8b3f4e81261cd`
+    - size `67108864`
+    - mtime `2026-03-10 23:17:47 -0500`
+
+EXPECTED NEXT HARDWARE TEST:
+  Boot the fry695 image and capture:
+    1. `wcmd`
+    2. `wd3`
+    3. `wc`
+    4. `wh`
+
+WHAT TO LOOK FOR IN `wcmd`:
+  Strong narrowing signals now include:
+    - `init-alive-ok` but no `init-prep-enter`
+      Meaning:
+        - control never entered the INIT prep function
+    - `init-prep-enter` without `init-prep-ok`
+      Meaning:
+        - failure occurred inside INIT prep before the next proven boundary
+    - `init-wait-ok` followed by `rt-boot-enter` and `rt-alive-fail`
+      Meaning:
+        - runtime handoff is now the front-rank suspect
+    - `phy-db-enter` / `hcmd-enter` plus ordinary host-command entries
+      Meaning:
+        - the project has moved back into a concrete command-level branch
+    - ordinary `timeout` / `async` events
+      Meaning:
+        - revive the command-timeout / notification-ownership matrix from
+          `eventually6`
+
+  One special case matters:
+    - if `wcmd` is still completely empty after fry695,
+      the trace retention/dump path itself becomes suspect
+
+SHORTEST HONEST SUMMARY:
+  fry694 proved that the old step-9 / no-RX / `0xdead 0x2e 0x7e3e4b69` outer
+  failure shape still occurs and that no retained host-command event exists to
+  explain it.
+
+  fry695 therefore adds retained phase-boundary markers to the same `wcmd`
+  path, so the next real hardware run can say which exact bring-up boundary was
+  last reached before the same old failure shape locked up.

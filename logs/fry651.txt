@@ -1,0 +1,75 @@
+fry651 - 2026-03-07 - WiFi 9260: fix NIC ownership handshake to match Linux iwl_pcie_prepare_card_hw
+
+PROBLEM:
+  Dell bare-metal stalled at step=8 (fw-upload) rc=-2 with:
+    HW_IF_CONFIG=0x00000000
+    GP_CNTRL=0x0804000d
+    CSR_RESET=0x00000011  (NEVO_RESET still asserted!)
+    CTXT_INFO_BA=0xd55555d5  (register not latching)
+  The NIC never achieved NIC_READY state. Canaries intact, so host
+  memory is fine. The register just isn't accepting writes.
+
+ROOT CAUSE (three bugs, all in iwl_prepare_ctxt_info_boot):
+
+  1. NIC_READY semaphore was never SET by the host.
+     Linux's iwl_pcie_set_hw_ready() WRITES NIC_READY (bit 22 = PCI_OWN_SEM)
+     to HW_IF_CONFIG, then polls for it to stick. TaterTOS only wrote PREPARE
+     and hoped NIC_READY would appear. But NIC_READY is a semaphore — the
+     host must claim it. This is why HW_IF_CONFIG was always 0x00000000.
+
+  2. Missing CSR_DBG_LINK_PWR_MGMT_REG (0x250) write.
+     Linux writes LINK_PWR_MGMT_DISABLED (bit 31) to register 0x250 if
+     the first NIC_READY attempt fails. This prevents the link from
+     power-saving the NIC away while we're trying to claim ownership.
+
+  3. Wrong ordering: prepare was called too late.
+     Linux calls prepare_card_hw right after SW_RESET, BEFORE APM init.
+     TaterTOS called it after APM init + DMA ring setup + MSI enable.
+
+  Bonus: Missing LMPM_SECURE_UCODE_LOAD writes before CSR_CTXT_INFO_BA.
+     Linux writes two PRPH registers to configure secure boot headers
+     before telling the NIC where context info lives.
+
+FIXES APPLIED:
+
+  1. Replaced iwl_prepare_ctxt_info_boot() with two new functions:
+     - iwl_pcie_set_hw_ready(): Sets NIC_READY in HW_IF_CONFIG, polls
+       for it to stick, writes OS_ALIVE mailbox on success.
+     - iwl_pcie_prepare_card_hw(): Full card ownership handshake matching
+       Linux. Fast path (try NIC_READY), then if needed: disable link
+       power mgmt + PREPARE (WAKE_ME) + retry NIC_READY up to 10 rounds.
+
+  2. Moved ownership claim into iwl_nic_reset() right after SW_RESET,
+     before APM init (matching Linux ordering).
+
+  3. Removed the old prepare step from iwl_start_fw_with_ctxt_info().
+
+  4. Added LMPM_SECURE writes before CSR_CTXT_INFO_BA write:
+     - LMPM_SECURE_UCODE_LOAD_CPU1_HDR_ADDR = 0xA01000 -> 0x420000
+     - LMPM_SECURE_UCODE_LOAD_CPU2_HDR_ADDR = 0xA01100 -> 0x420400
+
+  5. Added missing register/bit defines:
+     - CSR_DBG_LINK_PWR_MGMT_REG (0x250)
+     - CSR_RESET_REG_FLAG_NEVO_RESET (bit 0)
+     - CSR_RESET_REG_FLAG_FORCE_NMI (bit 1)
+     - CSR_RESET_LINK_PWR_MGMT_DISABLED (bit 31)
+
+FILES CHANGED:
+  src/drivers/net/wifi_9260.c
+
+BUILD:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+  Result: PASS
+  ISO: out/tatertos64v3.iso (also exported to Windows)
+
+NEXT DELL TEST:
+  Boot the new ISO on the Dell Precision 7530 and run:
+    wd
+    ws
+
+  Expected signals:
+    - HW_IF_CONFIG should now have NIC_READY (bit 22 = 0x00400000) set
+    - step should advance past 8 (fw-upload)
+    - CTXT_INFO_BA should read back the actual ctxt_info physical address
+    - If NIC_READY sticks: FW boot ROM should start, ALIVE possible

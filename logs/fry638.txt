@@ -1,0 +1,10 @@
+[2026-03-07 13:07:27 CST] Step: Switch mkfs.fat compatibility wrapper to the
+real dosfstools binary after host install.
+Why: dosfstools is now installed at /usr/sbin/mkfs.fat, but ~/.local/bin came
+first in PATH and still shadowed the real binary.
+Change: Updated ~/.local/bin/mkfs.fat to exec the system mkfs.fat first when
+present, and only use the mformat fallback if the host binary is unavailable.
+Files: ~/.local/bin/mkfs.fat
+Tests:
+- bash -lc 'mkfs.fat -V 2>&1 | sed -n "1,3p"'
+- bash -lc 'dd if=/dev/zero of=/tmp/mkfs-fat-real.img bs=1M count=4 && mkfs.fat -F 32 /tmp/mkfs-fat-real.img && mdir -i /tmp/mkfs-fat-real.img ::/'

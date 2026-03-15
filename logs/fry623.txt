@@ -1,0 +1,58 @@
+fry623 — 2026-03-06
+Boot hang at 3 squares — firmware blob broke kernel physical layout + diagnostics were blind
+
+Problem:
+  After fry620-622 (embedded 1.4MB WiFi firmware blob into kernel), Dell
+  stopped booting fully — stuck at 3 small squares on screen.
+
+Root cause (two issues):
+  1. The firmware blob was declared as mutable (`unsigned char`), placing it
+     in .data instead of .rodata. This inflated .data from ~600 bytes to
+     1.4MB, pushing .bss forward, which pushed .stack from phys 0x02800000
+     to 0x02A00000. The kernel's total physical footprint grew from ~8.25MB
+     (2112 pages) to ~10.25MB (2624 pages). The EFI AllocatePages(AllocateAddress)
+     at 0x02000000 now requested 512 extra pages — potentially colliding with
+     Dell UEFI allocations.
+
+  2. fry603 had disabled TATER_BOOT_VISUAL_DEBUG (set to 0) and
+     TATER_BOOT_SERIAL_TRACE (set to 0). The kernel drew ZERO stage markers
+     after EFI handoff. The only visible squares were the EFI loader's 3-4
+     colored markers. The kernel could have been crashing anywhere with no
+     visual feedback.
+
+Fix (4 files):
+  1. src/drivers/net/iwlwifi_fw_blob.c
+     - Changed `unsigned char iwlwifi_9260_fw_blob[]` to
+       `const unsigned char iwlwifi_9260_fw_blob[]`
+     - Moves 1.4MB blob from .data to .rodata
+     - .data back to 604 bytes
+
+  2. src/drivers/net/iwlwifi_fw.c
+     - Updated extern to `const unsigned char`
+     - Updated out->data assignment cast for fw_try_load
+     - Added (void*)(uintptr_t) cast for kfree in iwlwifi_fw_release
+
+  3. src/drivers/net/iwlwifi_fw.h
+     - Changed iwlwifi_fw_image.data from `uint8_t *` to `const uint8_t *`
+
+  4. src/kernel/main.c
+     - Re-enabled TATER_BOOT_VISUAL_DEBUG = 1 (was 0 since fry603)
+     - Kernel boot stage markers now visible again on Dell
+
+Segment layout after fix:
+  .rodata: 1,525,640 bytes (includes firmware blob)
+  .data:   604 bytes (back to normal)
+  .bss:    5,556,280 bytes (unchanged)
+  .stack:  phys 0x02A00000 (still shifted — .rodata growth pushes .bss forward)
+  Total kernel phys range: 0x02000000-0x02A40000 (10.25MB, 2624 pages)
+
+  Note: total footprint is still larger than pre-fry620 (~8.25MB) because
+  the 1.4MB blob in .rodata still shifts .data/.bss/.stack forward. If Dell
+  still fails, may need to shrink BSS or move .stack alignment.
+
+Build: clean, no new warnings (existing unused-function warnings unchanged).
+ISO exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+Next: Flash ISO to Dell. Count white squares to determine where boot stops.
+  - If 30+ squares: kernel init works, issue is in userland
+  - If <10 squares: ELF loading or early kernel crash from larger footprint

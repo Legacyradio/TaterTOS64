@@ -1,0 +1,91 @@
+========================================================================
+TaterTOS64v3 - fry603 - Intel 9260 firmware recovered + boot serial cutdown
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 16:20:00 CST
+
+CONTEXT
+-------
+- Previous work in fry602 added the first real Intel 9260 bring-up slice:
+  PCI detect, Dell subsystem match, MMIO probe, and VFS-backed firmware load.
+- The next blocker was the actual firmware blob and cleaner serial output on
+  the Dell Precision 7530.
+- User requested removal of old boot serial noise and the framebuffer debug
+  squares so serial output would focus on the Wi-Fi bring-up lines.
+
+DISCOVERY
+---------
+- Checked sibling repo `TatertOS64-new` for an existing Intel 9260 firmware.
+- Found two similarly named files:
+  - `iwlwifi-9260-th-b0-jf-b0-46.ucode`
+  - `iwlwifi-9260-th-b0-jf-b0-46 (1).ucode`
+- Verified that the plain filename was junk:
+  - size only ~4 KB
+  - content was HTML, not firmware
+- Verified that the `(1)` file was the real blob:
+  - size 1,490,508 bytes
+  - binary content beginning with `IWL.release/...`
+
+CHANGE
+------
+- Copied the real firmware blob into:
+  - `firmware/iwlwifi-9260.ucode`
+- This matches the canonical path already used by the loader and packaging
+  path from fry602.
+
+- Reduced boot serial noise:
+  - `src/kernel/main.c`
+    - added compile-time gates for boot visual debug and boot serial trace
+    - disabled early serial stage spam by default
+    - disabled framebuffer stage markers and payload presence squares
+  - `src/boot/efi_loader.c`
+    - added compile-time gate for EFI serial trace
+    - suppressed EFI serial progress chatter by default
+  - `src/kernel/kprint.c`
+    - changed filtering so `kprint()` now allows:
+      - `IWL9260:` lines
+      - real error/fault/panic lines
+    - drops the previous boot/init chatter
+
+VALIDATION
+----------
+- Confirmed firmware blob exists at:
+  - `firmware/iwlwifi-9260.ucode`
+- Confirmed packaging includes the firmware in live media outputs:
+  - `out/isodir/firmware/iwlwifi-9260.ucode`
+  - `out/fs.img`
+  - `out/efiboot.img`
+
+- Important build note:
+  - Manual rebuild path did create a valid ISO, but the Windows export copy
+    failed in one run because `/mnt/c/...` was read-only in that environment.
+  - User pointed out the project-standard path should be used instead.
+
+- Ran the standard repo build script:
+  - `bash build_iso.sh`
+- Result:
+  - build completed successfully
+  - ISO produced at `out/tatertos64v3.iso`
+  - ISO exported successfully to:
+    - `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+OUTCOME
+-------
+- The live image now carries the real Intel 9260 firmware blob.
+- Boot serial should now be mostly quiet except for:
+  - `IWL9260:` telemetry
+  - real failure output
+- The useless boot debug squares are disabled.
+
+NEXT HARDWARE STEP
+------------------
+- Boot the Dell Precision 7530 with the newly exported ISO.
+- Capture the `IWL9260:` serial lines only.
+- Use that readout to implement the next driver slice:
+  - device reset path
+  - firmware upload path
+  - ALIVE wait/validation
+
+========================================================================

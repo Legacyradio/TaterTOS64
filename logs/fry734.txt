@@ -1,0 +1,21 @@
+fry734 — Scheduler Handoff Verification
+=======================================
+Timestamp: 2026-03-14 21:03:52 CDT
+
+Completed step:
+- Verified the scheduler-only bootstrap fix with a serial-only QEMU boot.
+
+What was tested:
+- `make clean`
+- `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+- `timeout 45s qemu-system-x86_64 -m 4G -machine q35,accel=tcg -cpu qemu64 -smp 1 -boot order=d -net none -display none -no-reboot -no-shutdown -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -drive if=pflash,format=raw,file=/home/jjsako/TaterTOS64v3/logs/runtime_codex_matchcheck3/OVMF_VARS.fd -cdrom /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso -drive file=/home/jjsako/TaterTOS64v3/out/tater_nvme.img,if=none,id=nvm1,format=raw -device nvme,serial=TATER_NVME_01,drive=nvm1 -serial file:/home/jjsako/TaterTOS64v3/logs/runtime_codex_matchcheck3/serial.log -debugcon file:/home/jjsako/TaterTOS64v3/logs/runtime_codex_matchcheck3/debugcon.log -global isa-debugcon.iobase=0xe9`
+
+Observed result:
+- The previous `RIP=0x100B` invalid-opcode storm did not recur.
+- Boot reached `init: pid=2`, spawned `GUI.FRY`, and stayed alive for the full timeout.
+- The old bootstrap tail never resumed, so `B:STI` and deferred late-boot worker startup were missing.
+
+Why it mattered:
+- This proved the stale bootstrap-stack reschedule bug was fixed.
+- It also exposed the next required structural fix: move the post-handoff boot
+  tail into a real scheduler-owned task.

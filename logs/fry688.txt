@@ -1,0 +1,72 @@
+fry688 - 2026-03-09 23:31:00 CDT - WiFi 9260: move RFH doorbell + UMAC error diagnostics into wc
+
+SESSION CONTEXT:
+  fry687 added RFH doorbell pre/post readback and UMAC error table diagnostics
+  to the iwl_dbg init log (visible via `wl`) and expanded the wd3 phase trace.
+  Hardware test on Dell Precision 7530 confirmed:
+    - Firmware loads (load=0xffffffff), both CPUs start (c1=0x3, c2=0x3)
+    - UMAC crashes with error_id=0x2e at PC=0x7e3e4b69 (SRAM 0x800000 marker)
+    - RFH doorbell never propagates: rfh_w/r/u=0 across all 24 trace entries
+    - UREG_UCODE_LOAD_STATUS=0x00000000 (firmware never acked gen2 marker)
+    - Two boot attempts (step=4 then step=9), identical failure pattern
+    - CPU2 faults to 0x2320 after alive timeout
+
+  Problem: wd3 output was already very large (24 phase trace entries + LIVE PRPH
+  + RXBD + RXUSED sections), making it hard to read on the hardware console.
+  The new fry687 diagnostics went to iwl_dbg (wl log) which is also large.
+
+WHY:
+  Move the critical diagnostic readbacks into `wc` (WiFi CPU Status) which is
+  the compact, quick-glance command. This puts the most actionable data where
+  it's easiest to read on bare metal without scrolling through wd3.
+
+FILES CHANGED:
+  - src/drivers/net/wifi_9260.c
+  - src/user/shell/shell.c
+  - src/kernel/proc/syscall.c
+
+CODE CHANGES:
+  1. wifi_9260_get_cpu_status() (wc handler): Added three new sections after
+     the existing rx_closed/rx_fin output:
+
+     a) "--- RFH DOORBELL ---": Dumps boot-time values from g_iwl_bootdbg:
+        widx_trg_written, frbdcb_ba, urbdcb_ba, stts_wptr, fh_load_after.
+        Shows what the driver programmed during RFH init.
+
+     b) "--- RFH LIVE CFG ---": Live PRPH readback of RFH_DMA_CFG, GEN_CFG,
+        GEN_STATUS, UREG_UCODE_LOAD_STATUS, and FRBDCB_BA_LSB/MSB.
+        Answers: did the RFH config actually latch? Does BA match expected?
+
+     c) "--- UMAC ERR ---": If SRAM[0x800000] == 0xdead (crash marker),
+        dumps first 8 dwords of the UMAC error table inline.
+        Gives error_id, crash PC, and assert info without needing wl/wd3.
+
+  2. Shell buffer for wc: 4096 -> 8192 bytes to fit new sections.
+
+  3. Syscall SYS_WIFI_CPU_STATUS: max buffer check 4096 -> 8192.
+
+BUILD / VERIFICATION COMMANDS:
+  1. make clean
+  2. PATH="/home/jjsako/TaterTOS64v3/tools/host/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+RESULT:
+  - Clean rebuild via build_iso.sh: PASS
+  - ISO output: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  - NVMe image: /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+  - EFI boot image: /home/jjsako/TaterTOS64v3/out/efiboot.img
+  - Windows ISO export: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+NON-FATAL BUILD WARNINGS (unchanged from fry687):
+  - src/kernel/acpi/aml_exec.c: unused parameter `ctx`
+  - src/kernel/acpi/extended.c: unused helpers
+  - src/boot/efi_loader.c: unused gop_mask_size / gop_mask_pos
+  - xorriso: El Torito boot image load size warning during ISO packaging
+
+NEXT HARDWARE TEST:
+  Boot rebuilt image on Dell Precision 7530, then run:
+    1. `wc` — should now show RFH DOORBELL, RFH LIVE CFG, and UMAC ERR sections
+  Key things to look for:
+    - widx_trg_written: Was the doorbell value non-zero?
+    - BA_LSB/BA_MSB: Do they match frbdcb_ba from boot-time programming?
+    - LOAD_ST: Still 0x00000000? (firmware never acked)
+    - UMAC ERR +04: error_id (expect 0x2e), +08: crash PC (expect 0x7e3e4b69)

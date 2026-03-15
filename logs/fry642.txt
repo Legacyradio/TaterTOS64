@@ -1,0 +1,29 @@
+[2026-03-07] fry642 — Re-enable manual RFH register programming alongside context info boot
+
+What:
+  Removed the #if 0 guard around RFH register setup in iwl_dma_init_tfh()
+  (wifi_9260.c ~line 703-752).
+
+Why:
+  fry635 disabled manual RFH programming assuming context info replaced it.
+  This was wrong — they serve different purposes:
+    - Context Info: tells the Boot ROM where FW images live in DRAM so it can
+      self-load them. Does NOT configure the RFH hardware for RX DMA.
+    - Manual RFH registers: configures the Receive Frame Handler so the running
+      firmware can DMA notifications (ALIVE, scan results, etc.) back to host
+      memory. Without this, the FW runs but has no way to write to the RX queue.
+
+  The fry635 Dell log confirmed this: INT=00000000 (no interrupts ever fired),
+  meaning the firmware started but could never DMA the ALIVE notification back.
+  Linux programs both context info AND RFH registers — they are not exclusive.
+
+Also clarified: the "11 vs 13 sections" is correct behavior.
+  13 SEC_RT TLVs = 4 LMAC + 1 separator + 7 UMAC + 1 separator + 0 paging.
+  11 actual data sections DMA'd (4+7). The 2 separators (0xFFFFCCCC) are
+  delimiters, not real firmware data.
+
+Files: src/drivers/net/wifi_9260.c
+Build: clean + build_iso.sh — success, ISO exported.
+
+Next: Boot Dell with fry642 ISO, run `wd` — expect ALIVE to pass now that
+  RFH is properly configured for RX DMA.

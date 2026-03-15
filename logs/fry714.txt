@@ -1,0 +1,252 @@
+fry714 — Direct Linux 7.0-rc2 transport-init port for 9260
+==========================================================
+
+Timestamp: 2026-03-13 18:59:07 CDT
+
+CONTEXT:
+  User directive was explicit: stop adapting the init path and port the
+  Linux 7.0-rc2 iwlwifi transport bring-up directly from PCI ownership
+  through ALIVE. The active path in wifi_9260.c now follows Linux function
+  boundaries and Linux call order instead of a TaterTOS-specific flattened
+  sequence.
+
+SOURCE OF TRUTH:
+  - linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/trans.c
+  - linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/rx.c
+  - linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/tx.c
+  - linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/internal.h
+  - linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/iwl-fh.h
+  - linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/cfg/9000.c
+
+ACTIVE-PATH CHANGES:
+  2026-03-13 18:59:07 CDT
+  src/drivers/net/wifi_9260.c
+    Added Linux register aliases/defines:
+      - CSR_HW_IF_CONFIG_REG_PCI_OWN_SET
+      - CSR_HW_IF_CONFIG_REG_WAKE_ME
+      - CSR_INI_SET_MASK
+      - Linux timing constants for HW_READY / prepare-card retry loops
+    Why:
+      The active init path now uses the same ownership bits and interrupt
+      mask names Linux uses, so the code maps directly to upstream flow.
+
+  2026-03-13 18:59:07 CDT
+  src/drivers/net/wifi_9260.c:973
+    Replaced iwl_pcie_set_hw_ready() with the Linux version.
+    Why:
+      Direct PCI ownership claim must poll PCI_OWN_SET and set OS_ALIVE on
+      success exactly like upstream.
+
+  2026-03-13 18:59:07 CDT
+  src/drivers/net/wifi_9260.c:992
+    Replaced iwl_pcie_prepare_card_hw() with the Linux retry loop.
+    Why:
+      Linux disables link power management once, asserts WAKE_ME, polls for
+      150 ms per outer iteration, then delays 25 ms before retry. This removes
+      the drift from earlier custom retry logic.
+
+  2026-03-13 18:59:07 CDT
+  src/drivers/net/wifi_9260.c:1093
+    Replaced iwl_apm_init() with the Linux 9000-family path plus direct
+    helpers iwl_pcie_apm_config() and iwl_pcie_gen1_2_activate_nic().
+    Why:
+      The APM sequence is now Linux order:
+      L1A_NO_L0S_RX -> HPET -> HAP_WAKE -> L0S_DISABLED -> INIT_DONE ->
+      MAC_CLOCK_READY poll. No extra verify loops or reordered writes remain.
+
+  2026-03-13 18:59:07 CDT
+  src/drivers/net/wifi_9260.c:1139
+    Kept iwl_clear_persistence_bit() but left it on the active path exactly
+    where Linux 9000-family start_hw clears it.
+    Why:
+      9000-family devices clear persistence before SW reset; this stayed as
+      the only local PRPH translation needed there.
+
+  2026-03-13 18:59:07 CDT
+  src/drivers/net/wifi_9260.c:1173
+    Renamed the active reset path to _iwl_trans_pcie_start_hw() and rewired
+    bring-up to call it directly.
+    Why:
+      The active path now matches Linux layering:
+      prepare_card_hw -> clear_persistence -> sw_reset -> prepare_card_hw ->
+      apm_init -> enable_rfkill_int.
+
+  2026-03-13 18:59:07 CDT
+  src/drivers/net/wifi_9260.c:1621
+    Added direct Linux helper iwl_pcie_rx_mq_hw_init().
+    Why:
+      RFH queue programming is now the Linux MQ RX hardware init:
+      stop RX DMA, zero queue active mask, program FRBD/URBD/status pointers,
+      reset indices, enable RX DMA, set GEN_CFG snoop/chunk size, enable queue 0,
+      set interrupt coalescing.
+
+  2026-03-13 18:59:07 CDT
+  src/drivers/net/wifi_9260.c:1657
+    Added direct Linux helper iwl_pcie_rx_init().
+    Why:
+      The active path now separates RX allocation/restock from RX hardware
+      programming instead of bundling RX+TX into one custom TFH function.
+
+  2026-03-13 18:59:07 CDT
+  src/drivers/net/wifi_9260.c:1682
+    Added direct Linux helper iwl_pcie_tx_init() and Linux FH_MEM_CBBC queue
+    register mapping helper.
+    Why:
+      TX init now matches upstream:
+      SCD_TXFACT=0, keep-warm pointer, CBBC programming for queues 0..30,
+      SCD_GP_CTRL AUTO_ACTIVE_MODE + ENABLE_31_QUEUES.
+
+  2026-03-13 18:59:07 CDT
+  src/drivers/net/wifi_9260.c:1925
+    Added direct Linux helper iwl_pcie_nic_init().
+    Why:
+      start_fw now calls Linux’s nic_init boundary instead of open-coding
+      a TaterTOS-specific phase-2 sequence.
+
+  2026-03-13 18:59:07 CDT
+  src/drivers/net/wifi_9260.c:2105
+    Added direct Linux helper iwl_pcie_load_cpu_sections_8000().
+    Why:
+      Per-section FH_UCODE_LOAD_STATUS tracking and CPU1/CPU2 done-marker
+      writes now follow the upstream _8000 loader model directly.
+
+  2026-03-13 18:59:07 CDT
+  src/drivers/net/wifi_9260.c:2184
+    Replaced the active firmware upload path with
+    iwl_pcie_load_given_ucode_8000().
+    Why:
+      The active path now does Linux’s 8000/9000 sequence directly:
+      write WFPM_GP2, release CPU reset before upload, load CPU1 sections,
+      load CPU2 sections, then return immediately without extra post-upload
+      custom handling.
+
+  2026-03-13 18:59:07 CDT
+  src/drivers/net/wifi_9260.c:2756
+    Added direct Linux helper iwl_trans_pcie_start_fw().
+    Why:
+      The active bring-up path now does Linux order directly:
+      prepare_card_hw -> enable_rfkill_int -> clear CSR_INT ->
+      disable_interrupts -> clear RFKILL handshake -> clear CSR_INT ->
+      nic_init -> enable_fw_load_int -> clear RFKILL again ->
+      load_given_ucode_8000.
+      MSI setup remains immediately adjacent as the one TaterTOS-specific
+      side step required by this environment.
+
+  2026-03-13 18:59:07 CDT
+  src/drivers/net/wifi_9260.c:2804
+    Rewired iwl_fw_boot_attempt() to call:
+      _iwl_trans_pcie_start_hw()
+      iwl_trans_pcie_start_fw()
+      iwl_wait_alive()
+    Why:
+      The active call graph now mirrors upstream instead of driving bring-up
+      through the old flattened reset/upload helpers.
+
+  2026-03-13 18:59:07 CDT
+  src/drivers/net/wifi_9260.c
+    Removed now-dead masked-verify helper from the active WiFi file.
+    Why:
+      It was leftover drift from the adapted path and no longer belongs in
+      the direct Linux init flow.
+
+BUILD / VERIFICATION:
+  2026-03-13 18:59:07 CDT
+  Command:
+    /bin/bash -lc 'PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh'
+
+  Result:
+    PASS
+    - wifi_9260.c compiled clean after the direct-port rewiring
+    - full kernel/userspace build completed
+    - ISO created at out/tatertos64v3.iso
+    - ISO exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+  Build warnings still present outside this WiFi change:
+    - src/kernel/acpi/aml_exec.c: unused parameter 'ctx'
+    - src/kernel/acpi/extended.c: unused functions str_eq / obj_to_str / pci_cf8_write32
+    - src/boot/efi_loader.c: unused functions gop_mask_size / gop_mask_pos
+
+NEXT RUNTIME CHECKS:
+  - Boot QEMU and confirm non-WiFi path still reaches GUI.
+  - Boot the Dell Precision 7530 and verify ALIVE notification.
+  - Use shell diagnostics:
+      wstat
+      wlog
+      wlog2
+      wlog3
+      ctrace
+
+FOLLOW-UP DIAGNOSTIC INSTRUMENTATION:
+  2026-03-13 21:17:39 CDT
+  Goal:
+    Break the "ALIVE interrupt plus immediate SW_ERR, but no ALIVE RX
+    payload" deadlock by verifying what actually landed in SRAM and by
+    hunting the real UMAC error table instead of trusting 0x00800000.
+
+  2026-03-13 21:17:39 CDT
+  src/drivers/net/wifi_9260.c
+    Expanded retained SRAM probe coverage from 4 words to 16 words
+    (64 bytes) per uploaded section.
+    Why:
+      The old probe captured only the first 16 bytes of each section, which
+      was too small to rule out short writes or tail corruption after the FH
+      upload completed.
+
+  2026-03-13 21:17:39 CDT
+  src/drivers/net/wifi_9260.c
+    Added masked comparison helpers for retained probes and live SRAM rereads.
+    Why:
+      Section sizes are not always 32-bit aligned. The verifier now ignores
+      padding bytes in the tail word so partial-word sections do not report
+      false mismatches.
+
+  2026-03-13 21:17:39 CDT
+  src/drivers/net/wifi_9260.c
+    Added wifi_9260_get_verify_result().
+    Why:
+      New shell-visible verifier reports, per uploaded section:
+      - staged upload snapshot vs expected firmware bytes
+      - live SRAM reread vs expected firmware bytes
+      - first mismatch offset when a section diverges
+      It also scans 0x00800000-0x00810000 in 4-byte steps for DEAD-marked
+      error-table candidates and decodes the best candidate it finds.
+
+  2026-03-13 21:17:39 CDT
+  src/drivers/net/wifi_9260.c
+    Hooked automatic verify-summary logging into the ALIVE failure path.
+    Why:
+      When bring-up dies before userspace can inspect the device, the kernel
+      log now records section mismatches and DEAD-table candidates immediately
+      after the existing SRAM error-table dump.
+
+  2026-03-13 21:17:39 CDT
+  src/kernel/proc/syscall.c
+  src/user/libc/libc.c
+  src/user/libc/libc.h
+  src/user/shell/shell.c
+    Added SYS_WIFI_VERIFY = 50, fry_wifi_verify(), wifi verify, and wverify.
+    Why:
+      The new verifier is available from the shell without needing ad hoc
+      debug prints or one-off kernel rebuilds.
+
+BUILD / VERIFICATION (FOLLOW-UP):
+  2026-03-13 21:17:39 CDT
+  Command:
+    make -C /home/jjsako/TaterTOS64v3 -j2
+
+  Result:
+    PASS
+    - wifi_9260.c compiled with the new verifier and ALIVE-failure hook
+    - syscall layer accepted SYS_WIFI_VERIFY = 50
+    - libc + shell rebuilt with fry_wifi_verify() and wverify
+
+NEXT RUNTIME CHECKS (FOLLOW-UP):
+  - Boot the Dell Precision 7530 and trigger the failing WiFi bring-up.
+  - Run:
+      wverify
+      sram
+      wdeep
+  - Compare:
+      - whether any uploaded section mismatched live SRAM
+      - whether staged readback already showed corruption
+      - which 0xDEAD candidate in 0x00800000-0x00810000 carries a sane error_id

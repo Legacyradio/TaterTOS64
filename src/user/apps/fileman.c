@@ -332,7 +332,7 @@ static int reload_dir(void) {
             if (de->rec_len < sizeof(struct fry_dirent)) break;
             if (pos + de->rec_len > (uint32_t)n) break;
             uint32_t payload = (uint32_t)de->rec_len - (uint32_t)sizeof(struct fry_dirent);
-            if (de->name_len + 1 > payload) {
+            if ((uint32_t)de->name_len + 1U > payload) {
                 pos += de->rec_len;
                 continue;
             }

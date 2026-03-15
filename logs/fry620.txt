@@ -1,0 +1,34 @@
+fry620 - 2026-03-06 21:00
+Embed WiFi firmware blob into kernel binary
+
+Problem:
+  Dell `ws` showed: FAIL @ fw-load (step 3) rc=-1
+  iwlwifi_fw_load() relied on vfs_open() to find the firmware file at
+  /firmware/iwlwifi-9260.ucode in the ramdisk. On bare metal the EFI
+  loader couldn't reliably locate the firmware on the EFI filesystem
+  (fry pass1 found=7 of 9 files). The firmware must be baked into the
+  kernel init layer like everything else — it can't depend on a runtime
+  filesystem load.
+
+Fix (3 files):
+  1. src/drivers/net/iwlwifi_fw_blob.c (NEW)
+     - xxd -i conversion of firmware/iwlwifi-9260.ucode (1,490,508 bytes)
+     - Exports: iwlwifi_9260_fw_blob[], iwlwifi_9260_fw_blob_len
+     - Linked directly into kernel.elf as static data
+
+  2. src/drivers/net/iwlwifi_fw.c
+     - iwlwifi_fw_load() rewritten: instead of vfs_open() on two paths,
+       it now copies from the embedded iwlwifi_9260_fw_blob[] into a
+       kmalloc'd buffer (same interface as before — out->data, out->size,
+       magic detection all preserved)
+     - No VFS dependency for firmware anymore
+
+  3. Makefile
+     - Added src/drivers/net/iwlwifi_fw_blob.o to kernel object list
+
+Result:
+  - kernel.elf grew from ~700KB to ~2.1MB (1.4MB firmware blob)
+  - Build clean, no warnings
+  - ISO exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+Next: Flash ISO to Dell, run `ws` to verify firmware loads past step 3.

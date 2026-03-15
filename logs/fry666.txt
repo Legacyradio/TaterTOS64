@@ -1,0 +1,79 @@
+fry666 - 2026-03-08 21:19:47 CDT - WiFi 9260: use gen2 final ucode-load marker path
+
+SESSION CONTEXT:
+  User provided newer Dell Precision 7530 WiFi diagnostics showing:
+    - `wd`: step=9 (alive) rc=-1, sec_rt_count=13
+    - `wd2`: RFH_W=0x000001f8, RFH_R=0x00000008, RFH_U=0x00000000
+             CPU1_ST=0x00000003, CPU2_ST=0x00002320
+             UMAC_PC=0xc0080000, LMAC_PC=0x000000e8
+    - `wd`: shadow_ctrl=0x800fffff, wfpm_gp2_wr=0x01010101,
+            cpu_reset_rd=0x02840010, upload_fh_st=0xffffffff
+
+WHY:
+  The newer Dell dump proved the current local boot path was active, firmware
+  upload completed, and UMAC had started executing, but LMAC still remained at
+  PC=0x000000e8 with no used-ring movement and no ALIVE completion.
+
+  Comparing against Linux 7.0-rc2 `iwlwifi` 8000/9000 transport showed a
+  specific mismatch:
+    - Per-section progress still uses `FH_UCODE_LOAD_STATUS`
+    - The final CPU-ready marker on gen2 uses PRPH
+      `UREG_UCODE_LOAD_STATUS` (0xA05C40), not only FH 0x1AF0
+
+  Our driver was writing the final `0xFFFF` / `0xFFFFFFFF` only through
+  `FH_UCODE_LOAD_STATUS`. If that register is not the correct final-ready path
+  on this part, the CPUs can remain in the exact partially-started state seen
+  on Dell.
+
+CHANGES:
+  File changed:
+    - `src/drivers/net/wifi_9260.c`
+
+  Code updates:
+    1. Added `UREG_UCODE_LOAD_STATUS` define for the gen2 final-ready marker.
+    2. Added `iwl_write_ucode_load_done()` helper that writes the final marker
+       through PRPH instead of only through FH.
+    3. Changed runtime CPU image completion to use the new helper for final
+       `0xFFFF` / `0xFFFFFFFF` writes.
+    4. Cleared both FH and UREG final status paths at upload start so stale
+       ready markers do not carry across boots.
+    5. Changed the legacy single-path final `0xFFFFFFFF` write to use the same
+       gen2-ready helper for consistency.
+
+RATIONALE:
+  This is a transport-level fix based on direct Dell hardware evidence and a
+  Linux 7.0-rc2 sequencing comparison. It is hardware-agnostic behavior for the
+  8000/9000 family, not a Dell-specific quirk.
+
+COMMANDS RUN:
+  Investigation:
+    - `sed -n '1,240p' /home/jjsako/TaterTOS64v3/planv3.txt`
+    - `sed -n '1,220p' /home/jjsako/TaterTOS64v3/logs/fry665.txt`
+    - `rg -n "load_cpu_sections_8000|UREG_UCODE_LOAD_STATUS|FH_UCODE_LOAD_STATUS|RELEASE_CPU_RESET" /home/jjsako/TaterTOS64v3/linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi -g '*.[ch]'`
+    - `sed -n '715,785p' /home/jjsako/TaterTOS64v3/linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/trans.c`
+    - `sed -n '980,1120p' /home/jjsako/TaterTOS64v3/linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/trans.c`
+
+  Build / verification:
+    - `bash build_iso.sh`
+
+RESULT:
+  - `build_iso.sh`: PASS
+  - Output ISO:
+      `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+  - Windows export:
+      `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+NEXT BARE-METAL TEST:
+  Boot the rebuilt ISO on the Dell Precision 7530, then run:
+    1. `wd`
+    2. `wd2`
+    3. `wc`
+
+  Expected signal:
+    - `LMAC_PC` should move off `0x000000e8`
+    - `RFH_U` and/or RX completion counters should become non-zero
+    - init should move past step 9 if the final ready marker was the blocker
+
+NOTES:
+  - This log records a completed code step plus rebuild per `planv3.txt` rule 5.
+  - No SHA-256 was recorded because it was not requested.

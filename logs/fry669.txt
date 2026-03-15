@@ -1,0 +1,84 @@
+fry669 - 2026-03-09 00:10:00 CDT - WiFi 9260: align RFH doorbell and ALIVE interrupt phase
+
+SESSION CONTEXT:
+  User provided a Dell Precision 7530 WiFi handoff dump still failing at:
+    - `wh`: step=9, rc=-1, `diag cpu-stuck-rx-no-used`
+    - `wc`: `VERDICT: CPU STUCK`
+    - RFH state: free-ring progress present (`RFH_R != 0`) but used-ring
+      writeback still dead (`RFH_U = 0`, `rx_closed = 0`, `rx_finished = 0`)
+
+WHY:
+  After the earlier transport-shape fixes, the remaining mismatch was in the
+  upload-to-ALIVE transition itself rather than in the ring layouts. Comparing
+  the local bring-up to Linux 7.0-rc2 showed two concrete sequencing drifts:
+    1. The driver was writing the live PRPH free-ring write index directly
+       before ringing the RFH trigger doorbell.
+    2. The direct FH upload path switched to a broad interrupt mask before the
+       CPU-ready marker, instead of staying in the FH_TX-only phase until the
+       ALIVE wait takes over.
+
+  Both mismatches fit the observed signature where firmware starts, one IRQ is
+  observed, the RFH free ring advances, but used-ring/status writeback never
+  becomes visible to the host.
+
+FILES CHANGED:
+  - `src/drivers/net/wifi_9260.c`
+
+CODE CHANGES:
+  1. Stopped writing `RFH_Q0_FRBDCB_WIDX` directly during MQ RX bring-up.
+     The driver now leaves the PRPH WIDX initialized at zero and advances the
+     queue only through `RFH_Q_FRBDCB_WIDX_TRG(0)`, matching Linux's RFH
+     restock doorbell behavior.
+
+  2. Removed the early full interrupt-mask programming from
+     `iwl_upload_runtime_cpu_image()`.
+     The upload phase now remains in the FH_TX-only interrupt mode until
+     `iwl_wait_alive()` explicitly rotates to the ALIVE/FH_RX handoff phase.
+
+  3. Narrowed `iwl_wait_alive()` mask setup to `CSR_INT_BIT_ALIVE |
+     CSR_INT_BIT_FH_RX` instead of pre-enabling the broader debug/error set.
+
+RATIONALE:
+  This is still a hardware-agnostic transport fix. It does not assume a Dell-
+  specific quirk; it removes local sequencing drift from the Linux 9000-series
+  upload/handoff path.
+
+COMMANDS RUN:
+  Investigation:
+    - `sed -n '1,260p' /home/jjsako/TaterTOS64v3/planv3.txt`
+    - `sed -n '1,220p' /home/jjsako/TaterTOS64v3/logs/fry668.txt`
+    - `sed -n '900,1045p' /home/jjsako/TaterTOS64v3/linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/rx.c`
+    - `sed -n '730,865p' /home/jjsako/TaterTOS64v3/linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/trans.c`
+    - `sed -n '980,1125p' /home/jjsako/TaterTOS64v3/linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/trans.c`
+    - `sed -n '930,970p' /home/jjsako/TaterTOS64v3/linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/internal.h`
+    - `sed -n '2120,2160p' /home/jjsako/TaterTOS64v3/linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/rx.c`
+
+  Build / verification:
+    - `make -C /home/jjsako/TaterTOS64v3 src/drivers/net/wifi_9260.o`
+    - `bash build_iso.sh`
+
+RESULT:
+  - targeted rebuild of `src/drivers/net/wifi_9260.o`: PASS
+  - `build_iso.sh`: PASS
+  - output ISO:
+      `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+  - Windows export:
+      `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+NEXT BARE-METAL TEST:
+  Boot the rebuilt ISO on the Dell Precision 7530, then run:
+    1. `wh`
+    2. `wc`
+    3. `wd2`
+
+  Expected signal if this patch fixes the handoff bug:
+    - `RFH_U` becomes non-zero and/or
+    - `rx_closed` / `rx_finished` become non-zero and/or
+    - init progresses past step 9 / ALIVE timeout
+    - If it still lands on the same `cpu-stuck-rx-no-used` signature, the
+      next target is the remaining ISR/ALIVE handoff logic rather than the
+      ring layout.
+
+NOTES:
+  - This log exists to satisfy `planv3.txt` rule 5 and rule 6.
+  - No SHA-256 recorded here per `planv3.txt` rule 16.

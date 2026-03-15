@@ -1,0 +1,114 @@
+fry704 - 2026-03-12 00:00:00 UTC - Skip CPU2 done marker for INIT firmware image
+
+SESSION CONTEXT:
+  After fry703 added the `wdeep` deep-diagnostics command, the user ran the
+  latest build on the Dell Precision 7530 and captured: wdeep, wd3, wc, wh, sram.
+
+  The hardware output confirmed:
+    - ALIVE fires (int=0x02000001) — firmware starts
+    - Immediate SW_ERR afterward
+    - UMAC error table populated: error_id=0x2e (ADVANCED_SYSASSERT)
+    - last_host_cmd=0x00000000 — crashes before any host commands
+    - cpu1=0/9/9 (all 9 init sections loaded as CPU1)
+    - cpu2=9/0/9 (0 sections loaded as CPU2, but done marker still written)
+    - CPU2_ST=0x00002328 (error state)
+    - LMAC_PC=0x000000e8 (stuck)
+    - UMAC_PC=0xc0000000 (at reset vector, crashed)
+
+  SRAM probes showed all sections matched (exp=stg=now), except section [1]
+  at addr=0x00000000 where firmware overwrote first word with 0xDEAD (error
+  marker). This confirms the upload is correct but the firmware crashes
+  during its own initialization.
+
+WHY THIS PATCH:
+  Root cause identified: The INIT firmware image has NO CPU1_CPU2_SEPARATOR
+  (0xFFFFCCCC) sections. All 9 sections are loaded as CPU1. Then the code
+  unconditionally writes the CPU2 done marker (FH_UCODE_LOAD_STATUS =
+  0xFFFFFFFF), which tells CPU2 (UMAC) to start executing.
+
+  But the INIT firmware is a SINGLE-CPU image. CPU2 should NOT be started.
+  When CPU2 starts, it runs init UMAC code that isn't designed to execute
+  standalone during the init phase, causing ADVANCED_SYSASSERT (0x2e).
+
+  In Linux iwlwifi (7.0-rc2), the `is_dual_cpus` flag is set ONLY on the
+  IWL_UCODE_REGULAR image, never on IWL_UCODE_INIT:
+
+    case IWL_UCODE_TLV_NUM_OF_CPU:
+        if (...== 2)
+            drv->fw.img[IWL_UCODE_REGULAR].is_dual_cpus = true;
+        break;
+
+  In iwl_pcie_load_given_ucode_8000():
+
+    if (image->is_dual_cpus) {
+        ret = iwl_pcie_load_cpu_sections_8000(trans, image, 2, ...);
+    }
+
+  For INIT image, is_dual_cpus=false, so the CPU2 load path is NEVER called
+  and the CPU2 done marker (0xFFFFFFFF) is NEVER written.
+
+  This is a DIFFERENT bug from the eventually14 uploader contract rewrite.
+  That fixed payload-only vs. header-included section semantics.
+  This fixes whether CPU2 should be STARTED AT ALL for the init image.
+
+SOURCE REFERENCES USED:
+  - linux-7.0-rc2 pcie/gen1_2/trans.c: iwl_pcie_load_given_ucode_8000()
+  - linux-7.0-rc2 iwl-drv.c: IWL_UCODE_TLV_NUM_OF_CPU handling
+  - Dell hardware output from fry703 build (wdeep, wd3, wc, wh, sram)
+
+EXACT CODE CHANGES:
+  File: src/drivers/net/wifi_9260.c
+  Function: iwl_upload_firmware()
+
+  Before:
+    The CPU2 upload pass was called unconditionally after CPU1:
+      rc = iwl_upload_runtime_cpu_image(sections, count,
+              next_idx, 16, 0xFFFFFFFFu, "CPU2", 1, &next_idx);
+
+  After:
+    The CPU2 upload pass is now conditional on whether CPU1 found a separator:
+      if (next_idx < count) {
+          rc = iwl_upload_runtime_cpu_image(sections, count,
+                  next_idx, 16, 0xFFFFFFFFu, "CPU2", 1, &next_idx);
+      } else {
+          iwl_dbg("no CPU2 sections (single-CPU image), skipping...");
+          // zero out CPU2 debug state
+      }
+
+  This correctly handles:
+    - INIT image (9 sections, no separator): CPU1 loads all, CPU2 skipped
+    - RUNTIME image (13 sections, separator at idx 4): CPU1 loads 0-3, CPU2 loads 5-8
+
+WHAT THIS PATCH INTENTIONALLY DID NOT CHANGE:
+  - CPU1 upload logic (unchanged)
+  - Separator detection (0xFFFFCCCC / 0xAAAABBBB) (unchanged)
+  - Interrupt mask handling before done markers (unchanged)
+  - SRAM probe/diagnostic code (unchanged)
+  - Shell command surfaces (unchanged)
+
+IMPORTANT INTERPRETATION:
+  This is NOT another tweak to the "same old" ALIVE/RFH/mask theories.
+  This is a concrete bug where we were starting a CPU that Linux never starts
+  for the init image. The evidence from hardware strongly confirms this:
+    - UMAC asserts immediately (error_id=0x2e, last_host_cmd=0)
+    - SRAM is correctly staged (sections verified)
+    - The crash is in CPU2 (UMAC), not CPU1 (LMAC)
+
+  Expected outcome after this fix:
+    - If ALIVE fires WITHOUT SW_ERR: init firmware is alive, proceed to hcmd
+    - If ALIVE fires WITH SW_ERR still: a deeper firmware-side issue exists
+      (but at least we're not starting a CPU that shouldn't be running)
+    - If no ALIVE at all: something else broke (unlikely, since ALIVE was
+      working before and CPU1 upload is unchanged)
+
+COMMANDS RUN:
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+
+BUILD RESULT:
+  Full kernel + userspace build completed successfully.
+  ISO packaging completed successfully.
+
+ARTIFACTS:
+  out/tatertos64v3.iso
+  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso

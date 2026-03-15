@@ -1,0 +1,102 @@
+fry654 - 2026-03-07 22:00:11 CST - WiFi 9260: fix MQ RX free-ring VID encoding and used-ring decoding
+
+SESSION CONTEXT:
+  User provided bare-metal shell output from Dell Precision 7530:
+    - `wd` showed `step=9 (alive) rc=-1`
+    - `irq_count=1`
+    - `FH_LOAD_STATUS=0xffffffff`
+    - `rx_closed=0x00000000 rx_finished=0x00000000`
+    - `RFH_Q0_WIDX=0x000000f8`
+    - `RFH_USED_WIDX=0x00000000`
+  `ws` showed:
+    - `wifi: driver=offline`
+    - `FAIL @ alive (step 9) rc=-1`
+
+WHY:
+  The firmware upload path appears to complete (`FH_LOAD_STATUS=0xffffffff`) and
+  an interrupt has fired (`irq_count=1`), but the RX completion path never
+  surfaces a usable ALIVE packet to the driver.
+
+  The concrete bug found in `src/drivers/net/wifi_9260.c` was that the 9000-series
+  multi-queue RX free ring was populated with raw physical addresses only:
+    `rxbd_ring[i].addr = rx_buf_phys[i]`
+
+  For this hardware path, the free ring entry must carry:
+    DMA address | non-zero 12-bit VID
+
+  The used ring then reports that VID back on completion. The old code treated
+  the used-ring low 12 bits as a direct RX buffer index, which is wrong for this
+  encoding and can leave the host polling the wrong buffers forever.
+
+CHANGES:
+  File changed:
+    - `src/drivers/net/wifi_9260.c`
+
+  Code updates:
+    1. Documented the RX BD format for 9000-series MQ RX.
+    2. Added `iwl_rx_encode_bd_addr(phys, vid)`.
+    3. Added `iwl_rx_used_entry_to_idx(used_entry)` to decode VID -> buffer index.
+    4. Changed FRBDCB population to post `phys | (i + 1)` instead of raw `phys`.
+    5. Updated all RX consumers to decode used-ring entries through the helper:
+       - `iwl_wait_alive()`
+       - `iwl_wait_resp()`
+       - `iwl_rx_poll()`
+    6. Added invalid-entry debug prints so future `wd`/runtime logs will show
+       malformed used-ring completions explicitly.
+
+RATIONALE:
+  This fix matches the observed failure mode better than the older context-info
+  experiments in the repo:
+    - upload completed
+    - RFH queue was armed
+    - ALIVE still never became visible to host code
+  If the device completes RX using VID-tagged entries while the host interprets
+  them as plain ring indices, step 9 stalls exactly as seen.
+
+COMMANDS RUN:
+  Investigation:
+    - `rg --files /home/jjsako/TaterTOS64v3/src | rg "(wifi|iwl|shell|net|debug|diag|console|cmd)"`
+    - `rg -n "FAIL @ alive|step=9|alive|wd\\b|ws\\b|driver=offline|FH_LOAD_STATUS|CSR_RESET|rfkill_clr|fw_upload|cpu_reset_bit|HW_IF_CONFIG|GP_CNTRL|CSR_INT|HW_REV|RFH_" /home/jjsako/TaterTOS64v3/src /home/jjsako/TaterTOS64v3`
+    - `nl -ba src/drivers/net/wifi_9260.c | sed -n '...'`
+    - `nl -ba memory.md | sed -n '...'`
+    - `nl -ba logs/fry628.txt | sed -n '...'`
+    - `nl -ba logs/fry630.txt | sed -n '...'`
+    - `nl -ba logs/fry631.txt | sed -n '...'`
+    - `nl -ba logs/fry632.txt | sed -n '...'`
+    - `nl -ba logs/fry643.txt | sed -n '...'`
+    - `nl -ba logs/fry646.txt | sed -n '...'`
+    - `nl -ba logs/fry649.txt | sed -n '...'`
+    - `nl -ba logs/fry652.txt | sed -n '...'`
+    - `nl -ba logs/fry653.txt | sed -n '...'`
+
+  Build / verification:
+    - `PATH="/home/jjsako/TaterTOS64v3/tools/host/bin:/opt/cross/bin:$PATH" make kernel`
+    - `PATH="/home/jjsako/TaterTOS64v3/tools/host/bin:/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" bash build_iso.sh`
+
+RESULT:
+  - `make kernel`: PASS
+  - `build_iso.sh`: PASS
+  - Output ISO:
+      `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+  - Windows export did NOT occur:
+      `Skipping Windows ISO export: /mnt/c/Users/jjsako/Documents is not writable.`
+
+WARNINGS:
+  - Existing warning in `src/drivers/net/wifi_9260.c`:
+      `iwl_set_prph_bit` defined but unused
+  - Existing unrelated warnings remained in ACPI / EFI code during full build.
+
+NEXT BARE-METAL TEST:
+  Boot the new ISO on the Dell Precision 7530, then run:
+    1. `wd`
+    2. `ws`
+
+  Expected signal:
+    - init step advances past `9` (`alive`)
+    - `RFH_USED_WIDX` and/or RX closed/finished counters move
+    - driver no longer reports `offline`
+
+NOTES:
+  - No QEMU logs were used.
+  - BIOS revision/date was not visible during this session, so none was recorded.
+  - No SHA-256 was recorded because it was not requested.

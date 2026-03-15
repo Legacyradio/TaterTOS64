@@ -171,7 +171,7 @@ static void serial_write_char(char c) {
     outb(0x3F8, (uint8_t)c);
 }
 
-static char serial_read_char(void) {
+static __attribute__((unused)) char serial_read_char(void) {
     if (!kcon.serial_inited) {
         serial_init();
     }
@@ -513,11 +513,13 @@ static int kprint_is_error_line(const char *line) {
 }
 
 static int kprint_should_emit(const char *line) {
-    (void)g_kprint_errors_only;  // output is hard-suppressed
+    (void)g_kprint_errors_only;
     if (!line || !*line) return 0;
+    if (str_contains_ci(line, "iwl9260:")) return 1;
     if (str_contains_ci(line, "panic")) return 1;
     if (str_contains_ci(line, "fault")) return 1;
-    return 0;  // drop everything else
+    if (kprint_is_error_line(line)) return 1;
+    return 0;
 }
 
 void kprint_set_errors_only(int enabled) {

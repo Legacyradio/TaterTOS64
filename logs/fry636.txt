@@ -1,0 +1,13 @@
+[2026-03-07 12:51:36 CST] Step: Fix interactive EFI image build stall in build_iso.sh.
+Why: The build looked frozen in a terminal because mtools was prompted to resolve
+case-colliding FAT directories after the script tried to create both /fry and
+/FRY inside efiboot.img. FAT is case-insensitive, so that path set is invalid
+for a non-interactive build.
+Change: Keep only one canonical case per FAT directory branch in
+build_iso.sh's EFI image replication loop: "/", "/FRY", "/EFI/FRY",
+"/EFI/BOOT", "/EFI/BOOT/FRY". Leave the ISO tree duplication unchanged.
+Files: build_iso.sh
+Tests:
+- env SKIP_WIN_EXPORT=1 PATH="/opt/cross/bin:$PATH" bash ./build_iso.sh
+- PTY repro check with canonical FAT directories only: completed without any
+  mtools rename prompt and exited "done"

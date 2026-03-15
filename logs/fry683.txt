@@ -1,0 +1,56 @@
+fry683 - 2026-03-09 19:18:02 CDT - WiFi 9260: strip SEC_RT offset header before context-info DMA copy
+
+SESSION CONTEXT:
+  The latest bare-metal Dell Precision 7530 dump still stalled at step 9
+  (`alive`) with:
+    - `wh`: `diag cpu-never-started`
+    - `wd2`: `CPU1_ST=0`, `CPU2_ST=0`, no PC movement
+    - `wd3`: RFH ring base registers programmed, but no RX progress and no ALIVE
+
+WHY:
+  The current local TLV parser stores `SEC_RT` / `SEC_INIT` sections with:
+    - `sec.offset` = first 4 bytes of the TLV payload
+    - `sec.data` still pointing at the same first 4 bytes
+    - `sec.size` still including those 4 bytes
+
+  That matches the legacy direct-FH upload helper, which explicitly strips the
+  first dword before writing to SRAM. But the newer context-info boot path was
+  DMA-copying `sec.data` verbatim into DRAM. For gen2 self-load firmware, that
+  means every section image handed to the boot ROM started with the SRAM offset
+  word instead of actual firmware bytes.
+
+  Linux does not do that: its parser stores the offset separately and stores
+  section data/size without the leading 4-byte header before context-info DMA
+  allocation.
+
+FILES CHANGED:
+  - `src/drivers/net/wifi_9260.c`
+  - `logs/fry683.txt`
+
+CODE CHANGES:
+  1. Changed `iwl_alloc_fw_dma_sec()` to take `struct iwl_fw_section`.
+  2. In that helper, strip the 4-byte offset header and DMA-copy only the real
+     firmware payload into DRAM.
+  3. Added a guard for malformed `SEC_RT` entries with size `<= 4`.
+
+RATIONALE:
+  The observed `cpu-never-started` signature fits malformed boot-ROM input far
+  better than an RFH-only issue. The host has already programmed RX ring base
+  addresses, but the firmware CPUs never leave reset/startup because the DRAM
+  section contents are wrong.
+
+VERIFICATION COMMANDS:
+  - `make -C /home/jjsako/TaterTOS64v3 src/drivers/net/wifi_9260.o`
+
+NEXT HARDWARE TEST:
+  Boot the next image and run:
+    1. `wh`
+    2. `wd2`
+    3. `wd3`
+
+  Expected improvement:
+    - `CPU1_ST` / `CPU2_ST` should stop reading as all-zero
+    - UMAC or LMAC PC should move
+    - `wh` should stop reporting `cpu-never-started`
+    - if ALIVE still does not arrive, the failure should move to a later-stage
+      signature instead of a flat zero-CPU-start condition

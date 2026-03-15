@@ -1,0 +1,23 @@
+fry621 — 2026-03-06
+WiFi fw-load rc=-3 fix: heap too small for firmware copy
+
+Problem:
+  `ws` on Dell showed: FAIL @ fw-load (step 3) rc=-3
+  rc=-3 = kmalloc() returned NULL in iwlwifi_fw_load()
+  The bump-allocator heap is max 256 pages (1MB), but the embedded
+  firmware blob is ~1.4MB. kmalloc(1.4MB) fails.
+
+Fix:
+  The firmware blob is already linked into kernel.elf as
+  iwlwifi_9260_fw_blob[]. No need to kmalloc + copy it.
+  Changed iwlwifi_fw_load() to point out->data directly at the
+  embedded blob instead of copying.
+
+  Added `embedded` flag to struct iwlwifi_fw_image so
+  iwlwifi_fw_release() knows not to kfree() the pointer.
+
+Files changed:
+  src/drivers/net/iwlwifi_fw.c  — removed kmalloc/copy, use blob directly
+  src/drivers/net/iwlwifi_fw.h  — added embedded field to fw_image struct
+
+Next: Flash ISO to Dell, run `ws` to verify fw-load passes step 3.

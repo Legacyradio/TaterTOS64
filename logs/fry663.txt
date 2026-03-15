@@ -1,0 +1,48 @@
+fry663 — ISR ACK fix + split wifi diagnostics into separate commands
+====================================================================
+Timestamp: 2026-03-08 (session 2, rebuild 2)
+Status: BUILT, awaiting Dell test
+
+WHY:
+- fry662 Dell test: FW uploaded OK (FH_LOAD_STATUS=0xFFFFFFFF) but ALIVE never
+  arrived. irq_count=1, last_irq_csr=0x00000000, rx_closed=0, rx_finished=0.
+  Neither ALIVE nor SW_ERR seen in 2 seconds of polling.
+- `wd` output was getting truncated on Dell shell — critical info cut off.
+- Compared our init sequence against Linux 7.0-rc2 iwlwifi gen1 transport.
+
+CHANGES:
+
+1. ISR ACK pattern fix (src/drivers/net/wifi_9260.c):
+   - OLD: ISR wrote back only the CSR_INT bits it read
+   - NEW: ISR writes `csr_int | ~mask` (matches Linux iwl_pcie_irq_handler)
+   - WHY: Clears masked-but-pending bits that block HW interrupt coalescing
+
+2. Full interrupt mask during ALIVE wait + HW_ERR detection:
+   - Mask now includes HW_ERR, RF_KILL, WAKEUP (matches Linux CSR_INI_SET_MASK)
+   - ALIVE polling also uses `inta | ~mask` ACK pattern
+
+3. CPU status + PC register diagnostics:
+   - SB_CPU_1_STATUS(0xA01E30), SB_CPU_2_STATUS(0xA01E34)
+   - UREG_UMAC_CURRENT_PC(0xA05C18), UREG_LMAC1_CURRENT_PC(0xA05C1C)
+   - Reads PC twice 10ms apart → prints RUNNING vs STUCK
+
+4. Split wifi diagnostics into 3 shell commands:
+   - `wd` — register dump only (no more init log — won't get truncated)
+   - `wc` — NEW: CPU status, PC regs, RFH state, verdict (compact)
+   - `wl` — NEW: full init log (iwl_dbg messages from boot)
+   - `ws` — unchanged (link status summary)
+   - Syscalls: SYS_WIFI_CPU_STATUS=41, SYS_WIFI_INIT_LOG=42
+   - Files changed: wifi_9260.c, syscall.c, libc.c, libc.h, shell.c
+
+TESTING (rule 10):
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash -x build_iso.sh
+  Result: PASS, no errors
+  ISO: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+WHAT TO CHECK ON DELL:
+1. `wc` — shows CPU status verdict: RUNNING / STUCK / NEVER STARTED
+2. `wl` — shows full init log without truncation
+3. `wd` — register dump (now shorter, should not truncate)
+4. If FW is RUNNING: RFH DMA is the problem
+5. If FW is STUCK/NEVER STARTED: CPU release path is the problem

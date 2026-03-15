@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include "../boot/efi_handoff.h"
 #include "../boot/early_serial.h"
+#include "../include/tater_trace.h"
 #include "fs/vfs.h"
 #include "mm/heap.h"
 #include "proc/elf.h"
@@ -14,11 +15,13 @@ struct block_device;
 void gdt_init(void);
 void idt_init(void);
 void tss_init(uint64_t rsp0_top);
+void tss_use_runtime_ists(void);
 
 void pmm_init(struct fry_handoff *handoff);
 void pmm_relocate_bitmap(void);
 void pmm_debug_dump_state(const char *tag, uint64_t order);
 void vmm_init(struct fry_handoff *handoff);
+uint64_t vmm_phys_to_virt(uint64_t phys);
 void heap_init(void);
 
 void kprint_init(struct fry_handoff *handoff);
@@ -55,9 +58,14 @@ void nvme_init(void);
 void vmd_init(void);
 struct block_device *nvme_get_block_device(void);
 void netcore_init(void);
+void i219_init(void);
+int i219_is_ready(void);
+int i219_is_link_up(void);
+int dhcp_discover(void);
 void e1000_init(void);
 void rtl8169_init(void);
 void wifi_9260_init(void);
+int wifi_9260_boot_smoke_test(void);
 int part_init(void);
 int fat32_init(struct block_device *bd);
 int vfs_init(struct block_device *bd);
@@ -65,8 +73,11 @@ int vfs_init_ramdisk(uint64_t phys_base, uint64_t size);
 void vfs_set_storage_device(struct block_device *bd);
 int process_init(void);
 int sched_init(void);
+void sched_block(uint32_t pid);
 void sched_tick(void);
+void sched_yield(void);
 void syscall_init(void);
+void kernel_selftest(void);
 void aml_extended_init(void);
 void hpet_init(void);
 void hpet_sleep_ms(uint64_t ms);
@@ -85,21 +96,76 @@ uint8_t kernel_stack[262144];
 
 #define TATER_BUILD_TAG __DATE__ " " __TIME__
 #define TATER_BUILD_ID  "2026-03-04-fry531-rollback"
+#define TATER_SELFTEST 1
+#define TATER_SKIP_SMP 1
 
 static void aml_extended_init_thread(void *arg) {
     (void)arg;
     aml_extended_init();
 }
 
+static void early_fb_stage(struct fry_handoff *handoff, uint64_t stage);
+static void early_fb_color(struct fry_handoff *handoff, uint64_t col, uint64_t row_idx, uint32_t color);
+
+static void post_boot_late_init(struct fry_handoff *handoff) {
+    // The first real scheduled task already re-enables IF via its initial frame,
+    // but keep the old boot marker and make the intent explicit here too.
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("B:STI\n");
+    __asm__ volatile("sti");
+    early_fb_color(handoff, 9, 2, 0x0000FFFFu); /* R2C9: post-sti */
+
+    /*
+     * Start deferred kernel workers only after the process/scheduler layer is
+     * live and the first boot userspace handoff has had a chance to run.
+     */
+    acpi_events_start_worker();
+    early_fb_color(handoff, 10, 2, 0x0000FFFFu); /* R2C10: acpi_events done */
+
+    // Phase 16: Extended AML coverage (background — EC probing is slow)
+    kprint("init: aml_ext (background)\n");
+    {
+        struct fry_process *aml_t = process_create_kernel(
+            aml_extended_init_thread, 0, "aml_ext");
+        if (aml_t) {
+            sched_add(aml_t->pid);
+        } else {
+            kprint("init: aml_ext thread failed, running inline\n");
+            aml_extended_init();
+        }
+    }
+    early_fb_stage(handoff, 31);
+    early_fb_color(handoff, 11, 2, 0x0000FFFFu); /* R2C11: late boot done */
+}
+
+static void post_boot_thread(void *arg) {
+    struct fry_handoff *handoff = (struct fry_handoff *)arg;
+    struct fry_process *cur;
+
+    post_boot_late_init(handoff);
+
+    cur = proc_current();
+    if (cur) {
+        sched_block(cur->pid);
+        sched_yield();
+    }
+    for (;;) {
+        __asm__ volatile("hlt");
+    }
+}
+
 static int dbg_vfs_emit_name(const char *name, void *ctx) {
     (void)ctx;
     if (!name || !*name) return 0;
+    if (!TATER_BOOT_SERIAL_TRACE) return 0;
     kprint("DBG_VFS entry=%s\n", name);
     return 0;
 }
 
 /* Draw a tiny top-row stage block for bare-metal handoff debugging. */
 static void early_fb_stage(struct fry_handoff *handoff, uint64_t stage) {
+    (void)handoff;
+    (void)stage;
+    if (!TATER_BOOT_VISUAL_DEBUG) return;
     if (!handoff) return;
     if (!handoff->fb_base || !handoff->fb_width || !handoff->fb_height || !handoff->fb_stride) return;
     if (!handoff->boot_identity_limit || handoff->fb_base >= handoff->boot_identity_limit) return;
@@ -123,6 +189,11 @@ static void early_fb_stage(struct fry_handoff *handoff, uint64_t stage) {
 }
 
 static void early_fb_color(struct fry_handoff *handoff, uint64_t col, uint64_t row_idx, uint32_t color) {
+    (void)handoff;
+    (void)col;
+    (void)row_idx;
+    (void)color;
+    if (!TATER_BOOT_VISUAL_DEBUG) return;
     if (!handoff) return;
     if (!handoff->fb_base || !handoff->fb_width || !handoff->fb_height || !handoff->fb_stride) return;
     if (!handoff->boot_identity_limit || handoff->fb_base >= handoff->boot_identity_limit) return;
@@ -149,11 +220,14 @@ static void early_fb_color(struct fry_handoff *handoff, uint64_t col, uint64_t r
 
 static void after_vmm(struct fry_handoff *handoff) {
     early_fb_stage(handoff, 13);
-    early_serial_puts("K_AFTER_VMM_ENTRY\n");
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("K_AFTER_VMM_ENTRY\n");
     early_fb_stage(handoff, 14);
     early_debug_putc('a');
-    // Emit a stage marker to both debugcon and serial so live QEMU output matches logs.
-    #define STAGE(c) do { early_debug_putc(c); early_serial_putc(c); } while (0)
+    // Emit stage markers only when boot serial tracing is explicitly enabled.
+    #define STAGE(c) do { \
+        early_debug_putc(c); \
+        if (TATER_BOOT_SERIAL_TRACE) early_serial_putc(c); \
+    } while (0)
     STAGE('S');
     // Restore normal console path after VMM is live.
     kprint_init(handoff);
@@ -194,18 +268,21 @@ static void after_vmm(struct fry_handoff *handoff) {
     #undef STAGE
 
     // Phase 3: IRQ infrastructure
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("B:IRQ\n");
     irq_desc_init();
     irq_cr3_init(vmm_get_kernel_pml4_phys());
     pic8259_init();
     lapic_init();
     ioapic_init();
     early_fb_stage(handoff, 19);
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("B:AML\n");
 
     // Phase 4: AML interpreter
     aml_parse_tables();
     acpi_events_init();
     acpi_power_init();
     early_fb_stage(handoff, 20);
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("B:DRV\n");
 
     // Phase 5: Driver model
     platform_init();
@@ -219,17 +296,34 @@ static void after_vmm(struct fry_handoff *handoff) {
     // Phase 7: ACPI bus driver
     acpi_bus_init();
     early_fb_stage(handoff, 21);
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("B:HPET\n");
 
     // Phase 9: Timers must be initialized before SMP so APs can use HPET
     // for LAPIC timer calibration in ap_entry().
     hpet_init();
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("B:SMP\n");
 
     // Phase 8: SMP
+#if TATER_SKIP_SMP
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("B:SMP_SKIP\n");
+    /* Plant cli;hlt at trampoline pages so stray APs from firmware don't #UD */
+    {
+        uint8_t halt_stub[] = { 0xFA, 0xF4, 0xEB, 0xFC }; /* cli; hlt; jmp $-2 */
+        for (uint64_t pa = 0x8000; pa <= 0x9000; pa += 0x1000) {
+            uint8_t *p = (uint8_t *)(uintptr_t)vmm_phys_to_virt(pa);
+            for (int i = 0; i < 4; i++) p[i] = halt_stub[i];
+        }
+    }
+#else
     smp_init();
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("B:SMP_OK\n");
+#endif
 
     // BSP LAPIC timer (APs set up their own in ap_entry)
     lapic_timer_init();
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("B:LAPIC_OK\n");
     early_fb_stage(handoff, 22);
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("B:PS2\n");
 
     // Phase 9: Input drivers
     kprint("init: ps2\n");
@@ -238,11 +332,13 @@ static void after_vmm(struct fry_handoff *handoff) {
     ps2_mouse_init();
 
     // Phase 9: Video
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("B:GOP\n");
     kprint("init: gop\n");
     gop_fb_init();
     early_fb_stage(handoff, 23);
 
     // Phase 10: USB subsystem
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("B:USB\n");
     kprint("init: usb\n");
     usb_init();
     xhci_init();
@@ -251,6 +347,7 @@ static void after_vmm(struct fry_handoff *handoff) {
     early_fb_stage(handoff, 24);
 
     // Phase 11: Storage
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("B:STOR\n");
     kprint("init: storage\n");
     early_fb_stage(handoff, 25);
     kprint("storage: vmd init\n");
@@ -262,14 +359,27 @@ static void after_vmm(struct fry_handoff *handoff) {
     early_fb_stage(handoff, 27);
 
     // Phase 12: Network
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("B:NET\n");
     kprint("init: net\n");
     netcore_init();
+    i219_init();
     e1000_init();
     rtl8169_init();
-    wifi_9260_init();
-    early_fb_stage(handoff, 28);
+
+    /* Auto-DHCP if wired NIC is up */
+    if (i219_is_ready() && i219_is_link_up()) {
+        kprint("init: I219 link up, running DHCP...\n");
+        int dhcp_rc = dhcp_discover();
+        if (dhcp_rc == 0)
+            kprint("init: DHCP success\n");
+        else
+            kprint("init: DHCP failed rc=%d (can retry with netmgr)\n", dhcp_rc);
+    } else if (i219_is_ready()) {
+        kprint("init: I219 ready but no link (cable plugged in?)\n");
+    }
 
     // Phase 13: VFS + filesystem
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("B:VFS\n");
     kprint("init: vfs\n");
     kprint("init: ramdisk base=0x%llx size=%llu\n",
            (unsigned long long)(handoff ? handoff->ramdisk_base : 0ULL),
@@ -313,104 +423,135 @@ static void after_vmm(struct fry_handoff *handoff) {
             kprint("init: vfs no device\n");
         }
 
-        kprint("DBG_VFS source=%s have_rd=%d rd_base=0x%llx rd_size=%llu nvme=%d\n",
-               (root_source == ROOT_SRC_RAMDISK) ? "ramdisk" :
-               ((root_source == ROOT_SRC_BLOCK) ? "block" : "none"),
-               have_ramdisk ? 1 : 0,
-               (unsigned long long)(handoff ? handoff->ramdisk_base : 0ULL),
-               (unsigned long long)(handoff ? handoff->ramdisk_size : 0ULL),
-               nvme_bd ? 1 : 0);
-        {
-            struct vfs_stat st;
-            int rc_system_init = vfs_stat("/system/INIT.FRY", &st);
-            int rc_system_gui = vfs_stat("/system/GUI.FRY", &st);
-            int rc_apps_shell = vfs_stat("/apps/SHELL.TOT", &st);
-            int rc_apps_sysinfo = vfs_stat("/apps/SYSINFO.FRY", &st);
-            int rc_root_gui = vfs_stat("/GUI.FRY", &st);
-            int rc_root_sh = vfs_stat("/SHELL.TOT", &st);
-            kprint("DBG_VFS stat init=%d gui_system=%d shell_apps=%d sysinfo_apps=%d gui_root=%d sh_root=%d\n",
-                   rc_system_init, rc_system_gui, rc_apps_shell,
-                   rc_apps_sysinfo, rc_root_gui, rc_root_sh);
-            /*
-             * Row 3 is the live-root payload-presence row:
-             * col0=/system/INIT.FRY col1=/system/GUI.FRY col2=/apps/SHELL.TOT
-             * col3=/apps/SYSINFO.FRY col4=/GUI.FRY col5=/SHELL.TOT
-             * green=present red=missing
-             */
-            early_fb_color(handoff, 0, 3, (rc_system_init == 0) ? 0x0000FF00u : 0x00FF0000u);
-            early_fb_color(handoff, 1, 3, (rc_system_gui  == 0) ? 0x0000FF00u : 0x00FF0000u);
-            early_fb_color(handoff, 2, 3, (rc_apps_shell  == 0) ? 0x0000FF00u : 0x00FF0000u);
-            early_fb_color(handoff, 3, 3, (rc_apps_sysinfo == 0) ? 0x0000FF00u : 0x00FF0000u);
-            early_fb_color(handoff, 4, 3, (rc_root_gui    == 0) ? 0x0000FF00u : 0x00FF0000u);
-            early_fb_color(handoff, 5, 3, (rc_root_sh     == 0) ? 0x0000FF00u : 0x00FF0000u);
+        if (TATER_BOOT_SERIAL_TRACE) {
+            kprint("DBG_VFS source=%s have_rd=%d rd_base=0x%llx rd_size=%llu nvme=%d\n",
+                   (root_source == ROOT_SRC_RAMDISK) ? "ramdisk" :
+                   ((root_source == ROOT_SRC_BLOCK) ? "block" : "none"),
+                   have_ramdisk ? 1 : 0,
+                   (unsigned long long)(handoff ? handoff->ramdisk_base : 0ULL),
+                   (unsigned long long)(handoff ? handoff->ramdisk_size : 0ULL),
+                   nvme_bd ? 1 : 0);
+            {
+                struct vfs_stat st;
+                int rc_system_init = vfs_stat("/system/INIT.FRY", &st);
+                int rc_system_gui = vfs_stat("/system/GUI.FRY", &st);
+                int rc_apps_shell = vfs_stat("/apps/SHELL.TOT", &st);
+                int rc_apps_sysinfo = vfs_stat("/apps/SYSINFO.FRY", &st);
+                int rc_root_gui = vfs_stat("/GUI.FRY", &st);
+                int rc_root_sh = vfs_stat("/SHELL.TOT", &st);
+                kprint("DBG_VFS stat init=%d gui_system=%d shell_apps=%d sysinfo_apps=%d gui_root=%d sh_root=%d\n",
+                       rc_system_init, rc_system_gui, rc_apps_shell,
+                       rc_apps_sysinfo, rc_root_gui, rc_root_sh);
+                /*
+                 * Row 3 is the live-root payload-presence row:
+                 * col0=/system/INIT.FRY col1=/system/GUI.FRY col2=/apps/SHELL.TOT
+                 * col3=/apps/SYSINFO.FRY col4=/GUI.FRY col5=/SHELL.TOT
+                 * green=present red=missing
+                 */
+                early_fb_color(handoff, 0, 3, (rc_system_init == 0) ? 0x0000FF00u : 0x00FF0000u);
+                early_fb_color(handoff, 1, 3, (rc_system_gui  == 0) ? 0x0000FF00u : 0x00FF0000u);
+                early_fb_color(handoff, 2, 3, (rc_apps_shell  == 0) ? 0x0000FF00u : 0x00FF0000u);
+                early_fb_color(handoff, 3, 3, (rc_apps_sysinfo == 0) ? 0x0000FF00u : 0x00FF0000u);
+                early_fb_color(handoff, 4, 3, (rc_root_gui    == 0) ? 0x0000FF00u : 0x00FF0000u);
+                early_fb_color(handoff, 5, 3, (rc_root_sh     == 0) ? 0x0000FF00u : 0x00FF0000u);
+            }
+            vfs_readdir("/", dbg_vfs_emit_name, 0);
+            vfs_readdir("/system", dbg_vfs_emit_name, 0);
+            vfs_readdir("/apps", dbg_vfs_emit_name, 0);
+            vfs_readdir("/fry", dbg_vfs_emit_name, 0);
+            vfs_readdir("/FRY", dbg_vfs_emit_name, 0);
         }
-        vfs_readdir("/", dbg_vfs_emit_name, 0);
-        vfs_readdir("/system", dbg_vfs_emit_name, 0);
-        vfs_readdir("/apps", dbg_vfs_emit_name, 0);
-        vfs_readdir("/fry", dbg_vfs_emit_name, 0);
-        vfs_readdir("/FRY", dbg_vfs_emit_name, 0);
+        /*
+         * Intel 9260 firmware is file-backed, so defer Wi-Fi bring-up until the
+         * live root has been mounted and VFS can service firmware reads.
+         */
+        /*
+         * Row 2 diagnostic: cyan=0x0000FFFF squares track late-boot progress.
+         * Count the cyan squares on Dell to find the exact hang point.
+         * col0=pre-wifi col1=post-wifi col2=post-smoke col3=process_init
+         * col4=sched_init col5=syscall_init col6=launch(green/red)
+         * col7=sched_tick col8=post-sti col9=hlt-loop
+         */
+        early_fb_color(handoff, 0, 2, 0x0000FFFFu); /* R2C0: pre-wifi */
+        /* fry721: WiFi shelved — 130+ frys, no ALIVE. Pivoting to wired. */
+        kprint("init: wifi DISABLED (shelved fry721)\n");
+#if 0  /* WiFi shelved — re-enable when resuming Intel 9260 bring-up */
+        kprint("init: wifi\n");
+        wifi_9260_init();
+        early_fb_color(handoff, 1, 2, 0x0000FFFFu); /* R2C1: post-wifi */
+        {
+            int wifi_smoke_rc = wifi_9260_boot_smoke_test();
+            if (wifi_smoke_rc == 0) {
+                kprint("init: wifi smoke test passed\n");
+            } else if (wifi_smoke_rc < 0) {
+                kprint("init: wifi smoke test failed rc=%d\n", wifi_smoke_rc);
+            }
+        }
+#endif
+        early_fb_color(handoff, 2, 2, 0x0000FFFFu); /* R2C2: post-smoke */
+        early_fb_stage(handoff, 28);
         early_fb_stage(handoff, 29);
 
         // Phase 14: Process + userspace
+        if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("B:PROC\n");
         kprint("init: proc\n");
         process_init();
+        early_fb_color(handoff, 3, 2, 0x0000FFFFu); /* R2C3: process_init done */
         sched_init();
+        early_fb_color(handoff, 4, 2, 0x0000FFFFu); /* R2C4: sched_init done */
         syscall_init();
+        early_fb_color(handoff, 5, 2, 0x0000FFFFu); /* R2C5: syscall_init done */
+#if TATER_SELFTEST
+        kernel_selftest();
+#endif
         // Phase 15: Launch init — session policy lives in userspace now
+        if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("B:LAUNCH\n");
         kprint("init: launch\n");
         int launch_rc = process_launch("/system/INIT.FRY");
         if (launch_rc < 0)
             launch_rc = process_launch("/INIT.FRY");
         if (launch_rc < 0) {
+            early_fb_color(handoff, 6, 2, 0x00FF0000u); /* R2C6: launch FAILED */
             kprint("FATAL: no INIT.FRY found (code=%d)\n", process_last_launch_error());
             kernel_panic("cannot launch /system/INIT.FRY or /INIT.FRY");
         }
+        early_fb_color(handoff, 6, 2, 0x0000FF00u); /* R2C6: launch OK */
+        if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("B:LAUNCH_OK\n");
         kprint("init: user pid=%d\n", launch_rc);
         early_fb_stage(handoff, 32);
-        early_serial_puts("K_BOOT_USER_ENQUEUED\n");
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("K_BOOT_USER_ENQUEUED\n");
         early_fb_stage(handoff, 30);
+
+        {
+            struct fry_process *postboot_t = process_create_kernel(
+                post_boot_thread, handoff, "postboot");
+            if (postboot_t) {
+                sched_add(postboot_t->pid);
+            } else {
+                kprint("init: postboot thread failed, running deferred work inline\n");
+                post_boot_late_init(handoff);
+            }
+        }
     }
 
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("B:SCHED\n");
+    early_fb_color(handoff, 7, 2, 0x0000FFFFu); /* R2C7: pre-sched_tick */
     /*
      * Do one direct scheduler handoff before enabling the rest of background
      * kernel work. On bare metal this removes dependence on the first LAPIC
      * timer tick for the initial jump into userspace.
      */
     sched_tick();
-
-    // Enable interrupts now — scheduler needs LAPIC timer to keep userspace moving.
-    __asm__ volatile("sti");
-
-    /*
-     * Start deferred kernel workers only after the process/scheduler layer is
-     * live and the first boot userspace handoff has had a chance to run.
-     */
-    acpi_events_start_worker();
-
-    // Phase 16: Extended AML coverage (background — EC probing is slow)
-    kprint("init: aml_ext (background)\n");
-    {
-        struct fry_process *aml_t = process_create_kernel(
-            aml_extended_init_thread, 0, "aml_ext");
-        if (aml_t) {
-            sched_add(aml_t->pid);
-        } else {
-            kprint("init: aml_ext thread failed, running inline\n");
-            aml_extended_init();
-        }
-    }
-    early_fb_stage(handoff, 31);
-
-    for (;;) {
-        __asm__ volatile("hlt");
-    }
+    kernel_panic("boot thread resumed after scheduler handoff");
 }
 
 void _fry_start(struct fry_handoff *handoff) {
     early_fb_stage(handoff, 4);
     early_serial_init();
-    early_serial_puts("K_START\n");
-    early_serial_puts("K_BUILD " TATER_BUILD_ID "\n");
+    if (TATER_BOOT_SERIAL_TRACE) {
+        early_serial_puts("K_START\n");
+        early_serial_puts("K_BUILD " TATER_BUILD_ID "\n");
+    }
     early_debug_puts("K_BUILD " TATER_BUILD_ID "\n");
     early_debug_putc('k');
     g_handoff = handoff;
@@ -418,36 +559,37 @@ void _fry_start(struct fry_handoff *handoff) {
     gdt_init();
     idt_init();
     early_fb_stage(handoff, 5);
-    early_serial_puts("K_GDT_IDT\n");
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("K_GDT_IDT\n");
     early_debug_putc('g');
 
     // TSS setup with kernel stack
     uint64_t rsp0_top = (uint64_t)(kernel_stack + sizeof(kernel_stack));
     tss_init(rsp0_top);
     early_fb_stage(handoff, 6);
-    early_serial_puts("K_TSS\n");
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("K_TSS\n");
     early_debug_putc('t');
 
     // Memory managers
     pmm_init(handoff);
     early_fb_stage(handoff, 7);
-    early_serial_puts("K_PMM\n");
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("K_PMM\n");
     early_debug_putc('p');
     vmm_init(handoff);
+    tss_use_runtime_ists();
     early_fb_stage(handoff, 8);
-    early_serial_puts("K_PMM_RELOCATE_BEGIN\n");
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("K_PMM_RELOCATE_BEGIN\n");
     early_debug_putc('r');
     pmm_relocate_bitmap();
-    early_serial_puts("K_PMM_RELOCATE_END\n");
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("K_PMM_RELOCATE_END\n");
     early_debug_putc('R');
     pmm_debug_dump_state("PMM_AFTER_RELOC", 8);
     early_fb_stage(handoff, 9);
     early_fb_stage(handoff, 10);
-    early_serial_puts("K_VMM\n");
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("K_VMM\n");
     early_fb_stage(handoff, 11);
     early_debug_putc('v');
     early_fb_stage(handoff, 12);
-    early_serial_puts("K_STACK_SWITCH_CALL\n");
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("K_STACK_SWITCH_CALL\n");
     early_debug_putc('w');
     stack_switch_and_call((uint64_t)(kernel_stack + sizeof(kernel_stack)), after_vmm, handoff);
     early_debug_putc('r');

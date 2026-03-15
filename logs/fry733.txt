@@ -1,0 +1,17 @@
+fry733 — Main.c Integration Fix
+===============================
+Timestamp: 2026-03-14 21:00:54 CDT
+
+Completed step:
+- Fixed the `main.c` build break introduced by the postboot refactor.
+
+What changed:
+- Added forward declarations for `early_fb_stage()` and `early_fb_color()`
+  before the new postboot helper code.
+
+Why:
+- The refactor started using those static helpers before their definitions,
+  which caused an implicit-declaration error during the clean rebuild.
+
+Test status:
+- Clean rebuild and QEMU verification rerun pending.

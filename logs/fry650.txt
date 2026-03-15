@@ -1,0 +1,36 @@
+fry650 - 2026-03-07 18:49:14 CST - Final clean rebuild on request
+
+WHY:
+  User requested one last rebuild of the current TaterTOS64v3 tree after the
+  WiFi 9260 ctxt-info ownership / diagnostic changes.
+
+COMMANDS RUN:
+  1. make clean
+  2. PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+  3. sha256sum out/tatertos64v3.iso
+
+RESULT:
+  - clean step passed
+  - full build_iso.sh run passed
+  - final ISO produced:
+      out/tatertos64v3.iso
+
+SHA-256:
+  64695cda622ec03d97ab4edf6ad77c421b43233d242e09294a054625753e427c  out/tatertos64v3.iso
+
+WARNINGS OBSERVED:
+  - src/drivers/net/wifi_9260.c:
+      iwl_upload_firmware defined but not used
+      iwl_set_prph_bit defined but not used
+  - src/kernel/acpi/aml_exec.c:
+      unused parameter 'ctx'
+  - src/kernel/acpi/extended.c:
+      str_eq / obj_to_str / pci_cf8_write32 defined but not used
+  - src/boot/efi_loader.c:
+      gop_mask_size / gop_mask_pos defined but not used
+  These were warnings only; the rebuild completed successfully.
+
+NOTES:
+  - This was a rebuild / packaging step only; no code changed in this log step.
+  - No BIOS revision/date was visible during this step, so none was logged.
+  - No QEMU logs were used.

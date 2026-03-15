@@ -1,0 +1,109 @@
+fry676 - 2026-03-09 01:04:08 CDT - WiFi 9260: restore narrow ALIVE handoff mask and run clean rebuild
+
+SESSION CONTEXT:
+  User provided fresh Dell Precision 7530 WiFi dumps showing the bring-up had
+  regressed to an earlier handoff failure shape:
+    - `wdiag`: step=9, rc=-1, irq_count=1
+    - `wh`: `diag cpu-stuck-no-rx-progress`
+    - `wc`: `VERDICT: CPU STUCK`
+    - `wd2`: `FH_LOAD=0xffffffff`, `RFH_R=0x00000000`, `RFH_U=0x00000000`,
+             `rx_closed=0x00000000`, `rx_finished=0x00000000`
+    - CPU state flat: `UMAC_PC=0xc0000000`, `LMAC_PC=0x000000e8`
+
+WHY:
+  The current local `wifi_9260.c` had drifted back to using the full interrupt
+  mask during the ALIVE wait path. That contradicted the earlier `fry669`
+  transport note, which intentionally kept the upload-to-ALIVE handoff narrow
+  (`CSR_INT_BIT_ALIVE | CSR_INT_BIT_FH_RX`) after the FH_TX-only upload phase.
+
+  The new Dell dump also matched the broader-mask regression pattern more than
+  the later RFH-used-ring failure:
+    - single IRQ observed
+    - no useful RX progress at all (`RFH_R=0`, `RFH_U=0`)
+    - CPUs released but stuck before ALIVE delivery
+
+FILES CHANGED:
+  - `src/drivers/net/wifi_9260.c`
+
+CODE CHANGES:
+  1. `iwl_enable_fw_alive_ints()`:
+     - changed `CSR_INT_MASK` programming from the full mask back to
+       `CSR_INT_BIT_ALIVE | CSR_INT_BIT_FH_RX`
+
+  2. `iwl_wait_alive()`:
+     - changed the local `alive_mask` from `iwl_full_int_mask()` back to the
+       narrow ALIVE/FH_RX handoff mask
+
+RATIONALE:
+  This restores the intended upload-to-ALIVE phase split:
+    - upload phase: `FH_TX` only
+    - ALIVE wait phase: `ALIVE | FH_RX`
+
+  The change is transport sequencing cleanup, not a Dell-only quirk. The Dell
+  is only the machine exposing the regression clearly.
+
+COMMANDS RUN:
+  Investigation:
+    - `sed -n '1,260p' /home/jjsako/TaterTOS64v3/planv3.txt`
+    - `find /home/jjsako/TaterTOS64v3/logs -maxdepth 1 -name 'fry*.txt' -printf '%f\n' | sort -V | tail -n 8`
+    - `rg -n "iwl_enable_fw_alive_ints|iwl_enable_fw_load_int|iwl_full_int_mask" /home/jjsako/TaterTOS64v3/src/drivers/net/wifi_9260.c`
+    - `nl -ba /home/jjsako/TaterTOS64v3/src/drivers/net/wifi_9260.c | sed -n '2220,2315p'`
+    - `sed -n '1,220p' /home/jjsako/TaterTOS64v3/logs/fry669.txt`
+    - `sed -n '1,220p' /home/jjsako/TaterTOS64v3/logs/fry671.txt`
+
+  Build / verification:
+    - `make -C /home/jjsako/TaterTOS64v3 src/drivers/net/wifi_9260.o`
+    - `make clean`
+    - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+    - `sha256sum /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+    - `sha256sum /home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+
+RESULT:
+  - targeted rebuild of `src/drivers/net/wifi_9260.o`: PASS
+  - clean full rebuild via `build_iso.sh`: PASS
+  - ISO output:
+      `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+  - NVMe image output:
+      `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+  - Windows ISO export skipped because `/mnt/c/Users/jjsako/Documents` was not writable
+
+HASH VERIFICATION:
+  - `tatertos64v3.iso`:
+      `926a0d9da9226095d8bd9cdfbabdebc34a245d59022f10617529ebfb42e9d9ed`
+  - `tater_nvme.img`:
+      `32bcaa4ee936b8204bf5e5982a7750d0261bcac2bfd9537a5f3083e19ccc525e`
+
+BUILD WARNINGS:
+  - `src/kernel/acpi/aml_exec.c`: unused parameter `ctx`
+  - `src/kernel/acpi/extended.c`: three existing unused-function warnings
+  - `src/boot/efi_loader.c`: two existing unused-function warnings
+  - build completed successfully despite these warnings
+
+NEXT BARE-METAL TEST:
+  Boot the rebuilt image on the Dell Precision 7530, then run:
+    1. `wdiag`
+    2. `wd2`
+
+  Expected signal if the handoff mask regression was the blocker:
+    - `RFH_R` should move off zero again
+    - ideally `RFH_U`, `rx_closed`, or `rx_finished` should also become non-zero
+    - if RX progress still stays all-zero, the next target is the CPU release /
+      boot-stub path rather than interrupt-phase drift
+
+NOTES:
+  - This log exists to satisfy `planv3.txt` rule 5 and rule 6.
+  - SHA-256 hashes are recorded here because this was a user-requested rebuild,
+    matching `planv3.txt` rule 16.
+  - Follow-up analysis after the rebuild:
+    - AML is not the leading hypothesis for this specific failure signature.
+      The current WiFi init path is mostly raw PCI/MMIO/PRPH sequencing, and
+      the dump already shows the device is powered and reachable far enough to
+      upload firmware and read CPU/RFH state.
+    - Plain PCI `D3hot` is also not the leading hypothesis. The driver already
+      forces both the endpoint and parent bridge to D0 in `iwl_pci_prepare_link()`
+      before MMIO bring-up. If the device were still stuck in D3hot, the failure
+      would be expected much earlier (dead BAR/MMIO, failed reset, etc.).
+    - More exotic ACPI power-resource issues (for example D3cold / `_PR0` /
+      `_PR3` / `_PS0`) remain theoretically possible, but they are secondary
+      to the current firmware-handoff theory.
+    - User chose hardware testing next instead of more ACPI speculation.

@@ -1,0 +1,99 @@
+fry658 - 2026-03-07 23:47:11 CST - WiFi 9260: accept SEC_RT-only firmware at TLV parse
+
+SESSION CONTEXT:
+  User provided bare-metal shell output from TaterTOS64v3:
+    - `wd` showed `step=4 (tlv-parse) rc=-5`
+    - `ws` showed `wifi: driver=offline`
+    - boot probes already indicated earlier init reached firmware load
+
+WHY:
+  The TLV parser in `src/drivers/net/iwlwifi_fw.c` still enforced a legacy
+  requirement:
+    - CPU1 instruction TLV (`IWL_UCODE_TLV_INST`) must be present
+
+  That is wrong for the embedded 9260 firmware blob in this tree because the
+  runtime image can be expressed only as secure multi-section TLVs:
+    - `SEC_RT`
+    - optional `SEC_INIT`
+    - optional paging TLVs
+
+  In that case, `tlv-parse` should succeed and let the runtime uploader consume
+  `pieces->sec_rt`. Returning `-5` at step 4 prevents the already-implemented
+  secure-section upload path from ever running.
+
+CHANGES:
+  File changed:
+    - `src/drivers/net/iwlwifi_fw.c`
+
+  Code updates:
+    1. Kept the existing legacy `INST` validation for legacy-format firmware.
+    2. Changed the final parse check so `-5` is returned only if BOTH are absent:
+       - legacy CPU1 `INST`
+       - secure runtime sections (`SEC_RT`)
+    3. Added a debug line that explicitly reports when the parser is accepting
+       a `SEC_RT` runtime image without a legacy `INST` TLV.
+
+RATIONALE:
+  This matches the rest of the driver as it exists now:
+    - TLV parsing records all `SEC_RT` sections
+    - later code detects secure multi-section firmware
+    - runtime upload walks `pieces->sec_rt`
+
+  Without this parser change, the driver rejects a valid secure-format firmware
+  image before DMA, TFH, upload, or ALIVE handling can begin.
+
+COMMANDS RUN:
+  Investigation:
+    - `sed -n '1,260p' /home/jjsako/TaterTOS64v3/planv3.txt`
+    - `rg -n "tlv-parse|return -5|no CPU1 instruction section found|SEC_RT|SEC_INIT" /home/jjsako/TaterTOS64v3/src/drivers/net`
+    - `sed -n '1,420p' /home/jjsako/TaterTOS64v3/src/drivers/net/iwlwifi_fw.c`
+    - `sed -n '3320,3360p' /home/jjsako/TaterTOS64v3/src/drivers/net/wifi_9260.c`
+    - `sed -n '1,180p' /home/jjsako/TaterTOS64v3/logs/fry657.txt`
+
+  Build / verification:
+    - `make kernel`
+    - `bash build_iso.sh`
+
+RESULT:
+  - `make kernel`: PASS
+  - `build_iso.sh`: PASS
+  - Output ISO:
+      `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+  - Windows export:
+      `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+WARNINGS:
+  - Existing warning remains in `src/drivers/net/wifi_9260.c`:
+      `iwl_set_prph_bit` defined but unused
+  - Existing unrelated ACPI / EFI warnings remained during rebuild.
+
+NEXT BARE-METAL TEST:
+  Boot the rebuilt ISO on the Dell Precision 7530, then run:
+    1. `wd`
+    2. `ws`
+
+  Expected signal:
+    - init no longer fails at `step=4 (tlv-parse) rc=-5`
+    - either progress moves to `dma-alloc` / later stages
+    - or a new later-step failure appears that is more actionable
+
+NOTES:
+  - No QEMU logs were used.
+  - BIOS revision/date was not visible during this session, so none was recorded.
+
+HASH VERIFICATION:
+  Verified on 2026-03-07 23:47:48 CST:
+    - repo ISO:
+        `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+    - Windows tateriso copy:
+        `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+  SHA-256:
+    - repo ISO:
+        `583299d666aa77a85f81cde246bb6113e200ec3e62538744945c39ad24465655`
+    - Windows tateriso copy:
+        `583299d666aa77a85f81cde246bb6113e200ec3e62538744945c39ad24465655`
+
+  Result:
+    - hashes match exactly
+    - the exported `tateriso` ISO is byte-identical to the repo ISO used for this step

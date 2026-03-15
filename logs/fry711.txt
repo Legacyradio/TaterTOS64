@@ -1,0 +1,82 @@
+fry711 — 2026-03-13T08:15:00Z
+Implement all 5 fixes from fry710 research audit.
+STATUS: Built + ISO exported, awaiting Dell test.
+
+Changes to src/drivers/net/wifi_9260.c:
+
+FIX 1 (BUG A — HIGHEST PRIORITY): Clear persistence bit before SW_RESET.
+  - Added HPM_DEBUG (0xA03440), PERSISTENCE_BIT (BIT(12)), PREG_PRPH_WPROT_9000
+    (0xA04CE0), PREG_WFPM_ACCESS defines.
+  - Added iwl_clear_persistence_bit() function: grabs NIC access, reads
+    HPM_DEBUG, if BIT(12) set checks write-protection then clears it.
+  - Called in iwl_nic_reset() AFTER prepare_card_hw but BEFORE sw_reset,
+    matching Linux's _iwl_trans_pcie_start_hw() ordering.
+  WHY: Linux calls iwl_trans_pcie_clear_persistence_bit() for DEVICE_FAMILY_9000.
+  If UEFI left this bit set, firmware sees stale power management state and
+  may SYSASSERT during early self-check.
+
+FIX 2 (BUG B — HIGH PRIORITY): Remove DIS_L0S_EXIT_TIMER entirely.
+  - Removed legacy_fallback parameter from iwl_apm_apply_chicken_bits() and
+    iwl_apm_program_profile().
+  - Simplified iwl_apm_init() to single path (no fallback retry).
+  - Chicken bits mask now CLEARS DIS_L0S_EXIT_TIMER and sets only L1A_NO_L0S_RX.
+  WHY: Linux NEVER sets DIS_L0S_EXIT_TIMER for device_family >= FAMILY_8000.
+  The 9260 is FAMILY_9000. Setting it can interfere with PCIe L0s transitions.
+
+FIX 3 (BUG C — HIGH PRIORITY): Set RFKILL_WAKE_L1A_EN.
+  - Added CSR_GP_CNTRL_REG_FLAG_RFKILL_WAKE_L1A_EN = BIT(26) define.
+  - Set in iwl_nic_reset() after MAC access is granted.
+  WHY: Linux sets this for device_family >= 9000. Without it, the device
+  may not properly handle RF-kill state transitions on wake.
+
+FIX 4 (sleep after SW_RESET): Already correct — IWL_RESET_SETTLE_US = 5000us.
+
+FIX 5 (ordering): Moved iwl_nic_config() BEFORE iwl_dma_init_tfh().
+  - In iwl_fw_boot_attempt(), nic_config now runs right after NIC reset,
+    before DMA alloc and TFH init.
+  WHY: Linux order is apm_init → nic_config → rx_init → tx_init.
+  CSR_HW_IF_CONFIG_REG (radio type, SI bits) must be configured before
+  RFH hardware setup in case RFH reads these during DMA bring-up.
+
+Additionally restructured iwl_nic_reset() to match Linux Phase 1:
+  1. stop_master
+  2. prepare_card_hw (first — needed for prph access)
+  3. clear_persistence_bit (9000-specific)
+  4. sw_reset (5ms settle)
+  5. prepare_card_hw again (retake ownership, matching Linux retake path)
+  6. disable interrupts
+  7. APM init
+  8. MAC access request
+  9. RFKILL_WAKE_L1A_EN
+
+Build: clean, zero warnings from wifi_9260.c. ISO at out/tatertos64v3.iso.
+
+===========================================================================
+IF SYSASSERT 0x2E PERSISTS AFTER DELL TEST — NEXT STEPS (ordered by priority)
+===========================================================================
+
+1. VERIFY UMAC ERROR TABLE BASE ADDRESS
+   We read the error table at 0x800000 but never verified that's correct for
+   our firmware version.  Linux gets the error table address from the ALIVE
+   notification payload itself (or from a TLV).  If 0x800000 is wrong, we've
+   been reading garbage and the "0x2E" error code may be phantom.
+   → Read the ALIVE notification's error table pointer field instead of
+     hardcoding 0x800000.
+
+2. TLV CAPABILITIES — SILENT SKIPS
+   Our parser silently skips API_CHANGES_SET (type 29), ENABLED_CAPABILITIES
+   (type 30), and CMD_VERSIONS (type 48).  If the firmware's early self-check
+   looks for driver capability acknowledgment and finds nothing, it could
+   assert.  Lower probability but we've now exhausted the high-probability
+   init-sequence bugs.
+
+3. SECOND APM INIT
+   Linux does APM init twice: once in _iwl_trans_pcie_start_hw() and again
+   in iwl_pcie_nic_init().  We only do it once.  Probably doesn't matter
+   since sw_reset wipes state, but it's a remaining difference.
+
+4. NUCLEAR OPTION — LINUX REGISTER TRACE ON SAME DELL
+   Boot a USB Linux on the Dell Precision 7530, `modprobe iwlwifi`, grab
+   `dmesg` + register trace with iwlwifi debug enabled (dyndbg).  Then
+   compare register-by-register against our serial log output.  This would
+   definitively show every remaining difference.

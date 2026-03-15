@@ -1,0 +1,210 @@
+fry698 - 2026-03-11 08:19:51 CDT - WiFi 9260: align upload-to-ALIVE interrupt mask with Linux CSR_INI_SET_MASK after fry697 retained ALIVE+SW_ERR with fh=0
+
+SESSION CONTEXT:
+  The fry697 hardware run finally produced the retained first-seen snapshot
+  that `eventually9` asked for and that `eventually10` records in detail.
+
+  The decisive retained `wcmd` shape was:
+    - `retained=6 total=6 hostcmd=0 step=9 rc=-3`
+    - `#1 ord=2 phase step=9 tag=init-alive-sw-err arg=1 rc=-3 ms=6 c1=0x0000 csr=0x02088801 fh=0x00000000`
+    - `#4 ord=5 phase step=9 tag=init-alive-sw-err arg=2 rc=-3 ms=6 c1=0x0000 csr=0x02088801 fh=0x00000000`
+
+  The surrounding hardware output stayed in the same outer failure class:
+    - `hostcmd=0`
+    - `last_isr_csr=0x00000000`
+    - `last_isr_fh=0x00000000`
+    - `RFH_ACT=0x00010001 W=0x00000000 R=0x00000000 U=0x00000000`
+    - `rx_closed=0x00000000 rx_fin=0x00000000`
+    - same UMAC assert signature:
+      - `0x0000dead`
+      - `0x0000002e`
+      - `0x7e3e4b69`
+
+  The continuation conclusion written first in `eventually/eventually10.txt`
+  was:
+    - the retained snapshot path works
+    - the branch is still explicit INIT ALIVE SW_ERR
+    - ALIVE and SW_ERR co-appeared
+    - retained `fh=0` keeps the lead away from an FH-participating first branch
+    - the next patch should inspect the upload-to-ALIVE interrupt-mask
+      boundary only
+
+WHY THIS PATCH:
+  The fry697 hardware run removed the old "zeroed retained snapshot" doubt.
+  The next live source mismatch was narrower and concrete:
+
+  1. local `iwl_full_int_mask()` still under-described Linux
+     `CSR_INI_SET_MASK`
+  2. local `iwl_enable_fw_alive_ints()` still narrowed the mask to
+     `ALIVE | FH_RX`
+  3. later ALIVE wait code widened the mask again, meaning the handoff still
+     contained a narrower-than-Linux blind window right where the hardware was
+     selecting:
+       - `ALIVE + SW_ERR`
+       - `fh=0`
+       - no RX progress
+
+  So the next patch should not change broad boot theory, RFH layout, or host
+  command flow first.
+  It should align the exact upload-to-ALIVE interrupt-mask boundary that the
+  new retained snapshot had now made visible.
+
+SOURCE REFERENCES USED:
+  Hardware continuation:
+    - `eventually/eventually10.txt`
+
+  Current source:
+    - `src/drivers/net/wifi_9260.c`
+
+  Linux reference:
+    - `linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/iwl-csr.h`
+
+EXACT CODE CHANGES:
+  File:
+    - `src/drivers/net/wifi_9260.c`
+
+  1. Added the missing named CSR interrupt bits that Linux carries in the init
+     mask.
+     Relevant lines after patch:
+       - `105-114`
+
+     Added:
+       - `CSR_INT_BIT_RESET_DONE`
+       - `CSR_INT_BIT_SW_RX`
+       - `CSR_INT_BIT_RX_PERIODIC`
+
+     Why this matters:
+       - local source can now express the same initial-mask shape that Linux
+         uses across the upload-to-ALIVE boundary
+
+  2. Expanded `iwl_full_int_mask()` to match Linux `CSR_INI_SET_MASK`.
+     Relevant lines after patch:
+       - `819-825`
+
+     New behavior:
+       - the local "full" mask now includes:
+         - `FH_RX`
+         - `HW_ERR`
+         - `FH_TX`
+         - `SW_ERR`
+         - `RF_KILL`
+         - `SW_RX`
+         - `WAKEUP`
+         - `RESET_DONE`
+         - `ALIVE`
+         - `RX_PERIODIC`
+
+     Why this matters:
+       - the driver no longer calls this helper "full" while still omitting
+         known Linux init-mask causes
+
+  3. Stopped re-narrowing the upload-to-ALIVE handoff mask.
+     Relevant lines after patch:
+       - `835-844`
+
+     New behavior:
+       - `iwl_enable_fw_alive_ints()` now keeps `iwl_full_int_mask()` active
+         across the handoff
+       - `g_iwl_bootdbg.alive_int_mask` now preserves that broader mask too
+
+     Why this matters:
+       - the hardware-selected branch from fry697 lives in that exact window
+       - narrowing there and widening again later was no longer the honest next
+         thing to keep doing
+
+WHAT THIS PATCH INTENTIONALLY DID NOT CHANGE:
+  - no RFH ring address programming
+  - no ALIVE poll-loop logic
+  - no retained first-seen snapshot plumbing
+  - no host-command flow
+  - no new shell commands
+  - no claim that the WiFi functional blocker is solved
+
+IMPORTANT INTERPRETATION:
+  fry698 is still a targeted boundary patch, not a WiFi fix claim.
+
+  The fry697 hardware run already said:
+    - the driver can retain the decisive first-seen snapshot
+    - the current branch is explicit INIT ALIVE SW_ERR
+    - ALIVE and SW_ERR co-appear
+    - retained `fh=0`
+
+  fry698 therefore changes only the next source mismatch honestly selected by
+  that evidence:
+    - the upload-to-ALIVE interrupt-mask boundary
+
+  If the next hardware run still ends in the same old outer shape, the project
+  will at least know it tested that exact boundary rather than returning to
+  broad theory space.
+
+COMMANDS RUN:
+  Evidence / source inspection:
+    - `sed -n '1,240p' eventually/eventually9.txt`
+    - `sed -n '241,560p' eventually/eventually9.txt`
+    - `sed -n '1,220p' eventually/eventually8.txt`
+    - `sed -n '220,520p' eventually/eventually8.txt`
+    - `rg -n "CSR_INT_BIT|init-alive-sw-err|alive-swerr-seen|ALIVE" src/drivers/net/wifi_9260.c`
+    - `rg -n "CSR_INT_BIT|CSR_INI_SET_MASK" linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/iwl-csr.h`
+    - `nl -ba src/drivers/net/wifi_9260.c | sed -n '100,120p;816,845p'`
+
+  Verification / packaging:
+    - `bash build_iso.sh`
+    - `sha256sum out/tatertos64v3.iso out/tater_nvme.img out/efiboot.img`
+    - `stat -c '%n|%s|%y' out/tatertos64v3.iso out/tater_nvme.img out/efiboot.img /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+BUILD RESULT:
+  Full rebuild / packaging:
+    - PASS
+
+  Export to Windows ISO drop path:
+    - PASS
+
+  Rebuild warnings unchanged from earlier steps:
+    - `src/kernel/acpi/aml_exec.c:973` unused parameter `ctx`
+    - `src/kernel/acpi/extended.c:618` `str_eq` unused
+    - `src/kernel/acpi/extended.c:613` `obj_to_str` unused
+    - `src/kernel/acpi/extended.c:285` `pci_cf8_write32` unused
+    - `src/boot/efi_loader.c:352` `gop_mask_size` unused
+    - `src/boot/efi_loader.c:346` `gop_mask_pos` unused
+
+  ISO packaging warning unchanged:
+    - `xorriso`: boot image load size exceeded 65535 blocks of 512 bytes, so
+      El Torito recorded `0` to extend the ESP to end-of-medium
+
+ARTIFACTS:
+  - `out/tatertos64v3.iso`
+    - sha256 `fb97aa65b3ea0a6d32be4d50b2e9ba7bc4a6da6b7fea7c55d6aa9e3361b0d5ca`
+    - size `151416832`
+    - mtime `2026-03-11 08:17:53 -0500`
+
+  - `out/tater_nvme.img`
+    - sha256 `3cc758ed8bf2fc9dbe6896380b03aa8940a26aa603a76371df93eaf875057956`
+    - size `104857600`
+    - mtime `2026-03-11 08:17:51 -0500`
+
+  - `out/efiboot.img`
+    - sha256 `02313f5c2d8504bde49d13125205b64d62c1d6db000aec528ba1afe840fbc594`
+    - size `67108864`
+    - mtime `2026-03-11 08:17:52 -0500`
+
+  - `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+    - size `151416832`
+    - mtime `2026-03-11 08:17:54 -0500`
+
+EXPECTED NEXT HARDWARE TEST:
+  Boot the fry698 image and capture:
+    1. `wcmd`
+    2. `wd3`
+    3. `wc`
+    4. `wh`
+
+  First things that now matter most:
+    - whether the retained SW_ERR branch still shows the same
+      `csr=0x02088801 fh=0`
+    - whether `hostcmd=0` still remains true
+    - whether any usable RX progress appears
+    - whether `wd3` now shows the broader `alive_int_mask`
+    - whether the outer failure class stays:
+      - step 9
+      - rc -3
+      - same `0xdead / 0x2e / 0x7e3e4b69`

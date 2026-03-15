@@ -1,0 +1,20 @@
+fry739 — Revert ACPI Serial Trace Cleanup
+=========================================
+Timestamp: 2026-03-14 21:29:33 CDT
+
+Completed step:
+- Reverted the last ACPI table trace cleanup in `src/kernel/acpi/tables.c`.
+
+What changed:
+- Removed the `tater_trace.h` dependency from `src/kernel/acpi/tables.c`.
+- Restored the ACPI `STAGE()` macro to emit its single-character trace to both
+  debugcon and serial, matching the last verified-good boot behavior.
+
+Why:
+- The narrower ACPI serial cleanup introduced a boot regression immediately
+  after `init: pid=2`.
+- Stability takes priority over removing that final trace line, so this reverts
+  only the unsafe portion of the marker cleanup.
+
+Test status:
+- Rebuild and verification rerun pending.

@@ -1,0 +1,79 @@
+fry616 - NETMGR menu recovery + executable-permission hardening
+===============================================================
+Date: 2026-03-06
+Log written: 2026-03-06 19:58:57 CST
+
+Context:
+- Session started from a user report that `NETMGR` was missing from the live
+  GUI after recent WiFi / packaging work.
+- Early discussion mixed in the older `/nvme*` / secondary-storage policy work
+  from `fry583`; that turned out not to be the direct cause of the missing
+  Network Manager menu entry.
+
+Actual issue found:
+- `NETMGR.FRY` was being built and packaged into live-media locations, but the
+  GUI fallback app seed list did not include `NETMGR`.
+- Result: if directory discovery was delayed or failed, the menu could still
+  show `SHELL`, `SYSINFO`, `UPTIME`, `PS`, and `FILEMAN` while omitting
+  `NETMGR` even though the file existed in the image.
+
+Functional fix:
+- `src/user/gui/gui.c`
+  - Added `NETMGR.FRY` to the seeded fallback app list so the menu remains
+    deterministic and still exposes Network Manager when scan-based discovery
+    is unreliable.
+- `build_iso.sh`
+  - Kept `NETMGR.FRY` in the same live-media packaging set as the rest of the
+    userspace apps.
+  - Added explicit verification checks for `NETMGR.FRY` in the EFI image and
+    ISO live-app fallback paths so future builds fail loud if it drops out of
+    the boot image layout.
+
+Hardening work completed in the same session:
+- `user_linker.ld`
+  - Added real PT_LOAD segments:
+    - text = RX
+    - rodata = R
+    - data/bss = RW
+- `kernel_linker.ld`
+  - Added separate PT_LOAD segments for boot/text/rodata/data/stack.
+  - Added explicit symbols for text/rodata/data boundaries and LMAs.
+- `src/kernel/mm/vmm.c`
+  - Enabled `EFER.NXE` so NX page bits are actually enforced.
+  - Enabled `CR0.WP` so kernel writes respect read-only mappings.
+  - Replaced the old single writable kernel-image mapping with separate:
+    - `.text` mapped executable/read-only
+    - `.rodata` mapped read-only + NX
+    - `.data`/`.bss` mapped writable + NX
+  - Marked kernel stack and framebuffer mappings NX as well.
+
+Warning cleanup:
+- `src/kernel/proc/syscall.c`
+  - Marked unused syscall ABI args `a4` / `a5` intentionally unused.
+- `src/user/apps/fileman.c`
+  - Fixed signed/unsigned comparison in dirent bounds validation.
+- `src/kernel/kprint.c`
+  - Marked `serial_read_char()` unused explicitly.
+
+Verification:
+- Full rebuild completed successfully:
+  - `bash build_iso.sh`
+- Output artifacts:
+  - `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+  - `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+- Result:
+  - prior linker `LOAD segment with RWX permissions` warnings for kernel/user
+    ELFs are gone
+  - `NETMGR.FRY` present in the packaged live-media fallback layout
+
+Remaining known warnings:
+- `src/boot/efi_loader.c`
+  - unused `gop_mask_pos`
+  - unused `gop_mask_size`
+- `xorriso`
+  - existing El Torito load-size warning during ISO creation
+
+Status:
+- Build + packaging verified.
+- This session did not include a live boot verification pass, so menu/runtime
+  behavior still needs a real boot test on target hardware or QEMU.

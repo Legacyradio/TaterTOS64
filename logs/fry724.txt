@@ -1,0 +1,33 @@
+fry724 — 2026-03-14
+Begin phase one userspace VM ABI completion
+
+WHAT:
+- Added initial anonymous userspace `mmap` / `munmap` / `mprotect` plumbing
+- Added per-process VM region tracking for mapped anonymous regions
+- Added libc wrappers and public `FRY_PROT_*` / `FRY_MAP_*` flags
+- Added `vmtest` userspace smoke app and build target
+
+WHY:
+- Phase one in the browser-port plan starts with real userspace VM primitives
+- `sbrk` alone is not sufficient for a browser-class runtime
+- Need a proper kernel-backed VM surface before threads, sockets, or higher
+  browser runtime work make sense
+
+CURRENT LIMITS TO FINISH IN THIS PHASE:
+- `vmm_map_user()` currently masks out NX on initial map because it keeps only
+  low 12 PTE bits
+- syscall-side user-buffer validation is presence-only and must become
+  write-aware before read-only mappings are safe
+- `munmap` / `mprotect` currently require an exact tracked region match
+- file-backed read mappings still need a clean VFS-backed implementation or an
+  explicit phase-one decision if current VFS semantics block it
+
+FILES CHANGED SO FAR:
+- src/kernel/proc/process.h
+- src/kernel/proc/syscall.c
+- src/kernel/mm/vmm.h
+- src/kernel/mm/vmm.c
+- src/user/libc/libc.h
+- src/user/libc/libc.c
+- src/user/apps/vmtest.c
+- Makefile

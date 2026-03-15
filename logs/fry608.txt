@@ -1,0 +1,92 @@
+fry608 - WiFi Driver: Host Command Interface
+==============================================
+Date: 2026-03-06
+Plan: eventually/eventually1.txt step 6
+
+WHAT WAS DONE
+-------------
+Implemented step 6: Host Command Interface — the foundation for all
+firmware communication after ALIVE.
+
+Command TX Mechanism (iwl_send_cmd):
+  - Picks a command buffer from a round-robin pool (4 x 4KB DMA buffers)
+  - Builds iwl_host_cmd_hdr: cmd_id, group_id, sequence, length, flags
+  - Copies payload after header
+  - Cache-flushes the command buffer
+  - Builds TFD entry (tb[0] = command buffer phys addr + total length)
+  - Updates byte-count table for the TFD index
+  - Cache-flushes TFD + BC entry
+  - Memory fence (mfence) before doorbell
+  - Rings TX doorbell: HBUS_TARG_WRPTR = write_idx | (queue_id << 16)
+  - Returns sequence number for response matching
+
+Response RX Mechanism (iwl_wait_resp):
+  - Polls RX status writeback area for new closed_rb count
+  - Walks new RX buffers from rx_read_idx to closed_rb
+  - Cache-invalidates each RX buffer header
+  - Matches response by sequence number (bytes 2-3 of RX buffer)
+  - Copies response data to caller's buffer
+  - Configurable timeout in milliseconds
+
+Convenience Wrapper (iwl_send_cmd_sync):
+  - Combines send + wait in one call
+  - Fire-and-forget mode when resp_buf is NULL
+
+NVM Access (iwl_nvm_read_section):
+  - Sends IWL_NVM_ACCESS_CMD (0x88) with section type, offset, length
+  - Parses response: status(2) + resp_length(2) + data
+  - Returns bytes read or negative on error
+
+MAC Address Read (iwl_read_mac_address):
+  - Tries NVM_SECTION_TYPE_MAC_OVERRIDE (section 11) first
+  - Falls back to NVM_SECTION_TYPE_HW (section 0) at offset 21
+  - Handles Intel's little-endian byte-pair MAC format
+  - Prints MAC as xx:xx:xx:xx:xx:xx
+
+PHY Configuration (iwl_phy_cfg):
+  - Sends IWL_MVM_PHY_CFG_CMD (0x6C) with all calibrations enabled
+  - calib_control_tx = 0xFFFFFFFF, calib_control_rx = 0xFFFFFFFF
+
+Full Init Sequence (iwl_hcmd_init):
+  1. PHY_CFG_CMD (calibration enable)
+  2. 50ms delay for calibration
+  3. NVM read: MAC address
+  4. NVM read: regulatory data (section 6)
+  5. NVM read: PHY SKU data (section 12)
+
+DMA Allocation Updated:
+  - Added 4 command buffer pages to the DMA allocation (275 → 279 pages)
+  - cmd_buf_virt[4] / cmd_buf_phys[4] arrays in g_iwl_dma
+  - cmd_buf_idx round-robin counter
+  - rx_read_idx for tracking consumed RX responses
+
+Data Structures Added:
+  - struct iwl_host_cmd_hdr (8 bytes: cmd_id, group_id, seq, length, flags)
+  - struct iwl_nvm_access_cmd (8 bytes: op_code, target, type, offset, length)
+  - struct iwl_nvm_access_resp (16 bytes: header + offset, resp_length, type, status)
+  - struct iwl_phy_cfg_cmd (12 bytes: phy_cfg, calib_control_tx/rx)
+
+FILES CHANGED
+-------------
+- src/drivers/net/wifi_9260.c - Host command TX/RX, NVM read, PHY config
+
+BUILD
+-----
+- Compiles clean (no warnings, no errors)
+- Full ISO built and exported to Windows
+
+EXPECTED SERIAL OUTPUT (Dell boot — success case)
+-------------------------------------------------
+IWL9260: *** FIRMWARE IS ALIVE ***
+IWL9260: initializing host command interface...
+IWL9260: PHY_CFG_CMD sent
+IWL9260: MAC address: XX:XX:XX:XX:XX:XX
+IWL9260: regulatory NVM: NN bytes read
+IWL9260: PHY SKU NVM: NN bytes read
+IWL9260: host command interface ready
+IWL9260: init complete — ready for 802.11 MAC layer
+
+NEXT STEP
+---------
+Step 7: 802.11 MAC Layer — management frames, scanning, authentication,
+association with an access point

@@ -1,0 +1,107 @@
+fry685 - 2026-03-09 21:08:16 CDT - WiFi 9260: re-doorbell RFH RX free-ring at ALIVE handoff
+
+SESSION CONTEXT:
+  The latest Dell Precision 7530 bare-metal dump had moved past firmware upload
+  and CPU release, but still stalled at step 9 (`alive`) with:
+    - `FH_LOAD=0x000f000f`
+    - `CPU1_ST=0x030a0003`
+    - `CPU2_ST=0x000f000f`
+    - `UMAC_PC=0xc0800000`
+    - `LMAC_PC=0x000605dc`
+    - `RFH_ACT=0x00010001`
+    - `RFH_W=0x00000000`, `RFH_R=0x00000000`, `RFH_U=0x00000000`
+    - `rx_closed=0x00000000`, `rx_fin=0x00000000`
+
+WHY:
+  The dump no longer matched the older "firmware never started" or bad secure
+  header cases. The strongest remaining host-side theory was that the RX
+  free-ring advertisement was getting lost at the boundary between firmware
+  upload completion and the ALIVE wait.
+
+  The RX ring base addresses were already matching the programmed DMA values,
+  but RFH still showed zero free-ring consumption and zero used/status writes.
+  Re-advertising the free-ring at the ALIVE boundary is hardware-agnostic and
+  directly targets that remaining handoff gap without changing the proven
+  upload ordering.
+
+FILES CHANGED:
+  - `src/drivers/net/wifi_9260.c`
+
+CODE CHANGES:
+  1. Added `iwl_rfh_kick_rx_free_ring()` in `src/drivers/net/wifi_9260.c`.
+     - Flushes RXBD / RXUSED / RX status memory.
+     - Rewrites `RFH_Q_FRBDCB_WIDX_TRG(0)` with the full rounded-down queue
+       advertisement.
+     - Captures an optional boot-trace tag.
+
+  2. Switched initial RFH queue advertisement to use that helper.
+     - keeps the init-time doorbell path and the ALIVE-time doorbell path
+       using the same logic.
+
+  3. Re-doorbell RFH at ALIVE wait start.
+     - Immediately after rotating interrupts to `ALIVE | FH_RX`, call the
+       helper again before polling for notifications.
+
+  4. Added one bounded RFH re-kick during ALIVE timeout polling.
+     - If there is still zero RX status progress after 50 ms, re-advertise the
+       free-ring one more time and trace it as `alive-rekick`.
+
+RATIONALE:
+  This change is deliberately narrow. It does not revisit secure-header,
+  context-info, or upload-completion logic because the user's latest hardware
+  dump already showed those paths progressing much further than before.
+
+BUILD / VERIFICATION COMMANDS:
+  Investigation:
+    - `sed -n '1,260p' /home/jjsako/TaterTOS64v3/planv3.txt`
+    - `nl -ba /home/jjsako/TaterTOS64v3/src/drivers/net/wifi_9260.c | sed -n '1240,1355p'`
+    - `nl -ba /home/jjsako/TaterTOS64v3/src/drivers/net/wifi_9260.c | sed -n '2438,2665p'`
+    - compared against Linux reference files under:
+      `linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/`
+
+  Build attempts:
+    1. `make clean`
+    2. `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+       - first attempt failed because the new helper was called before its
+         definition
+    3. added forward declaration for `iwl_rfh_kick_rx_free_ring()`
+    4. `make clean`
+    5. `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+
+RESULT:
+  - final clean rebuild via `build_iso.sh`: PASS
+  - ISO output:
+      `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+  - NVMe image output:
+      `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+  - EFI boot image:
+      `/home/jjsako/TaterTOS64v3/out/efiboot.img`
+  - Windows ISO export:
+      skipped because `/mnt/c/Users/jjsako/Documents` was not writable
+
+NON-FATAL BUILD WARNINGS:
+  - `src/kernel/acpi/aml_exec.c`: unused parameter `ctx`
+  - `src/kernel/acpi/extended.c`: unused helpers `str_eq`, `obj_to_str`,
+    `pci_cf8_write32`
+  - `src/boot/efi_loader.c`: unused `gop_mask_size` / `gop_mask_pos`
+  - `xorriso`: El Torito boot image load size warning during ISO packaging
+
+NEXT HARDWARE TEST:
+  Boot the rebuilt image on the Dell Precision 7530, then run:
+    1. `wh`
+    2. `wd2`
+    3. `wc`
+    4. `wd3`
+
+  Primary checks:
+    - `RFH_R` should move off zero if the free-ring doorbell was the blocker
+    - ideally `RFH_U`, `rx_closed`, or `rx_fin` should also become non-zero
+    - if ALIVE still does not arrive but the trace shows `alive-kick` /
+      `alive-rekick` with no RX movement, the remaining blocker is likely no
+      longer in the host RFH handoff path
+
+NOTES:
+  - This log satisfies `planv3.txt` rule 5 and rule 6 for the completed code
+    change and rebuild.
+  - No SHA-256 hashes were recorded because the user requested the fix/rebuild
+    but did not explicitly request hash verification.

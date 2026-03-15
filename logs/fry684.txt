@@ -1,0 +1,90 @@
+fry684 - 2026-03-09 20:43:45 CDT - WiFi 9260: direct _8000 upload path now writes final CPU-ready marker to UREG_UCODE_LOAD_STATUS
+
+SESSION CONTEXT:
+  The latest sequential plain fry log before this entry was `fry683.txt`.
+  The current active source path was checked before changing code:
+    - `src/drivers/net/wifi_9260.c` still boots SEC_RT firmware through the
+      direct `_8000` FH upload path
+    - the context-info self-load helper exists in the file but is not the path
+      reached by the current firmware boot attempt
+
+  The user-provided Dell Precision 7530 bare-metal dump showed the most
+  progressed known failure shape so far:
+    - `step=9 rc=-1 irq=2`
+    - `FH_LOAD=0xffffffff`
+    - `UREG_UCODE_LOAD_STATUS=0x00000000`
+    - `CPU1_ST=0x00000003`
+    - `CPU2_ST=0x00002320`
+    - `UMAC_PC=0xc0000000`
+    - `LMAC_PC=0x000000e8`
+    - no RX progress (`RFH_R=0`, `RFH_U=0`)
+
+WHY:
+  In Linux 7.0-rc2, the same direct upload code used for 8000/9000-class parts
+  still keeps `FH_UCODE_LOAD_STATUS` for the per-section bitmap, but for
+  `trans->mac_cfg->gen2` it writes the final CPU-ready marker to
+  `UREG_UCODE_LOAD_STATUS`, not `FH_UCODE_LOAD_STATUS`.
+
+  The local driver was mixing those semantics:
+    - section progress bits were written into `FH_UCODE_LOAD_STATUS`
+    - final completion was also written into `FH_UCODE_LOAD_STATUS`
+    - `UREG_UCODE_LOAD_STATUS` remained zero in the live Dell dump
+
+  Since the user's current best state is the progressed `step=9 irq=2` shape,
+  this change intentionally stays on that same direct `_8000` path and only
+  corrects the final done-marker register inside that path.
+
+FILES CHANGED:
+  - `src/drivers/net/wifi_9260.c`
+  - `logs/fry684.txt`
+
+CODE CHANGES:
+  1. Updated `iwl_write_ucode_load_done()` so the final ready marker is written
+     to `UREG_UCODE_LOAD_STATUS`.
+  2. Left `FH_UCODE_LOAD_STATUS` in place for the per-section bitmap updates.
+  3. Expanded the completion debug log to print both:
+     - `FH_STATUS`
+     - `ULD_STATUS`
+
+RATIONALE:
+  This is not a switch back to the unused context-info experiment. It keeps the
+  driver on the already-more-progressed direct `_8000` upload flow and fixes
+  the specific handoff mismatch visible in the user's current bare-metal dump.
+
+VERIFICATION COMMANDS:
+  - `make -C /home/jjsako/TaterTOS64v3 src/drivers/net/wifi_9260.o`
+  - `bash build_iso.sh`
+
+RESULT:
+  - object rebuild: PASS
+  - full rebuild/package: PASS
+  - ISO output:
+      `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+  - NVMe image output:
+      `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+  - EFI boot image:
+      `/home/jjsako/TaterTOS64v3/out/efiboot.img`
+  - Windows ISO export:
+      `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+NON-FATAL BUILD WARNINGS:
+  - `src/kernel/acpi/aml_exec.c`: unused parameter `ctx`
+  - `src/kernel/acpi/extended.c`: unused helpers `str_eq`, `obj_to_str`,
+    `pci_cf8_write32`
+  - `src/boot/efi_loader.c`: unused `gop_mask_size` / `gop_mask_pos`
+  - `xorriso`: El Torito boot image load size warning during ISO packaging
+
+NEXT HARDWARE TEST:
+  Boot the rebuilt image on the Dell Precision 7530 and run:
+    1. `wh`
+    2. `wd2`
+    3. `wd3`
+
+  Primary check:
+    - `uld` / `UREG_UCODE_LOAD_STATUS` should stop reading as `0x00000000`
+      while preserving or improving on the current progressed `step=9 irq=2`
+      baseline.
+
+NOTES:
+  - This log is written to satisfy `planv3.txt` rule 5 and rule 6.
+  - No SHA-256 hashes were recorded because they were not requested.

@@ -1,0 +1,39 @@
+fry679 - 2026-03-09 08:33:47 CDT - Process correction: treat bare-metal reboot cycles as expensive and batch WiFi fixes before requesting more diagnostics
+
+SESSION CONTEXT:
+  The user called out a real process failure in the WiFi 9260 debugging loop:
+    - each hardware test requires rebooting the same machine used for builds
+    - repeated requests for more diagnostics after prior claims of "this is
+      enough to fix it" imposed unnecessary cost on the user
+    - the issue was not lack of technical detail, but poor handling of reboot
+      cost and iteration discipline
+
+WHY:
+  `planv3.txt` already requires step logging and disciplined execution, but it
+  did not explicitly encode the practical rule that bare-metal reboot cycles on
+  the primary build machine must be treated as expensive. That gap allowed too
+  much diagnostic churn instead of batching likely fixes into each reboot.
+
+FILES CHANGED:
+  - `planv3.txt`
+  - `logs/fry679.txt`
+
+PROCESS CHANGE RECORDED:
+  1. Added plan rule 17 to `planv3.txt`:
+     - bare-metal reboot/test cycles on the primary build machine are expensive
+     - batch fixes before asking for another hardware run
+     - do not ask for more diagnostics unless a code change cannot be made
+       responsibly without them
+  2. This log records the correction so future WiFi and bare-metal debugging
+     work is judged against the same constraint.
+
+IMPACT ON FUTURE TESTING:
+  - Prefer larger, better-justified fix bundles per reboot.
+  - Do not ask for fresh dumps as a default reflex.
+  - Only request additional hardware diagnostics when they are the blocker for
+    the next responsible code change.
+
+NOTES:
+  - This log satisfies `planv3.txt` rule 5 and rule 6 for a completed process
+    change.
+  - No rebuild was performed for this logging-only update.

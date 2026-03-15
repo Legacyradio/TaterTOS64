@@ -65,6 +65,57 @@ static inline uint64_t read_cr3_irq(void) {
     uint64_t v; __asm__ volatile("mov %%cr3, %0" : "=r"(v)); return v;
 }
 
+static const struct fry_vm_region *pf_find_vm_region(const struct fry_process *p,
+                                                     uint64_t addr) {
+    if (!p) return 0;
+    for (uint32_t i = 0; i < PROC_VMREG_MAX; i++) {
+        const struct fry_vm_region *r = &p->vm_regions[i];
+        if (!r->used) continue;
+        if (addr >= r->base && addr < r->base + r->length) return r;
+    }
+    return 0;
+}
+
+static const char *pf_region_kind_name(uint16_t kind) {
+    switch (kind) {
+        case FRY_VM_REGION_ANON_PRIVATE: return "anon-private";
+        case FRY_VM_REGION_ANON_SHARED:  return "anon-shared";
+        case FRY_VM_REGION_FILE_PRIVATE: return "file-private";
+        case FRY_VM_REGION_GUARD:        return "guard";
+        default:                         return "unknown";
+    }
+}
+
+static void pf_log_region_detail(const struct fry_process *cur,
+                                 uint64_t fault_addr,
+                                 uint64_t error) {
+    const struct fry_vm_region *r = pf_find_vm_region(cur, fault_addr);
+    const char *access = (error & (1ULL << 4)) ? "exec"
+                       : (error & (1ULL << 1)) ? "write"
+                       : "read";
+    if (!r) {
+        kprint("USER VM: addr=0x%llx access=%s reason=unmapped\n",
+               (unsigned long long)fault_addr, access);
+        return;
+    }
+
+    const char *reason = ((error & 1ULL) != 0) ? "protection" : "not-present";
+    if (!r->committed) {
+        reason = (r->kind == FRY_VM_REGION_GUARD) ? "guard" : "reserved";
+    }
+
+    kprint("USER VM: addr=0x%llx access=%s reason=%s kind=%s committed=%u base=0x%llx len=0x%llx prot=0x%x flags=0x%x\n",
+           (unsigned long long)fault_addr,
+           access,
+           reason,
+           pf_region_kind_name(r->kind),
+           (unsigned)r->committed,
+           (unsigned long long)r->base,
+           (unsigned long long)r->length,
+           (unsigned)r->prot,
+           (unsigned)r->flags);
+}
+
 __attribute__((noreturn))
 static void pf_kill_finish(uint32_t pid) {
     proc_free(pid);
@@ -92,6 +143,7 @@ static void pf_kill_current_user(uint64_t vector, uint64_t error, void *ctx) {
            (unsigned long long)error,
            (unsigned long long)rip,
            (unsigned long long)cr2);
+    pf_log_region_detail(cur, cr2, error);
 
     cur->exit_code = 139; /* SIGSEGV-like exit code */
 

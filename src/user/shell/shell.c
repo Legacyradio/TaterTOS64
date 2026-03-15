@@ -9,7 +9,7 @@
 #define CHAR_H    16
 #define MAX_TERM_COLS  200
 #define MAX_TERM_ROWS  100
-#define SCROLLBACK_MAX 500
+#define SCROLLBACK_INITIAL 512
 #define SCROLLBAR_W    10
 
 /* Dynamic sizing — updated on resize */
@@ -26,9 +26,10 @@ static char *screen_buf = NULL;
 
 /* Scrollback ring buffer */
 static char *scrollback = NULL;
-static int sb_count = 0;   /* lines stored (up to SCROLLBACK_MAX) */
-static int sb_head = 0;    /* oldest line index in ring */
+static int sb_count = 0;   /* lines stored */
+static int sb_capacity = 0;
 static int scroll_offset = 0; /* 0 = at bottom, >0 = scrolled up N lines */
+static int scroll_drag_active = 0;
 
 /* Terminal cursor */
 static int cur_row, cur_col;
@@ -65,25 +66,42 @@ static char *screen_row(int r) {
 static void build_path(const char *in, char *out, size_t max);
 
 static char *sb_line(int idx) {
-    /* idx: 0 = oldest, sb_count-1 = newest */
-    int real = (sb_head + idx) % SCROLLBACK_MAX;
-    return scrollback + real * SCREEN_STRIDE;
+    return scrollback + (size_t)idx * SCREEN_STRIDE;
+}
+
+static int sb_ensure_capacity(int min_lines) {
+    if (min_lines <= sb_capacity) return 0;
+
+    int new_cap = (sb_capacity > 0) ? sb_capacity : SCROLLBACK_INITIAL;
+    while (new_cap < min_lines) {
+        if (new_cap > 1 << 20) return -1;
+        new_cap *= 2;
+    }
+
+    char *nb = realloc(scrollback, (size_t)new_cap * SCREEN_STRIDE);
+    if (!nb) return -1;
+    scrollback = nb;
+    sb_capacity = new_cap;
+    return 0;
 }
 
 static void sb_push_line(const char *line) {
-    int slot;
-    if (sb_count < SCROLLBACK_MAX) {
-        slot = (sb_head + sb_count) % SCROLLBACK_MAX;
-        sb_count++;
-    } else {
-        slot = sb_head;
-        sb_head = (sb_head + 1) % SCROLLBACK_MAX;
+    if (sb_ensure_capacity(sb_count + 1) != 0) {
+        if (sb_count > 0) {
+            memmove(scrollback, scrollback + SCREEN_STRIDE,
+                    (size_t)(sb_count - 1) * SCREEN_STRIDE);
+            sb_count--;
+        } else {
+            return;
+        }
     }
-    char *dst = scrollback + slot * SCREEN_STRIDE;
+
+    char *dst = scrollback + (size_t)sb_count * SCREEN_STRIDE;
     int len = term_cols;
     if (len > MAX_TERM_COLS) len = MAX_TERM_COLS;
     memcpy(dst, line, (size_t)len);
     dst[len] = 0;
+    sb_count++;
 }
 
 /* ================================================================
@@ -114,8 +132,7 @@ static void term_scroll(void) {
 
 static void term_putc(char c) {
     needs_redraw = 1;
-    /* Any new output resets scroll view to bottom */
-    scroll_offset = 0;
+    if (scroll_offset < 0) scroll_offset = 0;
 
     if (c == '\n') {
         cur_col = 0;
@@ -173,12 +190,36 @@ static void term_puts(const char *s) {
 }
 
 static void term_printf(const char *fmt, ...) {
-    char buf[512];
     va_list ap;
+    va_list ap2;
+    char stack_buf[512];
+
     va_start(ap, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_copy(ap2, ap);
+    int need = vsnprintf(stack_buf, sizeof(stack_buf), fmt, ap);
     va_end(ap);
-    term_puts(buf);
+    if (need < 0) {
+        va_end(ap2);
+        return;
+    }
+
+    if ((size_t)need < sizeof(stack_buf)) {
+        va_end(ap2);
+        term_puts(stack_buf);
+        return;
+    }
+
+    char *heap_buf = malloc((size_t)need + 1);
+    if (!heap_buf) {
+        va_end(ap2);
+        term_puts(stack_buf);
+        return;
+    }
+
+    vsnprintf(heap_buf, (size_t)need + 1, fmt, ap2);
+    va_end(ap2);
+    term_puts(heap_buf);
+    free(heap_buf);
 }
 
 /* ================================================================
@@ -362,6 +403,380 @@ static const char *fs_type_name(uint8_t t) {
         case 4: return "ramdisk";
         default: return "none";
     }
+}
+
+static void wifi_format_ip(uint32_t ip, char *buf, size_t buf_len) {
+    snprintf(buf, buf_len, "%u.%u.%u.%u",
+             (unsigned)((ip >> 24) & 0xFFu),
+             (unsigned)((ip >> 16) & 0xFFu),
+             (unsigned)((ip >> 8) & 0xFFu),
+             (unsigned)(ip & 0xFFu));
+}
+
+static void wifi_format_mac(const uint8_t mac[6], char *buf, size_t buf_len) {
+    snprintf(buf, buf_len, "%02x:%02x:%02x:%02x:%02x:%02x",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+static const char *wifi_step_name(uint8_t step) {
+    switch (step) {
+        case WIFI_STEP_NONE:      return "none";
+        case WIFI_STEP_PCI_SCAN:  return "pci";
+        case WIFI_STEP_NIC_RESET: return "nic-reset";
+        case WIFI_STEP_FW_LOAD:   return "fw-load";
+        case WIFI_STEP_TLV_PARSE: return "tlv-parse";
+        case WIFI_STEP_DMA_ALLOC: return "dma-alloc";
+        case WIFI_STEP_TFH_INIT:  return "tfh-init";
+        case WIFI_STEP_MSI:       return "msi";
+        case WIFI_STEP_FW_UPLOAD: return "fw-upload";
+        case WIFI_STEP_ALIVE:     return "alive";
+        case WIFI_STEP_HCMD_INIT: return "hcmd";
+        case WIFI_STEP_MAC_INIT:  return "mac-init";
+        case WIFI_STEP_SCAN:      return "scan";
+        case WIFI_STEP_DONE:      return "done";
+        default:                  return "?";
+    }
+}
+
+static void cmd_wifi_status(void) {
+    struct fry_wifi_status st;
+    char mac[24];
+    char bssid[24];
+    char ip[20];
+    char gw[20];
+    char dns[20];
+
+    if (fry_wifi_status(&st) != 0) {
+        term_printf("wifi: status unavailable\n");
+        return;
+    }
+
+    wifi_format_mac(st.mac, mac, sizeof(mac));
+    wifi_format_mac(st.bssid, bssid, sizeof(bssid));
+    wifi_format_ip(st.ip, ip, sizeof(ip));
+    wifi_format_ip(st.gateway, gw, sizeof(gw));
+    wifi_format_ip(st.dns_server, dns, sizeof(dns));
+
+    term_printf("wifi: driver=%s mac=%s\n",
+                st.ready ? "ready" : "offline", mac);
+    if (!st.ready && st.init_rc != 0) {
+        term_printf("      FAIL @ %s (step %u) rc=%d\n",
+                    wifi_step_name(st.init_step),
+                    (unsigned)st.init_step,
+                    (int)st.init_rc);
+    } else if (!st.ready) {
+        term_printf("      init stopped @ %s (step %u)\n",
+                    wifi_step_name(st.init_step),
+                    (unsigned)st.init_step);
+    }
+    term_printf("      link=%s secure=%s dhcp=%s\n",
+                st.connected ? "associated" : "idle",
+                st.secure ? "yes" : "no",
+                st.configured ? "configured" : "pending");
+    term_printf("      ssid=%s channel=%u rssi=%d bssid=%s\n",
+                st.ssid[0] ? st.ssid : "<none>",
+                (unsigned)st.channel,
+                (int)st.rssi,
+                st.connected ? bssid : "--:--:--:--:--:--");
+    term_printf("      ip=%s gw=%s dns=%s\n",
+                st.configured ? ip : "0.0.0.0",
+                st.configured ? gw : "0.0.0.0",
+                st.configured ? dns : "0.0.0.0");
+}
+
+static void cmd_wifi_ip(void) {
+    struct fry_wifi_status st;
+    char ip[20];
+    char mask[20];
+    char gw[20];
+    char dns[20];
+
+    if (fry_wifi_status(&st) != 0) {
+        term_printf("wifi: status unavailable\n");
+        return;
+    }
+
+    wifi_format_ip(st.ip, ip, sizeof(ip));
+    wifi_format_ip(st.netmask, mask, sizeof(mask));
+    wifi_format_ip(st.gateway, gw, sizeof(gw));
+    wifi_format_ip(st.dns_server, dns, sizeof(dns));
+
+    term_printf("wifi ip: %s\n", st.configured ? ip : "0.0.0.0");
+    term_printf("wifi mask: %s\n", st.configured ? mask : "0.0.0.0");
+    term_printf("wifi gw: %s\n", st.configured ? gw : "0.0.0.0");
+    term_printf("wifi dns: %s\n", st.configured ? dns : "0.0.0.0");
+}
+
+static void cmd_wifi_scan(void) {
+    struct fry_wifi_scan_entry scan[FRY_WIFI_MAX_SCAN];
+    uint32_t count = 0;
+    long rc = fry_wifi_scan(scan, FRY_WIFI_MAX_SCAN, &count);
+    if (rc != 0) {
+        term_printf("wifi: scan failed rc=%ld\n", rc);
+        return;
+    }
+
+    term_printf("wifi: %u network(s)\n", (unsigned)count);
+    for (uint32_t i = 0; i < count; i++) {
+        term_printf("  %-32s ch=%u rssi=%d %s%s\n",
+                    scan[i].ssid[0] ? scan[i].ssid : "<hidden>",
+                    (unsigned)scan[i].channel,
+                    (int)scan[i].rssi,
+                    scan[i].secure ? "WPA2" : "OPEN",
+                    scan[i].connected ? " [CONNECTED]" : "");
+    }
+}
+
+static void cmd_wifi_connect(int argc, char *argv[]) {
+    if (argc < 3) {
+        term_printf("wifi: usage: wifi connect <ssid> [passphrase]\n");
+        return;
+    }
+
+    const char *ssid = argv[2];
+    const char *pass = (argc >= 4) ? argv[3] : "";
+
+    term_printf("wifi: connecting to %s...\n", ssid);
+    long rc = fry_wifi_connect(ssid, pass);
+    if (rc != 0) {
+        term_printf("wifi: connect failed rc=%ld\n", rc);
+        return;
+    }
+
+    term_printf("wifi: connect ok\n");
+    cmd_wifi_ip();
+}
+
+static void cmd_wifi_init_log(void) {
+    static char logbuf[FRY_WIFI_DEBUG_MAX];
+    long n = fry_wifi_init_log(logbuf, sizeof(logbuf));
+    if (n > 0) {
+        term_printf("%s", logbuf);
+    } else if (n < 0) {
+        term_printf("wifi: init log read failed rc=%d\n", (int)n);
+    } else {
+        term_printf("wifi: no init log\n");
+    }
+}
+
+static void cmd_wifi_handoff(void) {
+    static char handbuf[4096];
+    long n = fry_wifi_handoff(handbuf, sizeof(handbuf));
+    if (n > 0) {
+        term_printf("%s", handbuf);
+    } else if (n < 0) {
+        term_printf("wifi: handoff read failed rc=%d\n", (int)n);
+    } else {
+        term_printf("wifi: no handoff status\n");
+    }
+}
+
+static void cmd_wifi_debug(void) {
+    static char dbgbuf[FRY_WIFI_DEBUG_MAX];
+    long n = fry_wifi_debug(dbgbuf, sizeof(dbgbuf));
+    if (n > 0) {
+        term_printf("%s", dbgbuf);
+    } else if (n < 0) {
+        term_printf("wifi: debug log read failed rc=%d\n", (int)n);
+    } else {
+        term_printf("wifi: no debug log\n");
+    }
+}
+
+static void cmd_wifi_cpu_status(void) {
+    static char cpubuf[8192];
+    long n = fry_wifi_cpu_status(cpubuf, sizeof(cpubuf));
+    if (n > 0) {
+        term_printf("%s", cpubuf);
+    } else if (n < 0) {
+        term_printf("wifi: cpu status read failed rc=%d\n", (int)n);
+    } else {
+        term_printf("wifi: no cpu status\n");
+    }
+}
+
+static void cmd_wifi_trace(void) {
+    static char tracebuf[FRY_WIFI_DEBUG_MAX];
+    long n = fry_wifi_debug3(tracebuf, sizeof(tracebuf));
+    if (n > 0) {
+        term_printf("%s", tracebuf);
+    } else if (n < 0) {
+        term_printf("wifi: trace read failed rc=%d\n", (int)n);
+    } else {
+        term_printf("wifi: no trace data\n");
+    }
+}
+
+static void cmd_wifi_cmd_trace(void) {
+    static char cmdbuf[FRY_WIFI_DEBUG_MAX];
+    long n = fry_wifi_cmd_trace(cmdbuf, sizeof(cmdbuf));
+    if (n > 0) {
+        term_printf("%s", cmdbuf);
+    } else if (n < 0) {
+        term_printf("wifi: cmd trace read failed rc=%d\n", (int)n);
+    } else {
+        term_printf("wifi: no cmd trace data\n");
+    }
+}
+
+static void cmd_wifi_sram(void) {
+    static char srambuf[FRY_WIFI_DEBUG_MAX];
+    long n = fry_wifi_sram(srambuf, sizeof(srambuf));
+    if (n > 0) {
+        term_printf("%s", srambuf);
+    } else if (n < 0) {
+        term_printf("wifi: sram read failed rc=%d\n", (int)n);
+    } else {
+        term_printf("wifi: no sram data\n");
+    }
+}
+
+static void cmd_wifi_deep_diag(void) {
+    static char deepbuf[FRY_WIFI_DEBUG_MAX];
+    long n = fry_wifi_deep_diag(deepbuf, sizeof(deepbuf));
+    if (n > 0) {
+        term_printf("%s", deepbuf);
+    } else if (n < 0) {
+        term_printf("wifi: deep diag read failed rc=%d\n", (int)n);
+    } else {
+        term_printf("wifi: no deep diag data\n");
+    }
+}
+
+static void cmd_wifi_verify(void) {
+    static char verifybuf[FRY_WIFI_DEBUG_MAX];
+    long n = fry_wifi_verify(verifybuf, sizeof(verifybuf));
+    if (n > 0) {
+        term_printf("%s", verifybuf);
+    } else if (n < 0) {
+        term_printf("wifi: verify read failed rc=%d\n", (int)n);
+    } else {
+        term_printf("wifi: no verify data\n");
+    }
+}
+
+static void cmd_wifi_diag(void) {
+    term_printf("=== wd ===\n");
+    cmd_wifi_debug();
+    term_printf("=== wl ===\n");
+    cmd_wifi_init_log();
+    term_printf("=== wh ===\n");
+    cmd_wifi_handoff();
+    term_printf("=== wc ===\n");
+    cmd_wifi_cpu_status();
+}
+
+/* ---- Wired Ethernet (I219) commands ---- */
+
+static void cmd_eth_diag(void) {
+    static char ethbuf[4096];
+    long n = fry_eth_diag(ethbuf, sizeof(ethbuf));
+    if (n > 0) {
+        term_printf("%s", ethbuf);
+    } else if (n < 0) {
+        term_printf("eth: diag read failed rc=%d\n", (int)n);
+    } else {
+        term_printf("eth: no diag data (I219 not found?)\n");
+    }
+}
+
+static void cmd_dhcp(void) {
+    term_printf("DHCP: discovering...\n");
+    /* dhcp_discover is blocking (up to ~10s) — call via netmgr or inline.
+     * For now, this is a placeholder that prints the current IP config. */
+    term_printf("DHCP: (not yet wired to shell — use netmgr app)\n");
+}
+
+static void cmd_netstat(void) {
+    static char ethbuf[4096];
+    long n = fry_eth_diag(ethbuf, sizeof(ethbuf));
+    if (n > 0) {
+        /* Just show the first few lines (state summary) */
+        int lines = 0;
+        for (int i = 0; i < n && lines < 6; i++) {
+            term_putc(ethbuf[i]);
+            if (ethbuf[i] == '\n') lines++;
+        }
+    } else {
+        term_printf("netstat: no NIC available\n");
+    }
+}
+
+static void cmd_ping(int argc, char **argv) {
+    if (argc < 2) {
+        term_printf("usage: ping <ip>\n");
+        return;
+    }
+    term_printf("ping: not yet implemented (need DHCP first)\n");
+}
+
+static void cmd_wifi_reset(void) {
+    term_printf("wifi: live reset is disabled\n");
+    term_printf("wifi: reboot required until driver teardown/recovery exists\n");
+    long rc = fry_wifi_reinit();
+    if (rc != 0) {
+        term_printf("wifi: reset failed rc=%ld\n", rc);
+        return;
+    }
+}
+
+static void cmd_wifi(int argc, char *argv[]) {
+    if (argc < 2 || strcmp(argv[1], "status") == 0) {
+        cmd_wifi_status();
+        return;
+    }
+
+    if (strcmp(argv[1], "scan") == 0) {
+        cmd_wifi_scan();
+        return;
+    }
+
+    if (strcmp(argv[1], "connect") == 0) {
+        cmd_wifi_connect(argc, argv);
+        return;
+    }
+
+    if (strcmp(argv[1], "ip") == 0) {
+        cmd_wifi_ip();
+        return;
+    }
+
+    if (strcmp(argv[1], "diag") == 0) {
+        cmd_wifi_diag();
+        return;
+    }
+
+    if (strcmp(argv[1], "trace") == 0) {
+        cmd_wifi_trace();
+        return;
+    }
+
+    if (strcmp(argv[1], "cmdtrace") == 0) {
+        cmd_wifi_cmd_trace();
+        return;
+    }
+
+    if (strcmp(argv[1], "sram") == 0) {
+        cmd_wifi_sram();
+        return;
+    }
+
+    if (strcmp(argv[1], "deep") == 0) {
+        cmd_wifi_deep_diag();
+        return;
+    }
+
+    if (strcmp(argv[1], "verify") == 0) {
+        cmd_wifi_verify();
+        return;
+    }
+
+    if (strcmp(argv[1], "reset") == 0) {
+        cmd_wifi_reset();
+        return;
+    }
+
+    term_printf("wifi: commands: status scan connect ip diag trace cmdtrace reset sram deep verify\n");
 }
 
 static void print_mount_dbg(void) {
@@ -780,13 +1195,14 @@ static void execute_command(void) {
         term_printf("commands: ls cd cat echo mkdir rm touch write\n");
         term_printf("          clear reboot shutdown help pwd acpibreak exit quit\n");
         term_printf("          storage mounts mountdbg vfsdbg [path] nvmefix [path]\n");
-        term_printf("scroll: Ctrl+U = page up, Ctrl+D = page down\n");
+        term_printf("          eth dhcp netstat ping\n");
+        term_printf("          wifi [status|scan|connect|ip|diag|trace|cmdtrace|sram|deep|verify] wdiag wd2 wd3 wcmd wc wh wl sram wdeep wverify\n");
+        term_printf("scroll: Ctrl+U = page up, Ctrl+D = page down, drag scrollbar\n");
     } else if (strcmp(argv[0], "exit") == 0 || strcmp(argv[0], "quit") == 0) {
         fry_exit(0);
     } else if (strcmp(argv[0], "clear") == 0) {
         term_init();
         sb_count = 0;
-        sb_head = 0;
         scroll_offset = 0;
     } else if (strcmp(argv[0], "echo") == 0) {
         for (int i = 1; i < argc; i++) {
@@ -944,6 +1360,52 @@ static void execute_command(void) {
         }
     } else if (strcmp(argv[0], "acpibreak") == 0) {
         cmd_acpibreak();
+    } else if (strcmp(argv[0], "wifi") == 0) {
+        cmd_wifi(argc, argv);
+    } else if (strcmp(argv[0], "ws") == 0) {
+        cmd_wifi_status();
+    } else if (strcmp(argv[0], "wd") == 0) {
+        cmd_wifi_debug();
+    } else if (strcmp(argv[0], "wd2") == 0) {
+        {
+            static char dbg2buf[FRY_WIFI_DEBUG_MAX];
+            long n = fry_wifi_debug2(dbg2buf, sizeof(dbg2buf));
+            if (n > 0) {
+                term_printf("%s", dbg2buf);
+            } else if (n < 0) {
+                term_printf("wifi: debug2 read failed rc=%d\n", (int)n);
+            } else {
+                term_printf("wifi: no debug2 data\n");
+            }
+        }
+    } else if (strcmp(argv[0], "wd3") == 0) {
+        cmd_wifi_trace();
+    } else if (strcmp(argv[0], "wcmd") == 0) {
+        cmd_wifi_cmd_trace();
+    } else if (strcmp(argv[0], "wc") == 0) {
+        cmd_wifi_cpu_status();
+    } else if (strcmp(argv[0], "wh") == 0) {
+        cmd_wifi_handoff();
+    } else if (strcmp(argv[0], "sram") == 0) {
+        cmd_wifi_sram();
+    } else if (strcmp(argv[0], "wdeep") == 0) {
+        cmd_wifi_deep_diag();
+    } else if (strcmp(argv[0], "wverify") == 0) {
+        cmd_wifi_verify();
+    } else if (strcmp(argv[0], "wl") == 0) {
+        cmd_wifi_init_log();
+    } else if (strcmp(argv[0], "wdiag") == 0) {
+        cmd_wifi_diag();
+    } else if (strcmp(argv[0], "wsc") == 0) {
+        cmd_wifi_scan();
+    } else if (strcmp(argv[0], "eth") == 0) {
+        cmd_eth_diag();
+    } else if (strcmp(argv[0], "dhcp") == 0) {
+        cmd_dhcp();
+    } else if (strcmp(argv[0], "netstat") == 0) {
+        cmd_netstat();
+    } else if (strcmp(argv[0], "ping") == 0) {
+        cmd_ping(argc, argv);
     } else {
         /* Try spawning user program */
         char path[128];
@@ -988,6 +1450,11 @@ static void handle_key(char c) {
         return;
     }
 
+    if (scroll_offset != 0) {
+        scroll_offset = 0;
+        needs_redraw = 1;
+    }
+
     if (c == '\n') {
         input_line[input_pos] = 0;
         term_putc('\n');
@@ -1009,6 +1476,62 @@ static void handle_key(char c) {
     if ((unsigned char)c >= 0x20 && input_pos + 1 < (int)sizeof(input_line)) {
         input_line[input_pos++] = c;
         term_putc(c);
+    }
+}
+
+static void handle_mouse(const tw_msg_mouse_t *mm) {
+    if (!mm) return;
+
+    if (!(mm->btns & 1u)) {
+        scroll_drag_active = 0;
+        return;
+    }
+
+    if (mm->x < win_w - SCROLLBAR_W && !scroll_drag_active)
+        return;
+
+    scroll_drag_active = 1;
+
+    if (sb_count <= 0) {
+        if (scroll_offset != 0) {
+            scroll_offset = 0;
+            needs_redraw = 1;
+        }
+        return;
+    }
+
+    int total_lines = sb_count + term_rows;
+    int visible_lines = term_rows;
+    if (total_lines <= visible_lines) {
+        if (scroll_offset != 0) {
+            scroll_offset = 0;
+            needs_redraw = 1;
+        }
+        return;
+    }
+
+    int track_h = win_h - 4;
+    int thumb_h = (visible_lines * track_h) / total_lines;
+    if (thumb_h < 16) thumb_h = 16;
+
+    int range = track_h - thumb_h;
+    int max_off = sb_count;
+    int thumb_y = mm->y - (thumb_h / 2);
+    if (thumb_y < 2) thumb_y = 2;
+    if (thumb_y > win_h - 2 - thumb_h) thumb_y = win_h - 2 - thumb_h;
+
+    int new_off;
+    if (range <= 0) {
+        new_off = 0;
+    } else {
+        new_off = max_off - (((thumb_y - 2) * max_off + (range / 2)) / range);
+    }
+
+    if (new_off < 0) new_off = 0;
+    if (new_off > max_off) new_off = max_off;
+    if (new_off != scroll_offset) {
+        scroll_offset = new_off;
+        needs_redraw = 1;
     }
 }
 
@@ -1092,8 +1615,12 @@ static void process_input_stream(void) {
                     tw_msg_key_t kev;
                     memcpy(&kev, input_stream, sizeof(kev));
                     handle_key((char)(uint8_t)kev.key);
+                } else if (hdr.type == TW_MSG_MOUSE_EVENT && need == (int)sizeof(tw_msg_mouse_t)) {
+                    tw_msg_mouse_t mm;
+                    memcpy(&mm, input_stream, sizeof(mm));
+                    handle_mouse(&mm);
                 }
-                /* Consume any protocol frame from stdin; shell only acts on RESIZED. */
+                /* Consume any protocol frame from stdin after dispatching it. */
                 input_consume(need);
                 continue;
             }
@@ -1127,9 +1654,7 @@ int main(void) {
     screen_buf = malloc((size_t)MAX_TERM_ROWS * SCREEN_STRIDE);
     if (!screen_buf) return 1;
 
-    /* Allocate scrollback buffer */
-    scrollback = malloc((size_t)SCROLLBACK_MAX * SCREEN_STRIDE);
-    if (!scrollback) {
+    if (sb_ensure_capacity(SCROLLBACK_INITIAL) != 0) {
         free(screen_buf);
         return 1;
     }

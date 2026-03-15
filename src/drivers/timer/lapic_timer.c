@@ -8,6 +8,7 @@
 #include "../../kernel/mm/vmm.h"
 #include "../../boot/efi_handoff.h"
 #include "../../boot/early_serial.h"
+#include "../../include/tater_trace.h"
 
 void kprint(const char *fmt, ...);
 void sched_tick(void);
@@ -17,6 +18,7 @@ static uint8_t g_first_bsp_tick_seen;
 
 static void boot_diag_stage(uint64_t stage) {
     struct fry_handoff *handoff = g_handoff;
+    if (!TATER_BOOT_VISUAL_DEBUG) return;
     if (!handoff) return;
     if (!handoff->fb_base || !handoff->fb_width || !handoff->fb_height || !handoff->fb_stride) return;
     if (!handoff->boot_identity_limit || handoff->fb_base >= handoff->boot_identity_limit) return;
@@ -47,7 +49,7 @@ static void lapic_timer_handler(uint32_t vector, void *ctx, void *dev_id, uint64
         if (!g_first_bsp_tick_seen) {
             g_first_bsp_tick_seen = 1;
             boot_diag_stage(33);
-            early_serial_puts("K_FIRST_TICK\n");
+            if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("K_FIRST_TICK\n");
         }
         sched_tick();
         return;
@@ -56,7 +58,7 @@ static void lapic_timer_handler(uint32_t vector, void *ctx, void *dev_id, uint64
         if (!g_first_bsp_tick_seen) {
             g_first_bsp_tick_seen = 1;
             boot_diag_stage(33);
-            early_serial_puts("K_FIRST_TICK\n");
+            if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("K_FIRST_TICK\n");
         }
         sched_tick();
     }

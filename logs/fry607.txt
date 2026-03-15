@@ -1,0 +1,108 @@
+fry607 - WiFi Driver: ALIVE Handshake (MSI + RX Poll)
+======================================================
+Date: 2026-03-06
+Plan: eventually/eventually1.txt step 5
+
+WHAT WAS DONE
+-------------
+Implemented step 5 from the WiFi driver plan: ALIVE Handshake.
+
+MSI Interrupt Setup (iwl_enable_msi):
+  - Walks PCI capability list to find MSI cap (ID 0x05)
+  - Allocates interrupt vector via msi_alloc_vector()
+  - Registers iwl_irq_handler via request_irq()
+  - Programs MSI address register (LAPIC destination: 0xFEE00000 | lapic_id<<12)
+  - Programs MSI data register (vector number)
+  - Handles both 32-bit and 64-bit MSI capability formats
+  - Single-message mode, enables MSI last
+  - Called BEFORE firmware upload so IRQ is ready when FW boots
+
+IRQ Handler (iwl_irq_handler):
+  - Increments g_iwl_irq_fired counter
+  - Acknowledges interrupt by writing 0xFFFFFFFF to CSR_INT
+  - Lightweight — actual processing done by polling
+
+ALIVE Wait (iwl_wait_alive):
+  - Unmasks all interrupts (CSR_INT_MASK = 0xFFFFFFFF)
+  - Polls RX status writeback area every 1ms for 2 seconds
+  - Cache-invalidates RX status and RX buffer headers on each poll
+  - Checks RX buffer contents for ALIVE notification:
+    - group_id = 0xFF (system group)
+    - cmd_id = 0xFF (ALIVE command)
+  - On ALIVE found: parses struct iwl_alive_resp for:
+    - status (0 = OK), alive_counter
+    - ucode_major/minor, sw_rev, flags
+    - error_event_table_ptr, log_event_table_ptr (SRAM addresses for debugging)
+  - Returns success if status == 0
+  - On IRQ without RX data: logs CSR_INT value for diagnostics
+  - On timeout: dumps GP_CNTRL, CSR_INT, RX status counters, first 8 bytes of
+    RX[0] buffer as hex — critical diagnostics for first Dell boot
+
+Data Structures Added:
+  - struct iwl_alive_resp: firmware ALIVE notification (group, cmd, sequence,
+    length, version info, error/log table pointers, status)
+  - g_iwl_msi_vector, g_iwl_irq_fired: MSI state
+
+Init Sequence Updated:
+  - MSI setup moved before firmware upload (step 5 prep before step 4)
+  - After FW upload: iwl_wait_alive() called
+  - On ALIVE success: firmware image released (no longer needed in host RAM)
+  - On ALIVE failure: diagnostic output, firmware released, init aborts
+
+WHY
+---
+- The ALIVE notification is the fundamental proof that firmware is running.
+  Without it, all subsequent steps (host commands, scanning, etc.) are impossible.
+- MSI is used instead of MSI-X for simplicity — the NVMe driver already proves
+  the MSI pattern works on this hardware. The 9260 supports both.
+- RX queue polling (rather than purely IRQ-driven) is more robust for init:
+  Linux iwlwifi also polls during firmware bring-up.
+- The error/log table SRAM pointers from ALIVE are critical for debugging
+  firmware crashes later.
+
+FILES CHANGED
+-------------
+- src/drivers/net/wifi_9260.c - MSI setup, IRQ handler, ALIVE wait/parse
+
+NEW INCLUDES
+------------
+- drivers/pci/msi.h (msi_alloc_vector)
+- kernel/irq/manage.h (request_irq)
+- drivers/irqchip/lapic.h (lapic_get_id)
+
+BUILD
+-----
+- Compiles clean (no warnings, no errors)
+- Full ISO built and exported to Windows
+
+EXPECTED SERIAL OUTPUT (Dell boot — success case)
+-------------------------------------------------
+IWL9260: MSI enabled vec=NN addr=0xFEE0N000 64-bit
+IWL9260: firmware uploaded + started
+IWL9260: waiting for ALIVE notification...
+IWL9260: ALIVE received! status=0 counter=N
+IWL9260: FW ucode=N.N sw_rev=0xNNNN flags=0xNNNN
+IWL9260: error_tbl=0xNNNN log_tbl=0xNNNN
+IWL9260: *** FIRMWARE IS ALIVE *** — host command interface next
+
+EXPECTED SERIAL OUTPUT (Dell boot — timeout case)
+--------------------------------------------------
+IWL9260: ALIVE timeout! GP_CNTRL=0xNNNN CSR_INT=0xNNNN
+IWL9260: RX status: closed_rb=N finished_rb=N irq_fired=N
+IWL9260: RX[0] hex: NN NN NN NN NN NN NN NN
+IWL9260: ALIVE handshake FAILED rc=-1
+
+POSSIBLE ISSUES
+---------------
+A) ALIVE timeout: most likely if DMA upload didn't actually transfer data
+   (TFH DMA_DONE succeeded but device SRAM corrupt). Diagnostics will show.
+B) Wrong ALIVE format: 9260 may use a different notification structure than
+   the one defined. First 8 bytes hex dump will reveal actual format.
+C) MSI not firing: device may require MSI-X specifically. Polling still works.
+D) RX status not updating: FH_RCSR config may need different flags for gen2.
+   The closed_rb/finished_rb counters in timeout output will diagnose this.
+
+NEXT STEP
+---------
+Step 6: Host Command Interface — PHY config, regulatory domain, NVM read
+for MAC address + calibration data

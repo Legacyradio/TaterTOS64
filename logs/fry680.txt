@@ -1,0 +1,62 @@
+fry680 - 2026-03-09 09:03:00 CDT - WiFi: disable unsafe live reset command that can hard-freeze the machine
+
+SESSION CONTEXT:
+  The user reported that running `wifi reset` froze the Dell Precision 7530 so
+  completely that the uptime counter stopped moving. This was a hard machine
+  hang, not a recoverable shell/UI failure.
+
+WHY:
+  The current `wifi reset` path was not a real reset/recovery path. It invoked
+  `wifi_9260_init()` again on a live system without a matching teardown for the
+  existing WiFi state, IRQ/MSI setup, or other driver-owned resources. Exposing
+  that as an operator command was unsafe.
+
+FILES CHANGED:
+  - `src/user/shell/shell.c`
+  - `src/drivers/net/wifi_9260.c`
+  - `logs/fry680.txt`
+
+CODE CHANGES:
+  1. Stopped advertising `wifi reset` in shell help / command listings.
+  2. Changed the shell handler to report that live reset is disabled and that a
+     reboot is required until a real teardown/recovery path exists.
+  3. Changed `wifi_9260_reinit_user()` to reject userspace live reinit with
+     `-95` instead of attempting a second full initialization.
+
+RATIONALE:
+  A disabled command is better than a command that can wedge the whole machine.
+  A future re-enable must follow the same pattern as the guarded NVMe reset
+  path: explicit teardown, IRQ/MSI cleanup, recursion guards, and bounded
+  recovery.
+
+BUILD COMMANDS (planv3 rule 12):
+  1. `make clean`
+  2. `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+
+RESULT:
+  - `make clean`: PASS
+  - full rebuild via `build_iso.sh`: PASS
+  - ISO output:
+      `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+  - NVMe image output:
+      `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+  - EFI boot image:
+      `/home/jjsako/TaterTOS64v3/out/efiboot.img`
+  - Windows ISO export:
+      skipped because `/mnt/c/Users/jjsako/Documents` was not writable
+
+NON-FATAL BUILD WARNINGS:
+  - `src/kernel/acpi/aml_exec.c`: unused parameter `ctx`
+  - `src/kernel/acpi/extended.c`: unused helpers `str_eq`, `obj_to_str`,
+    `pci_cf8_write32`
+  - `src/boot/efi_loader.c`: unused `gop_mask_size` / `gop_mask_pos`
+
+NEXT HARDWARE TEST:
+  Boot the rebuilt image and verify:
+    1. `help` no longer advertises `wifi reset`
+    2. `wifi reset` prints the disabled/reboot-required message and returns
+       without hanging the machine
+
+NOTES:
+  - This log exists to satisfy `planv3.txt` rule 5 and rule 6.
+  - No SHA-256 hashes should be recorded unless the user explicitly asks.

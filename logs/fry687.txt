@@ -1,0 +1,92 @@
+fry687 - 2026-03-09 23:15:00 CDT - WiFi 9260: add RFH doorbell + UMAC error table diagnostics
+
+SESSION CONTEXT:
+  fry686 fixed the CPU-done marker register (FH_UCODE_LOAD_STATUS instead of
+  UREG_UCODE_LOAD_STATUS).  Hardware test on Dell Precision 7530 showed:
+    - FH upload succeeds: `load=0xffffffff` after CPU1+CPU2 sections
+    - Both CPUs start: `c1=0x3, c2=0x3` (stepping further than fry685)
+    - `FH_LOAD=0xffffffff` confirms done marker is now reaching firmware
+    - But UMAC_PC stuck at `0xc0000000`, LMAC_PC stuck at `0x000000e8`
+    - SRAM[0x800000] = `0x0000dead 0x0000002e 0x7e3e4b69 0x00000100`
+      -> UMAC firmware assert, error_id=0x2e, crash PC=0x7e3e4b69
+    - Zero interrupts ever fired (`irq=0` across all 24 boot trace entries)
+    - RFH completely idle: `rfh_w=0 rfh_r=0 rfh_u=0` throughout
+    - `UREG_UCODE_LOAD_STATUS=0x00000000` (firmware never reached gen2 marker)
+    - Two boot attempts (step=4 then step=9), identical failure pattern
+
+  Full wd3 phase trace (24 entries) showed:
+    #0-#1  rfh-widx/rfh-init: RFH programmed, doorbell kicked, but w/r/u=0
+    #2     msi-on: MSI enabled
+    #3     load-mask: FH_TX interrupt mask set
+    #4     wfpm: WFPM_GP2 written
+    #5     cpu-rst: RELEASE_CPU_RESET written
+    #6     CPU1: sections loaded, c2=0x3 (CPU2 woke)
+    #7     cpu2-hdr: secure CPU2 header set
+    #8     CPU2: all sections loaded, load=0xffffffff, c1=0x1 (CPU1 running)
+    #9     fw-up: upload complete, c1=0x3, c2=0x3
+    #10    alive-wait: ALIVE interrupt mask armed, no RX progress
+    #11    alive-kick: RFH re-doorbell, still w/r/u=0
+    #12    alive-rekick: second RFH re-doorbell at 50ms, still w/r/u=0
+    #13    alive-timeout: ALIVE timed out, c2=0x2320 (CPU2 changed state)
+    #14-23 Second attempt: identical pattern
+
+  Error 0x2e cross-referenced against Linux iwlwifi error tables
+  (fw/img.c advanced_lookup[]): no exact match.  Not PNVM_MISSING (0x0010070d).
+  Likely a UMAC firmware internal assert during RX queue initialization.
+
+WHY DIAGNOSTICS:
+  The RFH doorbell write (CSR 0x1C80) never propagates to the PRPH WIDX
+  register (stays 0).  Need to determine whether:
+  a) The CSR doorbell write isn't latching at all
+  b) The RFH DMA config was lost between programming and firmware startup
+  c) NIC access / clock gating is preventing the doorbell from reaching RFH
+  d) The RXBD ring base address in PRPH doesn't match what was programmed
+  e) Firmware crashes before it can process any RX DMA
+
+FILES CHANGED:
+  - `src/drivers/net/wifi_9260.c`
+
+CODE CHANGES:
+  1. `iwl_rfh_kick_rx_free_ring()`: Added before/after doorbell diagnostics:
+     - Reads RFH_Q0_FRBDCB_WIDX, RIDX, RXQ_ACTIVE, DMA_CFG, GEN_STATUS
+       BEFORE the doorbell write
+     - Reads them again AFTER the doorbell write (with 100us delay)
+     - Reads back CSR trigger register and FRBDCB_BA_LSB/MSB
+     - Dumps first 2 RXBD entries from host memory
+     - Dumps GP_CNTRL and CSR_RESET for clock/sleep state
+
+  2. `iwl_dma_init_tfh()`: Added readback of RFH config registers immediately
+     after programming (DMA_CFG, GEN_CFG, RXQ_ACTIVE, GEN_STATUS, queue BAs)
+     to verify writes actually latched.
+
+  3. ALIVE timeout handler: Added full UMAC error table dump (16 dwords at
+     SRAM 0x800000 + 8 dwords at 0x800200) for detailed firmware crash context.
+
+BUILD / VERIFICATION COMMANDS:
+  1. make clean
+  2. PATH="/home/jjsako/TaterTOS64v3/tools/host/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+RESULT:
+  - Clean rebuild via build_iso.sh: PASS
+  - ISO output: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  - NVMe image: /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+  - EFI boot image: /home/jjsako/TaterTOS64v3/out/efiboot.img
+  - Windows ISO export: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+NON-FATAL BUILD WARNINGS (unchanged from fry686):
+  - src/kernel/acpi/aml_exec.c: unused parameter `ctx`
+  - src/kernel/acpi/extended.c: unused helpers
+  - src/boot/efi_loader.c: unused gop_mask_size / gop_mask_pos
+  - xorriso: El Torito boot image load size warning during ISO packaging
+
+NEXT HARDWARE TEST:
+  Boot rebuilt image on Dell Precision 7530, then run:
+    1. `wh` (WiFi handoff summary)
+    2. `wd3` (full boot trace with new diagnostics)
+
+  Key things to look for in new output:
+    - "RFH post-config:" line: Do DMA, GEN, ACT readbacks match what was written?
+    - "RFH kick" lines: Does POST WIDX differ from PRE WIDX after doorbell?
+    - "BA: LSB=" line: Does it match the expected RXBD ring physical address?
+    - "TRG_RB=" line: Does the CSR trigger register read back the written value?
+    - "UMAC error table @0x800000:" lines: Full error descriptor fields

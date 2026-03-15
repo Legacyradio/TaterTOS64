@@ -1,0 +1,45 @@
+fry618 - WiFi init diagnostics wired to shell
+===============================================
+Date: 2026-03-06
+Log written: 2026-03-06 20:25:00 CST
+
+Context:
+- WiFi driver shows "offline" on Dell but no way to know which init step
+  failed without serial logs. Need diagnostics in the shell.
+
+Changes:
+- src/shared/wifi_abi.h
+  - Added WIFI_STEP_* enum (0=none through 13=done) for init progress.
+  - Added init_step (uint8_t) and init_rc (int16_t) to fry_wifi_status.
+  - Replaced the old reserved byte with init_step; added init_rc as int16_t.
+
+- src/drivers/net/wifi_9260.c
+  - Added g_iwl_init_step / g_iwl_init_rc static globals.
+  - Added iwl_init_fail() helper to set both on failure.
+  - Instrumented wifi_9260_init(): every failure path now records which
+    step (PCI, NIC reset, FW load, TLV parse, DMA alloc, TFH init, MSI,
+    FW upload, ALIVE, hcmd, MAC init) and its return code. On success
+    each step advances g_iwl_init_step forward.
+  - wifi_9260_get_user_status() now copies init_step and init_rc into
+    the status struct.
+
+- src/user/shell/shell.c
+  - wifi_step_name(): maps WIFI_STEP_* to short human-readable strings.
+  - cmd_wifi_status(): when driver is offline, prints the failure line:
+      FAIL @ fw-load (step 3) rc=-1
+    or if rc==0 but not ready:
+      init stopped @ pci (step 1)
+  - Added short aliases:
+    - "ws"  -> wifi status
+    - "wsc" -> wifi scan
+
+Shell usage on Dell:
+  tater> ws
+  wifi: driver=offline mac=00:00:00:00:00:00
+        FAIL @ nic-reset (step 2) rc=-1    <-- tells you exactly where
+        link=idle secure=no dhcp=pending
+        ...
+
+Verification:
+- Full clean build succeeded, no new warnings.
+- ISO exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso

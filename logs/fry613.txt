@@ -1,0 +1,74 @@
+fry613 - WiFi Bring-Up Integration: netcore MAC handoff + boot smoke test
+==========================================================================
+Date: 2026-03-06
+Follow-up to: fry611 / fry612
+
+WHY THIS WAS NEEDED
+-------------------
+Steps 1-10 were implemented, but the boot path still had two integration gaps:
+
+1. `netcore.c` depended on `g_net.mac` for Ethernet, ARP, and DHCP TX, but the
+   Intel 9260 driver never copied the NIC MAC into the network stack.
+2. Nothing in boot actually called `iwl_connect_wpa2()` or `dhcp_discover()`, so
+   the completed WiFi + IP stack was not being exercised on hardware.
+
+WHAT WAS CHANGED
+----------------
+`src/drivers/net/netcore.c/h`
+  - Added `net_set_mac(const uint8_t mac[6])`
+  - Stores the active interface MAC in `g_net.mac`
+  - Logs the MAC so early boot output confirms the handoff happened
+
+`src/drivers/net/wifi_9260.c`
+  - Includes `netcore.h` and calls `net_set_mac()` after host-command init
+    successfully reads the NIC MAC from NVM
+  - Tracks basic readiness (`g_iwl_ready`, `g_iwl_have_mac`) for test gating
+  - Adds `wifi_9260_boot_smoke_test()`, a disabled-by-default boot-time test:
+    1. Connect to configured SSID with `iwl_connect_wpa2()`
+    2. Run `dhcp_discover()`
+    3. Optionally resolve a hostname with `dns_resolve()`
+    4. Optionally open TCP and send a tiny HTTP probe
+    5. Log pass/fail at every stage
+
+`src/drivers/net/wifi_boot_test_config.h`
+  - New config header for the smoke test
+  - Defaults to disabled (`TATER_WIFI_BOOT_TEST_ENABLE 0`)
+  - Carries SSID, passphrase, hostname, and TCP port knobs
+  - DNS/TCP hostname defaults to empty, so first enablement tests WiFi + DHCP only
+  - Explicitly documents that first bring-up should use a 2.4 GHz WPA2-PSK AP
+
+`src/kernel/main.c`
+  - Calls `wifi_9260_boot_smoke_test()` immediately after `wifi_9260_init()`
+  - Reports final pass/fail result in boot logs
+
+HOW TO USE IT
+-------------
+1. Edit `src/drivers/net/wifi_boot_test_config.h`
+2. Set:
+   - `TATER_WIFI_BOOT_TEST_ENABLE` to `1`
+   - `TATER_WIFI_BOOT_TEST_SSID` to your test SSID
+   - `TATER_WIFI_BOOT_TEST_PASSPHRASE` to your test password
+   - Optionally set `TATER_WIFI_BOOT_TEST_HOSTNAME` if you also want DNS/TCP
+3. Rebuild `kernel.elf` / ISO as usual
+4. Boot on the Dell with a 2.4 GHz WPA2 network in range
+5. Watch serial for:
+   - `NET: MAC address set to ...`
+   - `IWL9260: boot smoke test starting ...`
+   - scan / association / EAPOL logs
+   - DHCP offer + ACK
+   - optional DNS + TCP probe logs
+
+EXPECTED OUTCOME
+----------------
+If the radio path, WPA2 handshake, and IP stack are really functional end to
+end, the smoke test should produce one continuous boot log from scan through
+DHCP and optionally DNS/TCP. If it fails, the first failing stage is now
+explicit in serial output instead of silently leaving the stack unused.
+
+BUILD CHECK
+-----------
+Verified with:
+`PATH="/opt/cross/bin:$PATH" make -C /home/jjsako/TaterTOS64v3 -B src/drivers/net/netcore.o src/drivers/net/wifi_9260.o src/kernel/main.o`
+
+Also linked successfully with:
+`PATH="/opt/cross/bin:$PATH" make -C /home/jjsako/TaterTOS64v3 kernel`

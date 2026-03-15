@@ -1,0 +1,76 @@
+fry709 — 2026-03-13
+Harden 9260 chicken-bit programming with verification, fallback, and debug breadcrumbs
+
+Context:
+  The 9260 bring-up path in src/drivers/net/wifi_9260.c programmed
+  CSR_GIO_CHICKEN_BITS with two raw set_bit() calls and no readback:
+    - L1A_NO_L0S_RX
+    - DIS_L0S_EXIT_TIMER
+
+  This made the sequence weak in three ways:
+    1. Blind MMIO writes: no proof the register latched
+    2. Wrong default for 9260: Linux 9000-family path keeps
+       L1A_NO_L0S_RX, but does not force DIS_L0S_EXIT_TIMER by default
+    3. Poor observability: existing wd/wh output did not show the chicken
+       register before/after/target values
+
+  Important classification note:
+    - 9260 is IWL device family 9000
+    - 9260 is NOT Linux transport "gen2"
+    - The previous wording in comments was misleading and was corrected
+
+Root cause analysis:
+  Upstream Linux keeps the chicken-bit behavior split as follows:
+    - generic/default path: set L1A_NO_L0S_RX
+    - older-family workaround: set DIS_L0S_EXIT_TIMER only for families
+      below IWL_DEVICE_FAMILY_8000
+
+  Our custom driver was forcing both bits on the 9260 path. That may work
+  on some systems, but it is not the right default and gives no signal when
+  the register write does not stick or when the fallback is actually needed.
+
+Changes in wifi_9260.c:
+
+  1. Added verified masked MMIO helper:
+     iwl_write_masked_verified()
+     - read current register value
+     - compute masked target value
+     - write + read back
+     - retry several times
+     - log a detailed failure if the write never latches
+
+  2. Reworked iwl_apm_init():
+     - default profile now programs only L1A_NO_L0S_RX for 9260
+     - waits for MAC_CLOCK_READY after the default profile
+     - if the default profile fails to latch or the MAC clock still times
+       out, retries with legacy fallback that also sets
+       DIS_L0S_EXIT_TIMER
+
+  3. Added persistent boot breadcrumbs:
+     - chicken_before
+     - chicken_after
+     - chicken_want
+     - CHICKEN_SET / CHICKEN_FALLBACK / CHICKEN_FAIL flags
+
+  4. Surfaced the new chicken data in existing debug outputs:
+     - wd2 / wifi_9260_get_debug_log2()
+     - wh / wifi_9260_get_handoff_status()
+
+  5. Reset the new breadcrumb fields during wifi_9260_init() so repeated
+     init attempts do not show stale values
+
+Expected outcomes:
+  - If the default 9000-family profile is correct for this Dell 9260:
+    chicken_want should show only L1A_NO_L0S_RX and MAC clock should come up
+  - If the platform truly needs the older workaround:
+    CHICKEN_FALLBACK should be set and chicken_after should include both bits
+  - If MMIO/latching is the real issue:
+    CHICKEN_FAIL should be set and wd2/wh should make that visible
+
+Verification:
+  - make src/drivers/net/wifi_9260.o — SUCCESS
+  - make kernel — SUCCESS
+
+Not done in this step:
+  - ISO build not run
+  - No boot/runtime hardware validation yet

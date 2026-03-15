@@ -1,0 +1,298 @@
+fry701 - 2026-03-11 19:31:39 CDT - WiFi 9260: add a dedicated `sram` shell command that unifies live fixed SRAM probes, retained per-section upload readback, and error-table visibility after fry700 left SRAM evidence split across `wd2` / `wc` / `wd3`
+
+SESSION CONTEXT:
+  The active repo state after `fry700` already exposed:
+    - upload-pass summaries in:
+      - `wd3`
+      - `wc`
+      - `wh`
+    - fixed live SRAM probes only in:
+      - `wd2`
+    - the UMAC error table only in:
+      - `wc`
+
+  The user then explicitly asked for:
+    - one command
+    - named `sram`
+    - with "all sram info we could ever need"
+
+  That request mattered because the current tree still had no single command
+  that showed, in one place:
+    - which SRAM destinations were actually staged by the active uploader
+    - what bytes the host expected at those destinations
+    - what readback looked like immediately after upload
+    - what the same addresses look like when inspected later from the shell
+
+  In other words, fry700 had already made the upload sequencing visible, but
+  the SRAM evidence itself was still fragmented.
+
+WHY THIS PATCH:
+  After fry700, the source truth was:
+    - `wd2` could show a few fixed live probes:
+      - `0x00000000`
+      - `0x00404000`
+      - `0x00800000`
+      - `0x00800020`
+    - `wc` could show the UMAC error table at `0x00800000`
+    - `wd3` could show upload-pass metadata
+    - but none of those commands retained section-by-section SRAM readback for
+      the actual image that had just been staged
+
+  That gap matters most on the current branch because `eventually12` had
+  already narrowed the lead to:
+    - the deeper firmware-precondition / section-boundary / assert side
+    - not the already-spent ALIVE restock branch
+
+  So the next practical diagnostic step was not another RFH or ALIVE tweak.
+  It was:
+    - a single shell command that exposes the SRAM view needed to judge the
+      currently staged section stream directly
+
+  This patch intentionally does introduce a new shell command.
+  That differs from fry700 on purpose because this step was driven by an
+  explicit user request and by the still-split SRAM evidence surface.
+
+SOURCE REFERENCES USED:
+  Continuation basis:
+    - `eventually/eventually12.txt`
+    - `logs/fry700.txt`
+
+  Current source:
+    - `src/drivers/net/wifi_9260.c`
+    - `src/kernel/proc/syscall.c`
+    - `src/user/libc/libc.c`
+    - `src/user/libc/libc.h`
+    - `src/user/shell/shell.c`
+
+EXACT CODE CHANGES:
+  File:
+    - `src/drivers/net/wifi_9260.c`
+
+  1. Added retained SRAM-probe state for the active staged image.
+     Relevant lines after patch:
+       - `483-525`
+
+     New retained data now includes, per staged section:
+       - section index
+       - CPU id
+       - SRAM destination address
+       - payload size
+       - whether the address fell in the driver's current extended-address
+         window
+       - expected first words from the section payload
+       - first readback captured immediately after upload when NIC access was
+         available
+
+     Why this matters:
+       - the next hardware run can now preserve section-by-section SRAM
+         evidence instead of only fixed-address snapshots
+
+  2. Added SRAM-probe helper logic to capture retained section evidence.
+     Relevant lines after patch:
+       - `1236-1288`
+
+     New helper behavior:
+       - computes up to four expected words per section payload
+       - captures immediate readback from the target SRAM destination
+       - resets retained probe state cleanly between init attempts
+
+  3. Hooked the retained probes into the actual firmware upload path.
+     Relevant lines after patch:
+       - `1925-1985`
+       - `2004-2096`
+
+     New uploader behavior:
+       - every successfully staged section now records retained SRAM probe
+         data
+       - both the direct multi-section path and the legacy single-section path
+         feed the same retained probe surface
+
+     Why this matters:
+       - the new command is driven by the active uploader, not by a separate
+         guessed parse pass
+
+  4. Added the new comprehensive shell-facing SRAM dump.
+     Relevant lines after patch:
+       - `5105-5270`
+
+     New `sram` output now includes:
+       - current init step / rc / irq summary
+       - active upload image summary:
+         - image kind
+         - section total
+         - probe count
+         - compact CPU1 / CPU2 upload summaries
+       - fixed live probes at:
+         - `0x00000000`
+         - `0x00000200`
+         - `0x00000400`
+         - `0x00404000`
+         - `0x00456000`
+         - `0x00800000`
+         - `0x00800020`
+         - `0x00800200`
+         - `0x00800400`
+       - retained section probe lines with:
+         - `exp`
+         - `stg`
+         - `now`
+       - a low-SRAM DEAD-marker scan
+       - the full UMAC error table at `0x00800000` when the marker is present
+
+     Why this matters:
+       - one command can now show the SRAM story end to end
+
+  5. Reset the new retained probe state on each fresh WiFi init attempt.
+     Relevant lines after patch:
+       - `5780`
+
+  File:
+    - `src/kernel/proc/syscall.c`
+
+  6. Added a dedicated WiFi SRAM syscall number and dispatcher case.
+     Relevant lines after patch:
+       - `400-411`
+       - `1111-1128`
+
+  File:
+    - `src/user/libc/libc.c`
+    - `src/user/libc/libc.h`
+
+  7. Added the userspace wrapper for the new SRAM syscall.
+     Relevant lines after patch:
+       - `libc.c`:
+         - `234-245`
+         - `435-440`
+       - `libc.h`:
+         - `114-124`
+
+  File:
+    - `src/user/shell/shell.c`
+
+  8. Added the new `sram` command surface in the shell.
+     Relevant lines after patch:
+       - `622-701`
+       - `1120`
+       - `1310-1311`
+
+     New shell behavior:
+       - top-level command:
+         - `sram`
+       - WiFi subcommand:
+         - `wifi sram`
+       - help output now advertises the new command
+
+WHAT THIS PATCH INTENTIONALLY DID NOT CHANGE:
+  - no firmware upload ordering
+  - no FH / RFH programming
+  - no interrupt-mask policy
+  - no ALIVE retry behavior
+  - no host-command flow
+  - no NVM / PHY / MAC init logic
+  - no claim that the WiFi blocker is fixed
+
+IMPORTANT INTERPRETATION:
+  fry701 is still a diagnostic-surface patch, not a bring-up success patch.
+
+  It does not prove:
+    - that the active uploader is wrong
+    - that the `0xc0080000` / `0xc0880000` / `0x80444000` destinations are
+      wrong
+    - or that the firmware assert root cause is now known
+
+  What it does prove is that the next hardware run can answer a better
+  question than fry700 could:
+    - for each section the active uploader staged, what did the host expect,
+      what was read back immediately after upload, and what does that same
+      SRAM destination look like when inspected later from the shell?
+
+  That is the exact missing SRAM visibility the user asked to expose.
+
+COMMANDS RUN:
+  Evidence / format inspection:
+    - `sed -n '1,260p' /home/jjsako/TaterTOS64v3/logs/fry700.txt`
+    - `sed -n '1,260p' /home/jjsako/TaterTOS64v3/eventually/eventually12.txt`
+    - `rg -n '"wd3"|"wc"|"wh"|"wcmd"|SYS_WIFI|wifi debug|wdiag|wd2|ws ' /home/jjsako/TaterTOS64v3/src/user/shell/shell.c /home/jjsako/TaterTOS64v3/src -g '!linux-7.0-rc2/**'`
+    - `sed -n '1,260p' /home/jjsako/TaterTOS64v3/src/user/shell/shell.c`
+    - `sed -n '260,620p' /home/jjsako/TaterTOS64v3/src/user/shell/shell.c`
+    - `sed -n '440,560p' /home/jjsako/TaterTOS64v3/src/drivers/net/wifi_9260.c`
+    - `sed -n '1668,1710p' /home/jjsako/TaterTOS64v3/src/drivers/net/wifi_9260.c`
+    - `sed -n '1868,2148p' /home/jjsako/TaterTOS64v3/src/drivers/net/wifi_9260.c`
+    - `sed -n '5030,5188p' /home/jjsako/TaterTOS64v3/src/drivers/net/wifi_9260.c`
+
+  Verification:
+    - `make -C /home/jjsako/TaterTOS64v3 src/drivers/net/wifi_9260.o src/kernel/proc/syscall.o src/user/libc/libc.o src/user/shell/shell.o`
+    - `make -C /home/jjsako/TaterTOS64v3 kernel shell`
+    - `bash build_iso.sh`
+    - `nl -ba /home/jjsako/TaterTOS64v3/src/drivers/net/wifi_9260.c | sed -n '460,560p;1214,1295p;1868,2148p;5030,5188p;5178,5258p;5258,5292p;5768,5786p'`
+    - `nl -ba /home/jjsako/TaterTOS64v3/src/kernel/proc/syscall.c | sed -n '396,412p;1106,1132p'`
+    - `nl -ba /home/jjsako/TaterTOS64v3/src/user/libc/libc.c | sed -n '234,246p;430,444p'`
+    - `nl -ba /home/jjsako/TaterTOS64v3/src/user/libc/libc.h | sed -n '114,126p'`
+    - `nl -ba /home/jjsako/TaterTOS64v3/src/user/shell/shell.c | sed -n '618,710p;1116,1124p;1300,1312p'`
+
+  Artifact metadata:
+    - `date '+%Y-%m-%d %H:%M:%S %Z'`
+    - `sha256sum /home/jjsako/TaterTOS64v3/kernel.elf /home/jjsako/TaterTOS64v3/shell.elf /home/jjsako/TaterTOS64v3/shell.tot`
+    - `stat -c '%n|%s|%y' /home/jjsako/TaterTOS64v3/kernel.elf /home/jjsako/TaterTOS64v3/shell.elf /home/jjsako/TaterTOS64v3/shell.tot`
+    - `sha256sum /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /home/jjsako/TaterTOS64v3/out/tater_nvme.img /home/jjsako/TaterTOS64v3/out/efiboot.img`
+    - `stat -c '%n|%s|%y' /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /home/jjsako/TaterTOS64v3/out/tater_nvme.img /home/jjsako/TaterTOS64v3/out/efiboot.img /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+BUILD RESULT:
+  Targeted object rebuild:
+    - PASS
+
+  Kernel + shell link / pack:
+    - PASS
+
+  Full ISO rebuild / packaging:
+    - PASS
+
+  Export to Windows ISO drop path:
+    - PASS
+
+  Rebuild warnings unchanged from earlier steps:
+    - `src/kernel/acpi/aml_exec.c:973` unused parameter `ctx`
+    - `src/kernel/acpi/extended.c:618` `str_eq` unused
+    - `src/kernel/acpi/extended.c:613` `obj_to_str` unused
+    - `src/kernel/acpi/extended.c:285` `pci_cf8_write32` unused
+    - `src/boot/efi_loader.c:352` `gop_mask_size` unused
+    - `src/boot/efi_loader.c:346` `gop_mask_pos` unused
+
+  ISO packaging warning unchanged:
+    - `xorriso`: boot image load size exceeded 65535 blocks of 512 bytes, so
+      El Torito recorded `0` to extend the ESP to end-of-medium
+
+ARTIFACTS:
+  - `kernel.elf`
+    - sha256 `8e2b98b657835c3923278e1ef5c55fa0cdb894ebeab6c50531fd7d90157228c4`
+    - size `2271864`
+    - mtime `2026-03-11 19:30:33 -0500`
+
+  - `shell.elf`
+    - sha256 `2faa6c3e678da454a955bbb3c09563dabadfc78327f33afbfe477eaac7a83c02`
+    - size `47600`
+    - mtime `2026-03-11 19:30:33 -0500`
+
+  - `shell.tot`
+    - sha256 `cbd5218adb38e13427d3bff15a0bdeade33a23426cc0a625fca21d45e30455fe`
+    - size `47616`
+    - mtime `2026-03-11 19:30:33 -0500`
+
+  - `out/tatertos64v3.iso`
+    - sha256 `6dc2fbe8b5c2e2c732289d582ff1b8b10e5653b51ec2298c8c9ff1377fbda77d`
+    - size `151441408`
+    - mtime `2026-03-11 19:38:21 -0500`
+
+  - `out/tater_nvme.img`
+    - sha256 `134d8fd91a2174b047eb1bd06a6593f538782d6c4c0b47232e30b003aa960a90`
+    - size `104857600`
+    - mtime `2026-03-11 19:38:20 -0500`
+
+  - `out/efiboot.img`
+    - sha256 `d208cfb56186f06e2a8383dbc9641bf0e5904ae3f80e2ff4ff64bd7217807941`
+    - size `67108864`
+    - mtime `2026-03-11 19:38:20 -0500`
+
+  - `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+    - size `151441408`
+    - mtime `2026-03-11 19:38:23 -0500`

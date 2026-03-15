@@ -1,0 +1,93 @@
+fry604 - WiFi Driver: NIC Reset Sequence + TLV Firmware Parsing
+================================================================
+Date: 2026-03-06
+Plan: eventually/eventually1.txt steps 1 + 2
+
+WHAT WAS DONE
+-------------
+Implemented the first two steps from the WiFi driver plan (eventually1):
+
+Step 1: NIC Reset Sequence (wifi_9260.c)
+  - Added all CSR register offset defines (HW_IF_CONFIG, INT, INT_MASK,
+    FH_INT_STATUS, GPIO_IN, RESET, GP_CNTRL, HW_REV, GIO_CHICKEN_BITS,
+    ANA_PLL_CFG, HW_REV_STEP_DASH, HW_RF_ID)
+  - Added CSR bit defines for RESET (SW_RESET, MASTER_DISABLED, STOP_MASTER),
+    GP_CNTRL (MAC_CLOCK_READY, INIT_DONE, MAC_ACCESS_REQ, GOING_TO_SLEEP),
+    GIO_CHICKEN_BITS (L1A_NO_L0S_RX, DIS_L0S_EXIT_TIMER)
+  - MMIO helpers: iwl_read32, iwl_write32, iwl_set_bit, iwl_clear_bit
+  - iwl_udelay(): busy-wait via port 0x80 writes (~1 us/iter)
+  - iwl_poll_bit(): poll register with mask/expected/timeout
+  - iwl_apm_stop_master(): sets STOP_MASTER, polls MASTER_DISABLED (25ms timeout)
+  - iwl_sw_reset(): sets SW_RESET bit, waits 5ms settle
+  - iwl_apm_init(): disables L0s exit timer + L0s RX, sets INIT_DONE,
+    polls MAC_CLOCK_READY (25ms timeout) — gen2 (9000+) APM init sequence
+  - iwl_nic_reset(): full sequence — reads pre-reset HW_REV/RF_ID for diags,
+    stop master → SW reset → clear/mask all interrupts → APM init →
+    MAC access request + poll. Prints pre/post reset register state.
+  - wifi_9260_init() now calls iwl_nic_reset() after PCI setup, before FW load
+  - MMIO size increased to 32 KB (was 4 KB) to cover full CSR space
+
+Step 2: TLV Firmware Parsing (iwlwifi_fw.c, iwlwifi_fw.h)
+  - iwlwifi_fw.h: added struct iwl_ucode_tlv (type+length), all known TLV type
+    defines (INST, DATA, INIT, INIT_DATA, SEC_RT, SEC_INIT, PAGING, NUM_OF_CPU,
+    FW_VERSION, etc.), struct iwl_fw_pieces (version fields, CPU1/CPU2 inst/data
+    pointers+sizes, paging array[32], flags, num_cpus, tlv_count)
+  - iwlwifi_fw_parse_tlv(): parses the standard Intel firmware header
+    (zero + magic + human_readable[64] + ver + build + timestamp = 88 bytes)
+    then walks the TLV chain extracting:
+      - IWL_UCODE_TLV_INST/DATA (legacy CPU1 sections)
+      - IWL_UCODE_TLV_INIT/INIT_DATA (legacy CPU2 sections)
+      - IWL_UCODE_TLV_SEC_RT (gen2 runtime: idx 0=inst, 1=data)
+      - IWL_UCODE_TLV_SEC_INIT (gen2 init: idx 0=inst, 1=data)
+      - IWL_UCODE_TLV_PAGING (up to 32 sections)
+      - IWL_UCODE_TLV_NUM_OF_CPU
+    4-byte alignment padding handled between entries
+  - wifi_9260_init() now calls iwlwifi_fw_parse_tlv() and prints FW version,
+    section sizes, and paging count
+
+WHY
+---
+- NIC reset puts the Intel 9260 into a known state before firmware upload.
+  Without it, the card may be in an undefined state from UEFI/previous boot.
+- TLV parsing extracts the actual firmware code sections (CPU1 instructions,
+  CPU1 data, CPU2 instructions, CPU2 data) needed for DMA upload in step 3+4.
+- The firmware data pointers point into the already-loaded fw.data buffer
+  (zero-copy), so no additional allocation needed.
+
+FILES CHANGED
+-------------
+- src/drivers/net/wifi_9260.c   - NIC reset sequence + TLV parse integration
+- src/drivers/net/iwlwifi_fw.c  - TLV parser implementation
+- src/drivers/net/iwlwifi_fw.h  - TLV structs, type defines, fw_pieces struct
+
+BUILD
+-----
+- Compiles clean (no warnings, no errors)
+- Full ISO built and exported to Windows
+
+EXPECTED SERIAL OUTPUT (Dell boot)
+----------------------------------
+IWL9260: found X:Y.Z did=2526 subsys=40108086 class=02:80:00
+IWL9260: matched Dell Precision 7530 subsystem 0x40108086
+IWL9260: pci cmd before=0xNNNN after=0xNNNN mmio=0xNNNN probe0=0xNNNN
+IWL9260: pre-reset HW_REV=0xNNNN STEP_DASH=0xNNNN RF_ID=0xNNNN
+IWL9260: NIC reset OK, MAC access granted   (or timeout error)
+IWL9260: post-reset HW_REV=0xNNNN GP_CNTRL=0xNNNN
+IWL-FW: "<human readable version string>"
+IWL9260: firmware loaded path=/firmware/iwlwifi-9260.ucode size=NNNN
+IWL9260: FW ver=N.N.N.N build=NNNN
+IWL9260: CPU1 inst=NNNN bytes data=NNNN bytes
+IWL9260: NIC reset + FW parsed OK; DMA ring setup next
+
+POSSIBLE ISSUES
+---------------
+A) MAC_CLOCK_READY timeout: card may need PCIe link training first, or
+   Dell UEFI left it in a state that needs different reset order
+B) Firmware TLV magic at unexpected offset: parser handles both offset 0 and 4
+C) No CPU1 instruction section: firmware format may differ from expected;
+   parser returns -5 with diagnostic message
+
+NEXT STEP
+---------
+Step 3: DMA Ring Setup (TFD/TFH) — allocate DMA-able memory for TX/RX
+descriptor rings, configure Transfer FIFO Handler for firmware upload

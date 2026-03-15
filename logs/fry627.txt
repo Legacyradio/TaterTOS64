@@ -1,0 +1,129 @@
+========================================================================
+TaterTOS64v3 - fry627 - direct ./build_iso.sh rebuild and artifact hash record
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 23:49:09 CST
+
+CONTEXT
+-------
+- User explicitly requested running the repo build script directly:
+  - `./build_iso.sh`
+- This step still follows `planv3.txt` rebuild/log rules:
+  - rule 5: write a fry log for the completed step
+  - rule 10: record the exact commands used for validation
+  - rule 11: no QEMU logs used
+  - rule 16: record SHA-256 after a user-requested rebuild
+
+WHY
+---
+- Produce a fresh bare-metal test artifact with the exact script invocation the
+  user requested.
+- Record current artifact hashes so there is no ambiguity about which ISO is
+  fresh versus which exported copy is stale.
+
+REBUILD COMMANDS
+----------------
+1) `./build_iso.sh`
+
+REBUILD RESULT
+--------------
+- PASS
+- Produced fresh local artifacts:
+  - `/home/jjsako/TaterTOS64v3/kernel.elf`
+  - `/home/jjsako/TaterTOS64v3/out/fs.img`
+  - `/home/jjsako/TaterTOS64v3/out/efiboot.img`
+  - `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+  - `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+- The script's final Windows export step did NOT complete:
+  - `cp: cannot create regular file '/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso': Read-only file system`
+  - Result: local ISO is fresh; Windows-exported ISO remains older/stale.
+
+WARNINGS OBSERVED
+-----------------
+- Existing kernel warning:
+  - `src/kernel/acpi/aml_exec.c`: unused parameter `ctx`
+- Existing kernel warnings:
+  - `src/kernel/acpi/extended.c`: unused `str_eq`
+  - `src/kernel/acpi/extended.c`: unused `obj_to_str`
+  - `src/kernel/acpi/extended.c`: unused `pci_cf8_write32`
+- Existing EFI loader warnings:
+  - `src/boot/efi_loader.c`: unused `gop_mask_size`
+  - `src/boot/efi_loader.c`: unused `gop_mask_pos`
+- Existing xorriso warning:
+  - boot image load size exceeds 65535 blocks of 512 bytes; El Torito records 0
+    to extend ESP to end-of-medium
+
+ARTIFACT MTIMES / SIZES
+-----------------------
+- `/home/jjsako/TaterTOS64v3/kernel.elf`
+  - size: `2167376`
+  - mtime: `2026-03-06 23:48:46.514315871 -0600`
+- `/home/jjsako/TaterTOS64v3/out/efiboot.img`
+  - size: `67108864`
+  - mtime: `2026-03-06 23:48:51.908453159 -0600`
+- `/home/jjsako/TaterTOS64v3/out/fs.img`
+  - size: `16777216`
+  - mtime: `2026-03-06 23:48:48.906745310 -0600`
+- `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+  - size: `104857600`
+  - mtime: `2026-03-06 23:48:51.416968536 -0600`
+- `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+  - size: `151244800`
+  - mtime: `2026-03-06 23:48:52.379628500 -0600`
+- `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+  - size: `151244800`
+  - mtime: `2026-03-06 23:24:18.052481800 -0600`
+
+SHA-256
+-------
+- `/home/jjsako/TaterTOS64v3/kernel.elf`
+  - `5935f3c06492b0761902a8f52a9e32fe263865fe681b47ea87532547f9360ead`
+- `/home/jjsako/TaterTOS64v3/out/efiboot.img`
+  - `fd0f64bbc14905959230172a4377995e000529097e2f13968742c62dd8a78460`
+- `/home/jjsako/TaterTOS64v3/out/fs.img`
+  - `e50896b64350af97ae2736d13012d700aa24c4627dc0558dbb9a618274ba9dea`
+- `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+  - `749c31647e76043219eb890449a0cd3e693f0fb1418f6a0df74498e95244660b`
+- `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+  - `667f05d6c8f3c07d24af44834bc0926c776ddfe09557281caf65cd7de90e58a3`
+- `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+  - `b59aa44f15ddce85443f7099514a0ba5d5fa706f68e20695caed2020e3fe781c`
+
+SOURCE VS WINDOWS-EXPORTED ISO
+------------------------------
+- Compare command:
+  - `cmp -s /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso; printf '%s' $?`
+- Result:
+  - `1`
+- Meaning:
+  - The Windows-exported ISO does not match the freshly rebuilt local ISO.
+  - The export target is stale because the copy step failed on read-only `/mnt/c`.
+
+VALIDATION COMMANDS
+-------------------
+1) Rebuild:
+   - `./build_iso.sh`
+2) Hash fresh artifacts:
+   - `sha256sum /home/jjsako/TaterTOS64v3/kernel.elf /home/jjsako/TaterTOS64v3/out/efiboot.img /home/jjsako/TaterTOS64v3/out/fs.img /home/jjsako/TaterTOS64v3/out/tater_nvme.img /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+3) Hash current Windows-exported ISO:
+   - `sha256sum /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+4) Compare local ISO vs Windows-exported ISO:
+   - `cmp -s /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso; printf '%s' $?`
+
+NEXT BARE-METAL CHECK
+---------------------
+- Use this fresh local ISO for the next test:
+  - `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+- If the Windows copy is needed for flashing/boot media creation, it must be
+  refreshed outside this read-only sandbox before testing.
+- For this rebuild, the exact local ISO hash to test is:
+  - `667f05d6c8f3c07d24af44834bc0926c776ddfe09557281caf65cd7de90e58a3`
+
+NOTES
+-----
+- No QEMU logs were used.
+- BIOS revision/date was not visible in this local rebuild step.
+
+========================================================================

@@ -1,0 +1,73 @@
+fry726 — 2026-03-14
+Drive phase one VM ABI from compile-complete to runtime-complete
+
+WHAT:
+- Expanded per-process VM region tracking with region kinds, backing metadata,
+  and committed-vs-reserved state
+- Added shared anonymous `mmap` backing objects and process-exit cleanup for
+  shared VM pages
+- Added reserved anonymous mappings via `FRY_MAP_RESERVE` with commit-through-
+  `mprotect` on full or partial subranges
+- Reworked `munmap` / `mprotect` handling to support region split/merge and
+  subrange transitions across reserved and committed private mappings
+- Allowed private file-backed mappings with copied page backing, including
+  writable private mappings that do not dirty the underlying file
+- Improved user page-fault diagnostics with VM-region-aware fault classification
+- Extended userspace libc with `fry_mreserve()` / `fry_mcommit()` and moved
+  large allocations onto anonymous private `mmap`
+- Replaced the old VM smoke test with broader phase-one coverage and added a
+  deliberate `vmfault` app for reserved-page fault validation
+- Wired `vmtest`, `vmfault`, fixture data, and optional autotest markers into
+  the build, ISO packaging, init autotest dispatch, and EFI ramdisk whitelist
+
+WHY:
+- Phase one is not just "some mmap syscalls compile"; it has to cover the real
+  VM surface a browser runtime will actually lean on
+- Reservation/commit, shared anonymous memory, private file mappings, and
+  allocator use of `mmap` all belong in the first professional VM pass
+- Runtime diagnostics and packaging matter because phase one is not finished
+  until the code can be booted and exercised from userspace
+
+PHASE ONE STATUS AFTER THIS PASS:
+- Anonymous private mappings: implemented
+- Shared anonymous mappings: implemented
+- Reserved address-space mappings plus staged commit: implemented
+- Partial `munmap` / `mprotect` with region splitting/merging: implemented
+- Private file-backed mappings: implemented
+- Large-allocation libc `mmap` path: implemented
+- VM-aware user page-fault diagnostics: implemented
+- Build and image packaging for VM tests: implemented
+
+RUNTIME STATUS AT LOG TIME:
+- `make kernel vmtest vmfault` succeeded before this log entry
+- `build_iso.sh` succeeded with `vmtest`, `vmfault`, fixture data, and autotest
+  markers packaged into the generated images
+- Single-vCPU QEMU boot reached `init`, but the VM autotests did not execute
+  because the EFI loader runtime ramdisk whitelist still omitted the new VM
+  apps, fixture, and marker files
+- Added EFI loader whitelist entries for `VMTEST.FRY`, `VMFAULT.FRY`,
+  `VMTEST.TXT`, `VMTEST.RUN`, and `VMFAULT.RUN`
+- Full runtime closure still needs to be re-run from the rebuilt tree after the
+  EFI loader fix
+
+KNOWN NON-PHASE-ONE ITEMS LEFT OUT:
+- No demand paging or lazy fault-fill path yet
+- No file-shared mapping semantics yet
+- No threads, futexes, sockets, polling, or other post-phase-one browser ABI
+  work has been started in this pass
+
+FILES CHANGED IN THIS PASS:
+- src/kernel/proc/process.h
+- src/kernel/proc/process.c
+- src/kernel/proc/syscall.h
+- src/kernel/proc/syscall.c
+- src/kernel/irq/irqdesc.c
+- src/user/libc/libc.h
+- src/user/libc/libc.c
+- src/user/apps/vmtest.c
+- src/user/apps/vmfault.c
+- src/user/init/init.c
+- src/boot/efi_loader.c
+- Makefile
+- build_iso.sh
+- vmtest_fixture.txt

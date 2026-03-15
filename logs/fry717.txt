@@ -1,0 +1,57 @@
+fry717 - 2026-03-14
+====================
+
+CHANGE: RELEASE_CPU_RESET_BIT flipped from BIT(24) to BIT(0)
+
+File: src/drivers/net/wifi_9260.c line 1900
+Was:  #define RELEASE_CPU_RESET_BIT   (1u << 24)
+Now:  #define RELEASE_CPU_RESET_BIT   (1u << 0)
+
+WHY: Dell test (fry713 build) showed step=9 rc=-5 (timeout), no ALIVE,
+CPU stuck at PC=0x605dc.  wverify showed 8/9 INIT sections verified OK
+in live SRAM, but section [2] (addr=0x00025cb4) was corrupted with
+cafe sentinel values.  Experimenting with BIT(0) to see if the CPU
+reset release bit value affects boot behavior.
+
+REVERT INSTRUCTIONS (if this makes things worse):
+  In src/drivers/net/wifi_9260.c, change line ~1900:
+    #define RELEASE_CPU_RESET_BIT   (1u << 0)  /* fry714: try BIT(0) — was BIT(24) */
+  back to:
+    #define RELEASE_CPU_RESET_BIT   (1u << 24) /* bit 24 per Linux 7.0-rc2 iwl-prph.h */
+
+DELL TEST OBSERVATIONS (from fry713 build):
+  - step=9 rc=-5 irq=2 (timeout waiting for ALIVE)
+  - LMAC1_PC=0x000605dc (stuck), UMAC_PC=0xc0000000 (stuck)
+  - SB_CPU1_STATUS=0x03030001 (stuck)
+  - wverify: 8/9 INIT sections live=ok, section [2] live=mismatch
+    Section [2] SRAM at 0x25cb4 shows cafe0000..cafe000e (our sentinels)
+    but staged=ok (DMA landed correctly at upload time)
+  - UMAC error table hunt found base=0x88886624 valid=0xdeadbee1
+    (not the real 0xA0000000 marker — garbage decode)
+  - FSEQ values all look like uninitialized garbage
+
+NEXT STEPS (if BIT(0) change does not help):
+  1. Sentinel corruption investigation: Section [2] at SRAM 0x25cb4
+     shows cafe sentinels that we only wrote to SRAM 0x00-0x38.
+     Contradicts: wdeep reads cafe at SRAM 0x00, but wverify reads
+     correct firmware data at SRAM 0x00 (section [1]).  Possible
+     NIC access or SRAM mapping issue between the two commands.
+     ACTION: Add diagnostic dump of SRAM 0x25cb0-0x25cd0 in wdeep
+     to confirm whether cafe values are really at that address or
+     if wverify read is aliasing.
+
+  2. Sentinel write may be corrupting section [1]: The sentinel code
+     (lines 2257-2262) overwrites SRAM 0x00-0x38 AFTER section [1]
+     is uploaded to SRAM 0x00000000.  This stomps the first 60 bytes
+     of section [1].  If the firmware checks its own header integrity
+     at boot, this corruption could cause a silent hang.
+     ACTION: Remove or relocate sentinel writes to a safe SRAM region
+     that doesn't overlap any uploaded section.
+
+  3. TLV capabilities not parsed: Parser skips API_CHANGES_SET (29),
+     ENABLED_CAPABILITIES (30), CMD_VERSIONS (48).  Firmware may
+     self-check these and assert if not acknowledged.
+     ACTION: Add stub parsing for these TLV types.
+
+  4. Nuclear option: Boot USB Linux on same Dell, modprobe iwlwifi
+     with debug, capture register trace, compare register-by-register.

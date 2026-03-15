@@ -1,0 +1,26 @@
+fry737 — Clean Boot Trace Verification
+======================================
+Timestamp: 2026-03-14 21:21:13 CDT
+
+Completed step:
+- Rebuilt cleanly after the trace cleanup and verified the live boot path with
+  the default marker toggles still disabled.
+
+What was tested:
+- `make clean`
+- `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+- `timeout 45s qemu-system-x86_64 -m 4G -machine q35,accel=tcg -cpu qemu64 -smp 1 -boot order=d -net none -display none -no-reboot -no-shutdown -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -drive if=pflash,format=raw,file=/home/jjsako/TaterTOS64v3/logs/runtime_codex_matchcheck5/OVMF_VARS.fd -cdrom /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso -drive file=/home/jjsako/TaterTOS64v3/out/tater_nvme.img,if=none,id=nvm1,format=raw -device nvme,serial=TATER_NVME_01,drive=nvm1 -serial file:/home/jjsako/TaterTOS64v3/logs/runtime_codex_matchcheck5/serial.log -debugcon file:/home/jjsako/TaterTOS64v3/logs/runtime_codex_matchcheck5/debugcon.log -global isa-debugcon.iobase=0xe9`
+
+Observed result:
+- No `B:*`, `K_*`, `SPAWN_*`, `DBG_VFS`, `VMM_*`, `PMM_*`, or heap trace lines
+  appeared in the serial boot log with the default toggles disabled.
+- The guest still reached `selftest: 13 passed, 0 failed`, `init: pid=2`, and
+  later ACPI background output before the external 45-second timeout.
+- No `!EXC`, no `RIP=0x100B`, and no panic were observed.
+
+Notes:
+- The debug port log still captures low-level bring-up breadcrumbs, which keeps
+  early diagnostics available without cluttering normal serial boot output.
+- `build_iso.sh` still warns when exporting the ISO to
+  `/mnt/c/Users/jjsako/Documents/tateriso` because that path was read-only in
+  this session.

@@ -1,0 +1,74 @@
+fry656 - 2026-03-07 22:57:50 CST - WiFi 9260: expose firmware-start readbacks in wd and rebuild patched ISO
+
+WHY:
+  The previous Dell boot was using the last ISO I had already built before this
+  step. That image did not include the new firmware-start diagnostics, so `wd`
+  still showed the older compact boot-probe block. This step fixes that mismatch
+  by rebuilding after the code change and making the next bare-metal boot
+  self-identifying on the first screen.
+
+CODE CHANGES:
+  File changed:
+    - src/drivers/net/wifi_9260.c
+
+  Brief why for the code change:
+    - Record WFPM_GP2 write/readback during the FH upload path.
+    - Record RELEASE_CPU_RESET readback and re-assert once if bit 24 does not
+      appear latched after the first write.
+    - Record post-upload FH_UCODE_LOAD_STATUS separately from the later live
+      register snapshot.
+    - Print these fields near the top of `wd` so the next Dell boot proves
+      immediately whether the new image is running.
+
+PROCESS:
+  Rebuilt using the default clean sequence:
+    make clean
+    PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+RESULT:
+  - Rebuild completed successfully
+  - ISO output:
+      /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+HASH VERIFICATION:
+  Reverified on 2026-03-07 23:04:19 CST against the current on-disk ISO with
+  independent tools:
+    - sha256sum:
+        8432814edd9218fad51af11cf1548aa2514212039fd04c23ceaa3fb9a0caf553
+    - openssl dgst -sha256:
+        8432814edd9218fad51af11cf1548aa2514212039fd04c23ceaa3fb9a0caf553
+    - sha512sum:
+        a2bb2c31b4b132a14cd8fcdd00f09be2f72e7b55232de5c057eb3814e2a430a9dacc82b93a107817acad7ad420585b5331e1192e5870a2bde97cf38fe087e2fe
+
+  Reverification result:
+    - SHA-256 unchanged from the earlier fry656 entry
+    - sha256sum and openssl dgst -sha256 still match exactly
+
+  Provenance note:
+    - The only local TaterTOS64v3 ISO present in this workspace is:
+        /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+    - Windows ISO export was skipped during the build because
+        /mnt/c/Users/jjsako/Documents was not writable
+
+WARNINGS:
+  - Existing warning remains in src/drivers/net/wifi_9260.c:
+      iwl_set_prph_bit defined but unused
+  - Existing unrelated warnings remain in ACPI / EFI code during full build
+
+NEXT BARE-METAL TEST:
+  Boot the rebuilt ISO on the Dell Precision 7530 and run:
+    wd
+    ws
+
+  The new `wd` output should now include these lines in BOOT PROBES:
+    - wfpm_gp2_wr=0x...
+    - wfpm_gp2_rd=0x...
+    - cpu_reset_rd=0x...
+    - upload_fh_st=0x...
+
+  If those lines are missing, the Dell is not running fry656's ISO.
+
+NOTES:
+  - No QEMU logs were used.
+  - BIOS revision/date was not visible during this step, so none was logged.
+  - SHA-256 was recorded in this log after explicit user request.

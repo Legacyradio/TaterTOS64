@@ -1,0 +1,33 @@
+fry629 - WiFi debug log visible from shell terminal
+Date: 2026-03-07
+
+Problem: All WiFi init debug output goes to kprint (serial only).
+On the Dell there's no serial capture, so you can't see what happened
+during init. Need diagnostics visible on screen.
+
+Changes:
+1. src/drivers/net/wifi_9260.c:
+   - Added 4KB debug ring buffer (g_iwl_dbg_buf)
+   - Added iwl_dbg() function: logs to both kprint (serial) AND the buffer
+   - Replaced all kprint calls in wifi_9260_init() and iwl_wait_alive()
+     with iwl_dbg() so init progress + ALIVE timeout diagnostics are captured
+   - Added iwl_dbg_fmt() mini printf for the buffer (supports %s %u %d %x)
+   - Added wifi_9260_get_debug_log(): copies init log + live register dump
+     (GP_CNTRL, CSR_INT, FW_STATUS 0x848, HW_REV) to userspace buffer
+   - Also captures FW format, upload status, ALIVE timeout details
+
+2. src/kernel/proc/syscall.c:
+   - Added SYS_WIFI_DEBUG = 40 syscall
+   - Handler copies debug log to user buffer
+
+3. src/user/libc/libc.c + libc.h:
+   - Added fry_wifi_debug(buf, bufsz) wrapper
+
+4. src/user/shell/shell.c:
+   - Added "wd" command: dumps wifi debug log to terminal
+
+Why: fry628 fixed register addresses but we still timeout on ALIVE.
+Need to see the actual register values on the Dell screen to debug further.
+
+Testing: Boot ISO on Dell, run "wd" in shell to see full init log + live regs.
+Build: clean + build_iso.sh OK, ISO exported.

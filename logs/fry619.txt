@@ -1,0 +1,32 @@
+fry619 - 2026-03-06
+WiFi firmware load fix: EFI loader path fallbacks
+
+Problem:
+  Dell `ws` command showed: FAIL @ fw-load (step 3) rc=-1
+  Step 3 = WIFI_STEP_FW_LOAD, rc=-1 = vfs_open() returned NULL.
+  iwlwifi_fw_load() tried both /firmware/iwlwifi-9260.ucode and
+  /firmware/iwlwifi-9260-th-b0-jf-b0-46.ucode — neither found in VFS.
+
+Root cause:
+  The EFI loader's fry_paths[8] (firmware entry) only had 2 path variants:
+    \firmware\iwlwifi-9260.ucode
+    \firmware\iwlwifi-9260-th-b0-jf-b0-46.ucode
+  All other ramdisk entries (.FRY files) had 8-9 variants covering \fry\,
+  \FRY\, \EFI\fry\, \EFI\FRY\, \EFI\BOOT\, etc. On the Dell, the EFI
+  filesystem root exposes the ISO 9660 tree differently (documented in
+  fry617), so files only at the top-level \firmware\ aren't reachable.
+
+  Similarly, build_iso.sh copied .FRY files to all 8 fallback directories
+  but only copied the firmware to the ISO root via copy_wifi_fw_dir.
+
+Fix (2 files):
+  1. src/boot/efi_loader.c — expanded fry_paths[8] from 2 to 9 variants:
+     \firmware\..., \fry\firmware\..., \FRY\firmware\...,
+     \EFI\fry\firmware\..., \EFI\FRY\firmware\..., \EFI\BOOT\firmware\...,
+     \EFI\BOOT\fry\firmware\..., \EFI\BOOT\FRY\firmware\...,
+     plus the alt filename as the 9th variant.
+  2. build_iso.sh — added copy_wifi_fw_dir call inside the fallback
+     directory loop so firmware is copied to all 8 ISO locations.
+
+Verified: ISO now contains iwlwifi-9260.ucode at all 8 paths.
+ISO exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso

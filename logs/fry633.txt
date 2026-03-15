@@ -1,0 +1,46 @@
+fry633 - Context Information table for 9000-series gen2 firmware boot
+2026-03-07
+
+ROOT CAUSE:
+The 9000-series gen2 firmware requires a Context Information table in DMA
+memory (struct iwl_context_info from iwl-context-info.h). Without it, the
+boot ROM starts the firmware (FW_STATUS=0x5a5a9999) but the firmware has
+NO IDEA where the RX/TX DMA queues are, so it cannot DMA the ALIVE
+notification back to the host. Programming the RFH registers directly is
+insufficient because the gen2 firmware overwrites them from the context info.
+
+FIX:
+- Added struct iwl_context_info and sub-structures matching Linux
+  iwl-context-info.h (found at TatertOS64-new/iwl-context-info.h):
+  version, control, rbd_cfg, hcmd_cfg, dump_cfg, dram (LMAC/UMAC/paging)
+- Added iwl_start_fw_with_ctxt_info() which:
+  1. Allocates 1 DMA page for the context info struct
+  2. Fills version (mac_id from HW_REV), control flags
+     (TFD_FORMAT_LONG | RB_SIZE_4K | RB_CB_SIZE=log2(256)=8)
+  3. Fills rbd_cfg with FRBDCB/URBDCB/status_wr_ptr phys addresses
+  4. Fills hcmd_cfg with TFD ring phys + cmd_queue_size=5
+  5. Splits SEC_RT sections into LMAC/UMAC/paging groups by scanning
+     for CPU1_CPU2_SEPARATOR (0xFFFFCCCC) in section SRAM offsets
+  6. Allocates separate DMA buffers for each FW section (below 4GB),
+     copies section data, fills dram.lmac_img[]/umac_img[]/virtual_img[]
+  7. Writes CSR_CTXT_INFO_BA (CSR offset 0x40) with context info phys addr
+  8. Releases CPU -- boot ROM reads context info, self-loads FW, starts it
+- Replaced iwl_upload_firmware() call in wifi_9260_init() with
+  iwl_start_fw_with_ctxt_info() -- no more manual FH service channel upload
+- Added CTXT_INFO_BA readback to wd debug command output
+
+WHY:
+The manual FH service channel loading got the firmware running in SRAM,
+but without the context info, the firmware couldn't find the host DMA
+queues. This is why FW_STATUS=0x5a5a9999 (running) but RX: rd=0 cl=0
+fin=0 irq=0 (no ALIVE received). The context info provides the firmware
+with everything it needs during boot.
+
+FILES CHANGED:
+- src/drivers/net/wifi_9260.c
+
+NEXT:
+Boot Dell with fry633 ISO, run `wd` command. Expect:
+- ALIVE notification received (no more timeout)
+- If still timeout: check CTXT_INFO_BA readback, FW_STATUS, RFH regs
+- If ALIVE passes: proceed to hcmd init, MAC, scan

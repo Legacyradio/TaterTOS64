@@ -1,0 +1,72 @@
+fry713 — Linux 7.0-rc2 iwlwifi init port (2026-03-13)
+=====================================================
+
+CONTEXT:
+  fry712 regressed NIC init on Dell — step=2 (nic-reset) rc=-2.
+  GP_CNTRL showed INIT_DONE + MAC_ACCESS_REQ but NOT MAC_CLOCK_READY.
+  Root cause: multiple differences vs Linux init path accumulated over
+  100+ fry iterations of manual reverse-engineering.
+
+APPROACH:
+  Read Linux 7.0-rc2 iwlwifi pcie/gen1_2/trans.c (local source tree) and
+  ported the 9260/FAMILY_9000 init path directly, replacing our hand-rolled
+  functions with code matching the Linux call chain exactly.
+
+BUGS FIXED (5 total):
+
+  BUG 1 — iwl_apm_init() L0S ordering (fry712 regression)
+    BEFORE: chicken → HPET → HAP_WAKE → INIT_DONE → poll clock → L0S_DISABLED
+    LINUX:  chicken → HPET → HAP_WAKE → L0S_DISABLED → INIT_DONE → poll clock
+    FIX: Moved iwl_set_bit(CSR_GIO_REG, L0S_DISABLED) BEFORE INIT_DONE.
+    Also simplified to use direct iwl_set_bit() calls instead of
+    iwl_write_masked_verified() (which has retry/verify loops that Linux
+    doesn't use).
+
+  BUG 2 — iwl_nic_reset() extra iwl_apm_stop_master()
+    BEFORE: Called stop_master as step 1 of NIC reset
+    LINUX:  _iwl_trans_pcie_start_hw() does NOT call stop_master
+    FIX: Removed. stop_master is for shutdown, not start.
+
+  BUG 3 — iwl_nic_reset() extra MAC_ACCESS_REQ + poll
+    BEFORE: After APM init, set MAC_ACCESS_REQ and poll MAC_CLOCK_READY
+    LINUX:  Does NOT request blanket MAC access in start_hw. MAC access
+            is obtained per-use via iwl_trans_grab_nic_access().
+    FIX: Removed. iwl_grab_nic_access() handles this when needed.
+
+  BUG 4 — iwl_pcie_set_pwr() accessing APMG registers
+    BEFORE: Read/write APMG_PS_CTRL_REG to set power source
+    LINUX:  Returns immediately if apmg_not_supported=true (9260)
+    FIX: Made iwl_pcie_set_pwr() a no-op. APMG registers are not
+         accessible on 9260 and reading them could cause hangs.
+
+  BUG 5 — boot_attempt interrupt/RFKILL ordering
+    BEFORE: RFKILL clear and interrupt disable happened AFTER DMA/TFH/MSI
+    LINUX:  iwl_trans_pcie_start_fw() clears CSR_INT, disables all ints,
+            and clears RFKILL handshake BEFORE calling nic_init.
+    FIX: Restructured boot_attempt to match Linux ordering:
+         1. prepare_card_hw
+         2. clear CSR_INT
+         3. disable all interrupts (mask=0)
+         4. clear RFKILL handshake (SW_BIT_RFKILL + CMD_BLOCKED)
+         5. clear CSR_INT again
+         6. nic_init (APM, set_pwr, nic_config, rx_init, tx_init, shadow)
+         7. enable_fw_load_int
+         8. clear RFKILL twice more (Linux "really make sure")
+    Also added named defines CSR_UCODE_SW_BIT_RFKILL (0x02) and
+    CSR_UCODE_DRV_GP1_BIT_CMD_BLOCKED (0x04).
+
+FILES CHANGED:
+  src/drivers/net/wifi_9260.c
+    - Rewrote iwl_apm_init() (lines ~1156-1210)
+    - Rewrote iwl_nic_reset() (lines ~1230-1282)
+    - Made iwl_pcie_set_pwr() a no-op
+    - Restructured iwl_fw_boot_attempt() Phase 2 flow
+    - Added CSR_UCODE_SW_BIT_RFKILL and CSR_UCODE_DRV_GP1_BIT_CMD_BLOCKED defines
+
+  Old functions now unused (compiler warns, kept for reference):
+    - iwl_apm_program_profile()
+    - iwl_apm_wait_mac_clock()
+    - iwl_apm_stop_master()
+
+BUILD: OK (ISO exported)
+TEST: Awaiting Dell test

@@ -1,0 +1,182 @@
+fry693 - 2026-03-10 22:02:34 CDT - WiFi 9260: move NVM/PHY prep into INIT phase per eventually4, keep RT PHY_CFG after PHY_DB
+
+SESSION CONTEXT:
+  Hardware result from the rebuilt fry692 image matched the old deeper blocker,
+  not a new ALIVE semantic issue:
+    - `step=9 rc=-1 irq=2`
+    - RFH still idle:
+      - `W=0 R=0 U=0`
+      - `rx_closed=0x00000000`
+      - `rx_finished=0x00000000`
+    - CPUs started:
+      - `CPU1_ST=0x00000003`
+      - `CPU2_ST=0x00002328`
+    - same UMAC assert signature:
+      - `0x0000dead`
+      - error_id `0x0000002e`
+      - crash PC `0x7e3e4b69`
+
+WHY THIS PATCH:
+  This is the exact branch eventually4 said to take next.
+
+  The ALIVE group/id fix in fry692 removed one protocol mismatch, but the
+  hardware still died before usable RX/ALIVE handoff. That means the next
+  highest-confidence bug is INIT/runtime sequencing, specifically that local
+  code was still doing this:
+
+    INIT boot -> INIT ALIVE -> wait INIT_COMPLETE
+    runtime boot -> PHY_DB send -> PHY_CFG + NVM reads
+
+  The bundled Linux Core43 MVM path instead does:
+
+    INIT boot -> INIT ALIVE -> NVM work -> TX_ANT_CFG -> PHY_CFG
+    -> wait INIT_COMPLETE / PHY_DB
+    runtime boot -> TX_ANT_CFG -> PHY_DB send -> PHY_CFG
+
+  So the local driver was still starting runtime without the INIT-side prep
+  that Core43 expects to be complete already.
+
+SOURCE REFERENCES USED:
+  Current source:
+    - `src/drivers/net/wifi_9260.c`
+
+  Local case file:
+    - `eventually/eventually4.txt`
+
+  Bundled Linux reference:
+    - `linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/mvm/fw.c`
+    - `linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/mvm/nvm.c`
+    - `linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/fw/api/commands.h`
+    - `linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/fw/api/config.h`
+
+EXACT CODE CHANGES:
+  File:
+    - `src/drivers/net/wifi_9260.c`
+
+  1. Added Core43 TX antenna + PHY chain helpers
+     Relevant lines after patch:
+       - `2156-2168`
+       - `2896-2898`
+       - `3396-3475`
+
+     Added:
+       - `IWL_TX_ANT_CONFIGURATION_CMD = 0x98`
+       - TX/RX chain bit definitions for `phy_config`
+       - cached `g_iwl_fw_phy_cfg = pieces.phy_config`
+
+     New helper behavior:
+       - derive valid TX/RX antenna masks from firmware TLV `phy_config`
+       - send `TX_ANT_CONFIGURATION_CMD`
+       - send `PHY_CFG_CMD` using TLV `phy_config` plus non-zero chain masks
+
+  2. Moved NVM diagnostics and INIT calibration trigger into INIT phase
+     Relevant lines after patch:
+       - `3408-3487`
+       - `5049-5063`
+
+     New INIT-side order:
+       1. boot INIT image
+       2. wait INIT ALIVE
+       3. read MAC / regulatory / PHY SKU NVM via `NVM_ACCESS_CMD`
+       4. send `TX_ANT_CONFIGURATION_CMD`
+       5. send `PHY_CFG_CMD`
+       6. wait for `INIT_COMPLETE` / `PHY_DB`
+
+     Important local safety point:
+       - the NVM sync commands happen before `PHY_CFG_CMD`
+       - that avoids `iwl_wait_resp()` consuming `PHY_DB` / `INIT_COMPLETE`
+         notifications that `iwl_wait_init_complete()` needs to see later
+
+  3. Kept runtime-side PHY DB replay in place and restored runtime PHY config
+     Relevant lines after patch:
+       - `5099-5109`
+       - `3489-3512`
+
+     Runtime-side order is now:
+       1. boot runtime image
+       2. send harvested PHY DB to runtime
+       3. send `TX_ANT_CONFIGURATION_CMD`
+       4. send `PHY_CFG_CMD`
+       5. continue host-command/MAC init
+
+     NVM reads were removed from the normal post-runtime path when INIT is
+     present, except for a retry if INIT-phase MAC collection failed.
+
+WHAT THIS PATCH INTENTIONALLY DID NOT CHANGE:
+  - no RFH register programming
+  - no ALIVE command/group constants
+  - no INIT upload semantics
+  - no PHY DB parser logic
+  - no reinterpretation of the `0x2e` UMAC assert
+
+COMMANDS RUN:
+  Evidence / source inspection:
+    - `rg -n "sec_init_count|iwl_hcmd_init|wait_init_complete|PHY_DB|NVM_ACCESS_CMD|iwl_wait_alive|iwl_send_phy_cfg_cmd|iwl_nvm_init" src/drivers/net/wifi_9260.c linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi -g '!**/*.o'`
+    - `nl -ba src/drivers/net/wifi_9260.c | sed -n '2480,2875p;3240,3475p;4965,5065p'`
+    - `nl -ba linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/mvm/fw.c | sed -n '560,790p;1570,1605p'`
+    - `nl -ba linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/mvm/nvm.c | sed -n '306,390p'`
+    - `nl -ba linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/fw/api/config.h | sed -n '1,80p'`
+
+  Verification:
+    - `make -C /home/jjsako/TaterTOS64v3 src/drivers/net/wifi_9260.o`
+    - `/bin/bash -lc 'PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh'`
+    - `sha256sum /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /home/jjsako/TaterTOS64v3/out/tater_nvme.img /home/jjsako/TaterTOS64v3/out/efiboot.img`
+    - `stat -c '%n|%s|%y' /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /home/jjsako/TaterTOS64v3/out/tater_nvme.img /home/jjsako/TaterTOS64v3/out/efiboot.img`
+
+BUILD RESULT:
+  Targeted compile:
+    - PASS
+
+  Full rebuild / image packaging:
+    - PASS
+
+  Rebuild warnings unchanged from prior steps:
+    - `src/kernel/acpi/aml_exec.c:973` unused parameter `ctx`
+    - `src/kernel/acpi/extended.c:618` `str_eq` unused
+    - `src/kernel/acpi/extended.c:613` `obj_to_str` unused
+    - `src/kernel/acpi/extended.c:285` `pci_cf8_write32` unused
+    - `src/boot/efi_loader.c:352` `gop_mask_size` unused
+    - `src/boot/efi_loader.c:346` `gop_mask_pos` unused
+
+  ISO packaging warning unchanged:
+    - `xorriso`: boot image load size exceeded 65535 blocks of 512 bytes, so
+      El Torito recorded 0 to extend the ESP to end-of-medium
+
+ARTIFACTS:
+  - `out/tatertos64v3.iso`
+    - sha256 `c5ed9a42b04f56581ab2d8e19ab4134a3cbd201a13f0c1405a88dec33dc71d72`
+    - size `151404544`
+    - mtime `2026-03-10 22:02:14 -0500`
+
+  - `out/tater_nvme.img`
+    - sha256 `d4e18dba1ab7197f8abf8b0f1f8c3ede3770a5c1105868147c443cdf4c5d99b4`
+    - size `104857600`
+    - mtime `2026-03-10 22:02:13 -0500`
+
+  - `out/efiboot.img`
+    - sha256 `f0251ed9d3e5ae236f95821e589bdd758dbc78a38e79a7bd864b8edd0fdeea02`
+    - size `67108864`
+    - mtime `2026-03-10 22:02:13 -0500`
+
+EXPECTED NEXT HARDWARE TEST:
+  Boot the new image and run:
+    1. `wdiag`
+    2. `wd3`
+    3. `wc`
+    4. `wh`
+
+WHAT TO LOOK FOR:
+  Strong success signals:
+    - move past the old `step=9 rc=-1` signature
+    - any non-zero RX progress
+    - INIT-side traffic or logs that show NVM / PHY prep happened before
+      calibration completion
+    - runtime reaches a later stage such as host-command or MAC init
+
+  If it still fails with the exact same:
+    - `step=9 rc=-1`
+    - `W=0 R=0 U=0`
+    - `0xdead / 0x2e / 0x7e3e4b69`
+
+  then this patch was not sufficient, but it still cleanly rules out the
+  highest-confidence remaining sequencing mismatch documented in eventually4.

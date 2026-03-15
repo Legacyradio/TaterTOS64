@@ -1,0 +1,39 @@
+fry670 - 2026-03-08 - WiFi 9260: fix done marker — write FH not UREG (gen1 device)
+
+WHY:
+  Dell test of fry669 showed FH_UCODE_LOAD_STATUS=0x000f000f — per-section
+  bits are set but the CPU-done markers (0xFFFF / 0xFFFFFFFF) never appear.
+  UREG_UCODE_LOAD_STATUS also reads 0x00000000. CPUs stuck because firmware
+  never got the "upload complete" signal.
+
+  Root cause: fry666 changed iwl_write_ucode_load_done() to write ONLY to
+  UREG_UCODE_LOAD_STATUS (0xA05C40), a gen2/22000+ register. The 9260 is
+  gen1 and needs done markers written to FH_UCODE_LOAD_STATUS (0x1AF0).
+
+  Linux 7.0-rc2 trans.c:766-779 confirms this explicitly:
+    if (trans->mac_cfg->gen2)
+        iwl_write_prph(trans, UREG_UCODE_LOAD_STATUS, ...);
+    else
+        iwl_write_direct32(trans, FH_UCODE_LOAD_STATUS, ...);
+
+FILES CHANGED:
+  - src/drivers/net/wifi_9260.c
+
+CODE CHANGES:
+  1. iwl_write_ucode_load_done(): changed from iwl_write_prph(UREG_...)
+     to iwl_write32(FH_UCODE_LOAD_STATUS, done_mark).
+  2. Removed redundant iwl_write_ucode_load_done(0) call at upload start
+     (FH_UCODE_LOAD_STATUS already cleared by preceding iwl_write32).
+
+COMMANDS RUN:
+  Build: make clean && build_iso.sh
+
+RESULT:
+  - build_iso.sh: PASS
+  - ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  - Windows: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+NEXT:
+  Boot Dell, run: wh, wc, wd
+  Expected: FH_UCODE_LOAD_STATUS should now read 0xFFFFFFFF after upload,
+  firmware CPUs should get the done signal and proceed to ALIVE.

@@ -1,0 +1,102 @@
+fry662 PLAN — Intel 9260 SW_ERR Root Cause Investigation
+========================================================
+Date: 2026-03-08
+Status: PLANNED (not yet implemented)
+
+CURRENT SYMPTOMS (from Dell fry661 boot):
+- step=9 (alive) rc=-1 — stuck at ALIVE wait, timed out
+- last_irq_csr=0x02000001 = CSR_INT_BIT_SW_ERR(25) | CSR_INT_BIT_ALIVE(0)
+- rx_closed=0x00000000, rx_finished=0x00000000 — NO RX completions at all
+- irq_count=1 — single interrupt fired
+- upload_fh_st=0xffffffff — we wrote this (CPU2 done marker), but could also
+  indicate card crash if PCIe link went down after write
+- ctxt_info=0x00000000 — not using context-info (gen1 path, confirmed correct)
+
+KEY INSIGHT FROM USER (critical):
+The interrupt acknowledgment handshake is broken. The 9260 Step 9 sequence is:
+  1. Hardware fires "Alive" interrupt (CSR_INT = 0x02000001)
+  2. Software MUST read CSR_INT and write it back to CLEAR the interrupt
+  3. Hardware sees the clear and drops the SW_RESET bit (CSR_RESET bit 4)
+If we never properly acknowledge the interrupt, the hardware state machine
+stays frozen. CSR_RESET still showing bit 4 set confirms this.
+
+CODE ANALYSIS — where our ALIVE wait loop fails:
+- iwl_wait_alive() (line ~1958) polls RX ring for ALIVE notification packet
+- It checks rx_status->closed_rb_num for RX completions
+- The "alternative detection" path (line ~2057) only fires when:
+    g_iwl_irq_fired && elapsed > 0 && closed_rb == 0
+  And it does clear CSR_INT there... but this might be too late or the
+  MSI handler might not be setting g_iwl_irq_fired properly
+- The ALIVE wait loop masks only CSR_INT_BIT_ALIVE | CSR_INT_BIT_FH_RX (line 1964)
+  but the actual interrupt has SW_ERR too — if SW_ERR isn't in the mask,
+  does the interrupt even fire as MSI?
+
+ROOT CAUSE HYPOTHESES (ordered by likelihood):
+
+H1: INTERRUPT ACK TIMING
+   The ALIVE interrupt fires but we never properly ACK it because:
+   a) MSI handler might not be running (vector not registered correctly?)
+   b) We clear CSR_INT too late (only after noticing g_iwl_irq_fired)
+   c) The interrupt mask at ALIVE-wait time doesn't include SW_ERR,
+      so SW_ERR stays pending and blocks the state machine
+   FIX: In the ALIVE wait loop, immediately read CSR_INT on each poll
+   iteration and write it back to clear. Don't rely on MSI handler.
+   Also unmask SW_ERR in addition to ALIVE + FH_RX.
+
+H2: RFH RX QUEUE NOT RECEIVING ALIVE
+   The firmware runs (ALIVE CSR bit set) but can't DMA the ALIVE
+   notification to the RX queue because:
+   a) RBDCB_SIZE mismatch: we use 256, Linux uses 512
+   b) Missing CSR_INT_COALESCING timer setup (Linux sets it to default)
+   c) Missing DEFAULT_RXQ_NUM in RFH_GEN_CFG
+   FIX: Match Linux exactly:
+   - Change RBDCB_SIZE from 256 to 512 (even though we only have 256 entries,
+     the hardware might need the field to match expectations)
+   - Add CSR_INT_COALESCING write (CSR_BASE+0x004, set to IWL_HOST_INT_TIMEOUT_DEF)
+   - Add DEFAULT_RXQ_NUM=0 in RFH_GEN_CFG
+
+H3: FW CRASH BEFORE ALIVE DMA
+   The firmware starts executing (ALIVE CSR bit), tries to initialize,
+   hits an error (SW_ERR), and crashes before it can DMA the ALIVE
+   notification. The SRAM error table would tell us WHY.
+   FIX: After timeout, immediately grab NIC access, read SRAM error table
+   at known addresses. Current code tries this but the output might be
+   truncated. Need to ensure error table dump is visible.
+
+IMPLEMENTATION PLAN:
+
+Step 1: Fix interrupt acknowledgment in ALIVE wait loop
+  - At start of each poll iteration, read CSR_INT directly
+  - If ALIVE or SW_ERR bits are set, write them back to clear immediately
+  - Include SW_ERR in the interrupt mask (line 1964)
+  - After clearing, re-check RX ring for completions
+  - Log what CSR_INT values we see during polling
+
+Step 2: Fix RFH configuration to match Linux exactly
+  - RBDCB_SIZE: Check if Linux really uses 512 for 9000-series, adjust if needed
+    (Note: our ring is 256 entries. If HW expects 512, we need 512-entry ring)
+  - Add CSR_INT_COALESCING write
+  - Add DEFAULT_RXQ_NUM=0 to RFH_GEN_CFG
+
+Step 3: Improve diagnostics
+  - In the ALIVE wait loop, log CSR_INT value on each iteration where it's non-zero
+  - After timeout, dump CSR_RESET to check if bit 4 is still set
+  - Ensure SRAM error table dump fits in output buffer
+  - Add GP_CNTRL dump during ALIVE wait
+
+Step 4: Build, flash, test on Dell
+  - make clean && build_iso.sh
+  - Flash to USB, boot Dell
+  - Run `wd` (scroll up for full output)
+  - Focus on: Did CSR_INT get cleared? Did RX completions happen?
+    Did SRAM error table reveal anything?
+
+REFERENCE FILES:
+  - Linux iwl_pcie_rx_mq_hw_init: linux-7.0-rc2/.../pcie/gen1_2/rx.c:900
+  - Linux iwl_pcie_load_given_ucode_8000: .../pcie/gen1_2/trans.c
+  - Our driver: src/drivers/net/wifi_9260.c
+  - ALIVE wait: wifi_9260.c:1958 (iwl_wait_alive)
+  - RFH init: wifi_9260.c:1005 (in iwl_dma_init_tfh)
+  - FW upload: wifi_9260.c:1366 (iwl_upload_firmware)
+
+NEXT FRY LOG: fry662

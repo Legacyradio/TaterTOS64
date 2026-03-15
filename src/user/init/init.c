@@ -14,7 +14,47 @@ static long try_spawn_first(const char *const *paths, uint32_t count, const char
     return -1;
 }
 
+static int path_exists(const char *path) {
+    long fd = fry_open(path, 0);
+    if (fd < 0) return 0;
+    fry_close((int)fd);
+    return 1;
+}
+
+static void maybe_run_autotest(const char *name, const char *trigger_path,
+                               const char *const *paths, uint32_t count) {
+    if (!path_exists(trigger_path)) return;
+    const char *path = 0;
+    long pid = try_spawn_first(paths, count, &path);
+    if (pid < 0) {
+        printf("init: autotest %s requested but unavailable path=%s\n",
+               name, path ? path : "(null)");
+        return;
+    }
+    printf("init: autotest %s path=%s pid=%ld\n", name, path ? path : "(null)", pid);
+    fry_wait((uint32_t)pid);
+    printf("init: autotest %s completed pid=%ld\n", name, pid);
+}
+
 int main(void) {
+    static const char *vmtest_paths[] = {
+        "/apps/VMTEST.FRY",
+        "/VMTEST.FRY",
+        "/fry/VMTEST.FRY",
+        "/FRY/VMTEST.FRY",
+        "/EFI/fry/VMTEST.FRY",
+        "/EFI/FRY/VMTEST.FRY",
+        "/EFI/BOOT/VMTEST.FRY"
+    };
+    static const char *vmfault_paths[] = {
+        "/apps/VMFAULT.FRY",
+        "/VMFAULT.FRY",
+        "/fry/VMFAULT.FRY",
+        "/FRY/VMFAULT.FRY",
+        "/EFI/fry/VMFAULT.FRY",
+        "/EFI/FRY/VMFAULT.FRY",
+        "/EFI/BOOT/VMFAULT.FRY"
+    };
     static const char *gui_paths[] = {
         "/system/GUI.FRY",
         "/GUI.FRY",
@@ -35,6 +75,10 @@ int main(void) {
     };
     int gui_failures = 0;
     printf("init: pid=%ld\n", fry_getpid());
+    maybe_run_autotest("vmtest", "/VMTEST.RUN",
+                       vmtest_paths, (uint32_t)(sizeof(vmtest_paths) / sizeof(vmtest_paths[0])));
+    maybe_run_autotest("vmfault", "/VMFAULT.RUN",
+                       vmfault_paths, (uint32_t)(sizeof(vmfault_paths) / sizeof(vmfault_paths[0])));
     for (;;) {
         const char *path = 0;
         long pid = try_spawn_first(gui_paths,

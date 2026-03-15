@@ -1,0 +1,56 @@
+fry655 - 2026-03-07 22:32:33 CST - WiFi 9260: harden dead-MMIO detection and restore planv3 process compliance
+
+WHY:
+  This step corrected two things:
+  1. Driver bring-up was too willing to treat all-ones MMIO/PRPH reads as
+     successful hardware state, which can hide warm-boot / D3 / dead-BAR
+     failures and waste time in later init stages.
+  2. The initial execution of this step did not fully follow planv3.txt:
+     - no per-step fry log was written
+     - the default rebuild sequence was not run exactly as specified
+
+CODE CHANGES:
+  File changed:
+    - src/drivers/net/wifi_9260.c
+
+  Brief why for the code change:
+    - Reject 0xffffffff MMIO polls as dead hardware instead of false success.
+    - Add PCI PM/ASPM recovery before MMIO bring-up, plus FLR retry fallback.
+    - Fail RFH init if PRPH status/readback looks dead.
+    - Capture raw CSR/FH interrupt causes for wd diagnostics so the next
+      bare-metal run can distinguish a real ALIVE/FH event from a stray IRQ.
+
+PROCESS CORRECTION:
+  Rebuild rerun using the exact default planv3 sequence:
+    make clean
+    PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+RESULT:
+  - Rebuild completed successfully
+  - ISO output:
+      /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+WARNINGS:
+  - Existing warning remains in src/drivers/net/wifi_9260.c:
+      iwl_set_prph_bit defined but unused
+  - Existing unrelated warnings remain in ACPI / EFI code during full build
+
+HARDWARE TEST COMMANDS:
+  Boot the Dell Precision 7530 with the rebuilt ISO, then run:
+    wd
+    ws
+
+  New debug fields to capture from wd if it still fails:
+    - last_irq_csr
+    - last_irq_fh
+    - HW_IF_CONFIG
+    - GP_CNTRL
+    - FH_LOAD_STATUS
+    - RFH_STATUS
+    - RFH_USED_WIDX
+    - rx_closed / rx_finished
+
+NOTES:
+  - No QEMU logs were used.
+  - BIOS revision/date was not visible during this session, so none was logged.
+  - No SHA-256 was recorded because it was not requested.

@@ -1,0 +1,112 @@
+fry661 - 2026-03-08 - WiFi 9260: add SRAM error table dump, SCD 31-queue enable, full interrupt mask before CPU done markers
+
+SESSION CONTEXT:
+  User booted fry660 ISO on Dell Precision 7530. Output:
+    - wd: step=9 (alive) rc=-1, irq_count=1
+    - last_irq_csr=0x02000001 (ALIVE + SW_ERR) — same as before fry660
+    - last_irq_fh=0x00000000 — no FH RX activity
+    - rx_closed=0, rx_finished=0 — RFH never delivered anything
+    - upload_fh_st=0xffffffff — upload completed
+    - TX init from fry660 did NOT fix the ALIVE+SW_ERR issue
+
+ANALYSIS:
+  Deep comparison against Linux 7.0-rc2 iwlwifi revealed:
+
+  1. TLV type definitions are correct (SEC_RT=19, SEC_INIT=20 in header).
+     Firmware has 13 SEC_RT sections (4 CPU1 + sep + 4 CPU2 + sep + 2 paging + sep)
+     totaling ~925KB. The upload path handles them correctly.
+
+  2. The firmware starts executing (ALIVE fires) but immediately crashes
+     (SW_ERR), before it can DMA the ALIVE notification through the RFH.
+     Root cause is still UNKNOWN — need SRAM error table to find out.
+
+  3. Missing from our code vs Linux:
+     a. SCD_GP_CTRL_ENABLE_31_QUEUES (BIT(0)) — 9260 has 31 queues
+     b. Full interrupt enable (SW_ERR, FH_RX, ALIVE, etc.) BEFORE writing
+        CPU done markers — Linux does iwl_enable_interrupts() between last
+        section upload and FH_UCODE_LOAD_STATUS done marker
+     c. No SRAM error table reading after SW_ERR
+
+  4. Gemini's "missing context" likely refers to Context Information boot,
+     but that is gen2/22000+ ONLY (AX200+). 9260 is gen1 and correctly
+     uses FH service channel DMA upload. ctxt_info=0x00000000 is expected.
+
+  5. The correctly-named firmware file (iwlwifi-9260-th-b0-jf-b0-46.ucode)
+     found in TatertOS64-new/ is a corrupt HTML download (4157 bytes, starts
+     with "<!doctype html>"). Our firmware/iwlwifi-9260.ucode (1.49MB) has
+     valid TLV structure, API 46, and proper SEC_RT sections.
+
+CODE CHANGES:
+  File changed:
+    - src/drivers/net/wifi_9260.c
+
+  1. Added CSR_INT_BIT defines:
+     - CSR_INT_BIT_WAKEUP (BIT(1)), CSR_INT_BIT_RF_KILL (BIT(7)),
+       CSR_INT_BIT_SW_ERR (BIT(25)), CSR_INT_BIT_FH_TX (BIT(27)),
+       CSR_INT_BIT_HW_ERR (BIT(29))
+
+  2. Added SCD_GP_CTRL_ENABLE_31_QUEUES (BIT(0)):
+     - iwl_dma_init_tfh() now writes SCD_GP_CTRL |= AUTO_ACTIVE_MODE | ENABLE_31_QUEUES
+     - Matches Linux iwl_pcie_tx_init for devices with >20 queues
+
+  3. Added SRAM read support:
+     - HBUS_TARG_MEM_RADDR (0x40C), HBUS_TARG_MEM_RDAT (0x41C)
+     - iwl_read_sram() function for NIC SRAM access
+     - iwl_dump_fw_error_table() scans known SRAM addresses after SW_ERR
+
+  4. Added full interrupt enable before CPU done markers:
+     - iwl_upload_runtime_cpu_image() now enables full mask (ALIVE, FH_RX,
+       SW_ERR, FH_TX, HW_ERR, RF_KILL, WAKEUP) and clears pending ints
+       before writing FH_UCODE_LOAD_STATUS done marker — matches Linux
+
+  5. Enhanced wd output:
+     - sec_rt_count= line shows how many SEC_RT sections were parsed
+     - SRAM VERIFY section: reads back SRAM at 0x00000000, 0x00800000,
+       0x00404000 to verify firmware was actually loaded into device SRAM
+
+  6. Enhanced ALIVE timeout handler:
+     - On SW_ERR, calls iwl_dump_fw_error_table() to dump SRAM error info
+     - Output goes to init debug log visible in wd
+
+  7. Global g_iwl_sec_rt_count saved from TLV parse for wd display
+
+BUILD / EXPORT:
+  - make clean: PASS
+  - build_iso.sh: PASS
+  - ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  - Windows export: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+HASH VERIFICATION:
+  SHA-256: de1cc77b367c29640c39c06fb52d3ccf75fa645eaaa7960c978d7ea3bf70f020
+  Both copies match.
+
+WARNINGS:
+  - Existing: iwl_set_prph_bit defined but unused in wifi_9260.c
+
+NEXT BARE-METAL TEST:
+  Boot the rebuilt ISO on the Dell Precision 7530, then run:
+    1. wd       (full output — scroll up to see all sections)
+    2. ws
+
+  Expected new output in wd:
+    - sec_rt_count=13 (confirms TLV parsing found all 13 sections)
+    - If SRAM VERIFY shows non-zero data at 0x00000000 and 0x00800000,
+      the firmware WAS loaded correctly into SRAM
+    - If SRAM VERIFY shows all zeros, the DMA upload failed silently
+    - Init log should show iwl_dump_fw_error_table SRAM dumps after SW_ERR
+    - These SRAM dumps will reveal the firmware's error code and PC
+
+  KEY DIAGNOSTIC:
+    - sec_rt_count: If != 13, TLV parsing bug
+    - SRAM[00000000]: Should be non-zero if upload worked
+    - SRAM error candidates: Look for non-zero/non-FF values that indicate
+      firmware error table was written
+
+REFERENCE:
+  Linux 7.0-rc2 files consulted:
+    - drivers/net/wireless/intel/iwlwifi/fw/file.h (TLV type enum — SEC_RT=19)
+    - drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/trans.c (start_fw, load_given_ucode_8000)
+    - drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/tx.c (iwl_pcie_tx_init, ENABLE_31_QUEUES)
+    - drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/rx.c (IRQ handler, SW_ERR handling)
+    - drivers/net/wireless/intel/iwlwifi/iwl-prph.h (SCD, HBUS register defines)
+    - drivers/net/wireless/intel/iwlwifi/iwl-io.h (SRAM read/write functions)

@@ -1,0 +1,8 @@
+2026-03-07 14:15:00 - fry635 - JJS
+Goal: Fix ALIVE timeout by resolving conflict between manual RFH init and Context Info boot.
+Action: In wifi_9260.c, modified iwl_dma_init_tfh() to populate g_iwl_dma rings but SKIP all iwl_write_prph() calls to RFH registers.
+Reasoning: We are booting via Context Info (iwl_start_fw_with_ctxt_info). The Boot ROM reads the context info table (which contains the RX ring addresses) and configures the hardware itself. Manually programming the RFH registers and enabling the DMA engine *before* the firmware starts likely conflicts with the Boot ROM's initialization sequence, causing the ALIVE packet to be lost or the FW to hang.
+Result:
+- Built ISO.
+- Expectation: Boot ROM reads context info, loads FW, configures RX queue, and sends ALIVE.
+- User will run `wd`.

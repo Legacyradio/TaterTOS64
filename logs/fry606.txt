@@ -1,0 +1,84 @@
+fry606 - WiFi Driver: Firmware Upload via TFH Service DMA
+==========================================================
+Date: 2026-03-06
+Plan: eventually/eventually1.txt step 4
+
+WHAT WAS DONE
+-------------
+Implemented step 4 from the WiFi driver plan: Firmware Upload.
+
+Peripheral Register Access:
+  - HBUS_TARG_PRPH_WADDR/WDAT/RADDR/RDAT registers (0x444-0x450)
+  - iwl_write_prph(addr, val): writes to NIC internal peripheral registers
+  - iwl_read_prph(addr): reads from NIC internal peripheral registers
+  - Uses dword access mode (3 << 24) with 20-bit address mask
+
+Firmware DMA Upload (iwl_load_fw_chunk):
+  - Programs TFH service DMA channel 0 registers:
+    - TFH_SRV_DMA_CHNL0_CTRL: clear, then set DMA_START
+    - TFH_SRV_DMA_CHNL0_SRAM_ADDR: device SRAM destination
+    - TFH_SRV_DMA_CHNL0_DRAM_ADDR_LO/HI: host DRAM source (physical)
+    - TFH_SRV_DMA_CHNL0_BC: byte count
+  - Polls DMA_DONE bit with 500ms timeout per chunk
+  - Cache flush (clflush+mfence) on source data before each DMA
+
+Section Upload (iwl_load_fw_section):
+  - Handles gen2 format: first 4 bytes of section = SRAM destination offset,
+    remaining bytes = actual firmware data
+  - Handles legacy format: caller provides default SRAM address
+    (INST at 0x00000000, DATA at 0x00800000)
+  - Splits large sections into 128 KB chunks (IWL_FW_DMA_CHUNK_SIZE)
+  - Converts kernel virtual addresses to physical via iwl_virt_to_phys()
+
+Full Upload Sequence (iwl_upload_firmware):
+  - Auto-detects gen2 vs legacy format by checking if first 4 bytes of
+    CPU1 instruction section look like a valid SRAM address (< 0x01000000)
+  - Uploads in order: CPU1-inst, CPU1-data, CPU2-inst, CPU2-data
+  - After all sections uploaded, triggers firmware execution via
+    iwl_write_prph(UREG_CPU_INIT_RUN, 1)
+  - 10ms settle delay, then reads GP_CNTRL for diagnostics
+
+WHY
+---
+- The firmware must be in device SRAM before it can execute.
+  The TFH service DMA channel is the hardware mechanism for this transfer.
+- Gen2 (9000+) firmware sections carry their own SRAM offsets in the TLV
+  data, unlike legacy firmware where SRAM addresses are hardcoded.
+- The 128 KB chunk limit is a hardware constraint of the TFH DMA engine.
+- Cache flushing is critical: the CPU may have cached the firmware data
+  from the VFS read; the device reads from physical DRAM via DMA.
+
+FILES CHANGED
+-------------
+- src/drivers/net/wifi_9260.c - FW upload functions, PRPH access, UREG start
+
+BUILD
+-----
+- Compiles clean (no warnings, no errors)
+- Full ISO built and exported to Windows
+
+EXPECTED SERIAL OUTPUT (Dell boot)
+----------------------------------
+IWL9260: firmware format: gen2 (SEC_RT)
+IWL9260: uploading CPU1-inst: NNNN bytes -> SRAM 0xNNNNNNNN
+IWL9260: CPU1-inst upload OK (NNNN bytes)
+IWL9260: uploading CPU1-data: NNNN bytes -> SRAM 0xNNNNNNNN
+IWL9260: CPU1-data upload OK (NNNN bytes)
+IWL9260: starting firmware execution...
+IWL9260: FW start triggered, GP_CNTRL=0xNNNNNNNN
+IWL9260: firmware uploaded + started; ALIVE handshake next
+
+POSSIBLE ISSUES
+---------------
+A) DMA timeout: device may not have DMA master enabled, or physical address
+   of firmware data in heap is not accessible to device (should be OK since
+   pmm/heap allocates below 4GB)
+B) Wrong SRAM address: gen2 detection heuristic may misidentify format;
+   first Dell boot serial output will confirm
+C) UREG_CPU_INIT_RUN may need different value for 9260 stepping
+D) Firmware may require paging sections to be loaded before start
+
+NEXT STEP
+---------
+Step 5: ALIVE Handshake — set up MSI-X interrupt handler, poll RX queue
+for ALIVE notification from firmware

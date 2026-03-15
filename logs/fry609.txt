@@ -1,0 +1,114 @@
+fry609 - WiFi Driver: 802.11 MAC Layer
+========================================
+Date: 2026-03-06
+Plan: eventually/eventually1.txt step 7
+
+WHAT WAS DONE
+-------------
+Implemented step 7: 802.11 MAC Layer — scanning, authentication, association.
+
+New Files:
+  - src/drivers/net/iwl_mac80211.h: 802.11 frame definitions, MVM command structs,
+    BSS entry struct, scan/associate API declarations
+  - src/drivers/net/iwl_mac80211.c: full 802.11 MAC layer implementation
+  - src/drivers/net/iwl_cmd.h: cross-file API for iwl_send_cmd/send_cmd_sync/wait_resp
+
+MAC Context Setup (iwl_mac_ctx_add):
+  - Sends MAC_CONTEXT_CMD (0x28) to create STA-mode MAC context
+  - Sets our MAC address, TSF ID, filter flags
+
+PHY Context Setup (iwl_phy_ctx_add):
+  - Sends PHY_CONTEXT_CMD (0x08) to configure radio
+  - Channel number, band (2.4/5 GHz), 20 MHz width, TX/RX chain masks (A+B)
+
+Binding (iwl_binding_add):
+  - Sends BINDING_CONTEXT_CMD (0x2B) to bind MAC context to PHY context
+  - Required before any TX/RX can happen
+
+UMAC Scan (iwl_start_scan + iwl_collect_scan_results):
+  - Sends SCAN_REQ_UMAC (0x0C, group 0x0D) with:
+    - 11 channels (2.4 GHz, channels 1-11)
+    - Active dwell 30ms, passive dwell 110ms per channel
+    - Wildcard probe request template (broadcast SSID)
+  - Probe request builder includes: SSID IE, Supported Rates (1-18 Mbps),
+    Extended Rates (24-54 Mbps)
+  - Collects results for up to 5 seconds
+  - Parses beacon/probe response frames: SSID, BSSID, channel (DS params),
+    capability info, beacon interval, RSN IE detection
+  - Deduplicates by BSSID
+  - Prints each found BSS with SSID, channel, BSSID, [WPA2]/[OPEN] tag
+
+TX Management Frames (iwl_tx_mgmt):
+  - Wraps 802.11 frame in TX_CMD (0x1C) with:
+    - 1 Mbps CCK rate (basic rate for management frames)
+    - ACK expected, 3 retries, infinite lifetime
+  - Sends via host command interface
+
+Authentication (iwl_send_auth):
+  - Builds Open System Authentication frame:
+    - FC = MGMT | AUTH subtype
+    - DA/BSSID = target AP, SA = our MAC
+    - Auth body: algorithm=OPEN, seq=1, status=0
+  - Sends via TX_CMD
+
+Association (iwl_send_assoc_req):
+  - Builds Association Request frame:
+    - FC = MGMT | ASSOC_REQ subtype
+    - Capability: ESS, short preamble, short slot
+    - Listen interval = 10
+    - SSID IE, Supported Rates, Extended Rates
+
+Response Waiting (iwl_wait_mgmt_resp):
+  - Polls RX queue for auth/assoc response frames
+  - Checks frame control subtype match
+  - Parses status code from response body
+  - For assoc: also extracts AID
+
+Full Association Flow (iwl_associate):
+  1. Update PHY context to target channel
+  2. Send auth → wait for auth response (1s timeout)
+  3. Send assoc request → wait for assoc response (1s timeout)
+
+Init Sequence (iwl_mac_init):
+  1. Store MAC address
+  2. Add MAC context (STA mode)
+  3. Add PHY context (channel 1, 2.4 GHz)
+  4. Create binding
+
+wifi_9260_init Updated:
+  - iwl_hcmd_init now takes mac_out[6] parameter
+  - After hcmd_init: calls iwl_mac_init(mac)
+  - Performs initial scan and prints result count
+  - iwl_send_cmd/send_cmd_sync/wait_resp changed from static to extern
+
+FILES CHANGED
+-------------
+- src/drivers/net/iwl_mac80211.c (NEW) - 802.11 MAC layer implementation
+- src/drivers/net/iwl_mac80211.h (NEW) - 802.11 types and API
+- src/drivers/net/iwl_cmd.h (NEW) - cross-file command API
+- src/drivers/net/wifi_9260.c - hcmd_init mac_out param, MAC layer calls
+- Makefile - added iwl_mac80211.o
+
+BUILD
+-----
+- Compiles clean (no warnings, no errors)
+- Full ISO built and exported to Windows
+
+EXPECTED SERIAL OUTPUT (Dell boot)
+----------------------------------
+IWL-MAC: initializing 802.11 MAC layer
+IWL-MAC: MAC context added (STA mode)
+IWL-MAC: PHY context added ch=1 band=0
+IWL-MAC: binding created (MAC 0 -> PHY 0)
+IWL-MAC: 802.11 MAC layer initialized
+IWL-MAC: starting UMAC scan (11 channels, cmd=NNN bytes)
+IWL-MAC: found BSS "MyNetwork" ch=6 aa:bb:cc:dd:ee:ff [WPA2]
+IWL-MAC: found BSS "OpenNet" ch=1 11:22:33:44:55:66 [OPEN]
+IWL-MAC: scan complete notification received
+IWL-MAC: scan found N networks
+IWL9260: scan complete, N networks found
+IWL9260: WiFi driver init complete
+
+NEXT STEP
+---------
+Step 8: WPA2 / Security — EAPOL four-way handshake, AES-CCMP encryption

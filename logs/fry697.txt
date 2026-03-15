@@ -1,0 +1,245 @@
+fry697 - 2026-03-11 00:17:52 CDT - WiFi 9260: retain first-seen ALIVE SW_ERR/HW_ERR snapshot after fry696 selected init-alive-sw-err on both attempts
+
+SESSION CONTEXT:
+  The user booted the fry696 image and captured real hardware output with:
+    - `wcmd`
+    - `wc`
+    - `wh`
+    - `wd3`
+
+  That run selected the explicit SW_ERR branch on both retries:
+    - `retained=6 total=6 hostcmd=0 step=9 rc=-3`
+    - `#0 ord=1 phase step=9 tag=init-alive-rekick arg=1 cl=0x0000 csr=0x00000000`
+    - `#1 ord=2 phase step=9 tag=init-alive-sw-err arg=1 rc=-3 cl=0x0000 csr=0x00000000`
+    - `#2 ord=3 phase step=9 tag=init-alive-fail arg=1 rc=-3 cl=0x0000 csr=0x00000000`
+    - `#3 ord=4 phase step=9 tag=init-alive-rekick arg=2 cl=0x0000 csr=0x00000000`
+    - `#4 ord=5 phase step=9 tag=init-alive-sw-err arg=2 rc=-3 cl=0x0000 csr=0x00000000`
+    - `#5 ord=6 phase step=9 tag=init-alive-fail arg=2 rc=-3 cl=0x0000 csr=0x00000000`
+
+  The surrounding hardware output stayed in the same outer failure class:
+    - `wc`:
+      - `step=9 rc=-3 irq=2`
+      - `CSR_INT=0x00000000`
+      - `last_isr_csr=0x00000000`
+      - `last_isr_fh=0x00000000`
+      - `CPU1_ST=0x00000003`
+      - `CPU2_ST=0x00002320`
+      - `VERDICT: CPU STUCK`
+      - `RFH_ACT=0x00010001 W=0x00000000 R=0x00000000 U=0x00000000`
+      - `rx_closed=0x00000000 rx_fin=0x00000000`
+      - UMAC error table still began with:
+        - `0x0000dead`
+        - `0x0000002e`
+        - `0x7e3e4b69`
+    - `wh`:
+      - `diag cpu-stuck-no-rx-progress`
+      - same programmed-RFH / no-RX shape
+    - `wd3`:
+      - first attempt visibly reached:
+        - `alive-wait`
+        - `alive-kick`
+        - `alive-rekick`
+        - `alive-swerr`
+      - later entries repeated the second attempt
+      - live PRPH still showed RFH programmed
+      - RXUSED still remained all zero
+
+WHY THIS PATCH:
+  `eventually9` already narrowed the lead to:
+    - explicit SW_ERR during INIT ALIVE wait
+    - on both retries
+    - still before `init-prep-enter`
+
+  But the retained evidence path was still one step too coarse:
+    - `wcmd` showed `init-alive-sw-err`
+    - yet the retained `csr=` snapshot was already zero
+    - `wc` also showed `last_isr_csr=0`
+    - `last_isr_fh=0`
+
+  That did not mean SW_ERR was false.
+  It meant the existing retained snapshot was being taken after the poll loop
+  had already acknowledged the interrupt bits, while `last_isr_*` only kept
+  IRQ-handler state and not the poll-observed state that actually selected the
+  SW_ERR branch.
+
+  So the next patch should not change RFH programming or INIT ordering first.
+  It should preserve the first-seen SW_ERR / HW_ERR evidence itself:
+    - exact `CSR_INT`
+    - exact `CSR_FH_INT_STATUS`
+    - elapsed milliseconds at first observation
+    - immediate `wd3` tag before the later coarse fail snapshot
+
+SOURCE REFERENCES USED:
+  Current source:
+    - `src/drivers/net/wifi_9260.c`
+
+  Continuation record:
+    - `eventually/eventually9.txt`
+
+  Real hardware shell output supplied after fry696:
+    - `wcmd`
+    - `wc`
+    - `wh`
+    - `wd3`
+
+EXACT CODE CHANGES:
+  File:
+    - `src/drivers/net/wifi_9260.c`
+
+  1. Added a retained phase helper that can preserve explicit state snapshots.
+     Relevant lines after patch:
+       - `594-653`
+
+     New behavior:
+       - phase entries can now retain:
+         - explicit `csr`
+         - explicit `fh`
+         - elapsed `ms`
+
+     Why this matters:
+       - the decisive ALIVE reason marker no longer has to rely on a later
+         post-ack register read
+
+  2. Captured first-seen SW_ERR / HW_ERR state inside ALIVE wait before ACK.
+     Relevant lines after patch:
+       - `2769-2804`
+
+     New behavior:
+       - on first observed SW_ERR:
+         - preserve `csr_int`
+         - preserve `fh_int`
+         - preserve elapsed milliseconds
+         - capture `alive-swerr-seen`
+       - on first observed HW_ERR:
+         - preserve the same fields
+         - capture `alive-hwerr-seen`
+
+  3. Threaded the preserved snapshot into the decisive retained fail marker.
+     Relevant lines after patch:
+       - `3021-3037`
+
+     New behavior:
+       - the final retained ALIVE reason entry now uses the first-seen snapshot
+         instead of a fresh zeroed read
+
+  4. Expanded `wcmd` phase output so the retained evidence is visible.
+     Relevant lines after patch:
+       - `4884-4898`
+
+     Output changes:
+       - phase entries now print:
+         - `ms=<elapsed>`
+         - `fh=0x...`
+       - existing fields remain:
+         - `tag=...`
+         - `arg=...`
+         - `rc=...`
+         - `cl=0x...`
+         - `csr=0x...`
+
+WHAT THIS PATCH INTENTIONALLY DID NOT CHANGE:
+  - no RFH register programming
+  - no interrupt-mask policy
+  - no ALIVE timeout / retry thresholds
+  - no INIT prep ordering
+  - no host-command flow
+  - no shell command surface
+  - no claim that the functional WiFi blocker is solved
+
+IMPORTANT INTERPRETATION:
+  fry697 is still a diagnostic narrowing patch, not a functional WiFi fix.
+
+  fry696 already proved:
+    - the front-rank branch is explicit SW_ERR during INIT ALIVE wait
+
+  fry697 now makes the next hardware run answer the sharper question:
+    - what exact poll-observed interrupt snapshot selected that branch?
+
+  That is the minimum next distinction needed before changing MSI / masked-bit
+  handling theory or claiming a firmware-crash root cause.
+
+COMMANDS RUN:
+  Evidence / source inspection:
+    - `rg -n "init-alive-sw-err|alive-swerr|SW_ERR|wcmd|WiFi Cmd Trace" src/drivers/net/wifi_9260.c`
+    - `sed -n '520,690p;2720,3025p;4808,4978p' src/drivers/net/wifi_9260.c`
+    - `nl -ba src/drivers/net/wifi_9260.c | sed -n '590,660p;2750,3040p;4884,4902p'`
+    - `sed -n '1,220p' eventually/eventually9.txt`
+    - `sed -n '1,220p' build_iso.sh`
+
+  Verification:
+    - `make -C /home/jjsako/TaterTOS64v3 -j2`
+    - `bash build_iso.sh`
+    - `sha256sum /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /home/jjsako/TaterTOS64v3/out/tater_nvme.img /home/jjsako/TaterTOS64v3/out/efiboot.img`
+    - `stat -c '%n|%s|%y' /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /home/jjsako/TaterTOS64v3/out/tater_nvme.img /home/jjsako/TaterTOS64v3/out/efiboot.img /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+BUILD RESULT:
+  Targeted tree rebuild:
+    - PASS
+
+  Full clean rebuild / image packaging:
+    - PASS
+
+  Export to Windows ISO drop path:
+    - PASS
+
+  Rebuild warnings unchanged from earlier steps:
+    - `src/kernel/acpi/aml_exec.c:973` unused parameter `ctx`
+    - `src/kernel/acpi/extended.c:618` `str_eq` unused
+    - `src/kernel/acpi/extended.c:613` `obj_to_str` unused
+    - `src/kernel/acpi/extended.c:285` `pci_cf8_write32` unused
+    - `src/boot/efi_loader.c:352` `gop_mask_size` unused
+    - `src/boot/efi_loader.c:346` `gop_mask_pos` unused
+
+  ISO packaging warning unchanged:
+    - `xorriso`: boot image load size exceeded 65535 blocks of 512 bytes, so
+      El Torito recorded `0` to extend the ESP to end-of-medium
+
+ARTIFACTS:
+  - `out/tatertos64v3.iso`
+    - sha256 `20fa2c846a81c89e07c1095c5d734f841ff2dad3e0d3c1633a6a3f09f5e618aa`
+    - size `151416832`
+    - mtime `2026-03-11 00:17:42 -0500`
+
+  - `out/tater_nvme.img`
+    - sha256 `617cedbaea6c1a66b37cff7a5b2972229e807f8372a923cd21105de5919c453f`
+    - size `104857600`
+    - mtime `2026-03-11 00:17:41 -0500`
+
+  - `out/efiboot.img`
+    - sha256 `9cd9f306b98d16289a086428772c3bfb7b154b3aa7e8468ddeca8b8bcd582a1b`
+    - size `67108864`
+    - mtime `2026-03-11 00:17:41 -0500`
+
+  - `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+    - size `151416832`
+    - mtime `2026-03-11 00:17:43 -0500`
+
+EXPECTED NEXT HARDWARE TEST:
+  Boot the fry697 image and capture:
+    1. `wcmd`
+    2. `wd3`
+    3. `wc`
+    4. `wh`
+
+WHAT TO LOOK FOR IN `wcmd`:
+  Strong narrowing signals now include:
+    - `init-alive-sw-err` with non-zero `csr` and/or `fh`
+      Meaning:
+        - the first poll-observed snapshot is finally retained
+    - `init-alive-hw-err`
+      Meaning:
+        - the branch has shifted to explicit HW_ERR
+    - `init-alive-sw-err` still present but with zeroed retained snapshots
+      Meaning:
+        - the new retained snapshot path did not execute as expected
+    - `init-alive-ok`
+      Meaning:
+        - the project moved beyond the current ALIVE SW_ERR blind spot
+
+SHORTEST HONEST SUMMARY:
+  fry696 proved that INIT ALIVE is failing with explicit SW_ERR on both
+  retries, not just timing out.
+
+  fry697 therefore keeps the same retained evidence path but now preserves the
+  exact first-seen SW_ERR / HW_ERR snapshot, then builds and packages a fresh
+  ISO for the next hardware run.

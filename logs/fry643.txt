@@ -1,0 +1,40 @@
+fry643 — 2026-03-07
+WiFi Intel 9260: Add RFH write-index trigger doorbell (CSR 0x1C80)
+
+PROBLEM:
+  Dell `wd` output showed:
+    FW_STATUS=0x5a5a9999  (FW running)
+    RFH_Q0_WIDX=0x000000ff (255 RBs posted)
+    RFH_USED_WIDX=0x00000000 (FW consumed ZERO)
+    RFH_STATUS=0xc0000000 (DMA_IDLE)
+    CSR_INT=0x00000000 (no interrupts)
+
+  FW is alive but never sends ALIVE notification because the RFH DMA
+  engine never starts processing the free receive buffer descriptors.
+
+ROOT CAUSE:
+  The code wrote the RX write index to the PRPH register
+  RFH_Q0_FRBDCB_WIDX (0xA08080) only.  In Linux iwlwifi, this is just
+  the internal state register.  The actual doorbell that kicks the RFH
+  DMA engine is a CSR-space trigger register:
+
+    RFH_Q_FRBDCB_WIDX_TRG(q) = 0x1C80 + q*4
+
+  Linux writes this in iwl_pcie_rxq_inc_wr_ptr() via
+  iwl_pcie_rxmq_restock().  Without the trigger write, the RFH stays
+  in DMA_IDLE even though the queue is enabled and buffers are posted.
+
+FIX (wifi_9260.c):
+  1. Added #define RFH_Q_FRBDCB_WIDX_TRG(q) (0x1C80 + (q) * 4)
+  2. After writing PRPH WIDX, added:
+       iwl_write32(RFH_Q_FRBDCB_WIDX_TRG(0), (IWL_RX_QUEUE_SIZE-1) & ~7u);
+     Value rounded down to multiple of 8 per Linux convention (248 = 0xF8).
+
+EXPECTED on Dell:
+  - RFH DMA should start processing free RBDs
+  - FW should DMA ALIVE notification into RX buffer
+  - CSR_INT should show interrupt fired
+  - RFH_USED_WIDX should advance from 0
+  - ALIVE handshake should pass
+
+Build: clean + ISO OK. Exported to Windows for Dell flash.

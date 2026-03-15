@@ -1,0 +1,77 @@
+fry677 - 2026-03-09 01:27:48 CDT - WiFi 9260: program secure CPU header registers in direct upload path
+
+SESSION CONTEXT:
+  User provided a fresh Dell Precision 7530 WiFi dump showing the bring-up was
+  still failing at step 9 with the compact handoff signature:
+    - `wh`: `diag cpu-stuck-no-rx-progress`
+    - `wd2`: `FH_LOAD=0xffffffff`, `RFH_R=0x00000000`, `RFH_U=0x00000000`
+    - CPU state flat: `UMAC_PC=0xc0800000`, `LMAC_PC=0x000000e8`
+
+WHY:
+  The current direct FH upload path in `src/drivers/net/wifi_9260.c` defined
+  the secure boot header registers:
+    - `LMPM_SECURE_UCODE_LOAD_CPU1_HDR_ADDR`
+    - `LMPM_SECURE_UCODE_LOAD_CPU2_HDR_ADDR`
+  but never actually programmed them during runtime firmware upload.
+
+  Earlier bring-up notes already called out these registers as part of the
+  9000-series secure boot path. A missing CPU2 header location is consistent
+  with the remaining dual-CPU stall shape where upload finishes but LMAC stays
+  pinned at `0x000000e8` and RFH never starts consuming the RX free ring.
+
+FILES CHANGED:
+  - `src/drivers/net/wifi_9260.c`
+
+CODE CHANGES:
+  1. In `iwl_upload_firmware()`:
+     - after clearing `FH_UCODE_LOAD_STATUS` and before `WFPM_GP2` /
+       `RELEASE_CPU_RESET`, program:
+         - `LMPM_SECURE_UCODE_LOAD_CPU1_HDR_ADDR = 0x420000`
+         - `LMPM_SECURE_UCODE_LOAD_CPU2_HDR_ADDR = 0x420400` for dual-CPU FW
+  2. Added a debug line logging the readback values of those secure header
+     registers so the next hardware dump can confirm they latched.
+
+RATIONALE:
+  This is a transport-sequencing fix in the existing 9260 direct-upload path,
+  not a Dell-specific quirk. The Dell is only the validation machine exposing
+  the missing header-programming path clearly.
+
+COMMANDS RUN:
+  Investigation:
+    - `sed -n '1,260p' /home/jjsako/TaterTOS64v3/planv3.txt`
+    - `find /home/jjsako/TaterTOS64v3/logs -maxdepth 1 -name 'fry*.txt' -printf '%f\n' | sort -V | tail -n 10`
+    - `sed -n '930,1015p' /home/jjsako/TaterTOS64v3/linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/trans.c`
+    - `sed -n '220,242p' /home/jjsako/TaterTOS64v3/linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/rx.c`
+    - `sed -n '571,590p' /home/jjsako/TaterTOS64v3/linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/iwl-fh.h`
+    - `rg -n "LMPM_SECURE_UCODE_LOAD_CPU1_HDR_ADDR|LMPM_SECURE_UCODE_LOAD_CPU2_HDR_ADDR" /home/jjsako/TaterTOS64v3/src/drivers/net/wifi_9260.c -n`
+    - `sed -n '1,220p' /home/jjsako/TaterTOS64v3/logs/fry651.txt`
+
+  Build / verification:
+    - `make -C /home/jjsako/TaterTOS64v3 src/drivers/net/wifi_9260.o`
+    - `bash build_iso.sh`
+
+RESULT:
+  - targeted rebuild of `src/drivers/net/wifi_9260.o`: PASS
+  - full rebuild via `build_iso.sh`: PASS
+  - ISO output:
+      `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+  - NVMe image output:
+      `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+  - Windows ISO export:
+      `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+NEXT BARE-METAL TEST:
+  Boot the rebuilt image on the Dell Precision 7530, then run:
+    1. `wdiag`
+    2. `wd2`
+
+  Expected signal if the missing secure header programming was the blocker:
+    - `LMAC_PC` should move off `0x000000e8`
+    - `RFH_R` should move off zero
+    - ideally `RFH_U`, `rx_closed`, or `rx_finished` should also become non-zero
+
+NOTES:
+  - This log was added to satisfy `planv3.txt` rule 5 and rule 6 after the
+    completed code/build step.
+  - No SHA-256 hashes were recorded because this was not an explicitly
+    user-requested hash-verification step under rule 16.

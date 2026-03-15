@@ -1,0 +1,15 @@
+[2026-03-07 13:12:22 CST] Step: Fix EFI FAT image build stall caused by mmd on
+an existing directory and verify full timed build completion.
+Why: The TTY build still hung at "Populating EFI system partition image..."
+because build_iso.sh called mmd on ::/EFI/BOOT even though that directory had
+already been created earlier in the script. mtools prompts interactively on an
+existing long-name directory, which looked like another freeze.
+Change: In build_iso.sh, guard the EFI image loop directory creation with
+`mdir ... || mmd ...` so existing directories are not recreated.
+Files: build_iso.sh
+Tests:
+- Reproduced the prompt directly:
+  `mmd -i /tmp/mmd-existing-test.img ::/EFI/BOOT`
+- Timed full build:
+  `timeout -k 10s 300s env SKIP_WIN_EXPORT=1 bash ./build_iso.sh`
+- Result: exit 0, ISO built at `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`

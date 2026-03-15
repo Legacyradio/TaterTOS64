@@ -12,6 +12,7 @@
 #define VMM_FLAG_LARGE        0x080ULL
 #define VMM_FLAG_NOFREE       0x200ULL
 #define VMM_FLAG_NO_EXECUTE   (1ULL << 63)
+#define VMM_PTE_FLAG_MASK     (0xFFFULL | VMM_FLAG_NO_EXECUTE)
 
 #define USER_VA_TOP     0x0000800000000000ULL
 #define KERNEL_VMA_BASE 0xFFFFFFFF80000000ULL
@@ -25,7 +26,9 @@ void vmm_map_range(uint64_t virt, uint64_t phys, uint64_t pages, uint64_t flags)
 uint64_t vmm_create_address_space(void);
 void vmm_map_user(uint64_t pml4_phys, uint64_t virt, uint64_t phys, uint64_t flags);
 uint64_t vmm_virt_to_phys_user(uint64_t pml4_phys, uint64_t virt);
+uint64_t vmm_query_user_flags(uint64_t pml4_phys, uint64_t virt);
 void vmm_unmap_user(uint64_t pml4_phys, uint64_t virt);
+int vmm_protect_user(uint64_t pml4_phys, uint64_t virt, uint64_t flags);
 void vmm_unmap(uint64_t virt);
 uint64_t vmm_virt_to_phys(uint64_t virt);
 uint64_t vmm_phys_to_virt(uint64_t phys);

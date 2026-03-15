@@ -1,0 +1,77 @@
+fry729 — Phase 0 ABI Discipline Completion
+==========================================
+Date: 2026-03-14
+
+Phase 0 of netbuild1 (browser port plan) is now fully complete.
+All items from the Phase 0 checklist have been implemented and verified.
+
+Summary of all Phase 0 work (fry728-729):
+------------------------------------------
+
+1. errno.h (src/include/errno.h)
+   - POSIX-compatible errno subset, Linux-compatible numbering
+   - 22 error codes: EPERM through ENOTEMPTY
+
+2. Stable public headers
+   - src/include/fry_types.h: pid_t, ssize_t, off_t, mode_t, uid_t, gid_t, fd_t
+   - src/include/fry_limits.h: FRY_FD_MAX, FRY_PROC_MAX, FRY_PATH_MAX, etc.
+   - src/include/fry_fcntl.h: O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND
+   - src/include/uaccess.h: copyin/copyout/user_ptr_ok declarations
+
+3. Errno retrofit (all 55 syscalls)
+   - Every `return (uint64_t)-1` replaced with typed negative errno
+   - Zero remaining bare -1 returns in syscall.c
+   - Covers: EFAULT, EBADF, ENOENT, ESRCH, EINVAL, ENOMEM, EMFILE,
+     ENFILE, EPERM, EIO, ENXIO, ENOSYS
+
+4. copyin/copyout
+   - copyin(): validates user source, copies to kernel buffer
+   - copyout(): validates user dest is writable, copies from kernel
+   - Both return -EFAULT on bad pointers
+
+5. Negative-path test suite (src/user/apps/abitest.c)
+   - 14 test groups, ~30 individual checks
+   - Tests: unknown syscall, bad FD read/write/close, bad pointer
+     read/write, open nonexistent, stat bad pointer/path, mmap
+     invalid args, munmap invalid, kill protected PIDs, SHM invalid,
+     sbrk negative
+   - FRY_IS_ERR/FRY_PTR_ERR macros for pointer-returning syscalls
+   - fry_syscall_raw() wrapper for raw syscall number testing
+
+6. Handle lifetime rules & resource accounting
+   - Documented FD/SHM/VM lifetime rules as comment block in process.h
+   - Added open_fds counter to fry_process (increment on open, decrement
+     on close, reset on exit in proc_free)
+   - Exit cleanup already covers: all open FDs, SHM ownership, VM regions
+
+7. Syscall allocation policy (documented in syscall.c)
+   - 0-31: Core POSIX-like (STABLE)
+   - 32-36: FS diagnostics
+   - 37-50: Driver-specific (reclaimable)
+   - 52-54: VM syscalls (STABLE)
+   - 64-127: Reserved POSIX-compat
+   - 128-255: Experimental/debug
+   - 256+: returns -ENOSYS
+
+8. Kernel self-test (src/kernel/selftest.c)
+   - Runs at boot when TATER_SELFTEST=1
+   - Validates: errno values, process table zeroed, constant sizes,
+     negative errno encoding
+   - Panics on failure — broken builds never reach userspace
+
+9. Phase 1 VM ABI (fry728)
+   - Guard pages via FRY_MAP_GUARD
+   - mmap/munmap/mprotect all returning typed errnos
+
+Build verification:
+   make clean && make kernel init shell gui sysinfo uptime ps fileman
+   netmgr vmtest vmfault abitest — all clean (no errors, pre-existing
+   warnings only in acpi/extended.c and shell.c)
+   build_iso.sh — ISO built and exported to Windows side
+
+Files changed this session (fry729):
+   - src/kernel/proc/syscall.c: syscall enum documentation
+   - src/kernel/proc/process.c: open_fds reset in proc_free
+   - src/kernel/selftest.c: NEW — boot-time ABI self-test
+   - src/kernel/main.c: TATER_SELFTEST flag, kernel_selftest() call
+   - Makefile: added selftest.o to KERNEL_OBJS

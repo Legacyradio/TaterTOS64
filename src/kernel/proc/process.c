@@ -15,6 +15,10 @@ void kprint(const char *fmt, ...);
 struct fry_process procs[PROC_MAX];
 static uint32_t next_pid;
 static int g_process_last_launch_error;
+static struct {
+    uint64_t phys;
+    uint32_t pages;
+} g_deferred_kstacks[PROC_MAX];
 
 static void mem_zero(void *p, uint64_t n) {
     uint8_t *b = (uint8_t *)p;
@@ -64,6 +68,34 @@ static void free_kernel_stack(struct fry_process *p) {
     p->kernel_stack_phys = 0;
     p->kernel_stack_pages = 0;
     p->kernel_stack_top = 0;
+}
+
+static void defer_kernel_stack_free(struct fry_process *p) {
+    if (!p || !p->kernel_stack_phys || !p->kernel_stack_pages) return;
+    for (uint32_t i = 0; i < PROC_MAX; i++) {
+        if (g_deferred_kstacks[i].phys == 0) {
+            g_deferred_kstacks[i].phys = p->kernel_stack_phys;
+            g_deferred_kstacks[i].pages = p->kernel_stack_pages;
+            p->kernel_stack_phys = 0;
+            p->kernel_stack_pages = 0;
+            p->kernel_stack_top = 0;
+            return;
+        }
+    }
+
+    kprint("proc_free: deferred stack queue full, leaking stack pid=%u\n", p->pid);
+    p->kernel_stack_phys = 0;
+    p->kernel_stack_pages = 0;
+    p->kernel_stack_top = 0;
+}
+
+void process_reap_deferred_stacks(void) {
+    for (uint32_t i = 0; i < PROC_MAX; i++) {
+        if (!g_deferred_kstacks[i].phys || !g_deferred_kstacks[i].pages) continue;
+        pmm_free_pages(g_deferred_kstacks[i].phys, g_deferred_kstacks[i].pages);
+        g_deferred_kstacks[i].phys = 0;
+        g_deferred_kstacks[i].pages = 0;
+    }
 }
 
 static void process_start(struct fry_process *p) {
@@ -230,13 +262,18 @@ void proc_free(uint32_t pid) {
 
             /* Drop SHM ownership/mappings before tearing down the address space. */
             syscall_shm_process_exit(pid);
+            syscall_vm_process_exit(&procs[i]);
 
             if (!procs[i].is_kernel && procs[i].cr3 &&
                 procs[i].cr3 != vmm_get_kernel_pml4_phys()) {
                 vmm_destroy_address_space(procs[i].cr3);
             }
             sched_remove(pid);
-            free_kernel_stack(&procs[i]);
+            if (cur && cur->pid == pid) {
+                defer_kernel_stack_free(&procs[i]);
+            } else {
+                free_kernel_stack(&procs[i]);
+            }
             procs[i].cr3 = 0;
             procs[i].state = PROC_DEAD;
             procs[i].wait_pid = 0;
@@ -250,6 +287,7 @@ void proc_free(uint32_t pid) {
                     procs[i].fd_table[f] = -1;
                 }
             }
+            procs[i].open_fds = 0;
 
             for (uint32_t w = 0; w < PROC_MAX; w++) {
                 if (procs[w].state == PROC_WAITING && procs[w].wait_pid == pid) {

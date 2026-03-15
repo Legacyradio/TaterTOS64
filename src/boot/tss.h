@@ -27,6 +27,7 @@ void tss_init(uint64_t rsp0_top);
 void tss_init_local(struct tss64 *tss, uint64_t rsp0_top, uint64_t ist1_top, uint64_t ist2_top);
 void tss_set_rsp0(uint64_t rsp0_top);
 void tss_set_rsp0_local(struct tss64 *tss, uint64_t rsp0_top);
+void tss_use_runtime_ists(void);
 void tss_load(uint16_t sel);
 
 #endif

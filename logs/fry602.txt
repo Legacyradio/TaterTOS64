@@ -1,0 +1,92 @@
+========================================================================
+TaterTOS64v3 - fry602 - first real Intel 9260 bring-up slice
+========================================================================
+
+LOG WRITTEN
+-----------
+2026-03-06 15:20:00 CST
+
+CONTEXT
+-------
+- Dell Precision 7530 Wi-Fi hardware IDs provided by user:
+  - `PCI\\VEN_8086&DEV_2526&SUBSYS_40108086&REV_29`
+  - `PCI\\VEN_8086&DEV_2526&SUBSYS_40108086`
+  - `PCI\\VEN_8086&DEV_2526&CC_028000`
+- Existing Wi-Fi code was still a placeholder:
+  - `src/drivers/net/wifi_9260.c`
+  - `src/drivers/net/iwlwifi_fw.c`
+  - `src/drivers/net/iwlwifi_fw.h`
+- The current boot order also made firmware loading impossible because
+  `wifi_9260_init()` ran before VFS/ramdisk mount.
+
+CHANGE
+------
+- Implemented a first real Intel 9260 bring-up slice focused on honest
+  hardware telemetry instead of fake "enabled" status.
+- `src/kernel/main.c`
+  - Deferred `wifi_9260_init()` until after VFS is mounted so file-backed
+    firmware reads are actually possible during live boot.
+- `src/drivers/net/iwlwifi_fw.h`
+  - Added canonical firmware paths and a simple firmware image descriptor.
+- `src/drivers/net/iwlwifi_fw.c`
+  - Added file-backed firmware loading via VFS.
+  - Supports canonical path `/firmware/iwlwifi-9260.ucode` and the longer
+    Intel filename as a fallback.
+  - Records size and whether the expected TLV magic appears near the start.
+- `src/drivers/net/wifi_9260.c`
+  - Added PCI scan for Intel Thunder Peak / 9260 (`8086:2526`).
+  - Logs exact BDF, subsystem ID, class code, command register state, BARs,
+    MMIO physical address, and a first MMIO probe dword.
+  - Explicitly recognizes the Dell 7530 subsystem `0x40108086`.
+  - Loads firmware through the new VFS-backed helper and reports whether the
+    file-backed firmware stage is ready.
+- `build_iso.sh`
+  - Added optional packaging for Wi-Fi firmware placed in:
+    - `firmware/iwlwifi-9260.ucode`
+    - `firmware/iwlwifi-9260-th-b0-jf-b0-46.ucode`
+  - Canonical destination on boot media is `/firmware/iwlwifi-9260.ucode`.
+- `src/boot/efi_loader.c`
+  - Extended live boot ramdisk population to include the canonical Wi-Fi
+    firmware file, so USB/ISO boots can expose it through VFS.
+
+WHY
+---
+- This gets the Dell from "Wi-Fi driver is a placeholder" to:
+  - real device detection,
+  - real Dell-subsystem recognition,
+  - real file-backed firmware visibility,
+  - real MMIO/PCI telemetry on target hardware.
+- It also fixes the structural blocker where firmware could never be loaded
+  because Wi-Fi init ran before the filesystem existed.
+
+LIMITATION
+----------
+- This is not yet a full firmware upload / ALIVE implementation.
+- The current milestone reached by this slice is:
+  - PCI detect + VFS-backed firmware load + serial/MMIO telemetry.
+- Remaining work for M24 is still:
+  - upload firmware sections,
+  - release device CPU/reset path,
+  - wait for ALIVE notification,
+  - read MAC/NVM data.
+
+VALIDATION
+----------
+1) Expected build/test step after this change:
+   - full rebuild so build_iso + EFI ramdisk changes are exercised
+2) Expected hardware readout:
+   - serial should now report whether:
+     - the Dell 9260 device was found,
+     - the subsystem matched `0x40108086`,
+     - firmware file was present on the live root,
+     - MMIO BAR mapping succeeded.
+
+NEXT HARDWARE GOAL
+------------------
+- Put the Intel firmware blob into `firmware/` before rebuild if it is not
+  already present.
+- Boot the Dell and capture the new `IWL9260:` lines.
+- Use those lines to implement the next slice: reset path + firmware upload +
+  ALIVE wait loop.
+
+========================================================================

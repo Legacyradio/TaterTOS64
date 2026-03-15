@@ -1,0 +1,68 @@
+fry648 - 2026-03-07 17:49:12 CST - WiFi 9260: force ctxt_info above 2 MiB and add page-clobber diagnostics
+
+WHY:
+  Bare-metal Dell output still stalled at step=9 (alive) with:
+    FW_STATUS=0x5a5a9999
+    RFH_USED_WIDX=0
+    CTXT_INFO_BA reading back junk while wd still showed ctxt_info=0x00009000
+  The immediate goal for this step was to stop guessing about low-memory stomps and
+  turn it into a controlled test:
+    1. make ctxt_info stop using low physical page 0x9000
+    2. expose enough state in wd to tell whether the page itself is being overwritten
+
+CHANGES:
+  1. Added pmm_alloc_pages_range(count, min_phys, max_phys)
+     Files:
+       src/kernel/mm/pmm.h
+       src/kernel/mm/pmm.c
+
+  2. Changed the WiFi ctxt_info allocation to require phys >= 0x00200000
+     File:
+       src/drivers/net/wifi_9260.c
+
+  3. Added ctxt_info canaries in unused tail bytes of the 4 KiB page:
+       ctxt_canary0 = 0x43545830
+       ctxt_canary1 = 0x43545831
+     and flush the full page so bare-metal wd can verify whether the page was clobbered.
+
+  4. Extended wd debug output to print:
+       ctxt_canary0
+       ctxt_canary1
+       CTXT_INFO_BA_HI
+     so the next Dell boot can distinguish:
+       - host RAM overwrite
+       - NIC CSR/boot-path corruption
+       - stale low-memory allocation theory
+
+BUILD / VERIFICATION:
+  Commands run:
+    PATH="/home/jjsako/TaterTOS64v3/tools/host/bin:/opt/cross/bin:$PATH" make kernel
+    PATH="/home/jjsako/TaterTOS64v3/tools/host/bin:/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+  Result:
+    - kernel build passed
+    - ISO build passed
+    - output ISO: out/tatertos64v3.iso
+
+  Warnings:
+    - existing unused-function warnings remain in src/drivers/net/wifi_9260.c
+    - unrelated warnings remain in ACPI/UEFI codepaths
+
+NEXT DELL TEST:
+  Boot the new ISO on the Precision 7530 and run:
+    wd
+    ws
+
+  Expected signal:
+    - ctxt_info should now be >= 0x00200000
+    - ctxt_canary0 should be 0x43545830
+    - ctxt_canary1 should be 0x43545831
+    - CTXT_INFO_BA should match ctxt_info
+
+  Interpretation:
+    - If canaries stay intact but CTXT_INFO_BA still turns into junk, low page 0x9000 was not the root cause.
+    - If canaries change, the ctxt_info page is being overwritten on the host side.
+
+NOTES:
+  - No SHA-256 was recorded because it was not requested.
+  - No BIOS revision/date was available during this step.

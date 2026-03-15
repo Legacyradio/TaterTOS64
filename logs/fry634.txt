@@ -1,0 +1,31 @@
+fry634 — 2026-03-07
+WiFi 9260: Fix context info DRAM entry enable bit + control flags
+
+Dell output from fry633 ISO:
+  - Context info path runs, FW_STATUS=0x5a (FW CPU started)
+  - But ALIVE TIMEOUT: GP=0804000d INT=00000000 FW=5a
+  - 11 FW sections copied (4 LMAC + 7 UMAC, 2 separators = 13 total) — correct
+  - Boot ROM loads context info but finds no valid DRAM entries
+
+Root cause: THREE bugs in iwl_start_fw_with_ctxt_info():
+
+1. DRAM entries missing enable bit (CRITICAL)
+   Linux iwlwifi ORs each DRAM entry with 0x1 (IWL_DRAM_BASE_ADDR_MASK).
+   Bit 0 = "entry valid/enabled". Without it, boot ROM sees all entries as
+   empty and never loads firmware sections from DMA memory.
+   Fix: ci->dram.lmac_img[i] = phys | 1ULL (same for umac_img, virtual_img)
+
+2. CTXT_INFO_TFD_FORMAT_LONG was (1u << 8) = bit 8, should be 0x01 = bit 0
+   Per Linux iwlwifi: IWL_CTXT_INFO_TFD_FORMAT_LONG = 0x01.
+
+3. CTXT_INFO_RB_SIZE_4K was 0x4, should be 0x0
+   In gen1 context info, 4K RBs are the default (value 0 in bits 9-11).
+
+Files changed:
+  src/drivers/net/wifi_9260.c
+    - Line 177: CTXT_INFO_TFD_FORMAT_LONG 0x01u (was 1u<<8)
+    - Line 179: CTXT_INFO_RB_SIZE_4K 0x0u (was 0x4u)
+    - Lines 1154,1162,1170: Added | 1ULL to each DRAM entry
+
+Next: Boot Dell with fry634 ISO, run `wd` — expect ALIVE to pass now
+      that boot ROM can actually see the firmware DRAM entries.

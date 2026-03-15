@@ -4,6 +4,11 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <errno.h>
+#include <fry_types.h>
+#include <fry_limits.h>
+#include <fry_fcntl.h>
+#include "../../shared/wifi_abi.h"
 
 size_t strlen(const char *s);
 int strcmp(const char *a, const char *b);
@@ -35,6 +40,14 @@ long fry_close(int fd);
 long fry_getpid(void);
 long fry_gettime(void);
 long fry_sbrk(intptr_t increment);
+void *fry_mmap(void *addr, size_t len, uint32_t prot, uint32_t flags);
+void *fry_mmap_fd(void *addr, size_t len, uint32_t prot, uint32_t flags, int fd);
+void *fry_mreserve(void *addr, size_t len, uint32_t flags);
+void *fry_mguard(void *addr, size_t len);
+long fry_mcommit(void *addr, size_t len, uint32_t prot);
+long fry_munmap(void *addr, size_t len);
+long fry_mprotect(void *addr, size_t len, uint32_t prot);
+long fry_syscall_raw(long num, long a1);
 long fry_shm_alloc(size_t size);
 long fry_shm_map(int shm_id);
 long fry_shm_free(int shm_id);
@@ -109,7 +122,37 @@ long fry_kill(long pid);
 long fry_create(const char *path, uint16_t type);
 long fry_mkdir(const char *path);
 long fry_unlink(const char *path);
-#define O_CREAT 0x40
+long fry_wifi_status(struct fry_wifi_status *out);
+long fry_wifi_scan(struct fry_wifi_scan_entry *out, uint32_t max_entries, uint32_t *out_count);
+long fry_wifi_connect(const char *ssid, const char *passphrase);
+long fry_wifi_debug(char *buf, uint32_t bufsz);
+long fry_wifi_cpu_status(char *buf, uint32_t bufsz);
+long fry_wifi_init_log(char *buf, uint32_t bufsz);
+long fry_wifi_debug2(char *buf, uint32_t bufsz);
+long fry_wifi_handoff(char *buf, uint32_t bufsz);
+long fry_wifi_debug3(char *buf, uint32_t bufsz);
+long fry_wifi_reinit(void);
+long fry_wifi_cmd_trace(char *buf, uint32_t bufsz);
+long fry_wifi_sram(char *buf, uint32_t bufsz);
+long fry_wifi_deep_diag(char *buf, uint32_t bufsz);
+long fry_wifi_verify(char *buf, uint32_t bufsz);
+long fry_eth_diag(char *buf, uint32_t bufsz);
+#define FRY_PROT_READ   0x01u
+#define FRY_PROT_WRITE  0x02u
+#define FRY_PROT_EXEC   0x04u
+
+#define FRY_MAP_SHARED  0x01u
+#define FRY_MAP_PRIVATE 0x02u
+#define FRY_MAP_FIXED   0x10u
+#define FRY_MAP_ANON    0x20u
+#define FRY_MAP_FILE    0x40u
+#define FRY_MAP_RESERVE 0x80u
+#define FRY_MAP_GUARD   0x100u
+
+/* mmap returns negative errno on failure; any pointer with high bit set is an error */
+#define FRY_MAP_FAILED ((void *)(intptr_t)-1)
+#define FRY_IS_ERR(p) ((intptr_t)(p) < 0)
+#define FRY_PTR_ERR(p) (-(int)(intptr_t)(p))
 
 struct fry_acpi_diag {
     uint32_t ns_nodes;

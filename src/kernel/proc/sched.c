@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include "sched.h"
 #include "process.h"
+#include "../mm/vmm.h"
 #include "../../drivers/smp/smp.h"
 #include "../../drivers/smp/spinlock.h"
 #include "../../drivers/irqchip/lapic.h"
@@ -10,6 +11,7 @@
 #include "../../boot/tss.h"
 #include "../../boot/efi_handoff.h"
 #include "../../boot/early_serial.h"
+#include "../../include/tater_trace.h"
 
 void kprint(const char *fmt, ...);
 extern struct fry_handoff *g_handoff;
@@ -29,12 +31,21 @@ struct runqueue {
 
 static struct runqueue rq[MAX_CPUS];
 static struct fry_process *current[MAX_CPUS];
+/*
+ * The BSP boot thread starts life on the linker-defined bootstrap stack, not
+ * on a scheduler-owned kernel stack. Keep a bookkeeping-only context for that
+ * one-way handoff, but never enqueue it as a runnable task.
+ */
+static struct fry_process boot_contexts[MAX_CPUS];
 static spinlock_t g_sched_lock = {0};
 static uint8_t g_first_context_switch_seen;
 static uint8_t g_first_user_switch_seen;
 
+extern char __kernel_stack_top;
+
 static void boot_diag_stage(uint64_t stage) {
     struct fry_handoff *handoff = g_handoff;
+    if (!TATER_BOOT_VISUAL_DEBUG) return;
     if (!handoff) return;
     if (!handoff->fb_base || !handoff->fb_width || !handoff->fb_height || !handoff->fb_stride) return;
     if (!handoff->boot_identity_limit || handoff->fb_base >= handoff->boot_identity_limit) return;
@@ -209,9 +220,31 @@ static void idle_loop(void *arg) {
     }
 }
 
+static void init_boot_context(uint32_t cpu) {
+    struct fry_process *boot = &boot_contexts[cpu];
+    for (uint32_t i = 0; i < sizeof(*boot); i++) {
+        ((uint8_t *)boot)[i] = 0;
+    }
+    boot->state = PROC_RUNNING;
+    boot->cpu = (uint8_t)cpu;
+    boot->is_kernel = 1;
+    boot->cr3 = vmm_get_kernel_pml4_phys();
+    boot->kernel_stack_top = (uint64_t)(uintptr_t)&__kernel_stack_top;
+    boot->name[0] = 'b';
+    boot->name[1] = 'o';
+    boot->name[2] = 'o';
+    boot->name[3] = 't';
+    boot->name[4] = 'c';
+    boot->name[5] = 't';
+    boot->name[6] = 'x';
+    boot->name[7] = 0;
+}
+
 int sched_init(void) {
     uint32_t count = smp_cpu_count();
+    uint32_t bsp = smp_bsp_index();
     if (count == 0) count = 1;
+    if (bsp >= count) bsp = 0;
     for (uint32_t i = 0; i < count && i < MAX_CPUS; i++) {
         uint64_t irqf = irq_save_disable();
         spin_lock(&g_sched_lock);
@@ -230,6 +263,15 @@ int sched_init(void) {
             spin_unlock(&g_sched_lock);
             irq_restore(irqf);
         }
+    }
+
+    {
+        uint64_t irqf = irq_save_disable();
+        spin_lock(&g_sched_lock);
+        init_boot_context(bsp);
+        current[bsp] = &boot_contexts[bsp];
+        spin_unlock(&g_sched_lock);
+        irq_restore(irqf);
     }
     return 0;
 }
@@ -417,13 +459,14 @@ void sched_tick(void) {
     spin_unlock(&g_sched_lock);
     if (mark_context_switch) {
         boot_diag_stage(34);
-        early_serial_puts("K_FIRST_SWITCH\n");
+        if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("K_FIRST_SWITCH\n");
     }
     if (mark_user_switch) {
         boot_diag_stage(35);
-        early_serial_puts("K_FIRST_USER\n");
+        if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("K_FIRST_USER\n");
     }
     __asm__ volatile("mov %0, %%cr3" : : "r"(next->cr3));
     context_switch(cur, next);
+    process_reap_deferred_stacks();
     irq_restore(irqf);
 }

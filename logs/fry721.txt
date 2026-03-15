@@ -1,0 +1,76 @@
+fry721 — Intel I219-LM wired Ethernet driver + WiFi shelved
+============================================================
+Date: 2026-03-14
+
+CHANGES:
+
+1. WiFi shelved (main.c)
+   - wifi_9260_init() + wifi_9260_boot_smoke_test() wrapped in #if 0
+   - WiFi code NOT removed, just muted
+   - Why: 130+ frys (fry602-720) with no ALIVE, pivoting to wired
+
+2. New file: src/drivers/net/i219.c — Intel I219-LM driver
+   - Targets PCI 8086:15B7 (Dell 7530 on-board LAN)
+   - Full initialization: PCI scan, BAR0 decode, bus master enable,
+     device reset (with I219 FEXTNVM11 workaround), MAC address read
+   - 256-entry TX + RX descriptor rings with DMA buffers (below 4GB)
+   - Legacy 16-byte descriptor format
+   - RCTL: enable, broadcast accept, 2KB buffers, strip CRC
+   - TCTL: enable, pad short, collision threshold/distance
+   - Link auto-detect with speed/duplex reporting
+   - TX: i219_tx_packet() — copy frame to buffer, fill descriptor, bump tail
+   - RX: i219_rx_poll() — check DD bit, deliver to callback, return descriptor
+   - Cache flush on all DMA-visible memory
+
+3. netcore.c rewired for wired NIC
+   - eth_send() routes through i219_tx_packet() when I219 is ready
+   - net_poll() routes through i219_rx_poll() when I219 is ready
+   - Falls back to WiFi (iwl_rx_poll/wifi_tx_packet) if I219 not present
+   - netcore_attach_i219() called by i219_init() to register RX callback
+
+4. Build integration
+   - i219.o added to Makefile
+   - i219_init() declared and called in main.c Phase 12 (Network)
+
+5. Diagnostics: i219_get_diag() — full register dump via "eth" shell command
+   - SYS_ETH_DIAG (syscall 51), fry_eth_diag() libc wrapper
+   - Shows: ready/link state, PCI location, MMIO address, MAC address
+   - Registers: CTRL, STATUS (decoded), RCTL, TCTL, ICR, IMS, RAL/RAH
+   - RX ring: RDH/RDT/RDLEN, descriptor status for [0..3]
+   - TX ring: TDH/TDT/TDLEN
+   - Extra: EECD, CTRL_EXT, TIPG, FEXTNVM11, PCI CMD/STATUS
+
+6. Shell commands added:
+   - "eth" — full I219 diagnostic dump
+   - "dhcp" — DHCP discover (placeholder, prints message)
+   - "netstat" — quick NIC status summary (first 6 lines of eth)
+   - "ping" — ping command (placeholder, needs DHCP first)
+
+7. Auto-DHCP at boot (main.c)
+   - After i219_init(), if ready && link_up, runs dhcp_discover()
+   - Prints success/failure to serial log
+   - If no link, prints "cable plugged in?" hint
+
+BUILD: Clean, no warnings. ISO exported.
+TEST: Awaiting Dell test — plug Ethernet cable, boot, check serial log.
+
+EXPECTED ON DELL:
+  - "I219: found at PCI xx:xx.x" — confirms PCI discovery
+  - "I219: MAC = xx:xx:xx:xx:xx:xx" — confirms register access
+  - "I219: link UP — 1000 Mbps full duplex" — confirms cable/PHY
+  - "I219: driver initialized successfully" — full init passed
+  - "init: DHCP success" — network ready!
+  - If I219 not found: "I219: not found on PCI bus" (wrong device ID?)
+
+SHELL COMMANDS TO TRY:
+  - "eth" — full diagnostic dump of I219 registers
+  - "netstat" — quick status check
+  - "dhcp" — re-run DHCP (placeholder for now)
+
+WHAT TO LOOK FOR IF IT FAILS:
+  - If "not found": check PCI enumeration log for 8086:xxxx Ethernet device,
+    report the actual device ID (might be I219-V 0x15B8 or other variant)
+  - If "BAR0 invalid": PCI BARs not populated by UEFI
+  - If "reset TIMEOUT": FEXTNVM11 workaround may need tuning
+  - If found + MAC ok but no link: cable not plugged, or PHY needs extra init
+  - Run "eth" command for full register dump regardless of outcome

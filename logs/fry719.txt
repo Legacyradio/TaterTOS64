@@ -1,0 +1,100 @@
+fry719 — Restore unconditional RELEASE_CPU_RESET + CPU2 done marker (revert fry718 regression)
+================================================================================================
+
+Timestamp: 2026-03-14
+
+CONTEXT:
+  fry718 Dell test showed TOTAL regression — identical to fry717 (BIT(0) catastrophe):
+    step=9 rc=-5 (timeout) irq=3
+    wverify: ALL 9 INIT sections live=mismatch, SRAM all 0xa5a5a5a2
+    wdeep: ALL PRPH reads return 0xa5a5a5a2 (device non-functional)
+    No SW_ERR, no HW_ERR — pure timeout
+
+  Compare to fry716 (our best state):
+    step=9 rc=-3 (SW_ERR) irq=2
+    wverify: 8/9 INIT sections live=ok (firmware data intact in SRAM)
+    SRAM 0x00 had 0x0000DEAD crash marker
+    CPU PC stuck at 0x605dc — firmware started but crashed
+
+ROOT CAUSE OF fry718 REGRESSION:
+  fry718 made two changes based on incorrect analysis of Linux's code:
+
+  1. Skipped RELEASE_CPU_RESET for single-CPU INIT images
+  2. Skipped CPU2 call for single-CPU INIT images
+
+  BUT: Linux's iwl_pcie_load_given_ucode_8000() UNCONDITIONALLY calls
+  CPU2 — there is NO is_dual_cpus check.  For single-CPU INIT, the CPU2
+  call loads 0 sections but STILL writes 0xFFFFFFFF to FH_UCODE_LOAD_STATUS.
+  This is the final "go" signal that tells the boot ROM to start firmware.
+
+  By skipping the CPU2 call, fry718 left the done marker at 0x0000FFFF.
+  The boot ROM never received the "all CPUs ready" signal, firmware never
+  started, DMA results were never committed to SRAM.
+
+  fry718's sentinel removal (change 4) was correct and is preserved.
+
+CHANGES:
+
+  1. Restore unconditional RELEASE_CPU_RESET
+     File: src/drivers/net/wifi_9260.c, iwl_pcie_load_given_ucode_8000()
+     Why: fry718 made this conditional on has_cpu2.  Restored to always
+     write, matching fry716 behavior that got firmware running.
+
+  2. Restore unconditional CPU2 call
+     File: src/drivers/net/wifi_9260.c, iwl_pcie_load_given_ucode_8000()
+     Why: Linux ALWAYS calls iwl_pcie_load_cpu_sections_8000(cpu=2).
+     For single-CPU INIT, it loads 0 sections but writes the critical
+     0xFFFFFFFF done marker.  fry718 skipped this entirely.
+
+  Sentinel writes remain removed (fry718 change 4 — section[1] corruption fix).
+  SRAM checkpoint diagnostics from fry718 remain in place.
+
+BUILD:
+  2026-03-14
+  make clean && build_iso.sh
+  Result: PASS — zero warnings in wifi_9260.c
+  ISO exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+DELL TEST COMMANDS:
+  Boot the new ISO on Dell, then run:
+    tater> wdeep
+    tater> wverify
+    tater> wh
+
+  EXPECTED:
+    - Should restore fry716 behavior: 8/9 or 9/9 sections live=ok
+    - Firmware starts, probably crashes at 0x605dc with SW_ERR + 0xDEAD
+    - BUT: sentinel corruption is now fixed (fry718 removed it), so
+      section[1] data at SRAM 0x00-0x38 is no longer overwritten.
+      If the sentinel corruption was causing the 0x605dc crash,
+      this build might get ALIVE.
+
+  ALSO CONFIRMED THIS SESSION:
+    - Our firmware (iwlwifi-9260.ucode, 1,490,508 bytes, SHA256 05f4c125...)
+      is IDENTICAL to the file Linux uses (iwlwifi-9260-th-b0-jf-b0-46 (1).ucode).
+      Same hash, same size.  The firmware binary is correct.
+    - The other file (iwlwifi-9260-th-b0-jf-b0-46.ucode, 4KB) was a
+      fake — an HTML bot-check page from a failed download.
+
+  CRITICAL FOLLOW-UP — STAGING DATA CORRUPTION (after Dell test):
+    wverify shows exp vs stg MISMATCH at section[1] offset+0x14:
+      exp (raw firmware binary) = 0x0846c660
+      stg (DMA staging buffer)  = 0x0846f3e4
+
+    The DMA staging buffer contains DIFFERENT data than the firmware
+    binary file.  Something between TLV parsing and DMA upload is
+    modifying firmware section data.  This means we are uploading
+    CORRUPTED firmware to the device.
+
+    If the firmware validates its own code/data integrity at boot
+    (checksum, signature, or self-test), corrupted data = immediate
+    crash.  This could be the ACTUAL root cause of the 0x605dc crash
+    that has persisted since fry714.
+
+    NEXT STEP: Track down WHERE the staging buffer diverges from the
+    raw firmware binary.  Check:
+      1. TLV parser — does it modify section data in-place?
+      2. DMA buffer allocation — does it copy correctly?
+      3. Any post-parse code that writes to section data pointers
+    If we're corrupting firmware data during staging, fixing that
+    corruption may finally get us past the 0x605dc crash to ALIVE.

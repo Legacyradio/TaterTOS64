@@ -1,0 +1,20 @@
+fry730 — Scheduler Logging Backfill
+===================================
+Timestamp: 2026-03-14 20:55:07 CDT
+
+Backfill for the earlier unlogged scheduler investigation patch.
+
+What changed:
+- `src/kernel/proc/sched.c`
+- Added a BSP bootstrap pseudo-task (`boot_tasks`) and seeded `current[bsp]`
+  from it instead of the BSP idle task.
+- Added `process_reap_deferred_stacks()` after `context_switch()`.
+
+Why:
+- The intent was to stop the BSP from saving the first live boot-thread stack
+  into the idle task state and to make deferred kernel-stack reclamation happen
+  after task switches.
+
+Result:
+- QEMU reproduced the same `RIP=0x100B` invalid-opcode failure, so that change
+  was not sufficient.

@@ -1,9 +1,12 @@
-CC = x86_64-elf-gcc
-AS = nasm
-LD = x86_64-elf-ld
+TOOLBIN = $(CURDIR)/tools/host/bin
 
-CFLAGS = -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra
-UFLAGS = -ffreestanding -fno-stack-protector -O2 -std=gnu11 -Wall -Wextra
+CC = $(TOOLBIN)/x86_64-elf-gcc
+AS = nasm
+LD = $(TOOLBIN)/x86_64-elf-ld
+HOSTCC ?= gcc
+
+CFLAGS = -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -Isrc/include
+UFLAGS = -ffreestanding -fno-stack-protector -O2 -std=gnu11 -Wall -Wextra -Isrc/include
 
 KERNEL_OBJS = \
   src/boot/efi_main.o \
@@ -66,10 +69,15 @@ KERNEL_OBJS = \
   src/drivers/storage/nvme.o \
   src/drivers/storage/vmd.o \
   src/drivers/net/netcore.o \
+  src/drivers/net/i219.o \
   src/drivers/net/e1000.o \
   src/drivers/net/rtl8169.o \
   src/drivers/net/wifi_9260.o \
   src/drivers/net/iwlwifi_fw.o \
+  src/drivers/net/iwlwifi_fw_blob.o \
+  src/drivers/net/iwl_mac80211.o \
+  src/drivers/net/iwl_crypto.o \
+  src/drivers/net/iwl_wpa2.o \
   src/kernel/fs/part.o \
   src/kernel/fs/fat32.o \
   src/kernel/fs/totfs.o \
@@ -78,7 +86,8 @@ KERNEL_OBJS = \
   src/kernel/proc/process.o \
   src/kernel/proc/sched.o \
   src/kernel/proc/elf.o \
-  src/kernel/proc/syscall.o
+  src/kernel/proc/syscall.o \
+  src/kernel/selftest.o
 
 LIBC_OBJ = src/user/libc/libc.o src/user/libc/gfx.o
 INIT_OBJS = $(LIBC_OBJ) src/user/init/init.o
@@ -88,8 +97,12 @@ SYSINFO_OBJS = $(LIBC_OBJ) src/user/apps/sysinfo.o
 UPTIME_OBJS = $(LIBC_OBJ) src/user/apps/uptime.o
 PS_OBJS = $(LIBC_OBJ) src/user/apps/ps.o
 FILEMAN_OBJS = $(LIBC_OBJ) src/user/apps/fileman.o
+NETMGR_OBJS = $(LIBC_OBJ) src/user/apps/netmgr.o
+VMTEST_OBJS = $(LIBC_OBJ) src/user/apps/vmtest.o
+VMFAULT_OBJS = $(LIBC_OBJ) src/user/apps/vmfault.o
+ABITEST_OBJS = $(LIBC_OBJ) src/user/apps/abitest.o
 
-all: kernel init shell gui sysinfo uptime ps fileman hosttools
+all: kernel init shell gui sysinfo uptime ps fileman netmgr vmtest vmfault abitest hosttools
 
 test-elf-bounds: out/elf_loader_bounds_test
 	./out/elf_loader_bounds_test
@@ -99,17 +112,17 @@ test-storage-fuzz: out/storage_meta_fuzz
 
 out/elf_loader_bounds_test: tools/elf_loader_bounds_test.c src/kernel/proc/elf.c src/kernel/proc/elf.h
 	mkdir -p out
-	gcc -O2 -std=gnu11 -Wall -Wextra -I. tools/elf_loader_bounds_test.c src/kernel/proc/elf.c -o out/elf_loader_bounds_test
+	$(HOSTCC) -O2 -std=gnu11 -Wall -Wextra -I. tools/elf_loader_bounds_test.c src/kernel/proc/elf.c -o out/elf_loader_bounds_test
 
 out/storage_meta_fuzz: tools/storage_meta_fuzz.c src/kernel/fs/part.c src/kernel/fs/part.h src/kernel/fs/ntfs.c src/kernel/fs/ntfs.h src/kernel/fs/vfs.h
 	mkdir -p out
-	gcc -O2 -std=gnu11 -Wall -Wextra -ffunction-sections -fdata-sections -I. \
+	$(HOSTCC) -O2 -std=gnu11 -Wall -Wextra -ffunction-sections -fdata-sections -I. \
 	  tools/storage_meta_fuzz.c src/kernel/fs/part.c src/kernel/fs/ntfs.c \
 	  -Wl,--gc-sections -o out/storage_meta_fuzz
 
 hosttools:
-	gcc -O2 -o tools/mktotfs tools/mktotfs.c
-	gcc -O2 -o tools/totcopy tools/totcopy.c
+	$(HOSTCC) -O2 -o tools/mktotfs tools/mktotfs.c
+	$(HOSTCC) -O2 -o tools/totcopy tools/totcopy.c
 
 src/boot/idt_stubs.o: src/boot/idt_stubs.asm
 	$(AS) -f elf64 $< -o $@
@@ -169,11 +182,29 @@ fileman: $(FILEMAN_OBJS)
 	$(LD) -T user_linker.ld -o fileman.elf $(FILEMAN_OBJS)
 	./tools/frypack.py fileman.elf fileman.fry
 
+netmgr: $(NETMGR_OBJS)
+	$(LD) -T user_linker.ld -o netmgr.elf $(NETMGR_OBJS)
+	./tools/frypack.py netmgr.elf netmgr.fry
+
+vmtest: $(VMTEST_OBJS)
+	$(LD) -T user_linker.ld -o vmtest.elf $(VMTEST_OBJS)
+	./tools/frypack.py vmtest.elf vmtest.fry
+
+vmfault: $(VMFAULT_OBJS)
+	$(LD) -T user_linker.ld -o vmfault.elf $(VMFAULT_OBJS)
+	./tools/frypack.py vmfault.elf vmfault.fry
+
+abitest: $(ABITEST_OBJS)
+	$(LD) -T user_linker.ld -o abitest.elf $(ABITEST_OBJS)
+	./tools/frypack.py abitest.elf abitest.fry
+
 clean:
 	rm -f $(KERNEL_OBJS) $(LIBC_OBJ) src/user/libc/gfx.o \
 	  src/user/init/init.o src/user/shell/shell.o src/user/gui/gui.o src/user/apps/sysinfo.o \
-	  src/user/apps/uptime.o src/user/apps/ps.o src/user/apps/fileman.o \
+	  src/user/apps/uptime.o src/user/apps/ps.o src/user/apps/fileman.o src/user/apps/netmgr.o \
+	  src/user/apps/vmtest.o src/user/apps/vmfault.o src/user/apps/abitest.o \
 	  kernel.elf init.elf init.fry shell.elf shell.tot shell.fry gui.elf gui.fry \
 	  sysinfo.elf sysinfo.fry uptime.elf uptime.fry ps.elf ps.fry \
-	  fileman.elf fileman.fry \
+	  fileman.elf fileman.fry netmgr.elf netmgr.fry vmtest.elf vmtest.fry \
+	  vmfault.elf vmfault.fry abitest.elf abitest.fry \
 	  tools/mktotfs tools/totcopy

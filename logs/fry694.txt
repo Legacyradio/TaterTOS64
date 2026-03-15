@@ -1,0 +1,319 @@
+fry694 - 2026-03-10 22:36:10 CDT - WiFi 9260: add standalone host-command trace command after fry693 confirmed eventually5 Case C
+
+SESSION CONTEXT:
+  The user booted the fry693 image and captured real hardware output with:
+    - `wd3`
+    - `wh`
+    - `wc`
+
+  That output did not move the failure later.
+  It matched the "same exact old signature remains" branch that
+  `eventually5` called Case C:
+    - `step=9 rc=-1 irq=2`
+    - ALIVE-stage failure still present
+    - no RX progress:
+      - `W=0 R=0 U=0`
+      - `rx_closed=0x00000000`
+      - `rx_fin=0x00000000`
+    - CPUs started but remained stuck:
+      - `CPU1_ST=0x00000003`
+      - `CPU2_ST=0x00002320`
+    - same UMAC error signature:
+      - marker `0x0000dead`
+      - error_id `0x0000002e`
+      - crash PC `0x7e3e4b69`
+
+  Additional real-hardware detail from this run:
+    - `wh` reported:
+      - `diag cpu-stuck-no-rx-progress`
+      - `UMAC_PC=0xc8888888->0xc8888888`
+      - `LMAC_PC=0x888888e8->0x888888e8`
+    - `wd3` reported:
+      - ALIVE wait reached `alive-timeout`
+      - RFH bases and status writeback addresses still matched host setup
+      - `RFH_GEN_STATUS=0xe0000000`
+      - `UREG_UCODE_LOAD_STATUS=0x00000000`
+      - RX status writeback remained zero
+    - `wc` reported:
+      - `FH_LOAD=0xffffffff`
+      - `LOAD_ST=0x00000000`
+      - same SRAM UMAC error table contents as the older deeper blocker
+
+WHY THIS PATCH:
+  This patch is the direct execution of what `eventually5` said to do if Case C
+  happened.
+
+  `eventually5` explicitly said:
+    - if fry693 still produced the same old step-9 / no-RX signature,
+    - stop making more broad sequencing guesses,
+    - add per-command tracing around `iwl_send_cmd_sync()`,
+    - and make the next run prove whether commands are:
+      - not accepted,
+      - accepted but losing async notifications,
+      - or accepted while firmware still asserts immediately.
+
+  The user also explicitly requested that this new evidence path be a separate
+  command and not be appended to `wd3`.
+
+SOURCE REFERENCES USED:
+  Current source:
+    - `src/drivers/net/wifi_9260.c`
+    - `src/kernel/proc/syscall.c`
+    - `src/user/libc/libc.c`
+    - `src/user/libc/libc.h`
+    - `src/user/shell/shell.c`
+
+  Continuation records:
+    - `eventually/eventually5.txt`
+    - `logs/fry693.txt`
+
+  Real hardware shell output supplied after fry693:
+    - `wd3`
+    - `wh`
+    - `wc`
+
+EXACT CODE CHANGES:
+  File:
+    - `src/drivers/net/wifi_9260.c`
+
+  1. Added a compact retained host-command trace ring.
+     Relevant lines after patch:
+       - `521-590`
+
+     Added retained fields for each entry:
+       - ordinal
+       - trace kind
+       - init step
+       - command id / group
+       - sequence number
+       - tx length
+       - timeout
+       - matched rx cmd / group / seq / len
+       - RX ring slot
+       - last `closed_rb`
+       - async packets seen while waiting
+       - CSR/FH interrupt snapshot
+
+     Trace kinds added:
+       - `send`
+       - `send-fail`
+       - `fire`
+       - `resp`
+       - `async`
+       - `timeout`
+
+  2. Added traced response-wait path instead of expanding `wd3`.
+     Relevant lines after patch:
+       - `2878-2880`
+       - `3131-3217`
+       - `3228-3261`
+
+     New behavior:
+       - records every `iwl_send_cmd_sync()` send
+       - records fire-and-forget commands separately
+       - records matched responses with rx cmd/group/seq/len
+       - records non-matching packets consumed during sync waits as `async`
+       - records timeout entries with:
+         - expected cmd/group
+         - expected sequence
+         - `closed_rb`
+         - async packet count
+         - CSR interrupt snapshot
+
+  3. Added a standalone dump function for the retained command trace.
+     Relevant lines after patch:
+       - `4608-4695`
+
+     Output form:
+       - one retained line per trace event
+       - compact enough for shell use
+       - separate from `wd3`, `wc`, and `wh`
+
+  4. Reset command-trace state on each WiFi init.
+     Relevant lines after patch:
+       - `5186-5190`
+
+     Reset state:
+       - count
+       - next slot
+       - global ordinal
+       - command sequence counter
+
+  5. Added kernel syscall plumbing for the new trace dump.
+     File:
+       - `src/kernel/proc/syscall.c`
+     Relevant lines after patch:
+       - `404-410`
+       - `1110-1117`
+
+     Added:
+       - `SYS_WIFI_CMD_TRACE = 47`
+       - syscall handler for `wifi_9260_get_cmd_trace()`
+
+  6. Added userspace wrapper and shell command.
+     Files:
+       - `src/user/libc/libc.c`
+       - `src/user/libc/libc.h`
+       - `src/user/shell/shell.c`
+
+     Relevant lines after patch:
+       - `src/user/libc/libc.c:238-244`
+       - `src/user/libc/libc.c:434-435`
+       - `src/user/libc/libc.h:123`
+       - `src/user/shell/shell.c:610-620`
+       - `src/user/shell/shell.c:674-676`
+       - `src/user/shell/shell.c:1103`
+       - `src/user/shell/shell.c:1287-1288`
+
+     New shell entry points:
+       - `wifi cmdtrace`
+       - `wcmd`
+
+WHAT THIS PATCH INTENTIONALLY DID NOT CHANGE:
+  - no ALIVE command/group constants
+  - no INIT/runtime ordering changes
+  - no RFH programming
+  - no `wd3` format changes
+  - no `wc` / `wh` logic changes
+  - no reinterpretation of the `0x2e` UMAC assert
+
+IMPORTANT INTERPRETATION:
+  This patch is diagnostic infrastructure, not a claimed functional fix.
+
+  The point is not to "make WiFi work" directly.
+  The point is to make the next real hardware run say which exact command path
+  was last successfully exchanged before the failure shape locked up.
+
+COMMANDS RUN:
+  Source inspection:
+    - `rg -n "iwl_send_cmd_sync|iwl_wait_resp|iwl_wait_alive|iwl_wait_init_complete|PHY_DB|TX_ANT_CONFIGURATION_CMD|NVM_ACCESS_CMD|trace|wd3|wh|wc|wdiag" src/drivers/net/wifi_9260.c`
+    - `rg -n "fry_wifi_debug3|fry_wifi_handoff|fry_wifi_cpu_status|SYS_WIFI_DEBUG3|SYS_WIFI_HANDOFF|SYS_WIFI_REINIT" src/user src/kernel src/shared`
+    - `nl -ba src/drivers/net/wifi_9260.c | sed -n '515,590p;2870,3265p;4600,4695p;5150,5200p'`
+    - `nl -ba src/kernel/proc/syscall.c | sed -n '404,414p;1104,1118p'`
+    - `nl -ba src/user/libc/libc.c | sed -n '238,246p;430,438p'`
+    - `nl -ba src/user/shell/shell.c | sed -n '606,678p;1098,1106p;1282,1290p'`
+
+  Verification:
+    - `make -C /home/jjsako/TaterTOS64v3 src/drivers/net/wifi_9260.o`
+    - `make -C /home/jjsako/TaterTOS64v3 src/kernel/proc/syscall.o src/user/libc/libc.o src/user/shell/shell.o`
+    - `make -C /home/jjsako/TaterTOS64v3`
+    - `bash build_iso.sh`
+    - `sha256sum /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /home/jjsako/TaterTOS64v3/out/tater_nvme.img /home/jjsako/TaterTOS64v3/out/efiboot.img`
+    - `stat -c '%n|%s|%y' /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /home/jjsako/TaterTOS64v3/out/tater_nvme.img /home/jjsako/TaterTOS64v3/out/efiboot.img`
+
+BUILD RESULT:
+  Targeted object builds:
+    - PASS
+
+  Full rebuild:
+    - PASS
+
+  Image packaging:
+    - PASS
+
+  Rebuild warnings unchanged from earlier steps:
+    - `src/kernel/acpi/aml_exec.c:973` unused parameter `ctx`
+    - `src/kernel/acpi/extended.c:618` `str_eq` unused
+    - `src/kernel/acpi/extended.c:613` `obj_to_str` unused
+    - `src/kernel/acpi/extended.c:285` `pci_cf8_write32` unused
+    - `src/boot/efi_loader.c:352` `gop_mask_size` unused
+    - `src/boot/efi_loader.c:346` `gop_mask_pos` unused
+
+  ISO packaging warning unchanged:
+    - `xorriso`: boot image load size exceeded 65535 blocks of 512 bytes, so
+      El Torito recorded `0` to extend the ESP to end-of-medium
+
+ARTIFACTS:
+  - `out/tatertos64v3.iso`
+    - sha256 `615ce77c5658b14e228e07f8fbe3217d623c7c8370144a5dfa5b95ef7b9ffbfe`
+    - size `151412736`
+    - mtime `2026-03-10 22:36:10 -0500`
+
+  - `out/tater_nvme.img`
+    - sha256 `6575f166c8b595b3203bd9b0b942c24d6b849d7948729dfa5f157d53893ee5dc`
+    - size `104857600`
+    - mtime `2026-03-10 22:36:08 -0500`
+
+  - `out/efiboot.img`
+    - sha256 `820b9b60fe318d8dbfbe0d9da209ee205a0c23ad68f71679d632664c82ea5306`
+    - size `67108864`
+    - mtime `2026-03-10 22:36:09 -0500`
+
+EXPECTED NEXT HARDWARE TEST:
+  Boot the fry694 image and capture:
+    1. `wcmd`
+    2. `wd3`
+    3. `wc`
+    4. `wh`
+
+  Optional:
+    - `wdiag`
+
+WHAT TO LOOK FOR IN `wcmd`:
+  Strong narrowing signals:
+    - a specific INIT-side command times out
+    - async packets appear during sync waits
+    - INIT-side commands all exchange cleanly but runtime never gets further
+    - runtime-side PHY replay/config commands are the first to fail
+
+  The key new question is no longer just:
+    - "did the card still die at step 9?"
+
+  It is now:
+    - "which exact command exchange was last observed before the same failure
+       shape locked up?"
+
+NEXT PROPOSED STEP IF THE TRACE SHOWS NO ENTRIES:
+  Meaning:
+    - failure still occurs before any traced host-command exchange
+    - or the code path never reached the traced command helpers
+
+  Next action:
+    - instrument phase boundaries around:
+      - end of INIT ALIVE success
+      - start/end of `iwl_prepare_init_phase()`
+      - return from `iwl_wait_init_complete()`
+      - runtime boot handoff
+
+NEXT PROPOSED STEP IF THE TRACE SHOWS A SPECIFIC TIMEOUT:
+  Meaning:
+    - the first failing command path is now concrete
+
+  Next action:
+    - patch only that command path first
+    - especially if the timeout is on:
+      - `NVM_ACCESS_CMD`
+      - `TX_ANT_CONFIGURATION_CMD`
+      - `PHY_CFG_CMD`
+      - runtime `PHY_DB_CMD`
+
+NEXT PROPOSED STEP IF THE TRACE SHOWS ASYNC PACKETS DURING A WAIT:
+  Meaning:
+    - notification ownership becomes a top suspect
+    - the driver may be consuming packets that should be preserved for another
+      stage-specific waiter
+
+  Next action:
+    - classify those async packets by cmd/group/seq
+    - decide whether the current sync wait is stealing:
+      - `PHY_DB`
+      - `INIT_COMPLETE`
+      - ALIVE-related notifications
+      - or unrelated notifications that still prove RX was alive
+
+NEXT PROPOSED STEP IF INIT COMMANDS ALL LOOK CLEAN:
+  Meaning:
+    - broad INIT sequencing is even less likely to be the active blocker
+
+  Next action:
+    - shift attention toward:
+      - runtime boot handoff after INIT
+      - first runtime-side command exchange
+      - deeper firmware assert cause before usable ALIVE/RX progress
+
+SHORTEST HONEST SUMMARY:
+  The fry693 hardware run matched `eventually5` Case C exactly.
+  fry694 therefore did not make another sequencing guess.
+  It added a separate retained command-trace command, `wcmd`, so the next real
+  hardware run can say which exact command exchange was last seen before the
+  same step-9 / no-RX / `0xdead 0x2e 0x7e3e4b69` failure shape.

@@ -5,6 +5,7 @@
 #include "pmm.h"
 #include "vmm.h"
 #include "../../boot/early_serial.h"
+#include "../../include/tater_trace.h"
 
 #define PAGE_SIZE 4096ULL
 #define HEAP_MAGIC 0xC0FFEE42u
@@ -36,7 +37,7 @@ void heap_init(void) {
     heap_end = 0;
     heap_curr = 0;
 
-    early_serial_puts("K_HEAP_ENTER\n");
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("K_HEAP_ENTER\n");
     early_debug_puts("K_HEAP_ENTER\n");
     pmm_debug_dump_state("PMM_AT_HEAP", 8);
 
@@ -53,14 +54,14 @@ void heap_init(void) {
     }
 
     if (heap_start == 0 || pages == 0) {
-        early_serial_puts("K_HEAP_FAIL\n");
+        if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("K_HEAP_FAIL\n");
         early_debug_puts("K_HEAP_FAIL\n");
         return;
     }
 
     heap_end = heap_start + pages * PAGE_SIZE;
     heap_curr = heap_start;
-    early_serial_puts("K_HEAP_OK\n");
+    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("K_HEAP_OK\n");
     early_debug_puts("K_HEAP_OK\n");
 }
 

@@ -1,0 +1,38 @@
+fry646 — 2026-03-07 — WiFi: Fix context info struct layout + remove premature CPU release
+
+PROBLEM:
+  Dell `wd` output showed step=9 (alive) rc=-1 — ALIVE notification never arrived.
+  FW_STATUS=0x5a5a9999 (boot ROM started), RFH_USED_WIDX=0 (no RX activity),
+  irq_count=0 (no MSI interrupts). Firmware was crashing before sending ALIVE.
+
+ROOT CAUSE ANALYSIS:
+  Two bugs found by comparing struct layouts against Linux v6.6 iwlwifi:
+
+  BUG 1 (critical): iwl_ctxt_info_hcmd_cfg field order was WRONG.
+    Linux:     { u8 cmd_queue_size; u8 reserved[7]; __le64 cmd_queue_addr; }
+    TaterTOS:  { uint64_t cmd_queue_addr; uint8_t cmd_queue_size; uint8_t reserved[7]; }
+
+    Boot ROM reads context info at fixed offsets:
+    - Offset 0x30: expects cmd_queue_size (1 byte) → got low byte of physical addr = 0x00
+    - Offset 0x38: expects cmd_queue_addr (8 bytes) → got 0x0000000000000005 (the size!)
+    Firmware tried to set up command queue DMA at address 0x5 → crash before ALIVE.
+
+  BUG 2 (race condition): Manual CPU release in context info boot path.
+    Lines 1215-1216 did WFPM_GP2 + RELEASE_CPU_RESET after AUTO_FUNC_BOOT_ENA.
+    Linux does NOT do this for context info boot — only for legacy FH upload path.
+    The boot ROM loads FW sections from DRAM and releases the CPU itself.
+    Premature CPU release = FW starts executing before all sections are loaded.
+
+FIXES:
+  1. Swapped iwl_ctxt_info_hcmd_cfg fields: cmd_queue_size first, then cmd_queue_addr
+     (wifi_9260.c lines 204-208)
+  2. Fixed iwl_ctxt_info_dump_cfg field order: type, size, addr (matching Linux)
+     (cosmetic — all zeros — but correct for future use)
+  3. Removed WFPM_GP2 + RELEASE_CPU_RESET from iwl_start_fw_with_ctxt_info
+     Now only sets CSR_GP_CNTRL AUTO_FUNC_BOOT_ENA, matching Linux exactly
+     (wifi_9260.c lines 1210-1218)
+
+VERIFICATION:
+  Full clean build + ISO successful. Same pre-existing warnings only.
+
+NEXT: Boot Dell with fry646 ISO, run `wd` — expect ALIVE notification + step > 9

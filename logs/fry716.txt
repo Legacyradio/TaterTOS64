@@ -1,0 +1,395 @@
+fry716 — Diagnose SYSASSERT 0x2E: sentinel error table + CPU PC reads
+===============================================================================
+
+Timestamp: 2026-03-14
+
+CONTEXT:
+  Dell test after fry715 produced identical results to fry714:
+    step=9 rc=-3 irq=2
+    FH_LOAD=0xffffffff, CPU1_ST=0x00000003, CPU2_ST=0x00002320
+    RFH idle (W=0, R=0, U=0, rx_closed=0, rx_fin=0)
+    UMAC: marker=0x0000dead, error_id=0x0000002e (ADVANCED_SYSASSERT)
+
+  `wverify` confirmed:
+    - All 9 INIT sections staged and uploaded correctly (staged ok=9)
+    - 8/9 live SRAM reads match expected (the 1 mismatch is the crash marker)
+    - Section [1] @ SRAM 0x00000000 (size 0x179c0): only diff is offset +0
+      changed from 0x00000000 to 0x0000DEAD
+
+  `wdeep` showed:
+    - FSEQ_TOP_INIT_VERSION = 0x00000000 (FSEQ never initialized)
+    - FSEQ_ERROR_CODE = 0xa5f5bbb7 (garbage / uninitialized SRAM)
+    - WFPM_ARC1_PD_NOTIFICATION = 0x00000020 (BIT(5), not the expected BIT(4))
+
+  Upload path is VERIFIED CORRECT.  Firmware starts executing and crashes
+  before FSEQ can run.  The init sequence (fry713-715) matches Linux 7.0-rc2.
+  We are out of obvious hardware setup bugs.
+
+===============================================================================
+CRITICAL DISCOVERY: THE ERROR TABLE IS PRE-POPULATED
+===============================================================================
+
+  The wverify section-by-section comparison reveals something game-changing:
+
+  Section [1] lives at SRAM 0x00000000.  Its EXPECTED data (from the firmware
+  binary file, before any CPU execution) is:
+
+    offset +0x00: 00000000   ← valid marker (not yet set)
+    offset +0x04: 0000002e   ← error_id = 0x2E (ALREADY in firmware binary!)
+    offset +0x08: 7e3e4b69   ← firmware git hash
+    offset +0x0c: 00000900
+    offset +0x10: 20020945   ← ilink1
+    offset +0x14: 0046f3e4   ← ilink2
+    offset +0x18: 0045c668   ← data1
+    offset +0x1c: 0046feec   ← data2
+    offset +0x20: 000014c8   ← data3
+    offset +0x24: 00003944   ← umac_major
+    offset +0x28: 00017000   ← umac_minor
+
+  After the crash, SRAM reads:
+
+    offset +0x00: 0000dead   ← valid marker SET by crash handler
+    offset +0x04: 0000002e   ← UNCHANGED from firmware binary
+    offset +0x08: 7e3e4b69   ← UNCHANGED
+    ...all other fields UNCHANGED...
+
+  This means the crash handler wrote ONLY the 0xDEAD valid marker.
+  Every other "diagnostic" field we've been reading — error_id 0x2E,
+  ilink1, ilink2, data1-3, umac_major/minor — are the TEMPLATE VALUES
+  pre-loaded in the firmware binary's data section.
+
+  We have been chasing a phantom error code.  0x2E may or may not be the
+  real error.  The actual crash diagnostics are UNKNOWN.
+
+  Two possibilities:
+    A) The crash handler fills in fields and THEN writes 0xDEAD last.
+       All fields happen to match the template (extremely unlikely for
+       runtime addresses like ilink1=0x20020945).
+    B) The crash is so early that the handler only managed to write the
+       valid marker.  All other fields are stale template data.
+
+  Option B is overwhelmingly likely.  The firmware crashes before its
+  error reporting infrastructure is even initialized.
+
+===============================================================================
+PLAN — 5 STEPS, IN ORDER
+===============================================================================
+
+STEP 1: SENTINEL THE ERROR TABLE
+---------------------------------
+  Goal: Confirm whether the crash handler fills in real data or not.
+
+  After all 9 INIT sections are DMA'd to SRAM but BEFORE writing the
+  CPU1 done marker (FH_UCODE_LOAD_STATUS = 0xFFFF), write sentinel
+  values to the error table region in SRAM.
+
+  Implementation:
+    In iwl_pcie_load_cpu_sections_8000(), after the section upload loop
+    but before line 2249 (iwl_enable_interrupts / done marker write),
+    add for cpu==1 only:
+
+      // Zero error table so we can distinguish real crash data from template
+      // Section [1] lands at SRAM 0x00000000.  Error table occupies first 60 bytes.
+      // Write known sentinels so we can tell if crash handler updates them.
+      if (cpu == 1) {
+          for (int j = 0; j < 15; j++) {
+              // Write 0xCAFE0000 | j as sentinel to each error table word
+              iwl_write_sram_word(j * 4, 0xCAFE0000u | (uint32_t)j);
+          }
+      }
+
+    Where iwl_write_sram_word(offset, val) writes a single 32-bit word to
+    device SRAM at the given offset.  This can be done via:
+      - iwl_write_prph() if the address is in PRPH range, OR
+      - A small FH DMA write (overkill), OR
+      - Direct SRAM access via HBUS_TARG_MEM_WADDR / HBUS_TARG_MEM_WDAT:
+          iwl_write32(HBUS_TARG_MEM_WADDR, sram_offset);
+          iwl_write32(HBUS_TARG_MEM_WDAT, value);
+        (Linux uses this pair for direct SRAM reads/writes.  Already used by
+        our sram probe code.)
+
+    After boot + crash, run wverify.  Expected outcomes:
+      A) offset +0 = 0xDEAD, offsets +4..+60 = real crash data (not sentinel)
+         → Crash handler IS working.  We have real error info.  Proceed to
+           decode it.
+      B) offset +0 = 0xDEAD, offsets +4..+60 = still 0xCAFE0000..0xCAFE000E
+         → Crash handler wrote ONLY the valid marker.  Error reporting is
+           not initialized at crash time.  The 0x2E was template junk.
+           Proceed to Step 2.
+      C) offset +0 = 0xCAFE0000 (sentinel still there, no 0xDEAD)
+         → Crash handler didn't even run.  The CPU faulted hard (maybe a
+           bus error or invalid instruction) with no recovery.  Proceed
+           to Step 3.
+
+  Register access note:
+    We already hold NIC access (grabbed at line 2282 in
+    iwl_pcie_load_given_ucode_8000).  HBUS_TARG_MEM_WADDR/WDAT should work
+    while NIC access is held.  Already-defined constants:
+      #define HBUS_TARG_MEM_RADDR  0x40C
+      #define HBUS_TARG_MEM_RDAT   0x41C
+      #define HBUS_TARG_MEM_WADDR  0x410
+      #define HBUS_TARG_MEM_WDAT   0x418
+    (Verify these are defined; if not, add them.  Linux uses these in
+    iwl_trans_read_mem / iwl_trans_write_mem.)
+
+
+STEP 2: CAPTURE CPU STATE AT CRASH TIME
+-----------------------------------------
+  Goal: If the crash handler isn't providing diagnostics, read the CPU's
+  own state registers to find where it stopped.
+
+  After detecting the crash (step=9 rc=-3), read:
+
+    a) UMAC Program Counter:
+       UREG_UMAC_CURRENT_PC  (prph 0xA05C18, per Linux iwl-prph.h)
+       This gives the instruction address where UMAC was when it faulted.
+
+    b) LMAC Program Counter:
+       UREG_LMAC1_CURRENT_PC (prph 0xA05C1C)
+       UREG_LMAC2_CURRENT_PC (prph 0xA05C20)
+
+    c) CPU1 Status:
+       WFPM_CPU1_STATUS (prph 0xA05C44 or via CSR readback)
+       Already reading this via wc → CPU1_ST=0x00000003
+
+    d) FW Error Registers (9000-series specific):
+       MON_DMARB_RD_CTL_ADDR  (prph 0xA03C60)  — DMA arbiter read control
+       MON_DMARB_RD_DATA_ADDR (prph 0xA03C64)  — DMA arbiter read data
+
+    e) FSEQ Current State:
+       FSEQ_CURRENT_STATUS    (prph 0xA340FC, if defined)
+
+  Implementation:
+    Add these reads to the wdeep command, or add a new `wpc` (wifi PC)
+    shell command.  The PC registers are the single most valuable piece
+    of data we don't have right now.
+
+  With the UMAC PC, we can:
+    - Cross-reference against the firmware's .text section addresses
+    - Section [2] (SRAM 0x00000000, size 0x25CB4) is likely the UMAC code
+    - Section [0] (SRAM 0x00404000) is likely UMAC data/BSS descriptor
+    - Find what instruction the firmware was executing when it crashed
+    - Determine if it's an early init function, a self-check, or
+      a hardware access that faulted
+
+
+STEP 3: DIFFERENTIATE HARD FAULT VS SOFT ASSERT
+-------------------------------------------------
+  Goal: Determine if the firmware hit a hardware fault (bus error,
+  undefined instruction, etc.) vs a software assert.
+
+  If Step 1 shows outcome C (no 0xDEAD at all), the CPU may have:
+    - Faulted on an invalid memory access
+    - Executed an undefined instruction
+    - Hit a watchdog timeout
+
+  Check:
+    a) CSR_INT after crash — which interrupt bits are set?
+       We see irq=2, which is CSR_INT_BIT_SW_ERR.  But also check:
+         - BIT(29) HW_ERR — hardware error
+         - BIT(25) ALIVE  — alive notification
+         - Read the raw CSR_INT value and print ALL set bits
+
+    b) ARC fault registers (if 9260 exposes them):
+       The 9260's UMAC runs on an ARC core.  ARC processors have fault
+       status registers.  These may be accessible via PRPH reads:
+         ARC_AUX_STATUS32    — exception cause
+         ARC_AUX_ERSTATUS    — exception return status
+       (Exact PRPH addresses need research — may be chip-specific)
+
+    c) SRAM corruption check:
+       wverify already does this.  If any section besides [1] shows
+       live!=staged, the firmware may have corrupted its own memory
+       before crashing.
+
+
+STEP 4: EXAMINE FIRMWARE EXPECTATIONS
+---------------------------------------
+  Goal: Find what the firmware needs from the host before boot that we
+  might not be providing.
+
+  a) N_HW_ADDRS TLV:
+     Linux reads IWL_UCODE_TLV_N_HW_ADDRS (type 31, or another type
+     number) from the firmware and stores it.  This tells the firmware how
+     many hardware addresses the NIC has.  If we don't parse this TLV, the
+     firmware might read a zero/garbage value from a shared memory region.
+
+     Check: Parse the firmware binary offline and list ALL TLV types present.
+     Our parser handles:
+       - INST(1), DATA(2), INIT(3), INIT_DATA(4)
+       - SEC_RT(19), SECURE_SEC_RT(26), SEC_INIT(20), SECURE_SEC_INIT(27)
+       - PAGING(33), NUM_OF_CPU(36), PHY_SKU(35)
+       - FW_VERSION(36 alias)
+     It SKIPS (silently via default: break):
+       - API_CHANGES_SET (29)
+       - ENABLED_CAPABILITIES (30)
+       - CMD_VERSIONS (48)
+       - N_HW_ADDRS (31?)
+       - FW_DBG_* (various)
+       - PNVM (many types)
+       - And potentially more
+
+     ACTION: Run a standalone TLV dump tool against the firmware binary
+     to list every TLV type present.  Flag any that modify shared memory
+     regions that the firmware reads during boot.  Most of these TLVs are
+     only used AFTER ALIVE (for runtime configuration), but some may
+     initialize data structures the firmware's boot code checks.
+
+  b) Shared memory / SRAM handshake areas:
+     Some iwlwifi firmware versions expect the host to write to specific
+     SRAM locations before boot (e.g., a "host capabilities" bitfield).
+     Linux's iwl_alive_data or iwl_fw_runtime_init may set these.
+
+     Check: Search Linux 7.0-rc2 for any SRAM writes done between
+     nic_init and the upload call.  There shouldn't be any for gen1 FH
+     path, but verify.
+
+  c) PNVM (Platform NVM):
+     9260 uses NVM (not PNVM — that's for AX200+).  Verify that our
+     firmware image doesn't contain IWL_UCODE_TLV_PNVM_VERSION or
+     require PNVM loading before ALIVE.
+
+
+STEP 5: NUCLEAR OPTION — LINUX REGISTER TRACE ON SAME HARDWARE
+-----------------------------------------------------------------
+  Goal: If Steps 1-4 don't reveal the root cause, capture a full register
+  trace from Linux on the SAME Dell 7530 and compare register-by-register.
+
+  Procedure:
+    a) Boot Ubuntu/Fedora USB live on the Dell
+    b) modprobe -r iwlwifi (if auto-loaded)
+    c) Enable debug tracing:
+         echo 0xFFFFFFFF > /sys/module/iwlwifi/parameters/debug
+         OR (for newer):
+         echo 1 > /sys/kernel/debug/tracing/events/iwlwifi/enable
+    d) modprobe iwlwifi
+    e) Capture dmesg and /sys/kernel/debug/iwlwifi/*/iwl_trans output
+    f) If tracing is available, capture ftrace output:
+         cat /sys/kernel/debug/tracing/trace > /tmp/iwlwifi_trace.txt
+
+  Key registers to compare:
+    - CSR_GP_CNTRL at each phase (start_hw, nic_init, upload, post-upload)
+    - CSR_HW_IF_CONFIG_REG (nic_config values)
+    - FH_UCODE_LOAD_STATUS progression during upload
+    - All FSEQ registers immediately after ALIVE
+    - WFPM_GP2 before and after upload
+    - RELEASE_CPU_RESET readback
+    - RFH register state at ALIVE time
+
+  This is the most labor-intensive step but guarantees we find the
+  difference.  Every register write Linux does that we don't is a
+  candidate root cause.
+
+
+===============================================================================
+PRIORITY ORDER
+===============================================================================
+
+  Step 1 first — takes ~30 minutes to implement and test.  Immediately tells
+  us if the error table is trustworthy.  If the crash handler IS populating
+  real data that just happens to match the template, we learn that 0x2E is
+  real and can focus on firmware-level debugging.  If the sentinel values
+  survive, we know the crash is pre-error-handler and need Step 2's PC dump
+  to find the fault location.
+
+  Step 2 can be done at the same time as Step 1 (same code change, same
+  Dell test cycle).  Adding PC register reads to wdeep costs nothing.
+
+  Step 3 is just analysis of Step 1/2 data.
+
+  Step 4 can be done offline (no Dell needed) while waiting for Dell test.
+
+  Step 5 only if Steps 1-4 don't crack it.
+
+===============================================================================
+EXPECTED OUTCOME
+===============================================================================
+
+  Most likely scenario: Step 1 shows outcome B (sentinels survive = crash
+  handler never ran real diagnostics).  Step 2 gives us the UMAC PC which
+  we can map to a firmware function.  Combined with the fact that FSEQ never
+  initialized, this will point to either:
+
+    1. A firmware self-check at boot that reads an expected value from shared
+       memory / SRAM and finds garbage (→ look for missing TLV-driven SRAM
+       initialization, Step 4)
+    2. A hardware register read that returns unexpected value (→ register trace
+       needed, Step 5)
+    3. A genuine bug in our NIC configuration that the firmware validates on
+       startup (→ compare nic_config values against Linux, Step 5)
+
+  The UMAC PC register is the key to unlocking this.  Once we know WHERE in
+  the firmware code the crash happens, we can map it to a specific check or
+  initialization routine and fix the actual root cause.
+
+===============================================================================
+IMPLEMENTATION — Steps 1+2 COMPLETED
+===============================================================================
+
+STEP 1 IMPLEMENTED: 2026-03-14
+  src/drivers/net/wifi_9260.c
+
+  a) Added HBUS_TARG_MEM_WADDR (0x410) and HBUS_TARG_MEM_WDAT (0x418)
+     defines for direct SRAM writes via CSR.
+
+  b) In iwl_pcie_load_cpu_sections_8000(), after all sections are DMA'd
+     but BEFORE iwl_enable_interrupts() and the CPU1 done marker write:
+       - For cpu==1 only, writes 15 sentinel words (0xCAFE0000..0xCAFE000E)
+         to SRAM addresses 0x00 through 0x38 via HBUS_TARG_MEM_WADDR/WDAT.
+       - This overwrites the pre-populated error table template data that
+         the firmware binary ships with.
+
+  c) In wifi_9260_get_deep_diag() (wdeep command), added
+     "--- SENTINEL CHECK (SRAM 0x00-0x3C) ---" section:
+       - Reads back all 15 words from SRAM
+       - Labels each as SENTINEL (0xCAFE000N unchanged), DEAD (crash marker),
+         or FW-WROTE (firmware crash handler actually populated this field)
+
+  Why: Distinguishes real crash diagnostics from template junk in the
+  firmware binary's data section.
+
+STEP 2 IMPLEMENTED: 2026-03-14
+  src/drivers/net/wifi_9260.c
+
+  a) Added register defines:
+       SB_CPU_1_STATUS         (0xA01E30)
+       SB_CPU_2_STATUS         (0xA01E34)
+       UMAG_SB_CPU_1_STATUS    (0xA038C0)
+       UMAG_SB_CPU_2_STATUS    (0xA038C4)
+       UREG_LMAC2_CURRENT_PC   (0xA05C20)
+       MON_DMARB_RD_CTL_ADDR   (0xA03C60)
+       MON_DMARB_RD_DATA_ADDR  (0xA03C5C)
+
+  b) Added g_iwl_cpu_pc_regs[] table with 7 registers:
+       UMAC_PC, LMAC1_PC, LMAC2_PC,
+       SB_CPU1_STATUS, SB_CPU2_STATUS,
+       UMAG_SB_CPU1_STATUS, UMAG_SB_CPU2_STATUS
+
+  c) In wifi_9260_get_deep_diag() (wdeep command), added:
+       - "--- CPU PC (read twice) ---" section: reads each PC register
+         twice and reports if value is stuck or MOVING
+       - MON_DMARB_RD_DATA readout (DMA arbiter monitor)
+
+  Why: The UMAC_PC tells us exactly WHERE in firmware code the crash
+  happened.  Reading twice detects if the CPU is still running or halted.
+
+BUILD:
+  2026-03-14
+  make clean && build_iso.sh
+  Result: PASS — zero warnings in wifi_9260.c
+  ISO exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+DELL TEST COMMANDS:
+  Boot the new ISO on Dell, then run:
+    tater> wdeep
+
+  Look for:
+    1. SENTINEL CHECK section — are fields SENTINEL or FW-WROTE?
+    2. CPU PC section — what is UMAC_PC? Is it stuck?
+    3. The combination tells us:
+       - FW-WROTE + stuck PC = real crash data, we know WHERE
+       - SENTINEL + stuck PC = crash too early for handler, PC tells us WHERE
+       - SENTINEL + MOVING PC = CPU is spinning, not crashed
+
+Steps 3-5 remain for user to implement if needed.
+===============================================================================

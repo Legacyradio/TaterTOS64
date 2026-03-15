@@ -1,0 +1,35 @@
+fry622 — 2026-03-06
+WiFi TLV parse rc=-2 fix: wrong magic constant + off-by-one TLV type IDs
+
+Problem:
+  `ws` on Dell showed: FAIL @ tlv-parse (step 4) rc=-2
+  Firmware loading (step 3) now works (fry620/621 embedded blob fix),
+  but TLV parsing failed immediately at magic validation.
+
+Root cause (iwlwifi_fw.h):
+  1. IWL_UCODE_TLV_MAGIC was 0x5A4B3C2D — WRONG.
+     The real Intel iwlwifi TLV magic is 0x0a4c5749 ("IWL\n" in LE).
+     The embedded firmware blob has 0x0a4c5749 at offset 4 (correct),
+     but iwlwifi_fw_load() couldn't match it → magic_offset stayed 0xFFFFFFFF
+     → iwlwifi_fw_parse_tlv() returned -2 ("no TLV magic found").
+
+  2. TLV type IDs were off-by-one for gen2 sections:
+       SEC_RT   was 18 (collided with FLAGS=18) — should be 19
+       SEC_INIT was 19 — should be 20
+       SEC_WOWLAN was 20 — should be 21
+     Per Linux kernel iwl-fw-file.h canonical values.
+
+Fix (src/drivers/net/iwlwifi_fw.h):
+  - Changed IWL_UCODE_TLV_MAGIC from 0x5A4B3C2D to 0x0a4c5749
+  - Changed SEC_RT from 18 to 19
+  - Changed SEC_INIT from 19 to 20
+  - Changed SEC_WOWLAN from 20 to 21
+
+Verified: firmware header parses correctly:
+  offset 0:  0x00000000 (zero word)
+  offset 4:  0x0a4c5749 (magic)
+  offset 8:  "release/core43::7e3e4b69" (human_readable)
+  offset 72: 0x0000002e (API version 46)
+  offset 88: first TLV type=0x16 (DEF_CALIB), len=0x0c
+
+Next: flash ISO to Dell, run `ws` — expect TLV parse to pass step 4.

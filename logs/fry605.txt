@@ -1,0 +1,73 @@
+fry605 - WiFi Driver: DMA Ring Setup (TFD/TFH)
+================================================
+Date: 2026-03-06
+Plan: eventually/eventually1.txt step 3
+
+WHAT WAS DONE
+-------------
+Implemented step 3 from the WiFi driver plan: DMA Ring Setup.
+
+DMA Memory Allocation (iwl_dma_alloc):
+  - Single contiguous allocation of 275 pages (~1.1 MB) below 4 GB
+    via pmm_alloc_pages_below() — same pattern as NVMe driver
+  - Layout carved from the allocation:
+    Pages 0-15:   TFD ring (256 entries * 256 bytes = 64 KB)
+    Page 16:      Byte-count table (256 entries * 2 bytes)
+    Page 17:      RX status buffer (device writes closed/finished indices)
+    Page 18:      RX buffer descriptor ring (256 * 8-byte physical addrs)
+    Pages 19-274: RX data buffers (256 * 4 KB, one page each)
+  - All memory zeroed after allocation
+  - Virtual pointers via vmm_phys_to_virt() for CPU access
+  - Global g_iwl_dma struct tracks all ring state
+
+TFH/FH Register Programming (iwl_dma_init_tfh):
+  - TFH_TFDQ_CBB_TABLE: TFD ring base address (64-bit, queue 0)
+  - FH_RSCSR_CHNL0_RBDCB_BASE: RX BD ring base address
+  - FH_MEM_RSSR_SHARED_MEM_ADDR: RX status writeback address
+  - FH_RSCSR_CHNL0_RBDCB_WPTR: RX write pointer (255 = all buffers available)
+  - FH_RCSR_CHNL0_CONFIG: RX channel 0 enabled with DMA, IRQ, single-frame mode
+  - RX BD ring populated with physical addresses of all 256 RX buffers
+  - Cache flush (clflush + mfence) on all descriptor memory before device use
+
+Data Structures Added:
+  - struct iwl_tfd: 256-byte TFD with 25 transfer buffer (TB) slots
+  - struct iwl_tfd_tb: 12-byte scatter-gather entry (phys addr + length)
+  - struct iwl_rx_bd: 8-byte RX buffer descriptor (physical address)
+  - struct iwl_rx_status: device-written RX completion status
+  - struct iwl_bc_entry: 2-byte byte-count table entry per TFD
+  - g_iwl_dma: global state struct with all ring pointers/indices
+
+Helper Functions Added:
+  - iwl_zero(): memory zeroing
+  - iwl_cache_flush(): clflush + mfence over a range (same as NVMe pattern)
+  - iwl_tfd_set_tb(): populate a TFD's transfer buffer entry (for step 4)
+
+WHY
+---
+- The Intel 9260 uses DMA to transfer firmware from host RAM to device SRAM.
+  The TFH reads TFD entries describing host memory buffers and DMAs them.
+- RX side needed for ALIVE handshake (step 5): firmware sends a response
+  back via DMA into the RX buffers after it starts running.
+- All memory below 4 GB to ensure physical addresses fit in hardware registers.
+
+FILES CHANGED
+-------------
+- src/drivers/net/wifi_9260.c - DMA ring structs, alloc, TFH programming
+
+BUILD
+-----
+- Compiles clean (no warnings, no errors)
+- Full ISO built and exported to Windows
+
+EXPECTED SERIAL OUTPUT (Dell boot)
+----------------------------------
+IWL9260: DMA alloc OK: 275 pages at phys=0xNNNNNNNN
+IWL9260:   TFD ring phys=0xNNNN  BC table phys=0xNNNN
+IWL9260:   RXBD ring phys=0xNNNN  RX status phys=0xNNNN
+IWL9260: TFH programmed, RX channel 0 enabled
+IWL9260: NIC reset + FW parsed + DMA rings OK; FW upload next
+
+NEXT STEP
+---------
+Step 4: Firmware Upload — DMA the parsed CPU1/CPU2 sections to device
+via TFH service DMA channel 0 (SRAM destination addressing)

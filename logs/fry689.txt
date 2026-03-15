@@ -1,0 +1,73 @@
+fry689 - 2026-03-10 00:43:44 CDT - WiFi 9260: implement two-phase boot with init PHY DB capture/send
+
+SESSION CONTEXT:
+  The WiFi 9260 bring-up path was still single-phase. The init and runtime
+  firmware images were parsed, but only the runtime image was ever uploaded.
+  That meant init calibration notifications were never collected and the
+  runtime image never received PHY DB data.
+
+WHY:
+  Intel 9260 MVM firmware expects the old two-phase flow:
+    1. Boot INIT ucode
+    2. Collect CALIB_RES_NOTIF_PHY_DB chunks until INIT_COMPLETE
+    3. Reboot into runtime ucode
+    4. Send PHY DB back to runtime before PHY_CFG/NVM bring-up
+  Without that, runtime boot is missing calibration state and the command IDs
+  for PHY_CFG / CALIB_RES / PHY_DB were also wrong by two.
+
+FILES CHANGED:
+  - src/drivers/net/wifi_9260.c
+
+CODE CHANGES:
+  1. Fixed host command IDs:
+     - PHY_CFG_CMD = 0x6A
+     - CALIB_RES_NOTIF_PHY_DB = 0x6B
+     - PHY_DB_CMD = 0x6C
+
+  2. Parameterized `iwl_upload_firmware()` and `iwl_fw_boot_attempt()` so the
+     same upload/ALIVE path can boot either SEC_INIT or SEC_RT sections.
+
+  3. Added an in-driver PHY DB store modeled on the Linux `iwl-phy-db.c`
+     layout:
+     - cfg
+     - calib_nch
+     - calib_ch_group_papd[]
+     - calib_ch_group_txp[]
+     Includes reset, dynamic growth, notification parsing, and runtime send.
+
+  4. Added `iwl_wait_init_complete()` to poll RX after INIT ALIVE, store every
+     `CALIB_RES_NOTIF_PHY_DB`, and stop on `INIT_COMPLETE_NOTIF`.
+
+  5. Split `wifi_9260_init()` into:
+     - optional INIT firmware phase with PHY DB collection
+     - runtime firmware phase
+     - PHY DB send to runtime image before the existing host-command init
+
+  6. Build caught one declaration-order mistake:
+     `iwl_wait_init_complete()` was earlier in the file than the host-command
+     ID defines. Moved those command ID defines into the earlier boot-handshake
+     section and reran the full clean rebuild.
+
+BUILD / VERIFICATION COMMANDS:
+  1. make clean
+  2. PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+RESULT:
+  - Clean rebuild via build_iso.sh: PASS
+  - ISO output: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  - NVMe image: /home/jjsako/TaterTOS64v3/out/tater_nvme.img
+  - EFI boot image: /home/jjsako/TaterTOS64v3/out/efiboot.img
+  - Windows ISO export: skipped because /mnt/c/Users/jjsako/Documents is not writable
+
+NON-FATAL BUILD WARNINGS:
+  - src/kernel/acpi/aml_exec.c: unused parameter `ctx`
+  - src/kernel/acpi/extended.c: unused helpers
+  - src/boot/efi_loader.c: unused gop_mask_size / gop_mask_pos
+  - xorriso: El Torito boot image load size warning during ISO packaging
+
+NEXT TEST:
+  Boot the rebuilt ISO on hardware and confirm the new sequence in WiFi debug:
+    1. INIT image boots and reaches ALIVE
+    2. PHY DB notifications are collected until INIT_COMPLETE
+    3. Runtime image boots and reaches ALIVE
+    4. PHY DB sections are sent before PHY_CFG_CMD

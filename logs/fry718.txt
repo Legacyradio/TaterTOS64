@@ -1,0 +1,118 @@
+fry718 — Revert BIT(0), match Linux single-CPU INIT path, remove sentinel corruption
+=======================================================================================
+
+Timestamp: 2026-03-14
+
+CONTEXT:
+  fry717 Dell test (BIT(0) build) showed catastrophic regression:
+    step=9 rc=-5 (timeout) irq=3
+    wverify: ALL 9 INIT sections live=mismatch, SRAM all 0xa5a5a5a2
+    wdeep: ALL PRPH reads return 0xa5a5a5a2 (device non-functional)
+    No SW_ERR, no HW_ERR — pure timeout
+
+  Compare to fry714-716 Dell tests (BIT(24) builds):
+    step=9 rc=-3 (SW_ERR) irq=2
+    wverify: 8/9 INIT sections live=ok (firmware data intact in SRAM)
+    SRAM 0x00 had 0x0000DEAD crash marker
+    CPU PC stuck at 0x605dc
+
+  CONCLUSION: BIT(0) caused a full device reset wiping all SRAM.
+  BIT(24) allows firmware to load and start (it crashes, but runs).
+
+ANALYSIS OF LINUX DIVERGENCE:
+  Three bugs found vs Linux 7.0-rc2 iwl_pcie_load_given_ucode_8000():
+
+  1. RELEASE_CPU_RESET written unconditionally — Linux only writes it
+     for dual-CPU (RT) images.  INIT is single-CPU (no separators).
+     Writing it for INIT may cause unexpected boot ROM behavior.
+
+  2. CPU2 sections loaded unconditionally — Linux skips CPU2 entirely
+     for single-CPU images.  Our code loaded 0 CPU2 sections but still
+     wrote the CPU2 done marker (0xFFFFFFFF), overwriting CPU1's
+     0x0000FFFF.  For single-CPU INIT, Linux's final marker is 0x0000FFFF.
+
+  3. Sentinel writes (fry716) to SRAM 0x00-0x38 corrupted section [1]
+     which starts at SRAM 0x00000000.  The first 60 bytes of uploaded
+     firmware data were overwritten with 0xCAFE0000..0xCAFE000E.
+     If firmware validates its own header at boot, this causes a crash.
+     fry716 already proved the 0x2E error code is template data, so
+     the sentinels served their diagnostic purpose and can be removed.
+
+CHANGES:
+
+  1. REVERT RELEASE_CPU_RESET_BIT from BIT(0) to BIT(24)
+     File: src/drivers/net/wifi_9260.c line ~1900
+     Why: BIT(0) caused full device reset wiping SRAM.  BIT(24) allows
+     firmware to load and execute (even if it crashes with SW_ERR).
+
+  2. Make RELEASE_CPU_RESET conditional on dual-CPU images
+     File: src/drivers/net/wifi_9260.c, iwl_pcie_load_given_ucode_8000()
+     Why: Linux only writes RELEASE_CPU_RESET for images with CPU2
+     sections (detected by separator presence).  INIT has no separators
+     (single-CPU) — skip the write.  Matches Linux exactly.
+
+  3. Skip CPU2 loading for single-CPU images
+     File: src/drivers/net/wifi_9260.c, iwl_pcie_load_given_ucode_8000()
+     Why: Linux skips CPU2 entirely for single-CPU INIT.  Final done
+     marker is now 0x0000FFFF (from CPU1 only), not 0xFFFFFFFF.
+     NOTE: This contradicts memory lesson 2 (fry706) which said
+     "ALWAYS write 0xFFFFFFFF".  fry706's analysis was incorrect —
+     Linux writes 0x0000FFFF for single-CPU images.
+
+  4. Remove sentinel writes that corrupt section [1]
+     File: src/drivers/net/wifi_9260.c, iwl_pcie_load_cpu_sections_8000()
+     Why: Sentinel 0xCAFE0000..0xCAFE000E at SRAM 0x00-0x38 overwrote
+     the first 60 bytes of section [1] data.  Firmware may validate
+     its header integrity at boot — corrupted header = silent crash.
+     fry716 proved the 0x2E is template data.  Sentinels no longer needed.
+
+  5. Add SRAM checkpoint after CPU1 done marker
+     File: src/drivers/net/wifi_9260.c, iwl_pcie_load_cpu_sections_8000()
+     Why: Reads first 4 words from section[0] SRAM addr and SRAM 0x00
+     immediately after done marker.  Detects whether SRAM is wiped by
+     a device reset triggered by the done marker.
+
+  6. Add SRAM checkpoint during ALIVE wait (500ms diagnostic dump)
+     File: src/drivers/net/wifi_9260.c, iwl_wait_alive()
+     Why: Reads SRAM 0x00, 0x04, and 0x404000 every 500ms during the
+     ALIVE wait.  Pinpoints the exact time when SRAM content disappears.
+
+  7. Update wdeep sentinel check to show UNINIT label for 0xa5a5a5a2
+     File: src/drivers/net/wifi_9260.c, wifi_9260_get_deep_diag()
+     Why: Replaced sentinel-based labels with general-purpose SRAM
+     error table dump.  0xa5a5a5a2 now shows "UNINIT" instead of
+     misleading "FW-WROTE".
+
+BUILD:
+  2026-03-14
+  make clean && build_iso.sh
+  Result: PASS — zero warnings in wifi_9260.c
+  ISO exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+DELL TEST COMMANDS:
+  Boot the new ISO on Dell, then run:
+    tater> wdeep
+    tater> wverify
+
+  EXPECTED CHANGES vs fry717:
+    - SRAM should have firmware data again (8/9 or 9/9 sections ok)
+      because BIT(24) is restored and sentinels no longer corrupt section[1]
+    - Possible outcomes:
+      A) 9/9 sections ok + ALIVE fires → sentinel corruption was the
+         remaining bug blocking ALIVE.  Proceed to HCMD/MAC init.
+      B) 9/9 sections ok + SW_ERR + DEAD marker → same crash as fry714-716
+         but now with clean section[1] data.  Check if error_id changed
+         from template 0x2E.
+      C) 8/9 ok + SW_ERR → same as before, sentinel removal didn't help.
+         Next step: examine CPU PC at crash, investigate TLV capabilities.
+
+  ALSO LOOK FOR in serial output:
+    - "single-CPU image — skipping RELEASE_CPU_RESET" confirms INIT path
+    - "fry718 SRAM checkpoint after CPU1 done:" shows SRAM state after marker
+    - SRAM values during ALIVE wait 500ms dumps
+
+REVERT INSTRUCTIONS:
+  If this build is worse than fry716 (BIT(24) without sentinel removal):
+    1. Keep BIT(24) — do NOT go back to BIT(0)
+    2. Revert changes 2-3 (unconditional RELEASE_CPU_RESET and CPU2 loading)
+    3. Consider restoring sentinels to a SAFE address (not 0x00-0x38)

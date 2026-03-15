@@ -1,0 +1,52 @@
+fry628 - Fix ALIVE timeout: wrong FW_STATUS register + CPU reset bit
+Date: 2026-03-07
+Timestamp: 2026-03-07 00:15:00 CST
+
+Status: Fixed two bugs in firmware upload sequence that caused ALIVE
+handshake timeout (step 9 rc=-1) on Dell Precision 7530.
+
+Problem:
+- Dell boot reached step 9 (ALIVE handshake) but firmware never responded.
+- Shell showed: FAIL @ alive (step 9) rc=-1
+
+Root Cause:
+1) Wrong firmware load status register: code used UREG_UCODE_LOAD_STATUS /
+   FH_UCODE_LOAD_STATUS at offset 0x1AF0 — that is the gen2 (AX210+)
+   register. The Intel 9260 is 9000-series (non-gen2) and uses FW_STATUS
+   at CSR offset 0x848. The firmware boot ROM monitors 0x848 to know when
+   sections are loaded; writing to 0x1AF0 meant it never saw the "done"
+   signal.
+2) Wrong RELEASE_CPU_RESET_BIT: was (1u << 24), should be (1u << 0) for
+   8000/9000-series. Also changed from read-modify-write (iwl_set_prph_bit)
+   to direct write (iwl_write_prph) to match Linux iwlwifi behavior.
+
+Changes:
+- src/drivers/net/wifi_9260.c:
+  - Added #define IWL_FW_STATUS 0x848 (8000/9000-series direct CSR register)
+  - Removed FH_UCODE_LOAD_STATUS and UREG_UCODE_LOAD_STATUS defines (gen2)
+  - Fixed RELEASE_CPU_RESET_BIT from (1u << 24) to (1u << 0)
+  - iwl_mark_cpu_section_loaded: read/write IWL_FW_STATUS instead of 0x1AF0
+  - iwl_upload_sec_image: write done_mark via iwl_write32(IWL_FW_STATUS)
+    instead of iwl_write_prph(UREG_UCODE_LOAD_STATUS)
+  - iwl_upload_firmware init: single iwl_write32(IWL_FW_STATUS, 0) clear,
+    direct iwl_write_prph for CPU release (not RMW)
+  - Legacy path: iwl_write32(IWL_FW_STATUS, 0xFFFFFFFF) instead of prph
+  - Diagnostic print updated to read IWL_FW_STATUS
+
+Why: The firmware was being DMA'd into NIC SRAM correctly (steps 1-8 passed),
+but the NIC boot ROM never received the "all sections loaded" signal because
+we wrote it to the wrong register. This is the difference between gen2
+(AX210+, prph 0x1AF0) and 9000-series (CSR 0x848).
+
+Build:
+- make clean
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Result:
+- Full rebuild + ISO export successful
+- One new harmless warning: iwl_set_prph_bit now unused (kept for future use)
+- ISO exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+Next:
+- Boot Dell with new ISO, run `ws` to check if ALIVE handshake now passes
+- If ALIVE succeeds, expect to reach step 10 (hcmd) or beyond

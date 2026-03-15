@@ -1,0 +1,49 @@
+fry727 — 2026-03-14
+Close the remaining phase-one VM region teardown gap without relying on QEMU
+
+WHAT:
+- Fixed `SYS_MUNMAP` so it can tear down any fully covered contiguous span of
+  adjacent tracked VM regions instead of requiring the entire request to fit
+  inside one region record
+- Kept the page-release path per covered region, then rewrote the region table
+  so left/right remainders survive correctly across split committed and split
+  reserved mappings
+- Extended `vmtest` with explicit userspace coverage for:
+  - full-span `munmap` across a protection-split committed mapping
+  - full-span `munmap` across a mixed reserve/committed mapping
+
+WHY:
+- Phase one was still carrying a real teardown defect after staged
+  `mprotect`/commit operations split one logical mapping into multiple tracked
+  regions
+- A professional VM ABI cannot require userspace to guess internal region
+  boundaries before calling `munmap`
+- With QEMU off limits for this pass, the in-tree userspace coverage had to be
+  strengthened so the remaining gap was at least pinned down and regressed in
+  source
+
+PHASE-ONE STATUS AFTER THIS PASS:
+- Anonymous private mappings: implemented
+- Shared anonymous mappings: implemented
+- Reserved mappings plus staged commit-through-`mprotect`: implemented
+- Subrange `mprotect` and `munmap` inside a tracked mapping: implemented
+- Full-span `munmap` across contiguous split regions: implemented
+- Private file-backed mappings: implemented
+- Large-allocation libc `mmap` path: implemented
+- VM-aware userspace page-fault diagnostics and kill path: implemented
+- Build/image packaging for VM apps and fixtures: implemented
+
+VERIFICATION IN THIS PASS:
+- `make -C /home/jjsako/TaterTOS64v3 kernel init vmtest vmfault` succeeded
+- `env TATERTOS_AUTOTEST_VM=1 TATERTOS_AUTOTEST_VMFAULT=1 PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+  succeeded and rebuilt the packaged VM apps/markers
+- No QEMU verification was used for this pass because QEMU is off limits
+
+FILES CHANGED IN THIS PASS:
+- src/kernel/proc/syscall.c
+- src/user/apps/vmtest.c
+
+NON-PHASE-ONE ITEMS STILL OUT OF SCOPE:
+- No demand paging or lazy fault fill
+- No file-shared `mmap`
+- No threads, futexes, sockets, polling, or later browser ABI work in this log

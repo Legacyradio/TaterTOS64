@@ -1,0 +1,36 @@
+fry671 - 2026-03-08 - WiFi 9260: restore full interrupt enable before CPU done markers
+
+WHY:
+  Dell fry663 test showed CPUs STUCK at PC=0xe8 (CPU1) and 0xc0000000 (CPU2).
+  FH_UCODE_LOAD_STATUS=0xFFFFFFFF confirms upload+done markers are correct.
+  The firmware boot stub apparently checks the host interrupt mask as a
+  readiness handshake before proceeding — without a full mask set, the CPU
+  spins forever at ~0xe8.
+
+  fry661 originally added this full-mask enable and it WORKED: the firmware
+  started and sent ALIVE (last_irq_csr=0x02000001). But subsequent refactors
+  (fry662-670) lost the change. The current iwl_upload_runtime_cpu_image()
+  writes the done marker with CSR_INT_MASK still set to FH_TX-only from the
+  upload phase.
+
+  Linux 7.0-rc2 pcie/gen1_2/trans.c:763 explicitly calls
+  iwl_enable_interrupts(trans) — full mask — BEFORE writing the done marker
+  for each CPU.
+
+CODE CHANGE:
+  src/drivers/net/wifi_9260.c — iwl_upload_runtime_cpu_image():
+    Added iwl_write32(CSR_INT, 0xFFFFFFFF) + iwl_write32(CSR_INT_MASK, full)
+    immediately before iwl_write_ucode_load_done(done_mark).
+    Full mask = ALIVE|WAKEUP|RF_KILL|SW_ERR|FH_TX|HW_ERR|FH_RX.
+
+BUILD:
+  make clean + build_iso.sh: PASS
+  ISO: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+NEXT:
+  Boot Dell, run: wh, wc
+  Expected:
+    - CPUs should UNSTICK (PC values changing)
+    - If fry661 history repeats: ALIVE fires but SW_ERR also fires
+    - last_irq_csr should show non-zero (ALIVE=BIT0, SW_ERR=BIT25)
+    - If SW_ERR: next step is SRAM error table dump to find root cause

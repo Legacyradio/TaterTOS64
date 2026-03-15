@@ -1,0 +1,82 @@
+fry660 - 2026-03-08 - WiFi 9260: add gen1 TX init (keep-warm, FH_MEM_CBBC, SCD) before firmware upload
+
+SESSION CONTEXT:
+  User provided Dell bare-metal output:
+    - `wd`: step=9 (alive) rc=-1, irq_count=1
+    - last_irq_csr=0x02000001 → BIT(0)=ALIVE + BIT(25)=SW_ERR
+    - last_irq_fh=0x00000000 → no FH RX activity
+    - rx_closed=0, rx_finished=0 → RFH never delivered anything
+    - upload_fh_st=0xffffffff → FW upload completed
+    - `ws`: wifi: driver=offline, FAIL @ alive (step 9) rc=-1
+
+ROOT CAUSE:
+  The firmware booted (CSR_INT_BIT_ALIVE fired) but immediately crashed
+  (CSR_INT_BIT_SW_ERR). No FH RX interrupt or RX completion occurred,
+  so the ALIVE notification was never delivered to the host.
+
+  Comparison against Linux 7.0-rc2 iwlwifi revealed that Linux calls
+  iwl_pcie_tx_init() BEFORE firmware upload, setting up:
+
+    1. FH_KW_MEM_ADDR_REG (0x197C): keep-warm buffer DMA address >> 4
+       - Keeps NIC's FH subsystem from entering low-power mode
+    2. FH_MEM_CBBC_QUEUE(0) (0x19D0): TFD ring base for command queue >> 8
+       - Gen1 uses FH_MEM_CBBC, NOT TFH_TFDQ_CBB_TABLE (0x1C00, gen2)
+    3. SCD_TXFACT (0xA02C10): deactivate all TX DMA FIFOs
+    4. SCD_GP_CTRL (0xA02DA8): set AUTO_ACTIVE_MODE (BIT(18))
+
+  Our iwl_dma_init_tfh() had the gen2 TFH_TFDQ_CBB_TABLE writes
+  commented out and no gen1 equivalents. No keep-warm buffer, no SCD init.
+  The firmware likely crashes when it can't find a valid command queue.
+
+CODE CHANGES:
+  File changed:
+    - src/drivers/net/wifi_9260.c
+
+  1. Added register defines:
+     - FH_KW_MEM_ADDR_REG, FH_MEM_CBBC_QUEUE_0
+     - SCD_BASE, SCD_TXFACT, SCD_GP_CTRL, SCD_GP_CTRL_AUTO_ACTIVE_MODE
+
+  2. Added keep-warm page to DMA pool:
+     - IWL_DMA_KW_PAGES = 1, total now 283 pages
+     - Added kw_phys field to DMA struct
+     - Allocated and zeroed in iwl_dma_alloc()
+
+  3. Replaced commented-out gen2 TX init in iwl_dma_init_tfh() with:
+     - iwl_write32(FH_KW_MEM_ADDR_REG, kw_phys >> 4)
+     - iwl_write_prph(SCD_TXFACT, 0)
+     - iwl_write32(FH_MEM_CBBC_QUEUE_0, tfd_ring_phys >> 8)
+     - read-modify-write SCD_GP_CTRL with AUTO_ACTIVE_MODE
+     - Debug print showing KW, CBBC0, SCD values
+
+BUILD / EXPORT:
+  - make clean: PASS
+  - build_iso.sh: PASS
+  - ISO: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  - Windows export: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+HASH VERIFICATION:
+  SHA-256: f43180688d959e1e05db15b9b7b69604a8c45acef13c4a5b5ae45ddc9b941236
+  Both copies match.
+
+WARNINGS:
+  - Existing: iwl_set_prph_bit defined but unused in wifi_9260.c
+  - Existing unrelated ACPI / EFI warnings
+
+NEXT BARE-METAL TEST:
+  Boot the rebuilt ISO on the Dell Precision 7530, then run:
+    1. wd
+    2. ws
+
+  Expected signal:
+    - If TX init was the cause of SW_ERR, step 9 should advance
+    - Look for new "TX init: KW=... CBBC0=... SCD=..." in wd
+    - If still step=9, check last_irq_csr — SW_ERR (bit 25) should be gone
+    - Success: driver progresses to step 10 (hcmd) or later
+
+REFERENCE:
+  Linux 7.0-rc2 files consulted:
+    - drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/tx.c (iwl_pcie_tx_init)
+    - drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/rx.c (iwl_pcie_rx_mq_hw_init)
+    - drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/trans.c (iwl_trans_pcie_start_fw)
+    - drivers/net/wireless/intel/iwlwifi/iwl-fh.h (register defines)
+    - drivers/net/wireless/intel/iwlwifi/iwl-prph.h (SCD defines)

@@ -10,6 +10,7 @@ uint64_t pmm_alloc_page(void);
 uint64_t pmm_alloc_early_low(void);
 uint64_t pmm_alloc_page_below(uint64_t max_phys);
 uint64_t pmm_alloc_pages(uint64_t count);
+uint64_t pmm_alloc_pages_range(uint64_t count, uint64_t min_phys, uint64_t max_phys);
 uint64_t pmm_alloc_pages_below(uint64_t count, uint64_t max_phys);
 void pmm_free_pages(uint64_t phys, uint64_t count);
 void pmm_free_page(uint64_t phys);

@@ -1,0 +1,262 @@
+fry691 - 2026-03-10 21:08:17 CDT - WiFi 9260: stop INIT empty second-pass from failing fw-upload with rc=-11; clean rebuild + artifact hashes
+
+SESSION CONTEXT:
+  User explicitly requested:
+    1. rebuild the ISO
+    2. log the step in the next fry file
+    3. include full detail per `planv3.txt`
+
+  Before changing code, the current repo state and local case file agreed on a
+  new earlier regression distinct from the older runtime/ALIVE blocker:
+    - live hardware signature from the user:
+        `step=8 rc=-11`
+    - `eventually/eventually4.txt` identified the current highest-confidence
+      mismatch as INIT upload semantics:
+        CPU1 consumes the flat SEC_INIT stream
+        CPU2 begins at end-of-array
+        local code returns `-11` when the second pass loads zero sections
+
+  Relevant local references used for this step:
+    - `eventually/eventually4.txt`
+    - `src/drivers/net/wifi_9260.c`
+    - `linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/trans.c`
+    - `planv3.txt`
+
+WHY:
+  The current driver still hard-failed multi-section upload whenever a CPU pass
+  loaded zero sections:
+    - `src/drivers/net/wifi_9260.c`
+    - `iwl_upload_runtime_cpu_image()`
+    - old behavior:
+        `if (loaded == 0) return -11;`
+
+  That behavior is acceptable for runtime SEC_RT splitting when the section
+  stream is separator-delimited and a missing second CPU image likely means the
+  parser/split logic is wrong.
+
+  It is not Core43-consistent for the current INIT path:
+    - `eventually4` records that SEC_INIT in this blob is flat, not
+      separator-delimited
+    - the current two-phase code reuses the same uploader for INIT and runtime
+    - on INIT:
+        CPU1 can legitimately consume the flat SEC_INIT stream
+        CPU2 can then start at the end of the array
+        a local `loaded == 0` hard fail becomes `step=8 rc=-11`
+
+  Local upstream comparison supports relaxing that rule:
+    - `linux-7.0-rc2/.../pcie/gen1_2/trans.c`
+    - `iwl_pcie_load_cpu_sections_8000()`
+    - the Linux path does not fail merely because the second pass copies zero
+      sections; it still enables interrupts and writes the CPU-done marker
+
+  This makes the current `step=8 rc=-11` a local regression in upload
+  semantics, not proof that the firmware rejected the INIT phase.
+
+FILES CHANGED:
+  - `src/drivers/net/wifi_9260.c`
+  - `logs/fry691.txt`
+
+CODE CHANGES:
+  File:
+    - `src/drivers/net/wifi_9260.c`
+
+  Function signature change:
+    - `iwl_upload_runtime_cpu_image(...)`
+    - added parameter:
+        `int allow_empty`
+
+  Exact logic change:
+    1. Old behavior:
+       - if `loaded == 0`, always log
+         `"had no loadable runtime sections"`
+       - return `-11`
+
+    2. New behavior:
+       - if `loaded == 0 && !allow_empty`, preserve the old `-11` failure
+       - if `loaded == 0 && allow_empty`, do NOT fail
+       - instead log:
+         `"empty pass, still writing done marker"`
+       - continue to:
+         - clear/enable interrupts
+         - write the CPU done marker
+         - capture the trace point
+
+  Call-site change in `iwl_upload_firmware()`:
+    - CPU1 upload call now passes `allow_empty = 0`
+    - CPU2 upload call now passes `allow_empty = 1`
+
+  Current line range after patch:
+    - function signature + empty-pass handling:
+      `src/drivers/net/wifi_9260.c:1744-1798`
+    - upload call sites:
+      `src/drivers/net/wifi_9260.c:1878-1884`
+
+  Concrete intended effect:
+    - preserve strict failure for the first pass
+    - stop the second pass from generating a local `rc=-11` regression when the
+      INIT image layout leaves no sections for that pass
+
+RATIONALE:
+  This is the smallest high-confidence correction available from the current
+  evidence set.
+
+  It does NOT try to solve:
+    - the older runtime UMAC assert seen around fry687/fry688
+    - ALIVE group/id mismatches
+    - INIT-vs-runtime phase ordering
+
+  It only removes the earliest current blocker so the hardware can move beyond
+  the local `fw-upload rc=-11` regression and become comparable again to the
+  older, more progressed fry687/fry688 baseline.
+
+COMMANDS RUN:
+  Source inspection / evidence:
+    - `sed -n '1,260p' /home/jjsako/TaterTOS64v3/planv3.txt`
+    - `nl -ba /home/jjsako/TaterTOS64v3/eventually/eventually4.txt`
+    - `sed -n '254,286p' /home/jjsako/TaterTOS64v3/eventually/eventually4.txt`
+    - `nl -ba /home/jjsako/TaterTOS64v3/src/drivers/net/wifi_9260.c | sed -n '1744,1885p'`
+    - `sed -n '730,840p' /home/jjsako/TaterTOS64v3/linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/trans.c`
+    - `sed -n '35,85p' /home/jjsako/TaterTOS64v3/linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/fw/api/commands.h`
+
+  Targeted compile before full rebuild:
+    - `make -C /home/jjsako/TaterTOS64v3 src/drivers/net/wifi_9260.o`
+
+  Required rebuild sequence per `planv3.txt` rule 12:
+    1. `make clean`
+    2. `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+
+  Post-rebuild artifact verification:
+    - `sha256sum /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /home/jjsako/TaterTOS64v3/out/tater_nvme.img /home/jjsako/TaterTOS64v3/out/efiboot.img`
+    - `stat -c '%n|%s|%y' /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /home/jjsako/TaterTOS64v3/out/tater_nvme.img /home/jjsako/TaterTOS64v3/out/efiboot.img`
+
+BUILD / VERIFICATION RESULT:
+  Targeted compile:
+    - `make -C ... src/drivers/net/wifi_9260.o`: PASS
+
+  Clean rebuild:
+    - `make clean`: PASS
+    - `build_iso.sh`: PASS
+
+  Build completed through:
+    - kernel rebuild
+    - userland rebuild
+    - ToTFS/NVMe image creation
+    - EFI loader build
+    - EFI system partition image creation
+    - ISO packaging
+    - live-app fallback verification
+
+  Windows export:
+    - skipped
+    - exact message:
+      `Skipping Windows ISO export: /mnt/c/Users/jjsako/Documents is not writable.`
+
+ARTIFACT OUTPUTS:
+  ISO:
+    - path:
+      `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+    - size:
+      `151402496` bytes
+    - mtime:
+      `2026-03-10 21:07:46.224459871 -0500`
+
+  NVMe image:
+    - path:
+      `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+    - size:
+      `104857600` bytes
+    - mtime:
+      `2026-03-10 21:07:44.300456062 -0500`
+
+  EFI image:
+    - path:
+      `/home/jjsako/TaterTOS64v3/out/efiboot.img`
+    - size:
+      `67108864` bytes
+    - mtime:
+      `2026-03-10 21:07:45.444458301 -0500`
+
+SHA-256 (recorded because this was a user-requested rebuild; `planv3.txt` rule 16):
+  - `tatertos64v3.iso`
+    `f8c23b6a49024c7d9d2ae189daa615629a73164563a7ea67f5fcc9abc312ec78`
+  - `tater_nvme.img`
+    `eb45c2a622f7c291eab55938ef3fd0e6ff53b8dd8b93eae7fd9b23b27e6c5d70`
+  - `efiboot.img`
+    `e4d2031cad9a52bc8454757e2cabe9960081e960e3daf6ca48eac5379eec6db0`
+
+BUILD WARNINGS:
+  Existing warnings observed during this rebuild:
+    - `src/kernel/acpi/aml_exec.c:973`
+      unused parameter `ctx`
+    - `src/kernel/acpi/extended.c:618`
+      `str_eq` defined but not used
+    - `src/kernel/acpi/extended.c:613`
+      `obj_to_str` defined but not used
+    - `src/kernel/acpi/extended.c:285`
+      `pci_cf8_write32` defined but not used
+    - `src/boot/efi_loader.c:352`
+      `gop_mask_size` defined but not used
+    - `src/boot/efi_loader.c:346`
+      `gop_mask_pos` defined but not used
+    - `xorriso`
+      warning that boot image load size exceeded 65535 blocks of 512 bytes and
+      El Torito recorded 0 to extend the ESP to end-of-medium
+
+  None of these warnings blocked artifact creation.
+
+NVMe / PACKAGING DETAILS:
+  ToTFS image was formatted and populated successfully.
+  Files copied into the NVMe image during this rebuild:
+    - `SHELL.TOT`
+    - `INIT.FRY`
+    - `GUI.FRY`
+    - `SYSINFO.FRY`
+    - `UPTIME.FRY`
+    - `PS.FRY`
+    - `FILEMAN.FRY`
+    - `NETMGR.FRY`
+
+  Reported NVMe image output:
+    - `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+
+NEXT HARDWARE TEST:
+  Boot the rebuilt image on the Dell Precision 7530 and run:
+    1. `wl`
+    2. `wc`
+    3. `wd3`
+
+  Primary expected change from this specific patch:
+    - the INIT phase should stop failing at:
+      `step=8 rc=-11`
+
+  Strong success signal:
+    - `wl` / `wd3` no longer show the old `fw-upload` `-11` failure
+    - instead, the driver advances into INIT ALIVE / INIT notification waiting
+    - new debug line should appear if the empty second pass happens:
+      `CPU2 empty pass, still writing done marker`
+
+  If the patch works and the failure moves later, the next likely visible states are:
+    - INIT reaches ALIVE and progresses toward `INIT_COMPLETE`
+    - or bring-up returns to a later runtime/ALIVE-era blocker similar to the
+      older fry687/fry688 baseline
+
+  If hardware still shows exactly:
+    - `step=8 rc=-11`
+    then one of the following is true:
+    - the booted image is not this rebuilt artifact
+    - there is another `-11` source on the live path
+    - the active hardware path is diverging from the currently inspected source
+
+LIMITS / NOT CHANGED IN THIS STEP:
+  This step did not change:
+    - ALIVE group/id filtering
+    - INIT_COMPLETE id (already `0x04` in current source)
+    - INIT-phase NVM/PHY ordering
+    - runtime RFH/ALIVE/UMAC assert behavior from the older fry687/fry688 path
+
+NOTES:
+  - No QEMU logs were used for this diagnosis or rebuild step.
+  - BIOS revision/date was not visible during this rebuild session, so none was
+    recorded.
+  - This log exists to satisfy `planv3.txt` rules 5, 6, 10, 12, and 16 for the
+    completed code change plus user-requested rebuild.

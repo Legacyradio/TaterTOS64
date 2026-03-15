@@ -1,0 +1,85 @@
+fry659 - 2026-03-08 00:02:04 CST - WiFi 9260: fix SEC_RT separator recognition, rebuild/export ISO, and verify hashes
+
+SESSION CONTEXT:
+  User provided bare-metal shell output from TaterTOS64v3 showing:
+    - `wd`: `step=8 (fw-upload) rc=-11`
+    - `ws`: `wifi: driver=offline`
+
+ROOT CAUSE:
+  The runtime uploader already expected the 9260 SEC_RT image to contain
+  in-band boundary markers, but the separator predicate was too strict:
+    - `iwl_fw_sec_is_separator()` required `sec->size == 4`
+
+  The embedded 9260 firmware in this tree actually uses 8-byte SEC_RT marker
+  entries whose first dword is still the separator value:
+    - `0xFFFFCCCC` for CPU1/CPU2 boundary
+    - `0xAAAABBBB` for paging boundary
+
+  Because those 8-byte markers were not recognized, CPU1 consumed the entire
+  SEC_RT stream, CPU2 found no remaining loadable runtime sections, and
+  `iwl_upload_runtime_cpu_image()` returned `-11`, surfacing as:
+    - `FAIL @ fw-upload (step 8) rc=-11`
+
+CODE CHANGE:
+  File changed:
+    - `src/drivers/net/wifi_9260.c`
+
+  Patch:
+    - relaxed separator detection from `sec->size == 4` to `sec->size >= 4`
+      while still requiring the marker dword to match a known separator value
+
+  Effect:
+    - 8-byte SEC_RT separator TLVs are now treated as boundaries
+    - CPU1 stops at the CPU separator instead of consuming the full stream
+    - CPU2 can load the next runtime image instead of failing with `-11`
+
+VERIFICATION:
+  Local firmware/TLV inspection confirmed the embedded 9260 blob contains:
+    - 13 SEC_RT entries total
+    - entry 4: len=8, offset=0xFFFFCCCC
+    - entry 9: len=8, offset=0xAAAABBBB
+    - entry 12: len=8, offset=0xFFFFCCCC
+
+  Local build verification:
+    - `make kernel`: PASS
+
+BUILD / EXPORT:
+  Command run:
+    - `bash build_iso.sh`
+
+  Result:
+    - full rebuild passed
+    - repo ISO produced:
+        `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+    - Windows export succeeded:
+        `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+HASH VERIFICATION:
+  Verified on 2026-03-08 00:02:04 CST with two independent tools:
+    - `sha256sum`
+    - `openssl dgst -sha256`
+
+  SHA-256:
+    - repo ISO:
+        `ef93c58d743eecfc51a9130b2a5b96a622c30e2010f3461df6bb1ab78828a7ba`
+    - Windows exported ISO:
+        `ef93c58d743eecfc51a9130b2a5b96a622c30e2010f3461df6bb1ab78828a7ba`
+
+  Result:
+    - hashes match exactly
+    - repo ISO and exported Windows copy are byte-identical
+
+WARNINGS:
+  Existing warnings remained during rebuild, including:
+    - `src/drivers/net/wifi_9260.c`: `iwl_set_prph_bit` defined but unused
+    - unrelated ACPI / EFI warnings already present in the tree
+
+NEXT BARE-METAL TEST:
+  Boot the newly exported ISO and run:
+    1. `wd`
+    2. `ws`
+
+  Expected signal:
+    - step 8 should no longer fail with `rc=-11`
+    - if initialization still fails, it should progress to a later and more
+      specific failure point

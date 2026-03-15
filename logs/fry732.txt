@@ -1,0 +1,23 @@
+fry732 — Post-Handoff Live Environment Repair
+=============================================
+Timestamp: 2026-03-14 20:59:35 CDT
+
+Completed step:
+- Moved post-handoff boot work out of the bootstrap thread in `src/kernel/main.c`.
+
+What changed:
+- Added `post_boot_late_init()` for the deferred boot tail work.
+- Added a scheduler-owned `postboot` kernel thread that runs the deferred
+  ACPI/AML startup after the first userspace handoff.
+- Converted the old inline tail after `sched_tick()` into a hard failure if the
+  bootstrap thread ever resumes unexpectedly.
+
+Why:
+- The scheduler fix correctly stopped the bootstrap thread from being runnable,
+  which also meant the old inline code after `sched_tick()` no longer ran.
+- A live environment still needs the deferred ACPI event worker and AML
+  background startup, so that work now lives in a real kernel task instead of
+  depending on an invalid resume path.
+
+Test status:
+- Rebuild and verification rerun pending.

@@ -1,0 +1,24 @@
+fry735 — Final Clean Rebuild And Live-Boot Verification
+=======================================================
+Timestamp: 2026-03-14 21:03:52 CDT
+
+Completed step:
+- Rebuilt cleanly after the `postboot` refactor and verified the live boot path.
+
+What was tested:
+- `make clean`
+- `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+- `timeout 45s qemu-system-x86_64 -m 4G -machine q35,accel=tcg -cpu qemu64 -smp 1 -boot order=d -net none -display none -no-reboot -no-shutdown -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -drive if=pflash,format=raw,file=/home/jjsako/TaterTOS64v3/logs/runtime_codex_matchcheck4/OVMF_VARS.fd -cdrom /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso -drive file=/home/jjsako/TaterTOS64v3/out/tater_nvme.img,if=none,id=nvm1,format=raw -device nvme,serial=TATER_NVME_01,drive=nvm1 -serial file:/home/jjsako/TaterTOS64v3/logs/runtime_codex_matchcheck4/serial.log -debugcon file:/home/jjsako/TaterTOS64v3/logs/runtime_codex_matchcheck4/debugcon.log -global isa-debugcon.iobase=0xe9`
+
+Observed result:
+- No `!EXC`, no `RIP=0x100B`, no panic.
+- Boot reached first handoff, first user syscall, `init: pid=2`, and `GUI.FRY` spawn.
+- Deferred late-boot work also ran: the serial log shows the interleaved
+  `B:STI` marker plus ACPI background diagnostics after userspace was already alive.
+- Guest stayed up until the external 45-second timeout.
+
+Notes:
+- The Windows-side ISO export in `build_iso.sh` still warns because
+  `/mnt/c/Users/jjsako/Documents/tateriso` was read-only in this session.
+- Verification artifacts: `logs/runtime_codex_matchcheck4/serial.log` and
+  `logs/runtime_codex_matchcheck4/debugcon.log`.

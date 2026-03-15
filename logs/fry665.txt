@@ -1,0 +1,77 @@
+fry665 - 2026-03-08 20:43:58 CDT - WiFi 9260: match RFH RX free-ring sizing to Linux 8000/9000 path
+
+SESSION CONTEXT:
+  User provided Dell Precision 7530 shell output showing WiFi still stuck at:
+    - `wd`: step=9 (alive) rc=-1
+    - `ws`: driver=offline
+    - `wd2`: RFH_W=0x000000f8, RFH_R=0x00000008, RFH_U=0x00000000
+             CPU1_ST=0x00000003, CPU2_ST=0x00002320
+             UMAC_PC=0xc0000000, LMAC_PC=0x000000e8
+
+WHY:
+  The current failure pattern showed firmware upload succeeding and CPU2 running,
+  but RFH still behaving like a 256-entry free-ring path. Linux 7.0-rc2
+  `iwlwifi` programs 8000/9000-series MQ RX with a 512-entry RBDCB.
+
+  Our local driver still had:
+    - `IWL_RX_QUEUE_SIZE = 256`
+    - `RFH_RXF_DMA_RBDCB_SIZE_256`
+    - 256 RX data buffers
+
+  That leaves the host-side ring sizing out of sync with what the hardware path
+  expects and fits the observed symptom: RFH consumes some free buffers but never
+  produces a usable used-ring completion or ALIVE notification.
+
+CHANGES:
+  File changed:
+    - `src/drivers/net/wifi_9260.c`
+
+  Code updates:
+    1. Changed RFH DMA config from 256-entry RBDCB to 512-entry RBDCB.
+    2. Increased `IWL_RX_QUEUE_SIZE` from 256 to 512.
+    3. Increased RX data-buffer allocation from 256 pages to 512 pages.
+    4. Updated RFH init comments / DMA layout comments to match the real ring size.
+
+RATIONALE:
+  This is a hardware-agnostic transport fix, not a Dell-specific quirk.
+  The Dell was only the machine exposing the mismatch clearly through `wd2`.
+
+COMMANDS RUN:
+  Investigation:
+    - `sed -n '1,240p' /home/jjsako/TaterTOS64v3/planv3.txt`
+    - `sed -n '1,220p' /home/jjsako/TaterTOS64v3/logs/fry661.txt`
+    - `sed -n '1,220p' /home/jjsako/TaterTOS64v3/logs/fry663.txt`
+    - `sed -n '1,220p' /home/jjsako/TaterTOS64v3/logs/fry664.txt`
+    - `sed -n '660,715p' /home/jjsako/TaterTOS64v3/linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/trans.c`
+    - `sed -n '715,905p' /home/jjsako/TaterTOS64v3/linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/trans.c`
+    - `sed -n '840,980p' /home/jjsako/TaterTOS64v3/linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/rx.c`
+    - `sed -n '980,1045p' /home/jjsako/TaterTOS64v3/linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/rx.c`
+
+  Build / verification:
+    - `bash build_iso.sh`
+
+RESULT:
+  - `build_iso.sh`: PASS
+  - Output ISO:
+      `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+  - Windows export:
+      `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+NEXT BARE-METAL TEST:
+  Boot the rebuilt ISO on the Dell Precision 7530, then run:
+    1. `wd`
+    2. `wd2`
+    3. `wc`
+    4. `ws`
+    5. `wl`
+
+  Expected signal:
+    - `RFH_W` should now report `0x000001f8` instead of `0x000000f8`
+    - If the ring-size mismatch was the blocker, RX used-ring movement and/or
+      ALIVE delivery should appear
+    - If not, CPU1/LMAC is still the next root-cause target
+
+NOTES:
+  - This log was added after the code/build work in order to bring the turn
+    back into compliance with `planv3.txt` rule 5.
+  - No SHA-256 was recorded because it was not requested.

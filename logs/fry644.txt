@@ -1,0 +1,39 @@
+fry644 - 2026-03-07
+WiFi 9260: Fix context info struct layout + RB_SIZE + auto-boot
+
+DIAGNOSIS from fry643 Dell register dump:
+  FW_STATUS=0x5a5a9999  (boot ROM ran but firmware didn't load)
+  RFH_USED_WIDX=0       (no RX DMA — firmware never started)
+  RFH_Q0_WIDX=0xF8      (doorbell write was correct)
+  GP_CNTRL=0x0804000d   (AUTO_FUNC_BOOT bit 1 = 0, never set)
+
+ROOT CAUSE: Three bugs in iwl_start_fw_with_ctxt_info path:
+
+Bug 1 (CRITICAL): iwl_context_info struct had wrong layout.
+  The struct included edbg_cfg and pnvm_cfg fields (gen3/AX210+ only).
+  These added 16 extra bytes, pushing the dram array from correct
+  offset 0x0B0 to wrong offset 0x0C0.
+  Boot ROM reads FW section addresses at 0x0B0 -> found zeros -> no FW load.
+  FIX: Removed edbg_cfg/pnvm_cfg, replaced with reserved2[4]+reserved3[16]
+  to match Linux iwl-context-info.h for 9000-series. dram now at 0x0B0.
+
+Bug 2: CTXT_INFO_RB_SIZE_4K defined as 0x0, should be 0x4.
+  Comment said "0x4 << 9" but define was 0x0u.
+  FIX: Changed to 0x4u. control_flags now 0x881 (was 0x81).
+
+Bug 3: Missing CSR_AUTO_FUNC_BOOT_ENA (BIT(1) in CSR_GP_CNTRL).
+  Linux sets this to trigger context info auto-boot. TaterTOS only did
+  RELEASE_CPU_RESET (the old FH-upload path).
+  FIX: Added CSR_GP_CNTRL_REG_FLAG_AUTO_FUNC_BOOT define + iwl_set_bit()
+  call before CPU release. Kept RELEASE_CPU_RESET as belt+suspenders.
+
+Files changed: src/drivers/net/wifi_9260.c
+  - Line 53: Added CSR_GP_CNTRL_REG_FLAG_AUTO_FUNC_BOOT define
+  - Line 182: Fixed CTXT_INFO_RB_SIZE_4K from 0x0u to 0x4u
+  - Lines 221-234: Fixed iwl_context_info struct (removed edbg/pnvm, dram at 0x0B0)
+  - Lines 1209-1215: Added AUTO_FUNC_BOOT set_bit before CPU release
+
+NEXT: Boot Dell with fry644 ISO, run `wd` — expect:
+  - FW_STATUS != 0x5a5a9999 (proper load status)
+  - RFH_USED_WIDX > 0 (firmware DMA'd ALIVE)
+  - If ALIVE passes, full WiFi init should proceed to scan

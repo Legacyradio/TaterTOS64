@@ -1,0 +1,92 @@
+fry649 - 2026-03-07 18:47:09 CST - WiFi 9260: add ctxt-info ownership diagnostics and register-latch checks
+
+WHY:
+  Dell bare-metal still stalled at step=9 (alive) with:
+    GP_CNTRL=0x0804000d
+    FW_STATUS=0x5a5a9999
+    CTXT_INFO_BA=0xd55555d5
+    CTXT_INFO_BA_HI=0xd55555d5
+  The important gap in the current debug path was that it did not prove whether
+  the 9260 had actually accepted the ctxt-info boot ownership sequence before
+  CSR_CTXT_INFO_BA was written. The goal for this step was to narrow the fault
+  to one of:
+    1. HW ownership / PREPARE handshake not completed
+    2. AUTO_FUNC_BOOT bit not asserted
+    3. CTXT_INFO_BA write not latching even after prepare succeeds
+
+CHANGES:
+  1. Added missing 9260 ctxt-info boot control bits in:
+       src/drivers/net/wifi_9260.c
+     Specifically:
+       - CSR_GP_CNTRL_REG_FLAG_AUTO_FUNC_BOOT
+       - CSR_HW_IF_CONFIG_REG_BIT_NIC_READY
+       - CSR_HW_IF_CONFIG_REG_BIT_NIC_PREPARE_DONE
+       - CSR_HW_IF_CONFIG_REG_PREPARE
+
+  2. Added iwl_prepare_ctxt_info_boot() in:
+       src/drivers/net/wifi_9260.c
+     Why:
+       The current v3 path programmed CSR_CTXT_INFO_BA directly, but did not
+       explicitly force / verify the HW_IF prepare state used by the older
+       experimental bring-up path. This helper now:
+       - asserts HW_IF_CONFIG PREPARE when needed
+       - polls for NIC_READY or NIC_PREPARE_DONE
+       - sets GP_CNTRL AUTO_FUNC_BOOT
+       - logs HW_IF / GP_CNTRL values on success or timeout
+
+  3. Integrated the prepare step into iwl_start_fw_with_ctxt_info() in:
+       src/drivers/net/wifi_9260.c
+     Why:
+       To ensure the ownership/auto-boot sequence is completed before
+       CSR_CTXT_INFO_BA is written.
+
+  4. Added CTXT_INFO_BA readback validation + retry in:
+       src/drivers/net/wifi_9260.c
+     Why:
+       If the first write still reads back garbage, the code now reasserts
+       PREPARE + AUTO_FUNC_BOOT, rewrites CSR_CTXT_INFO_BA, and logs the final
+       readback. This turns the previous silent junk readback into an explicit
+       register-latch diagnostic.
+
+  5. Extended wd live register dump in:
+       src/drivers/net/wifi_9260.c
+     Added:
+       - HW_IF_CONFIG
+     Why:
+       The next Dell `wd` run can now show whether the hardware ever entered
+       NIC_READY / NIC_PREPARE_DONE before or during the ctxt-info handoff.
+
+EXPECTED NEXT BARE-METAL SIGNAL:
+  On the next Dell Precision 7530 boot, `wd` should help separate failure modes:
+    - If HW_IF_CONFIG lacks NIC_READY and NIC_PREPARE_DONE:
+        ownership / prepare path is failing
+    - If GP_CNTRL still lacks AUTO_FUNC_BOOT bit 1:
+        ctxt-info auto-boot is not being armed
+    - If HW_IF_CONFIG and GP_CNTRL look correct but CTXT_INFO_BA still reads junk:
+        failure is likely BAR/MMIO/register-latch related, not TLV parsing
+    - If CTXT_INFO_BA finally matches ctxt_info and ALIVE still times out:
+        failure moves downstream into ctxt payload / RFH / firmware execution
+
+BUILD / VERIFICATION:
+  Commands run:
+    PATH="/home/jjsako/TaterTOS64v3/tools/host/bin:/opt/cross/bin:$PATH" make kernel
+    PATH="/home/jjsako/TaterTOS64v3/tools/host/bin:/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" bash build_iso.sh
+
+  Result:
+    - kernel build passed
+    - ISO build passed
+    - output ISO: out/tatertos64v3.iso
+
+  Warnings:
+    - existing unused-function warnings remain in src/drivers/net/wifi_9260.c
+    - unrelated ACPI / EFI warnings remain during full ISO build
+
+TEST COMMANDS FOR NEXT HARDWARE RUN:
+  Boot the new ISO on the Dell Precision 7530 and run:
+    wd
+    ws
+
+NOTES:
+  - No BIOS revision/date was visible during this step, so none was logged.
+  - No SHA-256 was recorded because it was not requested.
+  - No QEMU logs were used in this step.

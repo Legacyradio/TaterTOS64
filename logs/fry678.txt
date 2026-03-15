@@ -1,0 +1,72 @@
+fry678 - 2026-03-09 02:07:22 CDT - WiFi 9260: stop programming bogus secure-header PRPH registers in direct FH upload path
+
+SESSION CONTEXT:
+  A fresh Dell Precision 7530 WiFi dump still stalled at step 9 (`alive`) with:
+    - `wh`: `diag cpu-stuck-no-rx-progress`
+    - `wc`: `VERDICT: CPU STUCK`
+    - `UMAC_PC=0xc8000000->0xc8000000`
+    - `LMAC_PC=0x000000e8->0x000000e8`
+    - `RFH_R=0x00000000`, `RFH_U=0x00000000`
+    - `secure_cpu1_hdr=0x00000005`
+    - `secure_cpu2_hdr=0xcafcafbd`
+
+WHY:
+  The current driver was still touching the secure-header PRPH registers during
+  the 9260 `_8000` direct FH upload flow, and the register definitions were
+  wrong:
+    - local driver used `0xA01000` / `0xA01100`
+    - Linux `iwl-prph.h` defines `0x1E78` / `0x1E7C`
+
+  The trace values (`0x5`, `0xcafcafbd`) are not valid header locations and
+  indicated the handoff instrumentation was looking at the wrong place while
+  also writing into the wrong place. For the 9260 direct FH upload path, keep
+  these as read-only diagnostics instead of programming them here.
+
+FILES CHANGED:
+  - `src/drivers/net/wifi_9260.c`
+
+CODE CHANGES:
+  1. Corrected the secure-header PRPH offsets to match Linux:
+     - `LMPM_SECURE_UCODE_LOAD_CPU1_HDR_ADDR = 0x1E78`
+     - `LMPM_SECURE_UCODE_LOAD_CPU2_HDR_ADDR = 0x1E7C`
+  2. Removed the writes to those registers from `iwl_upload_firmware()` in the
+     secured multi-section runtime upload path.
+  3. Kept the readback trace, but changed it to an observe-only diagnostic.
+
+BUILD COMMANDS (planv3 rule 12):
+  1. `make clean`
+  2. `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+
+BUILD RESULT:
+  - `make clean`: PASS
+  - full rebuild via `build_iso.sh`: PASS
+  - ISO output:
+      `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+  - NVMe image output:
+      `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+  - EFI boot image:
+      `/home/jjsako/TaterTOS64v3/out/efiboot.img`
+  - Windows ISO export:
+      skipped because `/mnt/c/Users/jjsako/Documents` was not writable
+
+NON-FATAL BUILD WARNINGS:
+  - `src/kernel/acpi/aml_exec.c`: unused parameter `ctx`
+  - `src/kernel/acpi/extended.c`: several unused static helpers
+  - `src/boot/efi_loader.c`: unused `gop_mask_size` / `gop_mask_pos`
+
+NEXT HARDWARE TEST:
+  Boot the rebuilt image on the Dell Precision 7530, then run:
+    1. `wdiag`
+    2. `wd2`
+
+  Expected improvement if this was the remaining blocker:
+    - secure header readbacks no longer look like bogus values from the wrong PRPH space
+    - `LMAC_PC` moves off `0x000000e8`
+    - `RFH_R` or `RFH_U` becomes non-zero
+    - ideally ALIVE arrives
+
+NOTES:
+  - This log satisfies `planv3.txt` rule 5 and rule 6 for the completed code
+    change and rebuild.
+  - No SHA-256 hashes recorded, per `planv3.txt` rule 16, because this rebuild
+    was not a user-requested hash-verification step.

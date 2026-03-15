@@ -1,0 +1,34 @@
+fry626 - Intel 9260 firmware upload path fix
+Date: 2026-03-06
+Timestamp: 2026-03-06 23:26:15 CST
+
+Status: Replaced the wrong gen3 firmware DMA/start path with the 9000-series
+Intel 9260 flow and rebuilt the full image.
+
+Changes:
+- src/drivers/net/wifi_9260.c: replaced TFH_SRV_DMA firmware upload with FH
+  service channel 9, added an 8 KB page-aligned bounce buffer, switched
+  firmware start to RELEASE_CPU_RESET + FH/UREG_UCODE_LOAD_STATUS, and acked
+  FH causes in the IRQ handler.
+- src/drivers/net/iwlwifi_fw.h: added arrays to retain all SEC_RT and
+  SEC_INIT firmware sections.
+- src/drivers/net/iwlwifi_fw.c: parser now keeps every SEC_RT / SEC_INIT
+  section instead of only the first two.
+
+Why: The Intel 9260 is 9000-series hardware, not gen3 AX-class hardware.
+The previous code used the wrong DMA registers and wrong firmware start
+trigger, and it dropped later SEC_RT sections. That combination could prevent
+firmware boot on real hardware.
+
+Test / Build:
+- make clean
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Result:
+- Full rebuild completed successfully.
+- ISO output: /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+- ISO exported: /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+Notes:
+- build_iso.sh still emits existing unrelated warnings in
+  src/boot/efi_loader.c for unused gop_mask helpers.

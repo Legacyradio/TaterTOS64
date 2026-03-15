@@ -1,0 +1,86 @@
+fry690 - 2026-03-10 20:31:46 CDT - WiFi 9260: fix wrong INIT_COMPLETE notification opcode in init-fw wait path
+
+SESSION CONTEXT:
+  fry689 added the two-phase boot flow:
+    1. boot INIT firmware
+    2. collect PHY DB notifications until INIT_COMPLETE
+    3. boot runtime firmware
+    4. send PHY DB to runtime before PHY_CFG
+
+  Before changing code, the current source still defined:
+    - `IWL_INIT_COMPLETE_NOTIF = 0x84`
+  and `iwl_wait_init_complete()` was polling RX for that value.
+
+  The local Linux reference already present in the tree shows:
+    - `linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/fw/api/commands.h`
+    - `INIT_COMPLETE_NOTIF = 0x4`
+
+WHY:
+  With the wrong opcode, a successful INIT firmware phase can still look like
+  a timeout to TaterTOS64v3:
+    - PHY DB notifications may be received and stored
+    - INIT_COMPLETE may be emitted by firmware
+    - but the driver ignores it because it is waiting for `0x84` instead of
+      `0x04`
+
+  That causes a false failure in the new two-phase path and prevents the
+  runtime image handoff from starting even if INIT boot itself succeeded.
+
+FILES CHANGED:
+  - `src/drivers/net/wifi_9260.c`
+  - `logs/fry690.txt`
+
+CODE CHANGES:
+  1. Changed `IWL_INIT_COMPLETE_NOTIF` from `0x84` to `0x04`.
+  2. Left the rest of the two-phase bring-up path unchanged on purpose:
+     - no PHY DB storage changes
+     - no runtime boot changes
+     - no PHY_CFG payload changes
+
+RATIONALE:
+  This is a surgical correction to the first clearly wrong constant in the
+  INIT-phase wait loop. It isolates one variable and keeps the test focused:
+  does the driver now recognize INIT completion and proceed into runtime boot?
+
+BUILD / VERIFICATION COMMANDS:
+  1. `make clean`
+  2. `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+
+RESULT:
+  - clean rebuild via build_iso.sh: PASS
+  - ISO output:
+      `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+  - NVMe image:
+      `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+  - EFI boot image:
+      `/home/jjsako/TaterTOS64v3/out/efiboot.img`
+  - Windows ISO export: skipped because `/mnt/c/Users/jjsako/Documents` is not writable
+
+NON-FATAL BUILD WARNINGS:
+  - `src/kernel/acpi/aml_exec.c`: unused parameter `ctx`
+  - `src/kernel/acpi/extended.c`: unused helpers `str_eq`, `obj_to_str`,
+    `pci_cf8_write32`
+  - `src/boot/efi_loader.c`: unused `gop_mask_size` / `gop_mask_pos`
+  - `xorriso`: El Torito boot image load size warning during ISO packaging
+
+NEXT HARDWARE TEST:
+  Boot the rebuilt image on the Dell Precision 7530 and inspect the WiFi debug
+  path.
+
+  Suggested commands:
+    1. `wl`
+    2. `wc`
+    3. `wd3`
+
+  Primary check:
+    - the log should no longer end with `INIT_COMPLETE timeout`
+    - instead it should print:
+        `INIT_COMPLETE received after <N> PHY DB notifications`
+    - then the runtime firmware phase should start
+
+  If it still fails after this fix, the next likely issue is later in the
+  runtime bring-up path, not INIT completion detection.
+
+NOTES:
+  - This log satisfies `planv3.txt` rule 5 and rule 6.
+  - No SHA-256 hashes were recorded because this was not requested.

@@ -1,0 +1,106 @@
+fry715 — Restore dropped low-level RX/TX cleanup after fry714 direct-port rewrite
+===============================================================================
+
+Timestamp: 2026-03-13 19:56:52 CDT
+
+CONTEXT:
+  After fry714, the user supplied fresh Dell shell output:
+    - `wh`: step=9 rc=-3 irq=2
+    - `wc`: FH_LOAD=0xffffffff, CPU1_ST=0x00000003, CPU2_ST=0x00002320
+    - RFH remained idle:
+        RFH_ACT=0x00010001
+        W=0x00000000
+        R=0x00000000
+        U=0x00000000
+        rx_closed=0x00000000
+        rx_fin=0x00000000
+    - UMAC error table still valid with:
+        marker   = 0x0000dead
+        error_id = 0x0000002e
+
+  That means the failure shape stayed in the same place:
+  firmware upload completes, but the init image hits SW_ERR / UMAC assert
+  before RFH retires any RX buffer.
+
+WHY THIS PATCH:
+  fry714 rewired the bring-up path to follow Linux 7.0-rc2 function
+  boundaries more directly, but in doing so it dropped some earlier
+  low-level cleanup writes that were still required on this platform.
+
+  Local source comparison against Linux showed three concrete gaps:
+    1. `SCD_QUEUE_STATUS_BITS()` was mapped incorrectly for queue ranges
+       0..19 and 20..31.
+    2. `iwl_pcie_tx_init()` no longer stopped all FH TX DMA channels before
+       queue programming.
+    3. The 9000-series RB timeout write (`HBUS_TARG_MBX_C = 0x64`) was no
+       longer present on the active RX init path.
+
+ACTIVE-PATH CHANGES:
+  2026-03-13 19:56:52 CDT
+  src/drivers/net/wifi_9260.c
+    Fixed SCD queue-status register mapping:
+      - queues 0..19  -> SCD_BASE + 0x10c + q * 4
+      - queues 20..31 -> SCD_BASE + 0x334 + (q - 20) * 4
+    Why:
+      The previous local macro used one flat base (`0x104`) that does not
+      match Linux. Any queue deactivation using that macro would target the
+      wrong PRPH registers.
+
+  2026-03-13 19:56:52 CDT
+  src/drivers/net/wifi_9260.c
+    Added Linux-style helpers:
+      - `iwl_scd_txq_set_inactive()`
+      - `iwl_pcie_tx_stop_fh()`
+    Why:
+      The direct-port path still needs the queue/FH cleanup that existed in
+      earlier working branches and in Linux’s TX stop/init logic.
+
+  2026-03-13 19:56:52 CDT
+  src/drivers/net/wifi_9260.c:1683
+    Restored `HBUS_TARG_MBX_C = IWL_9000_RB_TIMEOUT` in `iwl_pcie_rx_init()`.
+    Why:
+      9000-series hardware needs the RB timeout armed so a single-frame ALIVE
+      notification can retire through RFH instead of waiting indefinitely.
+
+  2026-03-13 19:56:52 CDT
+  src/drivers/net/wifi_9260.c:1711
+    Updated `iwl_pcie_tx_init()` to:
+      - stop all FH TX channels first
+      - deactivate SCD queues 0..30
+      - then program keep-warm and CBBC queue addresses
+    Why:
+      This restores the cleanup/setup ordering the direct-port rewrite had
+      dropped, while keeping the overall Linux-shaped call graph from fry714.
+
+BUILD / VERIFICATION:
+  2026-03-13 19:56:52 CDT
+  Commands:
+    make -C /home/jjsako/TaterTOS64v3 src/drivers/net/wifi_9260.o
+    PATH="/opt/cross/bin:$PATH" make -C /home/jjsako/TaterTOS64v3 clean all
+    /home/jjsako/TaterTOS64v3/build_iso.sh
+
+  Result:
+    PASS
+    - `wifi_9260.c` compiled cleanly
+    - full kernel/userspace rebuild completed
+    - ISO created at `out/tatertos64v3.iso`
+    - NVMe image created at `out/tater_nvme.img`
+    - EFI boot image created at `out/efiboot.img`
+
+  Notes:
+    - existing non-WiFi warnings remained:
+      - `src/kernel/acpi/aml_exec.c`: unused parameter `ctx`
+      - `src/kernel/acpi/extended.c`: unused helpers
+      - `src/boot/efi_loader.c`: unused `gop_mask_size` / `gop_mask_pos`
+    - Windows ISO export was skipped because
+      `/mnt/c/Users/jjsako/Documents` was not writable in this run.
+
+NEXT HARDWARE CHECK:
+  Boot the new image on the Dell and rerun:
+    - `wh`
+    - `wc`
+
+  Desired movement:
+    - `RFH_Q0_FRBDCB_RIDX` or `RFH_Q0_URBDCB_WIDX` becomes non-zero
+    - `rx_closed` moves off zero
+    - ALIVE progresses instead of the same `0x2e` assert shape

@@ -1,0 +1,96 @@
+fry657 - 2026-03-07 23:29:02 CST - WiFi 9260: load CPU1 + CPU2 from the same SEC_RT runtime stream
+
+WHY:
+  Dell bare-metal is still stalling at:
+    - step=9 (alive) rc=-1
+    - driver=offline
+  and the strongest remaining mismatch in the gen1 FH upload path was the
+  section model itself.
+
+  The 9260 runtime firmware blob does not map to:
+    - CPU1 = SEC_RT
+    - CPU2 = SEC_INIT
+
+  Instead, the runtime image is one SEC_RT stream with in-band boundary
+  markers. The previous code treated all SEC_RT entries as one CPU image and
+  then incorrectly treated SEC_INIT as CPU2. That can upload the wrong SRAM
+  sections and poison FH_UCODE_LOAD_STATUS progression before ALIVE.
+
+CHANGES:
+  Files changed:
+    - src/drivers/net/iwlwifi_fw.h
+    - src/drivers/net/iwlwifi_fw.c
+    - src/drivers/net/wifi_9260.c
+
+  Code updates:
+    1. Added `offset` to `struct iwl_fw_section` so parsed SEC_RT / SEC_INIT
+       entries retain their first dword SRAM/boundary value.
+    2. Updated TLV parsing to record per-section offsets for SEC_RT / SEC_INIT
+       and stopped aliasing SEC_RT[0/1] and SEC_INIT[0/1] as CPU1/CPU2 legacy
+       instruction/data sections.
+    3. Added `PAGING_SEPARATOR = 0xAAAABBBB` alongside the existing
+       `CPU1_CPU2_SEPARATOR = 0xFFFFCCCC`.
+    4. Replaced the old whole-array uploader with
+       `iwl_upload_runtime_cpu_image()`:
+         - starts at a caller-supplied SEC_RT index
+         - uploads only real sections
+         - stops on CPU/paging separators
+         - returns the next index so CPU2 loads from the same SEC_RT stream
+    5. Changed `iwl_upload_firmware()` so runtime upload is now:
+         - CPU1 from `pieces->sec_rt` starting at index 0
+         - CPU2 from `pieces->sec_rt` starting after the CPU1 separator
+         - `pieces->sec_init` is logged but not used as runtime CPU2
+
+WHY THIS FIX:
+  This matches the Linux 8000/9000 FH upload model more closely:
+    - load CPU1 from the runtime image until the CPU separator
+    - load CPU2 from the same runtime image until the paging/end separator
+  The previous mapping could never stage a correct runtime CPU2/UMAC image on
+  the 9260.
+
+BUILD / VERIFICATION:
+  Commands run:
+    - `make clean`
+    - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+
+  Result:
+    - rebuild passed
+    - ISO output:
+        `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+
+  Warnings:
+    - existing unused warning remains in `src/drivers/net/wifi_9260.c` for
+      `iwl_set_prph_bit`
+    - existing unrelated warnings remain in ACPI / EFI code
+
+HASH VERIFICATION:
+  Verified on 2026-03-07 23:31:10 CST:
+    - repo ISO:
+        `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+    - Windows tateriso copy:
+        `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+  SHA-256:
+    - repo ISO:
+        `015475bc3c91325f2da246cf4db510a148dc95f2030996f00e57513e5e438e10`
+    - Windows tateriso copy:
+        `015475bc3c91325f2da246cf4db510a148dc95f2030996f00e57513e5e438e10`
+
+  Result:
+    - hashes match exactly
+    - the exported `tateriso` ISO is byte-identical to the repo ISO used for this step
+
+NEXT DELL TEST:
+  Boot the rebuilt ISO, then run:
+    1. `wd`
+    2. `ws`
+
+  Target signal:
+    - step advances past `alive` (9) to `hcmd` (10) or later
+    - or, if it still fails, the init log should now show CPU1 / CPU2 stopping
+      on explicit SEC_RT boundary markers instead of walking the wrong image
+
+NOTES:
+  - No QEMU logs were used.
+  - No BIOS revision/date was visible during this step.
+  - No SHA-256 was recorded because it was not requested.

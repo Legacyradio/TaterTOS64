@@ -1,0 +1,67 @@
+fry647 - 2026-03-07 - WiFi 9260: correct context-info queue layout and DRAM entry encoding
+
+Problem:
+  Dell bare-metal still stalls at step=9 (alive) with:
+    FW_STATUS=0x5a5a9999
+    RFH_USED_WIDX=0
+    irq_count=0
+  The boot ROM starts, but firmware never reaches a usable ALIVE notification.
+
+Corrected root cause:
+  The current context-info image in src/drivers/net/wifi_9260.c had two
+  regressions relative to Intel's iwl-context-info layout:
+
+  1. hcmd_cfg field order was backwards.
+     Official Intel layout in TatertOS64-new/iwl-context-info.h:
+       struct iwl_context_info_hcmd_cfg {
+         __le64 cmd_queue_addr;
+         u8     cmd_queue_size;
+         u8     reserved[7];
+       }
+     Current TaterTOS code had cmd_queue_size first, then cmd_queue_addr.
+     That shifts the command queue DMA address away from offset 0x30 and feeds
+     the boot ROM garbage for the host-command queue.
+
+  2. DRAM firmware section entries were being written as phys | 1.
+     Linux/Intel context-info code stores raw physical addresses in
+     dram.lmac_img[] / dram.umac_img[] / dram.virtual_img[].
+     OR'ing in bit 0 corrupts every section pointer by forcing it misaligned.
+
+Fixes applied:
+  - Restored hcmd_cfg to:
+      cmd_queue_addr (u64), cmd_queue_size (u8), reserved[7]
+  - Restored dump/early-debug/pnvm cfg layout to:
+      addr (u64), size (u32), reserved (u32)
+  - Removed the bogus "| 1ULL" from all DRAM firmware entry writes
+
+Files changed:
+  src/drivers/net/wifi_9260.c
+
+Why:
+  The boot ROM consumes the context-info block at fixed offsets. If the host
+  command queue fields are misplaced or the firmware section addresses are
+  deliberately misaligned, the 9260 never gets far enough to DMA ALIVE back to
+  the host.
+
+Verification run:
+  1. PATH="/opt/cross/bin:$PATH" make kernel
+     Result: PASS
+  2. PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+     Result: PASS
+     Output ISO: out/tatertos64v3.iso
+
+Notes:
+  - Pre-existing warnings remain in unrelated files and in wifi_9260.c for
+    unused legacy helpers (iwl_upload_firmware, iwl_set_prph_bit).
+  - The Dell-side next check is still `wd` / `ws`; success should move init
+    beyond step 9 and populate MAC/NVM state.
+
+Next bare-metal test:
+  Boot the new ISO on the Dell, then run:
+    wd
+    ws
+  Expected:
+    - init step > 9
+    - RFH_USED_WIDX > 0 or RX closed/finished indices advancing
+    - driver no longer offline
+    - MAC no longer all zeros

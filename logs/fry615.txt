@@ -1,0 +1,19 @@
+fry615 - Shell WiFi Debug Commands
+==================================
+Date: 2026-03-06
+
+Added shell-level WiFi debug commands in `src/user/shell/shell.c` using the
+same WiFi syscalls as `NETMGR`:
+
+  - `wifi status`
+  - `wifi scan`
+  - `wifi connect <ssid> [passphrase]`
+  - `wifi ip`
+
+Purpose:
+  - provide a non-GUI bring-up/debug path
+  - separate WiFi/driver failures from GUI/compositor issues
+  - allow reproducible manual testing on hardware
+
+Verified with:
+`PATH="/opt/cross/bin:$PATH" make -C /home/jjsako/TaterTOS64v3 -B shell`

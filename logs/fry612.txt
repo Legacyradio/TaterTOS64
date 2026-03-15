@@ -1,0 +1,102 @@
+fry612 - IP Network Stack: ARP, IPv4, ICMP, UDP, DHCP, TCP, DNS
+================================================================
+Date: 2026-03-06
+Plan: eventually/eventually1.txt step 10
+
+WHAT WAS DONE
+-------------
+Implemented step 10: `src/drivers/net/netcore.c` as the IP layer on top of the
+WiFi Ethernet-style data path from step 9. The file is just over 1K lines and
+provides ARP, IPv4, ICMP echo reply, UDP dispatch, DHCP, a small TCP client
+stack, and DNS A-record lookups.
+
+Ethernet TX + RX dispatch:
+  - `eth_send()` builds DA + SA + EtherType + payload frames and sends them via
+    `wifi_tx_packet()`
+  - `net_rx()` is registered through `wifi_set_rx_callback()` and dispatches
+    `0x0806` to ARP and `0x0800` to IPv4
+
+ARP (`arp_send`, `arp_process`, `arp_resolve`):
+  - 16-entry ARP cache
+  - Sends request/reply packets with Ethernet/IPv4 hardware and protocol types
+  - Learns sender MAC/IP pairs from inbound ARP traffic
+  - Replies when the target IP matches our configured address
+  - `arp_resolve()` returns cached MACs, treats all-ones and subnet broadcast as
+    broadcast, or sends an ARP request and returns pending
+
+IPv4 + ICMP (`ip_send`, `ip_process`, `icmp_process`):
+  - 20-byte IPv4 header, TTL 64, DF set, checksum via RFC 1071 helper
+  - Same-subnet traffic goes direct; off-subnet traffic goes through the gateway
+  - If ARP is still pending after a short retry, transmission falls back to
+    Ethernet broadcast for cases like DHCP discovery
+  - IPv4 RX accepts our IP, global broadcast, and subnet broadcast
+  - ICMP handles echo request -> echo reply
+
+UDP (`udp_bind`, `udp_send`, `udp_process`):
+  - 8 callback-based UDP bind slots
+  - Outbound UDP header generation with zero checksum for IPv4
+  - Inbound dispatch by destination port
+  - Shared ephemeral port counter starting at 49152
+
+DHCP (`dhcp_build_packet`, `dhcp_rx`, `dhcp_discover`):
+  - Implements DISCOVER -> OFFER -> REQUEST -> ACK
+  - Validates DHCP magic cookie and transaction ID
+  - Parses subnet mask, router, DNS server, and server identifier options
+  - Configures `g_net.ip`, `g_net.netmask`, `g_net.gateway`, `g_net.dns_server`,
+    and `g_net.configured` on ACK
+  - Retries discover up to 3 times with 3-second wait windows
+
+TCP (`tcp_connect`, `tcp_send`, `tcp_recv`, `tcp_close`, `tcp_process`):
+  - 4 connection slots with 4KB RX ring buffers
+  - States used in the implementation: CLOSED, SYN_SENT, ESTABLISHED,
+    FIN_WAIT_1, FIN_WAIT_2, CLOSE_WAIT, LAST_ACK
+  - Active open with SYN, SYN-ACK handling, ACK completion, FIN close handling
+  - TX segmentation in 1400-byte chunks
+  - Sequence/ack tracking and RST generation for unexpected inbound segments
+  - Pseudo-header checksum generation for transmitted TCP segments
+
+DNS (`dns_rx`, `dns_resolve`):
+  - Builds standard recursive A-record queries
+  - Encodes dotted hostnames into DNS label format
+  - Parses the question section, supports compression pointers in names, and
+    returns the first IPv4 A record found
+  - Retries up to 3 sends with 2-second wait windows and unbinds the temporary
+    UDP port on success or failure
+
+Initialization helpers:
+  - `netcore_init()` clears network state and registers the WiFi RX callback
+  - `dhcp_discover()` is a separate explicit call; it is not invoked from
+    `netcore_init()`
+  - `net_poll()` is a thin wrapper around `iwl_rx_poll(0)`
+  - Local helper routines cover byte-order conversion, string/IP formatting,
+    busy-wait delay, and checksum generation
+
+FILES CHANGED
+-------------
+- `src/drivers/net/netcore.c` - IP stack implementation
+- `eventually/eventually1.txt` - Step 10 summary corrected to match the code
+- `logs/fry612.txt` - Step 10 work log corrected to match the code
+
+BUILD
+-----
+- Verified forced rebuild of `src/drivers/net/netcore.o` with:
+  `PATH="/opt/cross/bin:$PATH" make -C /home/jjsako/TaterTOS64v3 -B src/drivers/net/netcore.o`
+- Result: compile succeeded
+- Full ISO build not re-run in this documentation pass
+
+EXPECTED SERIAL OUTPUT
+----------------------
+NET: network stack initialized
+NET: sending DHCP discover...
+NET: DHCP offer: 192.168.1.100
+NET: DHCP ACK: ip=192.168.1.100 gw=192.168.1.1 dns=192.168.1.1
+NET: DNS query for "example.com"
+NET: DNS resolved "example.com" -> 93.184.216.34
+NET: TCP connect 50000 -> 80 (SYN sent)
+NET: TCP connected
+
+NEXT STEP
+---------
+The 10-step WiFi bring-up plan in `eventually1.txt` is now documented as
+complete. The remaining work is hardware validation on the Dell target and any
+bug-fixing that falls out of first real-network tests.

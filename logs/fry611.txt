@@ -1,0 +1,113 @@
+fry611 - WiFi Driver: Data Path — RX Processing, TX Data, STA Setup, Connect Flow
+==================================================================================
+Date: 2026-03-06
+Plan: eventually/eventually1.txt step 9
+
+WHAT WAS DONE
+-------------
+Implemented step 9: Data Path — full RX/TX data path, EAPOL RX wiring,
+ADD_STA command, and the complete WPA2 connect-to-handshake flow.
+
+RX Frame Dispatcher (wifi_9260.c: iwl_rx_process_one):
+  - Classifies each RX buffer by 802.11 frame type and subtype
+  - Management frames: detects deauth/disassoc, returns for caller handling
+  - Data frames:
+    1. Determines header length (24/30 bytes, +2 for QoS)
+    2. If Protected bit set + WPA2 active: CCMP decrypt via wpa2_decrypt_data()
+    3. Parses LLC/SNAP header (0xAA/0xAA/0x03 + OUI + EtherType)
+    4. EtherType 0x888E: routes to EAPOL handshake handler
+    5. Other EtherTypes: builds pseudo-Ethernet frame and delivers to callback
+  - Pseudo-Ethernet frame construction:
+    - Extracts DA/SA from 802.11 header based on ToDS/FromDS bits
+    - FromDS: DA=A1, SA=A3 (AP → STA)
+    - ToDS: DA=A3, SA=A2 (STA → AP)
+    - Prepends DA(6)+SA(6)+EtherType(2) to LLC payload
+
+EAPOL Auto-Response (wifi_9260.c: iwl_rx_process_one):
+  - Detects EAPOL frames by EtherType 0x888E
+  - Calls wpa2_process_eapol() to handle message 1 or 3
+  - After message 1 processed (state→2): auto-builds and sends message 2
+  - After message 3 processed (state→3): auto-builds and sends message 4,
+    sets handshake complete (state→4), activates g_wpa2_active flag
+  - Prints "*** WPA2 HANDSHAKE COMPLETE — CCMP ACTIVE ***" on success
+
+RX Poll Loop (wifi_9260.c: iwl_rx_poll):
+  - Polls RX status writeback for new closed_rb entries
+  - Cache-invalidates each new RX buffer (full 4096 bytes)
+  - Dispatches each buffer to iwl_rx_process_one()
+  - Configurable timeout_ms (0 = check once and return)
+  - Returns count of processed frames
+
+TX Data Path (wifi_9260.c: wifi_tx_packet):
+  - Accepts Ethernet-like frames: DA(6)+SA(6)+EtherType(2)+payload
+  - Builds 802.11 data header (ToDS=1: A1=BSSID, A2=SA, A3=DA)
+  - Prepends LLC/SNAP header (0xAA/0xAA/0x03/00:00:00/EtherType)
+  - Sequence number tracking (per data_seq counter)
+  - If WPA2 active: wpa2_encrypt_data() for CCMP encryption
+    - Sets Protected Frame bit in FC
+    - Adds 8-byte CCMP header (PN + ExtIV)
+    - Appends 8-byte MIC
+  - If open: sends unencrypted
+  - Sends via iwl_tx_mgmt() (TX_CMD on queue 0)
+
+ADD_STA Command (wifi_9260.c: iwl_add_sta):
+  - Sends ADD_STA_CMD (0x18) to firmware after association
+  - Station ID 0 = AP, tfd_queue_msk = queue 0
+  - Required for firmware to enable data traffic with the AP
+
+Full WPA2 Connect Flow (wifi_9260.c: iwl_connect_wpa2):
+  1. iwl_scan() — scan for available networks
+  2. Find target SSID in scan results (byte-level string match)
+  3. wpa2_init() + wpa2_set_passphrase() — init context + derive PMK (PBKDF2)
+  4. iwl_associate_wpa2() or iwl_associate() based on has_rsn flag
+  5. iwl_add_sta() — register AP station in firmware
+  6. Poll EAPOL handshake: iwl_rx_poll(0) every 5ms for up to 10 seconds
+  7. Returns 0 when g_wpa2_active becomes true (handshake complete)
+
+Network Interface API (netcore.h):
+  - wifi_tx_packet(): send Ethernet frames over WiFi
+  - iwl_rx_poll(): poll for incoming frames
+  - wifi_set_rx_callback(): register handler for received data
+  - iwl_connect_wpa2(): complete connect flow
+  - Ready for step 10 (IP stack) to call
+
+FILES CHANGED
+-------------
+- src/drivers/net/wifi_9260.c - RX processing, TX data, ADD_STA, connect flow
+- src/drivers/net/netcore.h - WiFi data path API declarations
+- Makefile - no changes needed (same .o files)
+
+BUILD
+-----
+- Compiles clean (no warnings, no errors)
+- Full ISO built and exported to Windows
+
+EXPECTED SERIAL OUTPUT (Dell boot — WPA2 connect)
+--------------------------------------------------
+IWL9260: scan complete, N networks found
+IWL9260: found "MyNetwork" ch=6 [WPA2]
+IWL-WPA2: deriving PMK from passphrase (N chars, SSID len=N)
+IWL-WPA2: PMK derived OK
+IWL-MAC: WPA2 associating with "MyNetwork" ch=6
+IWL-MAC: sending auth to XX:XX:XX:XX:XX:XX
+IWL-MAC: auth response status=0
+IWL-MAC: sending WPA2 assoc req to "MyNetwork"
+IWL-MAC: assoc response status=0 AID=1
+IWL-MAC: *** WPA2 ASSOCIATED with "MyNetwork" — awaiting EAPOL ***
+IWL9260: STA added for AP XX:XX:XX:XX:XX:XX
+IWL9260: waiting for EAPOL handshake...
+IWL9260: received EAPOL frame (N bytes)
+IWL-WPA2: received message 1 (ANonce)
+IWL-WPA2: PTK derived (KCK+KEK+TK = 48 bytes)
+IWL9260: sent EAPOL message 2
+IWL9260: received EAPOL frame (N bytes)
+IWL-WPA2: received message 3 (GTK)
+IWL-WPA2: message 3 MIC verified OK
+IWL-WPA2: GTK installed (idx=N)
+IWL9260: sent EAPOL message 4
+IWL9260: *** WPA2 HANDSHAKE COMPLETE — CCMP ACTIVE ***
+IWL9260: *** CONNECTED to "MyNetwork" (WPA2-CCMP) ***
+
+NEXT STEP
+---------
+Step 10: IP Network Stack (netcore.c) — ARP, IPv4, UDP, DHCP, TCP, DNS

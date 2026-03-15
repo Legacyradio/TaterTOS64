@@ -663,11 +663,15 @@ static uint64_t get_rsdp(EFI_SYSTEM_TABLE *st) {
 
 typedef void (*kernel_entry_t)(struct fry_handoff *handoff);
 
+#define TATER_EFI_SERIAL_TRACE 0
+
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     g_st = SystemTable;
     efi_serial_init();
-    efi_serial_puts("EFI: start\n");
-    efi_serial_puts("EFI: build " TATER_BUILD_ID "\n");
+    if (TATER_EFI_SERIAL_TRACE) {
+        efi_serial_puts("EFI: start\n");
+        efi_serial_puts("EFI: build " TATER_BUILD_ID "\n");
+    }
     efi_puts(SystemTable, L"\r\nTATER EFI: start\r\n");
     efi_puts(SystemTable, L"TATER EFI: build 2026-03-04-dell-nvme-scan\r\n");
     EFI_BOOT_SERVICES *bs = SystemTable->BootServices;
@@ -792,16 +796,17 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     handoff->ramdisk_base = 0;
     handoff->ramdisk_size = 0;
 
-    // Load userspace payload binaries into a ramdisk for ISO/USB boot without NVMe.
-    // Split policy: SHELL.TOT for shell, .FRY for regular apps.
+    // Load runtime payloads into a ramdisk for ISO/USB boot without NVMe.
+    // This includes userspace binaries plus any file-backed firmware the kernel
+    // needs before block-backed storage is available.
     // Strategy:
     //   1. Try common locations on the primary filesystem (li->DeviceHandle):
     //      \fry\, \FRY\, root (\), plus common EFI subdirectories.
     //   2. If nothing is found there, scan all EFI_SIMPLE_FILE_SYSTEM_PROTOCOL
     //      handles (firmware sometimes maps the EFI partition differently).
     {
-        enum { FRY_FILE_COUNT = 7, FRY_PATH_VARIANTS = 9 };
-        static CHAR16 fry_paths[FRY_FILE_COUNT][FRY_PATH_VARIANTS][32] = {
+        enum { FRY_FILE_COUNT = 14, FRY_PATH_VARIANTS = 9 };
+        static CHAR16 fry_paths[FRY_FILE_COUNT][FRY_PATH_VARIANTS][64] = {
             {
                 {'\\','s','y','s','t','e','m','\\','I','N','I','T','.','F','R','Y',0},
                 {'\\','I','N','I','T','.','F','R','Y',0},
@@ -873,6 +878,83 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
                 {'\\','E','F','I','\\','B','O','O','T','\\','F','I','L','E','M','A','N','.','F','R','Y',0},
                 {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','F','I','L','E','M','A','N','.','F','R','Y',0},
             },
+            {
+                {'\\','a','p','p','s','\\','N','E','T','M','G','R','.','F','R','Y',0},
+                {'\\','N','E','T','M','G','R','.','F','R','Y',0},
+                {'\\','f','r','y','\\','N','E','T','M','G','R','.','F','R','Y',0},
+                {'\\','F','R','Y','\\','N','E','T','M','G','R','.','F','R','Y',0},
+                {'\\','E','F','I','\\','f','r','y','\\','N','E','T','M','G','R','.','F','R','Y',0},
+                {'\\','E','F','I','\\','F','R','Y','\\','N','E','T','M','G','R','.','F','R','Y',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','N','E','T','M','G','R','.','F','R','Y',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','N','E','T','M','G','R','.','F','R','Y',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','F','R','Y','\\','N','E','T','M','G','R','.','F','R','Y',0},
+            },
+            {
+                {'\\','a','p','p','s','\\','V','M','T','E','S','T','.','F','R','Y',0},
+                {'\\','V','M','T','E','S','T','.','F','R','Y',0},
+                {'\\','f','r','y','\\','V','M','T','E','S','T','.','F','R','Y',0},
+                {'\\','F','R','Y','\\','V','M','T','E','S','T','.','F','R','Y',0},
+                {'\\','E','F','I','\\','f','r','y','\\','V','M','T','E','S','T','.','F','R','Y',0},
+                {'\\','E','F','I','\\','F','R','Y','\\','V','M','T','E','S','T','.','F','R','Y',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','V','M','T','E','S','T','.','F','R','Y',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','V','M','T','E','S','T','.','F','R','Y',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','F','R','Y','\\','V','M','T','E','S','T','.','F','R','Y',0},
+            },
+            {
+                {'\\','a','p','p','s','\\','V','M','F','A','U','L','T','.','F','R','Y',0},
+                {'\\','V','M','F','A','U','L','T','.','F','R','Y',0},
+                {'\\','f','r','y','\\','V','M','F','A','U','L','T','.','F','R','Y',0},
+                {'\\','F','R','Y','\\','V','M','F','A','U','L','T','.','F','R','Y',0},
+                {'\\','E','F','I','\\','f','r','y','\\','V','M','F','A','U','L','T','.','F','R','Y',0},
+                {'\\','E','F','I','\\','F','R','Y','\\','V','M','F','A','U','L','T','.','F','R','Y',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','V','M','F','A','U','L','T','.','F','R','Y',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','V','M','F','A','U','L','T','.','F','R','Y',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','F','R','Y','\\','V','M','F','A','U','L','T','.','F','R','Y',0},
+            },
+            {
+                {'\\','V','M','T','E','S','T','.','T','X','T',0},
+                {'\\','a','p','p','s','\\','V','M','T','E','S','T','.','T','X','T',0},
+                {'\\','f','r','y','\\','V','M','T','E','S','T','.','T','X','T',0},
+                {'\\','F','R','Y','\\','V','M','T','E','S','T','.','T','X','T',0},
+                {'\\','E','F','I','\\','V','M','T','E','S','T','.','T','X','T',0},
+                {'\\','E','F','I','\\','f','r','y','\\','V','M','T','E','S','T','.','T','X','T',0},
+                {'\\','E','F','I','\\','F','R','Y','\\','V','M','T','E','S','T','.','T','X','T',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','V','M','T','E','S','T','.','T','X','T',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','V','M','T','E','S','T','.','T','X','T',0},
+            },
+            {
+                {'\\','V','M','T','E','S','T','.','R','U','N',0},
+                {'\\','f','r','y','\\','V','M','T','E','S','T','.','R','U','N',0},
+                {'\\','F','R','Y','\\','V','M','T','E','S','T','.','R','U','N',0},
+                {'\\','E','F','I','\\','V','M','T','E','S','T','.','R','U','N',0},
+                {'\\','E','F','I','\\','f','r','y','\\','V','M','T','E','S','T','.','R','U','N',0},
+                {'\\','E','F','I','\\','F','R','Y','\\','V','M','T','E','S','T','.','R','U','N',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','V','M','T','E','S','T','.','R','U','N',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','V','M','T','E','S','T','.','R','U','N',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','F','R','Y','\\','V','M','T','E','S','T','.','R','U','N',0},
+            },
+            {
+                {'\\','V','M','F','A','U','L','T','.','R','U','N',0},
+                {'\\','f','r','y','\\','V','M','F','A','U','L','T','.','R','U','N',0},
+                {'\\','F','R','Y','\\','V','M','F','A','U','L','T','.','R','U','N',0},
+                {'\\','E','F','I','\\','V','M','F','A','U','L','T','.','R','U','N',0},
+                {'\\','E','F','I','\\','f','r','y','\\','V','M','F','A','U','L','T','.','R','U','N',0},
+                {'\\','E','F','I','\\','F','R','Y','\\','V','M','F','A','U','L','T','.','R','U','N',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','V','M','F','A','U','L','T','.','R','U','N',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','V','M','F','A','U','L','T','.','R','U','N',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','F','R','Y','\\','V','M','F','A','U','L','T','.','R','U','N',0},
+            },
+            {
+                {'\\','f','i','r','m','w','a','r','e','\\','i','w','l','w','i','f','i','-','9','2','6','0','.','u','c','o','d','e',0},
+                {'\\','f','r','y','\\','f','i','r','m','w','a','r','e','\\','i','w','l','w','i','f','i','-','9','2','6','0','.','u','c','o','d','e',0},
+                {'\\','F','R','Y','\\','f','i','r','m','w','a','r','e','\\','i','w','l','w','i','f','i','-','9','2','6','0','.','u','c','o','d','e',0},
+                {'\\','E','F','I','\\','f','r','y','\\','f','i','r','m','w','a','r','e','\\','i','w','l','w','i','f','i','-','9','2','6','0','.','u','c','o','d','e',0},
+                {'\\','E','F','I','\\','F','R','Y','\\','f','i','r','m','w','a','r','e','\\','i','w','l','w','i','f','i','-','9','2','6','0','.','u','c','o','d','e',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','f','i','r','m','w','a','r','e','\\','i','w','l','w','i','f','i','-','9','2','6','0','.','u','c','o','d','e',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','f','i','r','m','w','a','r','e','\\','i','w','l','w','i','f','i','-','9','2','6','0','.','u','c','o','d','e',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','F','R','Y','\\','f','i','r','m','w','a','r','e','\\','i','w','l','w','i','f','i','-','9','2','6','0','.','u','c','o','d','e',0},
+                {'\\','f','i','r','m','w','a','r','e','\\','i','w','l','w','i','f','i','-','9','2','6','0','-','t','h','-','b','0','-','j','f','-','b','0','-','4','6','.','u','c','o','d','e',0},
+            },
         };
         static const char *fry_names[FRY_FILE_COUNT] = {
             "system/INIT.FRY",
@@ -881,7 +963,14 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
             "apps/SYSINFO.FRY",
             "apps/UPTIME.FRY",
             "apps/PS.FRY",
-            "apps/FILEMAN.FRY"
+            "apps/FILEMAN.FRY",
+            "apps/NETMGR.FRY",
+            "apps/VMTEST.FRY",
+            "apps/VMFAULT.FRY",
+            "VMTEST.TXT",
+            "VMTEST.RUN",
+            "VMFAULT.RUN",
+            "firmware/iwlwifi-9260.ucode"
         };
         void  *fry_bufs[FRY_FILE_COUNT];
         UINTN  fry_sizes[FRY_FILE_COUNT];
@@ -890,7 +979,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         UINTN    fry_total = 0;
         uint32_t fry_found = 0;
 
-        // Helper: try loading all userspace payload files from a given filesystem root.
+        // Helper: try loading all required runtime payload files from a given filesystem root.
         // Returns number newly found (added to fry_bufs[]).
         // Defined as an inline block to avoid needing a nested function.
         #define TRY_LOAD_FRY(fs_root) do {                                    \
@@ -911,14 +1000,16 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
 
         // Pass 1: primary filesystem (device that loaded BOOTX64.EFI).
         TRY_LOAD_FRY(root);
-        efi_serial_puts("EFI: fry pass1 found=");
-        efi_serial_putc('0' + (char)(fry_found & 0xF));
-        efi_serial_puts("\n");
+        if (TATER_EFI_SERIAL_TRACE) {
+            efi_serial_puts("EFI: fry pass1 found=");
+            efi_serial_putc('0' + (char)(fry_found & 0xF));
+            efi_serial_puts("\n");
+        }
 
         // Pass 2: if primary device was partial, keep scanning all SFS handles
         // until every expected userspace payload is present.
         if (fry_found < FRY_FILE_COUNT) {
-            efi_serial_puts("EFI: fry scanning all SFS handles\n");
+            if (TATER_EFI_SERIAL_TRACE) efi_serial_puts("EFI: fry scanning all SFS handles\n");
             typedef EFI_STATUS (EFIAPI *LocHB_t)(UINTN, EFI_GUID*, void*,
                                                   UINTN*, EFI_HANDLE**);
             LocHB_t lhb = (LocHB_t)bs->LocateHandleBuffer;
@@ -939,7 +1030,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
                     TRY_LOAD_FRY(root2);
                     root2->Close(root2);
                     if (fry_found > before) {
-                        efi_serial_puts("EFI: fry found on alt SFS handle\n");
+                        if (TATER_EFI_SERIAL_TRACE) efi_serial_puts("EFI: fry found on alt SFS handle\n");
                     }
                 }
                 bs->FreePool(handles);
@@ -975,13 +1066,13 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
                 }
                 handoff->ramdisk_base = (uint64_t)(uintptr_t)rd_addr;
                 handoff->ramdisk_size = (uint64_t)rd_total;
-                efi_serial_puts("EFI: ramdisk built\n");
+                if (TATER_EFI_SERIAL_TRACE) efi_serial_puts("EFI: ramdisk built\n");
                 efi_puts(SystemTable, L"TATER EFI: ramdisk built\r\n");
             } else {
-                efi_serial_puts("EFI: ramdisk alloc failed\n");
+                if (TATER_EFI_SERIAL_TRACE) efi_serial_puts("EFI: ramdisk alloc failed\n");
             }
         } else {
-            efi_serial_puts("EFI: no fry files found (NVMe only)\n");
+            if (TATER_EFI_SERIAL_TRACE) efi_serial_puts("EFI: no fry files found (NVMe only)\n");
             efi_puts(SystemTable, L"TATER EFI: no ramdisk (NVMe only)\r\n");
         }
     }
@@ -1009,17 +1100,21 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     efi_put_hex64(SystemTable, entry_pa);
     efi_puts(SystemTable, L"\r\n");
     efi_puts(SystemTable, L"TATER EFI: handoff ExitBS\r\n");
-    efi_serial_puts("EFI: ExitBS enter mapbuf=0x");
-    efi_serial_puthex64((uint64_t)(uintptr_t)map_buf);
-    efi_serial_puts(" entry=0x");
-    efi_serial_puthex64(entry_pa);
-    efi_serial_puts("\n");
+    if (TATER_EFI_SERIAL_TRACE) {
+        efi_serial_puts("EFI: ExitBS enter mapbuf=0x");
+        efi_serial_puthex64((uint64_t)(uintptr_t)map_buf);
+        efi_serial_puts(" entry=0x");
+        efi_serial_puthex64(entry_pa);
+        efi_serial_puts("\n");
+    }
     for (UINTN attempt = 0; attempt < 8; attempt++) {
         /* Keep map key fresh for ExitBootServices; do not print to ConOut
          * between this GetMemoryMap and ExitBootServices. */
-        efi_serial_puts("EFI: ExitBS attempt ");
-        efi_serial_putc((char)('0' + (int)attempt));
-        efi_serial_puts("\n");
+        if (TATER_EFI_SERIAL_TRACE) {
+            efi_serial_puts("EFI: ExitBS attempt ");
+            efi_serial_putc((char)('0' + (int)attempt));
+            efi_serial_puts("\n");
+        }
         map_sz = map_cap;
         st = bs->GetMemoryMap(&map_sz, (EFI_MEMORY_DESCRIPTOR*)map_buf, &map_key, &desc_sz, &desc_ver);
         if (st == EFI_BUFFER_TOO_SMALL) {
@@ -1029,11 +1124,13 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
             if (!new_map_buf) efi_die(SystemTable, L"TATER EFI E12 mmap pages\r\n");
             map_buf = new_map_buf;
             map_cap = new_cap;
-            efi_serial_puts("EFI: mmap grew, new mapbuf=0x");
-            efi_serial_puthex64((uint64_t)(uintptr_t)map_buf);
-            efi_serial_puts(" cap=0x");
-            efi_serial_puthex64((uint64_t)map_cap);
-            efi_serial_puts("\n");
+            if (TATER_EFI_SERIAL_TRACE) {
+                efi_serial_puts("EFI: mmap grew, new mapbuf=0x");
+                efi_serial_puthex64((uint64_t)(uintptr_t)map_buf);
+                efi_serial_puts(" cap=0x");
+                efi_serial_puthex64((uint64_t)map_cap);
+                efi_serial_puts("\n");
+            }
             continue;
         }
         if (EFI_ERROR(st)) {
@@ -1047,13 +1144,15 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         handoff->mmap_desc_size = (uint64_t)desc_sz;
         handoff->boot_identity_limit = TATER_BOOT_IDENTITY_LIMIT;
         FB_MARK(0x00606000u); // stage 8 (pre-ExitBootServices)
-        efi_serial_puts("EFI: ExitBS key=0x");
-        efi_serial_puthex64((uint64_t)map_key);
-        efi_serial_puts(" map_sz=0x");
-        efi_serial_puthex64((uint64_t)map_sz);
-        efi_serial_puts(" desc_sz=0x");
-        efi_serial_puthex64((uint64_t)desc_sz);
-        efi_serial_puts("\n");
+        if (TATER_EFI_SERIAL_TRACE) {
+            efi_serial_puts("EFI: ExitBS key=0x");
+            efi_serial_puthex64((uint64_t)map_key);
+            efi_serial_puts(" map_sz=0x");
+            efi_serial_puthex64((uint64_t)map_sz);
+            efi_serial_puts(" desc_sz=0x");
+            efi_serial_puthex64((uint64_t)desc_sz);
+            efi_serial_puts("\n");
+        }
 
         st = bs->ExitBootServices(ImageHandle, map_key);
         if (!EFI_ERROR(st)) break;
@@ -1064,17 +1163,17 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
             efi_die(SystemTable, L"TATER EFI halt\r\n");
         }
         efi_puts(SystemTable, L"TATER EFI: handoff ExitBS retry\r\n");
-        efi_serial_puts("EFI: ExitBS invalid key, retry\n");
+            if (TATER_EFI_SERIAL_TRACE) efi_serial_puts("EFI: ExitBS invalid key, retry\n");
         if (attempt == 7) {
             efi_puts(SystemTable, L"TATER EFI E15 ExitBS max retries\r\n");
             efi_die(SystemTable, L"TATER EFI halt\r\n");
         }
     }
-    efi_serial_puts("EFI: ExitBS ok\n");
+    if (TATER_EFI_SERIAL_TRACE) efi_serial_puts("EFI: ExitBS ok\n");
     FB_MARK(0x00804000u); // stage 9 (post-ExitBootServices)
     kernel_entry_t entry = (kernel_entry_t)(uintptr_t)entry_pa;
     FB_MARK(0x00A02000u); // stage 10 (jumping to kernel)
-    efi_serial_puts("EFI: jump kernel\n");
+    if (TATER_EFI_SERIAL_TRACE) efi_serial_puts("EFI: jump kernel\n");
     entry(handoff);
 #undef CAPTURE_FB
 #undef FB_MARK

@@ -1,0 +1,52 @@
+TaterTOS64v3 Session Log
+Timestamp: 2026-03-09 18:28:07 CDT
+Author: Codex
+
+[2026-03-09 18:28:07 CDT] Scope
+- Investigated Intel 9260 Wi-Fi ALIVE-stage failure from bare-metal `wdiag`, `wd2`, `wh`, and `wc` output.
+- Implemented driver fixes and rebuilt/exported boot artifacts.
+
+[2026-03-09 18:28:07 CDT] Completed Step 1
+- Inspected `src/drivers/net/wifi_9260.c`, `src/user/shell/shell.c`, and Linux reference files under `linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/`.
+- Determined the active 9260 boot path was using the legacy direct-FH upload flow for multi-section `SEC_RT` firmware instead of the gen2 context-info self-load path.
+- Why: the observed failure (`step=9`, CPU stuck, zero RX progress, `ctxt_info=0`) matched a missing context-info handoff, not a simple IRQ issue.
+
+[2026-03-09 18:28:07 CDT] Completed Step 2
+- Updated `src/drivers/net/wifi_9260.c` so `iwl_upload_firmware()` routes multi-section `SEC_RT` firmware into `iwl_start_fw_with_ctxt_info()` and leaves legacy images on the old DMA upload path.
+- Added the required forward declaration for `iwl_start_fw_with_ctxt_info()`.
+- Removed stale secure-header direct-upload diagnostics from the legacy-only path.
+- Why: Intel 9260-class gen2 firmware expects `CSR_CTXT_INFO_BA` + `UREG_CPU_INIT_RUN` boot, and the old path left the device without the context-info boot handoff.
+
+[2026-03-09 18:28:07 CDT] Completed Step 3
+- Updated `wifi_9260_get_handoff_status()` in `src/drivers/net/wifi_9260.c` to print live RFH base-address registers alongside the expected DMA addresses:
+  - `RFH_Q0_FRBDCB_BA_LSB`
+  - `RFH_Q0_URBDCB_BA_LSB`
+  - `RFH_Q0_URBD_STTS_WPTR_LSB`
+- Why: this distinguishes RX queue programming errors from missing interrupts or firmware CPUs stuck before RX completion.
+
+[2026-03-09 18:28:07 CDT] Completed Step 4
+- Verified code compiles after the Wi-Fi changes:
+  - `make -C /home/jjsako/TaterTOS64v3 src/drivers/net/wifi_9260.o`
+  - `make -C /home/jjsako/TaterTOS64v3 kernel`
+- Result: successful.
+
+[2026-03-09 18:28:07 CDT] Completed Step 5
+- Performed the required clean + package rebuild:
+  - `bash build_iso.sh`
+- Result: successful.
+
+[2026-03-09 18:28:07 CDT] Build / Export Outputs
+- ISO: `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+- EFI image: `/home/jjsako/TaterTOS64v3/out/efiboot.img`
+- NVMe image: `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+- Exported ISO: `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+[2026-03-09 18:28:07 CDT] Build Notes
+- `xorriso` emitted a warning that the boot image load size exceeded 65535 blocks of 512 bytes and recorded 0 in El Torito to extend the ESP to end-of-medium.
+- Packaging still completed successfully and the ISO export finished successfully.
+
+[2026-03-09 18:28:07 CDT] Next Bare-Metal Validation
+- Boot the newly exported ISO.
+- Use `wh` first for the shortest Wi-Fi handoff check.
+- Follow with `wd2` and `wc` if the handoff still stalls.
+- Expected improvement: `ctxt_info` should no longer be zero, context-info boot flags should be set, and `wh` now reports RFH base-address match/mismatch directly.

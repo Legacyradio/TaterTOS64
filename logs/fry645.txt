@@ -1,0 +1,50 @@
+fry645 - 2026-03-07 - Context info struct layout + TFD format flag fixes
+
+Problem:
+  Dell boot with fry644 shows FW_STATUS=0x5a5a9999 (boot ROM ran) but ALIVE
+  never arrives. RFH_USED_WIDX=0, rx_closed=0, rx_finished=0.
+  Boot ROM cannot find firmware DRAM section addresses.
+
+Root cause (verified against Linux kernel v6.6 iwl-context-info.h):
+
+  BUG 1: CTXT_INFO_TFD_FORMAT_LONG = 0x01 (bit 0) -- WRONG
+    Linux kernel: IWL_CTXT_INFO_TFD_FORMAT_LONG = 0x0100 (bit 8)
+    Bit 0 is actually AUTO_FUNC_INIT, not TFD_FORMAT_LONG.
+    Boot ROM saw short TFD format instead of long TFD format.
+
+  BUG 2: struct iwl_context_info missing 16 bytes (pnvm_cfg field)
+    fry644 removed edbg_cfg + pnvm_cfg (32B) but only added back 16B of
+    reserved padding, causing net loss of 16 bytes.
+    Result: dram array at offset 0x0B0 instead of correct 0x0C0.
+    Boot ROM reads DRAM entries at 0x0C0 (per Linux struct layout) and
+    gets zeros -- cannot find FW sections in memory.
+
+    Linux struct layout (verified):
+      dump_cfg   +0x050  16B
+      edbg_cfg   +0x060  16B  (early debug config, zeroed)
+      pnvm_cfg   +0x070  16B  (platform NVM config, zeroed)
+      reserved2  +0x080  64B
+      dram       +0x0C0  1536B
+
+    TaterTOS BEFORE fix (fry644):
+      dump_cfg   +0x050  16B
+      reserved2  +0x060  16B
+      reserved3  +0x070  64B
+      dram       +0x0B0  1536B  <-- 16 bytes too early!
+
+Fixes applied:
+  1. CTXT_INFO_TFD_FORMAT_LONG: 0x01u -> 0x0100u (bit 8)
+     control_flags changes from 0x0881 to 0x0980
+  2. Restored edbg_cfg (16B) and pnvm_cfg (16B) fields in struct
+     iwl_context_info, moving dram from 0x0B0 to correct 0x0C0.
+     Struct total: 1776 -> 1792 bytes (matches Linux).
+     version.size auto-updates via sizeof.
+
+Files changed:
+  src/drivers/net/wifi_9260.c
+    - Line 181: CTXT_INFO_TFD_FORMAT_LONG 0x01u -> 0x0100u
+    - Lines 222-234: Added edbg_cfg + pnvm_cfg fields, renumbered reserved
+
+Next: Boot Dell with fry645 ISO, run `wd` command.
+  Expected: FW_STATUS != 0x5a5a9999, ALIVE notification received,
+  RFH_USED_WIDX > 0, `ws` shows driver != offline.

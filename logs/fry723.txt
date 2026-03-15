@@ -1,0 +1,20 @@
+fry723 — 2026-03-14
+Enable I219 RX/TX/LSC interrupts
+
+WHAT:
+- Added IMS write in i219_init() to enable RXT0 (bit 7), TXDW (bit 0), LSC (bit 4)
+- Previously IMS=0x00000000 — NIC was completely deaf to interrupts
+
+WHY:
+- eth diag showed IMS=0x00000000, no interrupts enabled at all
+- Need at minimum RXT0 for rx notification, TXDW for tx completion, LSC for link change
+
+RX RING NOTE (RDH=16, RDT=1):
+- This is NOT a bug in the recycling code — i219_rx_poll() correctly recycles descriptors and bumps RDT
+- The 16 consumed descriptors are broadcast traffic picked up after boot before anything calls net_poll()
+- net_poll() is only called during active network operations (DHCP, DNS, TCP)
+- TODO: consider adding a drain call during init to clean up stale descriptors at boot
+- TODO: consider adding periodic background polling
+
+FILE CHANGED:
+- src/drivers/net/i219.c — added IMS write before g_i219_ready = 1

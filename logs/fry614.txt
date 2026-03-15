@@ -1,0 +1,62 @@
+fry614 - GUI Network Manager + WiFi userspace syscalls
+======================================================
+Date: 2026-03-06
+Follow-up to: fry613
+
+WHAT CHANGED
+------------
+Added a real GUI-facing WiFi control path instead of relying on the boot smoke
+test workflow.
+
+Kernel / ABI:
+  - Added shared WiFi ABI in `src/shared/wifi_abi.h`
+  - Added userspace wrappers in `src/user/libc/libc.c/h`:
+    - `fry_wifi_status()`
+    - `fry_wifi_scan()`
+    - `fry_wifi_connect()`
+  - Added syscall numbers 37-39 for WiFi status, scan, and connect
+  - `src/kernel/proc/syscall.c` now bridges userspace requests into the Intel
+    9260 driver
+
+Driver integration:
+  - `src/drivers/net/wifi_9260.c` now tracks runtime link state:
+    - ready
+    - MAC present
+    - connected / secure
+    - current SSID / BSSID
+    - channel / last scan RSSI
+  - Added driver helpers for:
+    - userspace status snapshot
+    - userspace-triggered scan
+    - userspace-triggered connect + DHCP
+  - Deauth/disassoc now clears link state and network config
+  - `src/drivers/net/netcore.c/h` gained `net_reset_config()` so reconnect /
+    disconnect paths do not leave stale DHCP data behind
+
+GUI app:
+  - Added `src/user/apps/netmgr.c`
+  - New TaterWin app with:
+    - refresh/scan button
+    - visible network list
+    - selected network details
+    - passphrase field
+    - connect button
+    - activity log pane
+  - Status bar shows driver/link/DHCP state plus MAC/IP data
+
+Build / packaging:
+  - Added `netmgr` target to `Makefile`
+  - Updated `build_iso.sh` so `NETMGR.FRY` is copied into `/apps` and the
+    live-media fallback locations used by the GUI launcher/runtime
+
+VERIFICATION
+------------
+Verified with:
+  - `make -B netmgr kernel`
+  - `make -B init shell gui sysinfo uptime ps fileman netmgr`
+  - `bash -n build_iso.sh`
+
+Notes:
+  - Existing unrelated warnings remain in the tree (for example RWX linker
+    segment warnings and a few pre-existing `-Wunused-parameter` warnings)
+  - No full ISO build was run in this pass

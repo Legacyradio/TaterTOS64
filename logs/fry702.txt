@@ -1,0 +1,288 @@
+fry702 - 2026-03-11 22:03:53 CDT - WiFi 9260: rewrite secure-section parser/uploader semantics to Linux-style payload-only sections after fry701 left the last serious host-side uploader contract mismatch unresolved
+
+SESSION CONTEXT:
+  The active continuation state after `fry701` was:
+    - no new hardware output yet
+    - better SRAM visibility existed through:
+      - `wcmd`
+      - `wd3`
+      - `wc`
+      - `wh`
+      - `sram`
+    - but the project still had one unresolved host-side concern:
+      - the parser and the uploader did not agree on the semantic shape of a
+        secure firmware section
+
+  The local tree still stored secure sections as:
+    - `data = raw tlv payload including the 4-byte destination header`
+    - `size = full tlv length`
+    - `offset = parsed separately from those same first 4 bytes`
+
+  At the same time, multiple transport-side comments and helper boundaries
+  were already acting as if secure sections should instead be:
+    - `offset = destination`
+    - `data = payload only`
+    - `size = payload size only`
+
+  That left the repo in a mixed contract state.
+
+  The user explicitly asked for:
+    - a real fix proposal
+    - no shortcuts
+    - no corner cutting
+    - professional work
+
+  At that point, the honest next step was not another log request and not
+  another ALIVE / RFH / interrupt tweak.
+  It was one last serious host-side uploader rewrite.
+
+WHY THIS PATCH:
+  After the `eventually12` / `eventually13` narrowing, the project had
+  already spent:
+    - ALIVE-side restock timing
+    - interrupt-mask timing around done markers
+    - RFH visibility and queue-state checks
+    - SRAM observability improvements
+
+  The remaining serious host-side mismatch was narrower:
+    - secure TLV parse semantics
+    - secure upload semantics
+    - separator handling under those semantics
+    - context-info payload copying under those semantics
+
+  Linux stores secure sections as:
+    - `offset = parsed from the TLV header`
+    - `data = payload after the offset`
+    - `size = payload length after the offset`
+
+  The local tree did not.
+
+  That mismatch is exactly the kind of defect that can survive many hardware
+  logs while still being a real bring-up blocker.
+
+  So fry702 rewrites the secure-section contract end-to-end instead of making
+  another local band-aid around the old mixed model.
+
+SOURCE REFERENCES USED:
+  Continuation / diagnosis basis:
+    - `eventually/eventually12.txt`
+    - `eventually/eventually13.txt`
+    - `eventually/eventually14.txt`
+
+  Existing fry-log format anchors:
+    - `logs/fry699.txt`
+    - `logs/fry700.txt`
+    - `logs/fry701.txt`
+
+  Current local source:
+    - `src/drivers/net/iwlwifi_fw.c`
+    - `src/drivers/net/iwlwifi_fw.h`
+    - `src/drivers/net/wifi_9260.c`
+
+  Linux comparison points:
+    - `linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/iwl-drv.c`
+    - `linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/trans.c`
+
+EXACT CODE CHANGES:
+  File:
+    - `src/drivers/net/iwlwifi_fw.c`
+
+  1. Added a dedicated secure-section store helper and changed secure TLV
+     parsing to Linux-style payload-only semantics.
+     Relevant lines after patch:
+       - `164-181`
+       - `270-290`
+
+     New behavior:
+       - secure sections now store:
+         - `offset = fw_u32le(tlv_data)`
+         - `data = tlv_data + 4`
+         - `size = tlv_len - 4`
+
+     Why this matters:
+       - the parser no longer leaves the 4-byte destination header inside
+         `sec->data / sec->size`
+
+  2. Added support for secure secure-section TLVs.
+     Relevant lines after patch:
+       - `270-290`
+
+     New behavior:
+       - `SECURE_SEC_RT`
+       - `SECURE_SEC_INIT`
+       are now routed through the same secure-section store helper
+
+     Why this matters:
+       - the secure-section path now matches Linux more honestly even if a
+         different blob family is used later
+
+  File:
+    - `src/drivers/net/iwlwifi_fw.h`
+
+  3. Clarified the public section contract.
+     Relevant lines after patch:
+       - `62-65`
+
+     New behavior:
+       - `struct iwl_fw_section` is now explicitly documented as:
+         - payload-only `data`
+         - payload-only `size`
+         - separate `offset`
+
+     Why this matters:
+       - the parser / transport agreement is now explicit, not implied
+
+  File:
+    - `src/drivers/net/wifi_9260.c`
+
+  4. Replaced the old mixed "load section by reparsing its first 4 bytes"
+     helper with an explicit payload uploader.
+     Relevant lines after patch:
+       - `1918-1982`
+
+     New behavior:
+       - uploads now take:
+         - explicit SRAM destination
+         - payload pointer
+         - payload size
+       - the transport does not reparse an offset header from secure payload
+         bytes anymore
+
+     Why this matters:
+       - the uploader now consumes the same section contract the parser
+         produces
+
+  5. Reworked the CPU1 / CPU2 secure upload loop to operate on stored offsets
+     and Linux-style separator handling.
+     Relevant lines after patch:
+       - `2000-2086`
+
+     New behavior:
+       - each real secure section loads from:
+         - `iwl_fw_sec_get_offset(sec)`
+         - `sec->data`
+         - `sec->size`
+       - separator handling no longer depends on the 4-byte header still being
+         embedded in the payload
+       - zero-length real payloads now fail explicitly instead of being
+         silently treated like the old raw-header case
+
+     Why this matters:
+       - CPU pass iteration now matches the Linux `_8000` mental model much
+         more closely
+
+  6. Fixed secure-section helper semantics for:
+       - offset lookup
+       - separator detection
+       - runtime section counting
+       - context-info DMA copying
+     Relevant lines after patch:
+       - `2239-2289`
+
+     New behavior:
+       - separator detection keys off stored section offsets directly
+       - section counting no longer assumes `size >= 4` for separators
+       - DMA copying now copies the stored payload exactly, not `data + 4`
+
+     Why this matters:
+       - the whole secure-section stack now uses one consistent contract
+
+WHAT THIS PATCH INTENTIONALLY DID NOT CHANGE:
+  - no ALIVE wait timing
+  - no interrupt-mask policy
+  - no RFH register programming
+  - no host-command sequencing
+  - no NVM / PHY / MAC init logic
+  - no new shell commands
+  - no new interpretation of the user’s last hardware run
+  - no claim that the WiFi functional blocker is solved
+
+IMPORTANT INTERPRETATION:
+  fry702 is a serious host-side contract rewrite, not a claim of bring-up
+  success.
+
+  It should be interpreted as:
+    - the parser/uploader mismatch has now been fixed honestly
+    - the next hardware run should not be explained through the old mixed
+      secure-section contract anymore
+
+  If the next hardware report still lands on the same old:
+    - step 9
+    - rc -3
+    - ALIVE seen
+    - immediate SW_ERR
+    - no host-command path
+    - no usable RX progress
+  then the project should stop treating:
+    - "the uploader is probably still subtly wrong"
+  as the first active explanation.
+
+  Companion continuation file for this session:
+    - `eventually/eventually14.txt`
+
+COMMANDS RUN:
+  Source review / Linux comparison:
+    - `sed -n '1750,2205p' src/drivers/net/wifi_9260.c`
+    - `sed -n '2230,2290p' src/drivers/net/wifi_9260.c`
+    - `sed -n '160,320p' src/drivers/net/iwlwifi_fw.c`
+    - `sed -n '488,525p' linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/iwl-drv.c`
+    - `sed -n '650,1035p' linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/trans.c`
+    - `rg -n "iwl_fw_sec_get_offset|iwl_fw_sec_is_separator|iwl_alloc_fw_dma_sec|SECURE_SEC_RT|SECURE_SEC_INIT" src/drivers/net`
+
+  Edit / verification support:
+    - `git -C /home/jjsako/TaterTOS64v3 diff -- src/drivers/net/iwlwifi_fw.c src/drivers/net/iwlwifi_fw.h src/drivers/net/wifi_9260.c`
+    - `nl -ba src/drivers/net/iwlwifi_fw.c | sed -n '150,285p'`
+    - `nl -ba src/drivers/net/iwlwifi_fw.h | sed -n '58,70p'`
+    - `nl -ba src/drivers/net/wifi_9260.c | sed -n '1915,2295p'`
+
+  Full rebuild / packaging:
+    - `/bin/bash -lc 'PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh'`
+
+  Artifact verification:
+    - `date '+%Y-%m-%d %H:%M:%S %Z'`
+    - `sha256sum out/tatertos64v3.iso out/tater_nvme.img out/efiboot.img`
+    - `stat -c '%n|%s|%y' out/tatertos64v3.iso out/tater_nvme.img out/efiboot.img /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+BUILD RESULT:
+  Full rebuild / packaging:
+    - PASS
+
+  Touched driver objects:
+    - `src/drivers/net/wifi_9260.o`
+    - `src/drivers/net/iwlwifi_fw.o`
+    built cleanly inside the full rebuild
+
+  Export to Windows ISO drop path:
+    - PASS
+
+  Rebuild warnings unchanged from earlier steps:
+    - `src/kernel/acpi/aml_exec.c:973` unused parameter `ctx`
+    - `src/kernel/acpi/extended.c:618` `str_eq` unused
+    - `src/kernel/acpi/extended.c:613` `obj_to_str` unused
+    - `src/kernel/acpi/extended.c:285` `pci_cf8_write32` unused
+    - `src/boot/efi_loader.c:352` `gop_mask_size` unused
+    - `src/boot/efi_loader.c:346` `gop_mask_pos` unused
+
+  ISO packaging warning unchanged:
+    - `xorriso`: boot image load size exceeded 65535 blocks of 512 bytes, so
+      El Torito recorded `0` to extend the ESP to end-of-medium
+
+ARTIFACTS:
+  - `out/tatertos64v3.iso`
+    - sha256 `0f22322c3b3c0417b898b00e96f9a91736dc6dbdd9489068f90472113e088372`
+    - size `151441408`
+    - mtime `2026-03-11 21:55:46 -0500`
+
+  - `out/tater_nvme.img`
+    - sha256 `80fa47862a48f69d5e6d521f917116324d64bcdca8027e9a22bdc2df1ff179de`
+    - size `104857600`
+    - mtime `2026-03-11 21:55:44 -0500`
+
+  - `out/efiboot.img`
+    - sha256 `6c3e5d8c6f8b345e5c7de8e0fc4e163cdc89fd2a31d670cc936efb0f21fe48cf`
+    - size `67108864`
+    - mtime `2026-03-11 21:55:45 -0500`
+
+  - `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+    - size `151441408`
+    - mtime `2026-03-11 21:55:47 -0500`

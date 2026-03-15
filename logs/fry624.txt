@@ -1,0 +1,33 @@
+fry624 - Dell boot SUCCESS: full boot to GUI confirmed
+Date: 2026-03-07
+
+Status: DELL BOOTS TO GUI. fry623 .rodata fix resolved the hang.
+
+Boot diagnostic squares observed on Dell:
+  Row 0: 27 white squares (kernel init stages 4-32)
+  Row 2: 1 cyan visible (rest overwritten by GUI framebuffer)
+  Row 3: 4 green + 2 red (VFS file presence)
+
+Row 3 decode (green=found, red=missing):
+  col0 /system/INIT.FRY  = GREEN (found)
+  col1 /system/GUI.FRY   = GREEN (found)
+  col2 /apps/SHELL.TOT   = GREEN (found)
+  col3 /apps/SYSINFO.FRY = GREEN (found)
+  col4 /GUI.FRY (root)   = RED   (expected - lives in /system/)
+  col5 /SHELL.TOT (root) = RED   (expected - lives in /apps/)
+
+The 2 red are expected: root-level fallback copies don't exist because
+the real files are in /system/ and /apps/ subdirectories. The kernel
+tries /system/INIT.FRY first (main.c:401) so boot succeeds.
+
+Row 2 cyan: only 1 visible before GUI painted over the framebuffer,
+meaning late-boot (wifi, process, sched, syscall, launch, sti) all
+completed fast enough that the GUI overwrote the markers.
+
+Summary:
+- Kernel with 1.4MB embedded firmware blob in .rodata boots on Dell
+- Kernel phys footprint ~10.25MB works fine
+- VFS ramdisk root operational, all 4 required files found
+- GUI reaches screen
+
+Next: WiFi bring-up testing on Dell (ws/wsc shell commands)

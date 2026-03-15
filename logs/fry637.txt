@@ -1,0 +1,17 @@
+[2026-03-07 13:06:20 CST] Step: Fix missing cross-compiler PATH and provide
+mkfs.fat compatibility command for local builds.
+Why: /opt/cross/bin/x86_64-elf-gcc was installed but not exported in normal
+shell startup, so direct make invocations could not find the cross compiler.
+mkfs.fat was not installed on the host, which caused confusion even though the
+build script could fall back to mformat.
+Change:
+- Added /opt/cross/bin PATH export guards to ~/.bashrc and ~/.profile.
+- Updated Makefile to use /opt/cross/bin/x86_64-elf-gcc and
+  /opt/cross/bin/x86_64-elf-ld when present.
+- Added ~/.local/bin/mkfs.fat compatibility wrapper that delegates supported
+  image formatting calls to mformat.
+Files: Makefile, ~/.bashrc, ~/.profile, ~/.local/bin/mkfs.fat
+Tests:
+- bash -lc 'command -v x86_64-elf-gcc; command -v mkfs.fat; command -v mformat'
+- bash -lc 'dd if=/dev/zero of=/tmp/mkfs-fat-wrapper.img bs=1M count=4 && mkfs.fat -F 32 /tmp/mkfs-fat-wrapper.img && mdir -i /tmp/mkfs-fat-wrapper.img ::/'
+- make -C /home/jjsako/TaterTOS64v3 -n kernel

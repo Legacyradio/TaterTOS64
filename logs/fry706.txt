@@ -1,0 +1,52 @@
+fry706 - Restore 0xFFFFFFFF done marker for single-CPU INIT images
+2026-03-12 15:13 CDT
+
+PROBLEM:
+  fry705 Dell test: CPU1 still stuck at PC=0x605dc, no ALIVE, no interrupts.
+  FH_UCODE_LOAD_STATUS=0x0000ffff (CPU1 done only).
+  LMPM_SECURE_CPU1_HDR readback=0x00000000 (likely write-only register).
+
+ROOT CAUSE ANALYSIS:
+  Compared Linux 7.0-rc2 iwl_pcie_load_given_ucode_8000() vs TaterTOS.
+  Two findings:
+
+  1. LMPM_SECURE_CPU1_HDR_ADDR is NOT written by Linux for 8000/9000 path.
+     Linux only writes LMPM_SECURE_CPU2_HDR in the older non-8000 path
+     (iwl_pcie_load_given_ucode, not iwl_pcie_load_given_ucode_8000).
+     The fry705 fix was based on a wrong premise. Harmless but unnecessary.
+
+  2. THE REAL BUG: Linux ALWAYS calls iwl_pcie_load_cpu_sections_8000(cpu=2)
+     even for single-CPU INIT images. When no CPU2 sections exist:
+       - Loop body never executes (no sections to upload)
+       - iwl_enable_interrupts() called (redundant but harmless)
+       - FH_UCODE_LOAD_STATUS = 0xFFFFFFFF written unconditionally
+     TaterTOS was SKIPPING this entirely for single-CPU INIT, leaving
+     FH_UCODE_LOAD_STATUS at 0x0000FFFF. The firmware boot ROM polls
+     for 0xFFFFFFFF as the "all loading complete" signal. Without the
+     upper 16 bits, CPU1 keeps waiting at PC=0x605dc.
+
+  This explains the entire fry704-705 mystery:
+    - fry661: 0xFFFFFFFF was written -> ALIVE fired (SW_ERR was different bug)
+    - fry704: 0xFFFFFFFF removed -> no ALIVE, stuck at 0x605dc
+    - fry705: LMPM_SECURE added but 0xFFFFFFFF still missing -> same stuck
+
+FIX:
+  In the single-CPU INIT else-branch (wifi_9260.c ~line 2243):
+    - Enable interrupts (clear pending + set full mask)
+    - Write FH_UCODE_LOAD_STATUS = 0xFFFFFFFF
+    - Log the resulting FH_STATUS readback
+  This matches Linux's behavior exactly.
+
+EXPECTED ON DELL:
+  - If ALIVE fires + no SW_ERR: init firmware alive, proceed to hcmd/calibration
+  - If ALIVE + SW_ERR: firmware starts but crashes (different bug than fry661)
+  - If still stuck: do a full register-by-register diff of TaterTOS boot
+    sequence vs Linux iwl_pcie_load_given_ucode_8000() — no more reasoning
+    about individual registers in isolation, compare the ENTIRE sequence.
+
+FILES CHANGED:
+  src/drivers/net/wifi_9260.c
+    - else-branch at ~line 2243: replaced "skip CPU2 done marker" with
+      enable-interrupts + write 0xFFFFFFFF, matching Linux
+
+BUILD: OK (clean + build_iso.sh)

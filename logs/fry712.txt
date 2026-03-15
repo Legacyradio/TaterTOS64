@@ -1,0 +1,74 @@
+fry712 — Second APM init (Phase 2) + L0S disable in APM path
+==============================================================
+Date: 2026-03-13 17:26 UTC
+
+CONTEXT:
+  fry711 implemented all 5 fixes from the fry710 audit (persistence bit,
+  DIS_L0S_EXIT_TIMER, RFKILL_WAKE_L1A_EN, 5ms sleep, nic_config ordering).
+  Dell test showed SYSASSERT 0x2E STILL fires — CPU2 (UMAC) asserts at
+  PC=0x0046f3e4 within ~6ms, SW_ERR interrupt, no ALIVE notification.
+
+  fry710 audit Section 2 identified "Difference E" — Linux calls APM init
+  TWICE but we only call it once — but this was NOT one of the 5 bugs
+  implemented in fry711.  This is the last known difference between our
+  init sequence and Linux's.
+
+ROOT CAUSE ANALYSIS:
+  Linux boot flow has TWO APM init calls:
+    Phase 1 (_iwl_trans_pcie_start_hw):
+      prepare_card_hw → clear_persistence → sw_reset → prepare_card_hw →
+      **apm_init** → init_msix → enable_rfkill_int
+
+    Phase 2 (iwl_trans_pcie_start_fw → iwl_pcie_nic_init):
+      **apm_init** → nic_config → rx_init → tx_init
+
+  Our code only has Phase 1's APM init (inside iwl_nic_reset).  The Phase 2
+  APM init re-asserts INIT_DONE, re-polls MAC_CLOCK_READY, and re-disables
+  L0S in CSR_GIO_REG right before DMA/RFH setup.  Without it, the hardware
+  may be in a subtly wrong power/clock state when DMA registers are programmed.
+
+  Additionally, Linux's iwl_pcie_apm_init() calls iwl_pcie_apm_config()
+  which disables L0S in CSR_GIO_REG as part of every APM init.  We only
+  did this later in iwl_nic_config().
+
+CHANGES (wifi_9260.c):
+
+  FIX 1: Add L0S disable to iwl_apm_init()
+    - After MAC clock poll succeeds, set CSR_GIO_REG |= L0S_DISABLED
+    - Matches Linux's iwl_pcie_apm_config() which is called at the end
+      of iwl_pcie_apm_init()
+    - Previously we only set L0S in nic_config(), meaning the first APM
+      init left L0S in whatever state UEFI set
+
+  FIX 2: Add second iwl_apm_init() call in iwl_fw_boot_attempt()
+    - Called right before iwl_nic_config(), matching Linux Phase 2 ordering
+    - Linux: iwl_pcie_nic_init() { apm_init; nic_config; rx_init; tx_init }
+    - Our new ordering: nic_reset(apm#1) → apm#2 → nic_config → dma_alloc → dma_init_tfh
+    - Debug log: "Phase 2 APM init OK"
+
+WHY:
+  The second APM init is the last remaining structural difference between
+  our init sequence and Linux's.  The firmware may depend on a clean
+  INIT_DONE + MAC_CLOCK state established immediately before DMA/RFH
+  configuration, not one that was established much earlier during the
+  NIC reset phase.
+
+EDITORIAL NOTE (for future me):
+  After a solid week of chasing this SYSASSERT 0x2E — persistence bits,
+  L0S timers, APM ordering, RFKILL L1A, done markers, second APM init —
+  we're going nuclear.  Booting Ubuntu live USB on the Dell to capture a
+  real iwlwifi register trace.  The prediction: it's going to be something
+  small and dumb.  One register write, one timing quirk, one bit we never
+  thought to check.  We'll look at the diff and go "...seriously?"
+  Remember this moment.
+
+BUILD: Clean build OK, ISO exported to Windows.
+
+NEXT:
+  - Test on Dell Precision 7530
+  - Run: wh (hardware), wc (config), wd3 (deep diagnostics)
+  - If SYSASSERT 0x2E persists, remaining hypotheses:
+    1. UMAC error table base address (hardcoded 0x800000 vs ALIVE payload)
+    2. TLV capabilities (types 29, 30, 48 silently skipped in parser)
+    3. Nuclear option: boot USB Linux on Dell, modprobe iwlwifi with debug,
+       capture register trace, compare register-by-register

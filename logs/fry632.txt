@@ -1,0 +1,42 @@
+fry632 — 2026-03-07
+WiFi 9260: Fix RFH register addresses (ALIVE TIMEOUT root cause)
+
+PROBLEM:
+  Dell boot showed FW_STATUS=0x5a5a9999 (firmware running) but ALIVE TIMEOUT.
+  RX DMA completely dead: rd=0 cl=0 fin=0 irq=0. No interrupts fired.
+
+ROOT CAUSE:
+  RFH Q0 register addresses for URBDCB (used ring) and URBD_STTS (status
+  writeback) were SWAPPED and WRONG. Verified against Linux kernel iwl-fh.h.
+
+  Wrong (before):
+    RFH_Q0_URBD_STTS_WPTR_LSB  0xA08100  (was labeled status, actually used ring!)
+    RFH_Q0_URBDCB_BA_LSB       0xA08400  (nonexistent register!)
+    RFH_Q0_URBDCB_WIDX         0xA08480  (wrong address)
+
+  Correct (Linux kernel, now fixed):
+    RFH_Q0_URBDCB_BA_LSB       0xA08100  (used ring base)
+    RFH_Q0_URBDCB_WIDX         0xA08180  (used ring write index)
+    RFH_Q0_URBD_STTS_WPTR_LSB  0xA08200  (status writeback pointer)
+    RFH_Q0_URBD_STTS_WPTR_MSB  0xA08204  (status writeback pointer MSB)
+
+  Effect: used ring base was written to nonexistent 0xA08400 (silently dropped),
+  status writeback phys was written to 0xA08100 (the used ring base register),
+  and the actual status writeback register at 0xA08200 was NEVER programmed.
+  Device had no valid used ring and no status writeback -> complete RX failure.
+
+ADDITIONAL FIXES (from Linux iwl_pcie_rx_mq_hw_init reference):
+  1. Added RFH_Q0_FRBDCB_RIDX (0xA080C0) — free ring read index, zeroed on init
+  2. Zero URBDCB_WIDX and FRBDCB_RIDX during init (Linux does this)
+  3. Deactivate RFH_RXF_RXQ_ACTIVE before reconfiguring (Linux does this)
+  4. RFH_RXF_RXQ_ACTIVE set to BIT(0)|BIT(16) = 0x00010001 (was just 1u)
+     BIT(16) enables used-ring writeback for queue 0
+  5. Added RFH_GEN_CFG_RB_CHUNK_SIZE_128 = BIT(4) to RFH_GEN_CFG
+     Required for PCIe (non-integrated) devices per Linux driver
+  6. Removed RFH_RXF_DMA_SINGLE_FRAME from DMA_CFG (Linux doesn't set it)
+
+FILES:
+  src/drivers/net/wifi_9260.c — register defines + iwl_dma_init_tfh()
+
+NEXT:
+  Boot Dell with fry632 ISO, run `wd` — expect ALIVE to pass.

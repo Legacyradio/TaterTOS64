@@ -1,0 +1,283 @@
+fry700 - 2026-03-11 18:32:05 CDT - WiFi 9260: expose active firmware-upload section sequencing in `wd3` / `wc` / `wh` after fry699 proved `alive-seen-kick` still ends in the same ALIVE+SW_ERR / no-RX branch
+
+SESSION CONTEXT:
+  The user booted the fry699 image and supplied real hardware shell output from:
+    - `wcmd`
+    - `wd3`
+    - `wc`
+    - `wh`
+    - `wd2`
+
+  The decisive stable branch shape was:
+    - `wcmd` still retained:
+      - `init-alive-rekick`
+      - `init-alive-sw-err`
+      - `init-alive-fail`
+      on both attempts
+    - the retained SW_ERR snapshot stayed:
+      - `ms=6`
+      - `csr=0x02000001`
+      - `fh=0x00000000`
+    - `hostcmd=0` remained true
+    - `wd3` now explicitly showed:
+      - `alive-seen-kick`
+      before the later `alive-rekick` / `alive-swerr`
+    - `wh`, `wc`, and `wd3` still showed:
+      - no usable RX progress
+      - `RFH_W=0`
+      - `RFH_R=0`
+      - `RFH_U=0`
+      - `rx_closed=0`
+      - `rx_fin=0`
+      - `RXUSED[0..7]` all zero
+    - the outer failure class stayed old:
+      - step 9
+      - rc -3
+      - same UMAC assert signature:
+        - `0x0000dead`
+        - `0x0000002e`
+        - `0x7e3e4b69`
+
+  `eventually/eventually11.txt` had already said that if fry699 came back with:
+    - the same retained
+      `init-alive-sw-err ms=6 csr=0x02000001 fh=0`
+    - plus visible `alive-seen-kick`
+    - plus still-zero RX
+  then the immediate ALIVE-side restock branch had been spent and the next
+  patch should inspect the deeper firmware-precondition / section-sequencing
+  boundary only.
+
+WHY THIS PATCH:
+  fry699 already executed the immediate ALIVE-side restock idea and the
+  hardware still came back with the same clean:
+    - `ALIVE + SW_ERR`
+    - `fh=0`
+    - no host-command path
+    - no usable RX progress
+
+  That means the next honest host-side question is no longer:
+    - "did the ALIVE-side re-advertise run?"
+
+  It is now:
+    - "what exact firmware section stream did the active uploader stage for
+       CPU1 and CPU2 before the same old ALIVE+SW_ERR/no-RX branch?"
+
+  The important source reality in the current tree is:
+    - the active multi-section boot path is the direct `_8000` FH upload path
+      in `iwl_upload_firmware()`
+    - not the dormant `iwl_start_fw_with_ctxt_info()` helper, which is not
+      called from the current boot attempt path
+
+  So the next patch should not:
+    - add more ALIVE re-kicks
+    - change interrupt masks again
+    - change RFH base programming again
+    - invent a new shell command
+
+  It should keep the same shell-visible evidence path and surface the exact
+  CPU1 / CPU2 upload split, break marker, and done-status state that feeds the
+  same failing ALIVE boundary.
+
+SOURCE REFERENCES USED:
+  Hardware continuation:
+    - `eventually/eventually11.txt`
+
+  Current source:
+    - `src/drivers/net/wifi_9260.c`
+
+  Linux comparison point:
+    - `linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/trans.c`
+
+EXACT CODE CHANGES:
+  File:
+    - `src/drivers/net/wifi_9260.c`
+
+  1. Added persistent firmware-upload pass tracking to boot debug state.
+     Relevant lines after patch:
+       - `473-509`
+
+     New state now retained:
+       - active image kind:
+         - INIT or RT
+       - total section count for the active upload pass
+       - for CPU1 and CPU2 separately:
+         - `start_idx`
+         - `break_idx`
+         - `break_off`
+         - `loaded`
+         - `first_off`
+         - `last_off`
+         - `done_status`
+
+     Why this matters:
+       - the next hardware run can now show the exact live section split that
+         fed the same old ALIVE failure
+
+  2. Recorded the active CPU1 / CPU2 section sequencing inside
+     `iwl_upload_runtime_cpu_image()`.
+     Relevant lines after patch:
+       - `1931-2007`
+
+     New behavior:
+       - each upload pass now records:
+         - the starting section index
+         - where it stopped
+         - which separator marker stopped it
+         - how many real sections loaded
+         - the first and last section offsets actually staged
+         - the final `FH_UCODE_LOAD_STATUS` value after the done marker write
+
+     Why this matters:
+       - the active boundary after fry699 is no longer the ALIVE-side re-kick
+         itself; it is the section stream that leads into the same ALIVE
+         branch
+
+  3. Seeded the new upload summary from the active image selection point in
+     `iwl_upload_firmware()`.
+     Relevant lines after patch:
+       - `2015-2021`
+       - `2080-2095`
+
+     New behavior:
+       - the uploader now records whether the current pass is:
+         - `INIT`
+         - or `RT`
+       - and records the total section count for the active section array
+
+     Why this matters:
+       - the next shell output can tie the same old step-9 failure to the
+         exact image and section stream that was staged immediately before it
+
+  4. Surfaced the new summary through the existing shell commands only.
+     Relevant lines after patch:
+       - `wd3`:
+         - `4764-4781`
+       - `wc`:
+         - `5115-5128`
+       - `wh`:
+         - `5213-5226`
+
+     New behavior:
+       - `wd3` now prints:
+         - `fw_img`
+         - `fw_sec_total`
+         - detailed CPU1 / CPU2 upload pass summaries
+       - `wc` now prints:
+         - `--- FW UPLOAD ---`
+         - compact CPU1 / CPU2 upload pass summaries
+       - `wh` now prints:
+         - a minimal `fw` / `fwup` handoff summary line
+
+     Why this matters:
+       - the evidence stays on the same shell command set that the
+         `eventually8` / `eventually9` / `eventually10` continuation chain
+         already uses
+
+  5. Reset the new fields cleanly on each new WiFi init attempt.
+     Relevant lines after patch:
+       - `5523-5526`
+
+WHAT THIS PATCH INTENTIONALLY DID NOT CHANGE:
+  - no ALIVE wait timing or re-kick logic
+  - no interrupt-mask composition
+  - no RFH base-address programming
+  - no retained first-seen SW_ERR snapshot plumbing
+  - no host-command flow
+  - no new shell commands
+  - no claim that the WiFi functional blocker is solved
+
+IMPORTANT INTERPRETATION:
+  fry700 is still a diagnostic narrowing patch, not a WiFi fix claim.
+
+  The fry699 hardware run already proved:
+    - the broader handoff mask is active
+    - the immediate ALIVE-side restock path actually ran
+    - the retained branch is still the same clean:
+      - `ALIVE + SW_ERR`
+      - `fh=0`
+    - no host-command path is reached
+    - no usable RX progress appears
+
+  fry700 therefore changes only the next source mismatch honestly selected by
+  that evidence:
+    - the active firmware-upload section sequencing that leads into the same
+      ALIVE failure
+
+COMMANDS RUN:
+  Evidence / source inspection:
+    - `git -C /home/jjsako/TaterTOS64v3 status --short`
+    - `sed -n '120,260p' /home/jjsako/TaterTOS64v3/eventually/eventually11.txt`
+    - `rg -n "alive-seen-kick|alive-swerr-seen|alive-rekick|wcmd|wd3|wc|wh|cmd trace|phase trace|boot trace|UMAC ERR|WiFi Trace" /home/jjsako/TaterTOS64v3/src/drivers/net/wifi_9260.c`
+    - `sed -n '1880,2205p' /home/jjsako/TaterTOS64v3/src/drivers/net/wifi_9260.c`
+    - `sed -n '2660,2755p' /home/jjsako/TaterTOS64v3/src/drivers/net/wifi_9260.c`
+    - `sed -n '720,840p' /home/jjsako/TaterTOS64v3/linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/trans.c`
+
+  Verification / line anchors:
+    - `make -C /home/jjsako/TaterTOS64v3 src/drivers/net/wifi_9260.o`
+    - `nl -ba /home/jjsako/TaterTOS64v3/src/drivers/net/wifi_9260.c | sed -n '470,520p;1916,1996p;1996,2076p;4760,4784p;5110,5128p;5208,5228p;5518,5528p'`
+
+  Full rebuild / packaging:
+    - `bash build_iso.sh`
+    - `sha256sum /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /home/jjsako/TaterTOS64v3/out/tater_nvme.img /home/jjsako/TaterTOS64v3/out/efiboot.img`
+    - `stat -c '%n|%s|%y' /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /home/jjsako/TaterTOS64v3/out/tater_nvme.img /home/jjsako/TaterTOS64v3/out/efiboot.img /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+BUILD RESULT:
+  Targeted object rebuild:
+    - PASS
+
+  Full rebuild / packaging:
+    - PASS
+
+  Export to Windows ISO drop path:
+    - PASS
+
+  Rebuild warnings unchanged from earlier steps:
+    - `src/kernel/acpi/aml_exec.c:973` unused parameter `ctx`
+    - `src/kernel/acpi/extended.c:618` `str_eq` unused
+    - `src/kernel/acpi/extended.c:613` `obj_to_str` unused
+    - `src/kernel/acpi/extended.c:285` `pci_cf8_write32` unused
+    - `src/boot/efi_loader.c:352` `gop_mask_size` unused
+    - `src/boot/efi_loader.c:346` `gop_mask_pos` unused
+
+  ISO packaging warning unchanged:
+    - `xorriso`: boot image load size exceeded 65535 blocks of 512 bytes, so
+      El Torito recorded `0` to extend the ESP to end-of-medium
+
+ARTIFACTS:
+  - `out/tatertos64v3.iso`
+    - sha256 `f8ee347b087e6131efb4cf0038f6f9bba4ac3bfdd5ab6b49659ce4ee88d3689f`
+    - size `151429120`
+    - mtime `2026-03-11 18:31:03 -0500`
+
+  - `out/tater_nvme.img`
+    - sha256 `64278615174c8e0b7855f56b609f84b5d8ea10199017a314a9eea46fdb682851`
+    - size `104857600`
+    - mtime `2026-03-11 18:31:02 -0500`
+
+  - `out/efiboot.img`
+    - sha256 `0dcdec993419819c97228b55ec4bcc4f06a3b3694504284f6cc4d76239a15aa5`
+    - size `67108864`
+    - mtime `2026-03-11 18:31:03 -0500`
+
+  - `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+    - size `151429120`
+    - mtime `2026-03-11 18:31:05 -0500`
+
+EXPECTED NEXT HARDWARE TEST:
+  Boot the fry700 image and capture:
+    1. `wcmd`
+    2. `wd3`
+    3. `wc`
+    4. `wh`
+
+  First things that now matter most:
+    - whether `wcmd` still shows the same retained
+      `init-alive-sw-err ms=6 csr=0x02000001 fh=0`
+    - whether `wd3` / `wc` / `wh` now show a sane stable CPU1 / CPU2 upload
+      summary for the active image
+    - whether the CPU1 / CPU2 break markers and loaded counts look plausible
+      or anomalous
+    - whether the outer failure class still stays:
+      - step 9
+      - rc -3
+      - same `0xdead / 0x2e / 0x7e3e4b69`

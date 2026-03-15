@@ -1,0 +1,47 @@
+fry664 — LMPM_CHICK fix for dual-CPU boot + split wd/wd2
+Date: 2026-03-08
+
+ANALYSIS of fry663 Dell results:
+- FW upload OK (FH_LOAD=0xFFFFFFFF)
+- UMAC (CPU2) running: PC changed 0xe8 -> 0x0c000000
+- LMAC (CPU1) PC stuck at 0xe8 — never executed uploaded code
+- CPU1_ST=3 (claims running), CPU2_ST=0x2320
+- RFH consumed 8 free buffers (RIDX=8) but 0 used completions (UWDX=0)
+- Only 1 interrupt, ISR saw CSR_INT=0 (stale MSI)
+- No ALIVE, no SW_ERR, no HW_ERR
+- Terminal truncated wd output — couldn't see LIVE REGS or SRAM sections
+
+ROOT CAUSE (likely):
+Missing LMPM_CHICK_EXTENDED_ADDR_SPACE write for dual-CPU firmware.
+Linux's iwl_pcie_load_given_ucode_8000 does:
+  if (image->is_dual_cpus)
+      iwl_write_prph(trans, LMPM_CHICK, LMPM_CHICK_EXTENDED_ADDR_SPACE);
+BEFORE WFPM_GP2 and RELEASE_CPU_RESET. Our FW has NUM_OF_CPU=2 (dual CPU)
+but we never set LMPM_CHICK. Without this, the boot ROM may not properly
+handle dual-CPU section layout, causing LMAC to never jump to uploaded code.
+
+CHANGES:
+1. wifi_9260.c — Added LMPM_CHICK (0xA01FF8) = 0x01 before WFPM_GP2 write
+   in iwl_upload_firmware() when pieces->num_cpus >= 2
+
+2. wifi_9260.c — Split wd output:
+   - wd: init state + DMA addrs + boot probes (fits on terminal)
+   - wd2 (NEW): live regs + CPU status + SRAM verify + RX[0] hex dump
+   - wd2 also shows LMPM_CHICK readback to verify it took effect
+
+3. New syscall SYS_WIFI_DEBUG2 (43) for wd2
+   - kernel/proc/syscall.c: enum + handler
+   - user/libc/libc.c + libc.h: wrapper
+   - user/shell/shell.c: wd2 command
+
+TEST PLAN:
+1. Boot on Dell, run: ws, wd, wd2, wc
+2. If ALIVE succeeds: WiFi init continues to hcmd/MAC
+3. If still fails: wd2 shows LMPM_CHICK readback, SRAM verify, RX[0] hex
+   to determine next steps
+
+Files changed:
+- src/drivers/net/wifi_9260.c (LMPM_CHICK + wd2 function)
+- src/kernel/proc/syscall.c (SYS_WIFI_DEBUG2)
+- src/user/libc/libc.c + libc.h (fry_wifi_debug2)
+- src/user/shell/shell.c (wd2 command)

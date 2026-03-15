@@ -1,0 +1,44 @@
+fry617 - NETMGR.FRY missing from EFI loader ramdisk
+====================================================
+Date: 2026-03-06
+Log written: 2026-03-06 20:15:00 CST
+
+Context:
+- Dell hardware boot showed NETMGR launch failed with error -101 (ELF_LOAD_ERR_OPEN).
+- WiFi shell commands showed driver=offline, scan returned rc=-2.
+
+Root cause (NETMGR):
+- src/boot/efi_loader.c had FRY_FILE_COUNT=8 and listed only 8 files in
+  fry_paths[]/fry_names[]: INIT, GUI, SHELL, SYSINFO, UPTIME, PS, FILEMAN,
+  and iwlwifi firmware. NETMGR.FRY was never added.
+- On Dell USB boot the ramdisk IS the root filesystem, so NETMGR.FRY simply
+  did not exist at runtime. The GUI tried all fallback directories and every
+  vfs_open returned NULL -> ELF_LOAD_ERR_OPEN (-101).
+- build_iso.sh and the GUI seed list had NETMGR, but the EFI loader that
+  actually builds the ramdisk was missed.
+
+Fix (NETMGR):
+- src/boot/efi_loader.c:
+  - FRY_FILE_COUNT bumped from 8 to 9.
+  - Added fry_paths[7] entry for NETMGR.FRY with all 9 path variants
+    (\apps\, \, \fry\, \FRY\, \EFI\fry\, \EFI\FRY\, \EFI\BOOT\,
+    \EFI\BOOT\fry\, \EFI\BOOT\FRY\).
+  - Added "apps/NETMGR.FRY" to fry_names[] (index 7, firmware shifted to 8).
+  - RAMDISK_MAXFILES is 16, so 9 entries is well within limits.
+
+WiFi driver offline analysis:
+- wifi_9260_init() sets g_iwl_ready=1 only at the very end (after NIC reset,
+  FW load, TLV parse, DMA alloc, TFH init, MSI, FW upload, ALIVE handshake,
+  hcmd init, MAC layer init, and initial scan all succeed).
+- Shell "wifi scan" returns -2 because wifi_9260_get_scan_entries() checks
+  if (!g_iwl_ready) return -2.
+- This is the first real Dell hardware test of the WiFi driver code. Without
+  serial logs we cannot determine which init step failed. Possible causes:
+  firmware not found in ramdisk (path mismatch), NIC reset timeout, DMA
+  allocation failure, MSI setup issue, FW upload failure, ALIVE timeout, etc.
+- Next step: get serial logs from Dell boot to identify the exact failure point.
+
+Verification:
+- Full clean build succeeded, no errors.
+- ISO exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+- All NETMGR.FRY fallback paths verified in both EFI image and ISO.

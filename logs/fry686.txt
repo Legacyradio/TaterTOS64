@@ -1,0 +1,113 @@
+fry686 - 2026-03-09 22:28:04 CDT - WiFi 9260: fix CPU-done marker register (FH vs UREG)
+
+SESSION CONTEXT:
+  fry685 added an RFH RX free-ring re-doorbell at the ALIVE handoff boundary.
+  Hardware test on Dell Precision 7530 showed:
+    - `UMAC_PC` shifted from `0xc0800000` to `0xc0000000` (firmware relocated)
+    - `LMAC_PC` frozen at `0x000605dc` across both snapshots
+    - `RFH_W=0`, `RFH_R=0`, `RFH_U=0` -- RFH never consumed anything
+    - `UREG_UCODE_LOAD_STATUS=0x00000000` -- firmware never acknowledged start
+    - `LMPM_SECURE_CPU1_HDR=0x00000000`, `LMPM_SECURE_CPU2_HDR=0x00000000`
+    - `CPU1_ST=0x030a0003`, `CPU2_ST=0x000f000f`
+    - `FH_LOAD=0x000f000f` -- per-section bits present but final done missing
+    - Boot trace confirmed `alive-kick` and `alive-rekick` both fired with no
+      RX movement.  Firmware never sent ALIVE.
+
+  Full wd3 phase trace showed the upload sequence completing correctly
+  (sections loaded, per-section FH bits accumulating) but firmware stalling
+  immediately after -- LMAC never started, UMAC stuck at early init.
+
+ROOT CAUSE:
+  `iwl_write_ucode_load_done()` was writing the final CPU-done marker to
+  `UREG_UCODE_LOAD_STATUS` (PRPH register `0xA05C40`) via `iwl_write_prph()`.
+
+  The 9260 (device 0x2526) is 9000-series, which is NOT gen2.  In the Linux
+  iwlwifi driver (`pcie/gen1_2/trans.c`, `iwl_pcie_load_cpu_sections_8000()`),
+  the done marker destination depends on `trans->mac_cfg->gen2`:
+    - gen2 = true  -> `iwl_write_prph(UREG_UCODE_LOAD_STATUS, 0xFFFF/0xFFFFFFFF)`
+    - gen2 = false -> `iwl_write_direct32(FH_UCODE_LOAD_STATUS, 0xFFFF/0xFFFFFFFF)`
+
+  `iwl9000_mac_cfg` in `cfg/9000.c` does NOT set `gen2 = true`, so Linux uses
+  `FH_UCODE_LOAD_STATUS` (CSR register at `0x1AF0`) for the done marker.
+
+  The firmware boot stub on 9260 polls `FH_UCODE_LOAD_STATUS` for `0xFFFF`
+  (CPU1 done) and `0xFFFFFFFF` (CPU2 done).  Because TaterTOS was writing the
+  done marker to the wrong register, `FH_UCODE_LOAD_STATUS` stayed at
+  `0x000f000f` (per-section bits only), and firmware never saw the "all
+  sections ready" signal.
+
+  This explains why:
+    - `UMAC_PC` relocated to `0xc0000000` (UMAC started but stalled waiting
+      for the done marker)
+    - `LMAC_PC` stuck at `0x000605dc` (UMAC never released LMAC)
+    - `UREG_UCODE_LOAD_STATUS=0x00000000` (firmware never wrote this register
+      because it never reached that stage)
+    - RFH was irrelevant -- firmware never got far enough to touch RX DMA
+
+  The per-section bitmap writes in `iwl_mark_cpu_section_loaded()` were already
+  correctly going to `FH_UCODE_LOAD_STATUS` via `iwl_write32()`.  Only the
+  final done marker was misdirected.
+
+FILES CHANGED:
+  - `src/drivers/net/wifi_9260.c`
+
+CODE CHANGES:
+  1. Changed `iwl_write_ucode_load_done()` to write the done marker to
+     `FH_UCODE_LOAD_STATUS` via `iwl_write32()` instead of
+     `UREG_UCODE_LOAD_STATUS` via `iwl_write_prph()`.
+  2. Updated the comment to document that 9260 is non-gen2 and explain the
+     register selection per Linux's code path.
+
+REFERENCE:
+  - Linux `pcie/gen1_2/trans.c` lines 764-781: `iwl_pcie_load_cpu_sections_8000()`
+    gen2 branch vs non-gen2 branch for done marker register.
+  - Linux `cfg/9000.c` lines 71-75: `iwl9000_mac_cfg` has no `gen2` field.
+  - Linux `pcie/gen1_2/trans.c` line 1357: 9000-series uses `_8000` upload path.
+
+BUILD / VERIFICATION COMMANDS:
+  Investigation:
+    - Cross-referenced wd3 boot trace (phases #0-#23) against code
+    - `grep` for SECURE, UREG_UCODE_LOAD_STATUS, FH_UCODE_LOAD_STATUS in
+      wifi_9260.c and Linux reference tree
+    - Read Linux `iwl_pcie_load_cpu_sections_8000()` and `iwl9000_mac_cfg`
+    - Read fry677.txt / fry678.txt for prior secure header investigation
+
+  Build:
+    1. `make clean`
+    2. `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+
+RESULT:
+  - Clean rebuild via `build_iso.sh`: PASS
+  - ISO output: `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+  - NVMe image: `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+  - EFI boot image: `/home/jjsako/TaterTOS64v3/out/efiboot.img`
+  - Windows ISO export: `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+NON-FATAL BUILD WARNINGS (unchanged from fry685):
+  - `src/kernel/acpi/aml_exec.c`: unused parameter `ctx`
+  - `src/kernel/acpi/extended.c`: unused helpers `str_eq`, `obj_to_str`,
+    `pci_cf8_write32`
+  - `src/boot/efi_loader.c`: unused `gop_mask_size` / `gop_mask_pos`
+  - `xorriso`: El Torito boot image load size warning during ISO packaging
+
+NEXT HARDWARE TEST:
+  Boot the rebuilt image on the Dell Precision 7530, then run:
+    1. `wh`
+    2. `wd2`
+    3. `wc`
+    4. `wd3`
+
+  Primary checks:
+    - `FH_LOAD` should now show `0xFFFFFFFF` (not just `0x000f000f`)
+    - `CPU1_ST` should progress past `0x030a0003`
+    - `LMAC_PC` should move off `0x000605dc` (UMAC releases LMAC after seeing
+      done marker)
+    - If ALIVE arrives, `rx_closed` / `rx_fin` should become non-zero
+    - If ALIVE still does not arrive but `FH_LOAD=0xFFFFFFFF` and LMAC starts
+      moving, the remaining blocker is in the ALIVE notification path itself
+
+NOTES:
+  - The fry685 RFH re-doorbell logic remains in place; it is harmless and may
+    still be useful once firmware gets past the done-marker stall.
+  - This log satisfies `planv3.txt` rule 5 and rule 6 for the completed code
+    change and rebuild.

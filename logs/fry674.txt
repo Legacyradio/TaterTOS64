@@ -1,0 +1,90 @@
+fry674 - 2026-03-09 00:27:04 CDT - Shell: remove output truncation, add real scrollbar input, grow scrollback, and fold wd into wdiag
+
+SESSION CONTEXT:
+  User called out that the shell itself was making WiFi bring-up painful:
+    - long diagnostic output was being cut off
+    - the drawn scrollbar did not actually work
+    - repeated reboot/test cycles were losing useful context
+
+WHY:
+  The bottleneck had moved from the WiFi driver to the shell.
+  Reading `src/user/shell/shell.c` showed four concrete issues:
+    1. `term_printf()` hard-truncated every formatted print to 512 bytes.
+    2. Scrollback was capped at 500 lines and overwrote older output.
+    3. The scrollbar was visual-only; mouse events were ignored.
+    4. `wdiag` still required a follow-up `wd` request for some failures.
+
+FILES CHANGED:
+  - `src/user/shell/shell.c`
+
+CODE CHANGES:
+  1. Reworked `term_printf()` to use a two-pass `vsnprintf()` path with
+     heap fallback, removing the fixed 512-byte shell print cap.
+  2. Replaced fixed 500-line scrollback storage with dynamically growing
+     scrollback capacity using `realloc()`.
+  3. Added mouse handling for the existing scrollbar so dragging it now
+     updates `scroll_offset` instead of doing nothing.
+  4. Changed scroll behavior so passive output review stays in place; typing
+     a new key snaps back to live output instead of every emitted character.
+  5. Raised shell-local `wh` and `wc` buffers from 1024/2048 to 4096 bytes.
+  6. Extended `wdiag` to include `wd` before `wl`, `wh`, and `wc`.
+  7. Updated shell help text to advertise scrollbar dragging.
+
+RATIONALE:
+  This is a shell usability and observability fix, not a Dell-specific hack.
+  The goal is to make hardware bring-up evidence retrievable in one boot cycle
+  without losing data to shell-side truncation or dead UI affordances.
+
+COMMANDS RUN:
+  Investigation:
+    - `sed -n '1,260p' /home/jjsako/TaterTOS64v3/planv3.txt`
+    - `rg -n "sb_count|scroll|scrollback|term_printf|TW_MSG_MOUSE_EVENT|FRY_WIFI_DEBUG_MAX" /home/jjsako/TaterTOS64v3/src/user/shell/shell.c /home/jjsako/TaterTOS64v3/src/user/libc /home/jjsako/TaterTOS64v3/src/shared/wifi_abi.h /home/jjsako/TaterTOS64v3/src/kernel/proc/syscall.c`
+    - `sed -n '1,360p' /home/jjsako/TaterTOS64v3/src/user/shell/shell.c`
+    - `sed -n '1220,1495p' /home/jjsako/TaterTOS64v3/src/user/shell/shell.c`
+    - `sed -n '742,840p' /home/jjsako/TaterTOS64v3/src/user/apps/fileman.c`
+
+  Build / verification:
+    - `make -C /home/jjsako/TaterTOS64v3 src/user/shell/shell.o shell.elf shell.tot`
+    - `PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh`
+
+RESULT:
+  - targeted shell compile: PASS
+  - full clean rebuild: PASS
+  - ISO output:
+      `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+  - NVMe image updated:
+      `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+  - Windows ISO export:
+      `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+NEXT HARDWARE TEST:
+  Boot the rebuilt image and use the shell normally.
+  For WiFi bring-up evidence, a single command should now be enough:
+    1. `wdiag`
+
+  Expected shell-side improvements:
+    - long shell prints are no longer clipped at 512 bytes
+    - `wh` / `wc` no longer hit their old tiny local caps
+    - dragging the scrollbar should move through scrollback
+    - scrollback should keep growing instead of wrapping at 500 lines
+
+FURTHER DIAG OPTIONS:
+  1. Immediate WiFi path:
+     - use the rebuilt shell first and capture a fresh single-shot `wdiag`
+       from the Dell Precision 7530
+     - this is the preferred next step because the current 9260 handoff dumps
+       are expected to fit within the existing kernel/userspace WiFi debug cap
+
+  2. If shell-visible WiFi evidence is still insufficient:
+     - add chunked WiFi debug retrieval and/or a size-query API for
+       `wd` / `wd2` / `wl`
+     - rationale: the driver-side debug buffer can already grow dynamically,
+       but the syscall/ABI path still caps retrieval at `FRY_WIFI_DEBUG_MAX`
+       (128 KiB)
+     - this is a secondary diagnostic enhancement, not the immediate blocker
+       for the current Intel 9260 ALIVE/handoff failure
+
+NOTES:
+  - This log exists to satisfy `planv3.txt` rule 5 and rule 6.
+  - Rebuild was requested and completed in this step; no SHA-256 hashes were
+    recorded because they were not explicitly requested.

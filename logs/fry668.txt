@@ -1,0 +1,84 @@
+fry668 - 2026-03-08 22:17:43 CDT - WiFi 9260: tighten ALIVE handoff transport path
+
+SESSION CONTEXT:
+  User provided a newer Dell Precision 7530 handoff dump still failing at:
+    - `wh`: step=9, rc=-1, `diag cpu-stuck-rx-no-used`
+    - `wc`: `VERDICT: CPU STUCK`
+    - RFH state: free-ring progress present (`RFH_R != 0`) but used-ring
+      writeback still dead (`RFH_U = 0`, `rx_closed = 0`, `rx_finished = 0`)
+
+WHY:
+  The failure had moved past "firmware never loaded" and past "CPU never
+  started". The remaining transport boundary still had concrete local
+  mismatches versus Linux 7.0-rc2:
+    1. `CSR_INT_COALESCING` is an 8-bit register, but the driver was writing
+       it with `iwl_write32(...)`.
+    2. The direct FH upload path was arming the wrong interrupt mask before
+       upload. Linux uses FH_TX-only during the service-channel upload and
+       enables ALIVE/RX later.
+    3. `struct iwl_rx_status` was oversized versus Linux `struct iwl_rb_status`.
+
+  Any of those can break or distort the upload-to-ALIVE handoff even when the
+  firmware image and RFH base addresses are otherwise correct.
+
+FILES CHANGED:
+  - `src/drivers/net/wifi_9260.c`
+
+CODE CHANGES:
+  1. Fixed `struct iwl_rx_status` layout to match the 9000-series Linux
+     reserve-buffer status shape:
+       - old: 16 bytes (`uint32_t rsvd[2]`)
+       - new: 12 bytes (`uint32_t spare`)
+
+  2. Added byte MMIO write helper:
+       - `iwl_write8()`
+
+  3. Changed RFH interrupt coalescing programming to use an 8-bit write:
+       - old: `iwl_write32(CSR_INT_COALESCING, 0x40)`
+       - new: `iwl_write8(CSR_INT_COALESCING, 0x40)`
+
+  4. Split interrupt helpers by phase:
+       - `iwl_enable_fw_load_int()` for direct FH upload (`FH_TX` only)
+       - `iwl_enable_fw_alive_ints()` for ALIVE/RX-only phase
+
+  5. Changed the active direct-upload init path to use `iwl_enable_fw_load_int()`
+     before `iwl_upload_firmware()`, matching Linux's `iwl_enable_fw_load_int()`
+     behavior for the secured 8000/9000 upload path.
+
+RATIONALE:
+  This is a transport-level cleanup based on local Linux source comparison and
+  the current Dell failure signature. It does not assume Dell-specific quirks.
+
+COMMANDS RUN:
+  Investigation:
+    - `rg -n "URBDCB_BA|URBD_STTS_WPTR|RXQ_ACTIVE|iwl_pcie_rx_mq_hw_init" linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi -g '*.[ch]'`
+    - `sed -n '900,1015p' linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/rx.c`
+    - `sed -n '700,860p' linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/trans.c`
+    - `sed -n '980,1125p' linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/pcie/gen1_2/trans.c`
+
+  Build / verification:
+    - `bash build_iso.sh`
+    - `make -C /home/jjsako/TaterTOS64v3 src/drivers/net/wifi_9260.o`
+
+RESULT:
+  - `build_iso.sh`: PASS
+  - targeted rebuild of `src/drivers/net/wifi_9260.o`: PASS
+  - output ISO:
+      `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+  - Windows export:
+      `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+NEXT BARE-METAL TEST:
+  Boot the rebuilt ISO on the Dell Precision 7530, then run:
+    1. `wh`
+    2. `wc`
+    3. `wd2`
+
+  Expected signal if this patch fixes the handoff bug:
+    - `RFH_U` becomes non-zero and/or
+    - `rx_closed` / `rx_finished` become non-zero and/or
+    - init progresses past step 9 / ALIVE timeout
+
+NOTES:
+  - This log exists to satisfy `planv3.txt` rule 5 and rule 6.
+  - No SHA-256 recorded here per `planv3.txt` rule 16.

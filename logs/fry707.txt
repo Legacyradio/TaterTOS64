@@ -1,0 +1,66 @@
+fry707 — 2026-03-12
+WiFi Intel 9260: Fix RFH write index trigger, stop FH TX channels, set RB timeout
+
+Analysis of fry706 Dell test results:
+  - ALIVE fires (CSR_INT bit 0) + FH_RX (bit 31) — firmware STARTS
+  - SW_ERR fires immediately (bit 25) — UMAC SYSASSERT 0x2E (error 46)
+  - UMAC error table valid: 0xDEAD magic, build tag 0x7e3e4b69 matches firmware
+  - RX ring shows NO data: all RXUSED=0, closed_rb=0, finished_rb=0
+  - Firmware crashes within 6ms, deterministic on both attempts
+  - Upload is correct: FH_UCODE_LOAD_STATUS=0xFFFFFFFF, all 9 sections loaded
+
+Root cause investigation:
+  Compared init sequence with Linux v6.0 iwlwifi source (verified via web fetch).
+  Found three differences:
+
+  1. RFH_Q_FRBDCB_WIDX_TRG (write index trigger doorbell) format:
+     - OUR CODE: write_actual | (write_actual << 16) = 0x01F801F8
+     - LINUX v6.0: just write_actual = 0x1F8
+     - The extra upper bits corrupt the RFH doorbell register.
+       When firmware tries to DMA the ALIVE notification through a
+       misconfigured RFH, the DMA may fail, causing UMAC SYSASSERT.
+     - NOTE: Dell showed 0x01F001F8 (not 0x01F801F8) — unknown why
+       upper half was 496 not 504, but both are wrong vs Linux.
+
+  2. FH TX channels not stopped:
+     - Linux iwl_pcie_tx_stop_fh() writes 0 to ALL 10 FH TX channel
+       config registers (channels 0-9) before firmware upload.
+     - Our code only stopped the service channel (ch=9).
+     - Leftover FH state could confuse firmware on startup.
+
+  3. RB timeout not set:
+     - 9000-series needs HBUS_TARG_MBX_C = 0x64 (128us @ 25MHz osc)
+     - Without timeout, RFH waits indefinitely for full RB before
+       closing, so single-frame ALIVE never triggers closed_rb update.
+
+  Also confirmed our RFH_RXF_DMA_CFG matches Linux EXACTLY:
+  - RFH_RXF_DMA_MIN_RB_4_8 = (3 << 24) — matches Linux (NOT BIT(24))
+  - No SINGLE_FRAME in iwl_pcie_rx_mq_hw_init — matches Linux
+  - No rb_timeout in DMA_CFG register — matches Linux
+  - Our computed value 0x87940000 = Linux's value
+
+Changes in wifi_9260.c:
+  - iwl_rfh_kick_rx_free_ring(): Changed trigger from
+    write_actual|(write_actual<<16) to just write_actual.
+    Matches Linux v6.0 iwl_pcie_rxmq_restock().
+
+  - iwl_dma_init_tfh(): Added FH TX channel stop loop:
+    for ch 0..9: write 0 to FH_TCSR_CHNL_TX_CONFIG_REG(ch).
+    Matches Linux iwl_pcie_tx_stop_fh().
+
+  - iwl_dma_init_tfh(): Added SCD queue deactivation loop:
+    for q 0..30: write 0 to SCD_QUEUE_STATUS_BITS(q).
+    Matches Linux iwl_scd_txq_set_inactive() in iwl_pcie_tx_init().
+
+  - iwl_dma_init_tfh(): Added HBUS_TARG_MBX_C = 0x64 write
+    for 9000-series RB timeout (128us @ 25MHz oscillator).
+
+  - Added defines: SCD_QUEUE_STATUS_BITS, FH_TCSR_CHNL_NUM,
+    HBUS_TARG_MBX_C, IWL_9000_RB_TIMEOUT.
+
+Expected outcomes on Dell:
+  - If trigger was the SYSASSERT cause: ALIVE + no SW_ERR → proceed to hcmd
+  - If FH/SCD stale state was the cause: same as above
+  - If RB timeout was the issue: closed_rb should advance, ALIVE data arrives
+  - If still SYSASSERT 0x2E: root cause is something else (possibly firmware
+    internal, or missing DRAM region setup)

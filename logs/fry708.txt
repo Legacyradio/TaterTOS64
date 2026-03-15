@@ -1,0 +1,71 @@
+fry708 — 2026-03-13T06:07:54Z
+Match Linux 8000+ FW upload path exactly: remove 3 wrong operations
+
+Context:
+  fry707 Dell test: ALIVE fires + SYSASSERT 0x2E (UMAC assert), closed_rb=0.
+  The firmware boots and sends ALIVE interrupt but immediately crashes.
+  Exhaustive register-by-register comparison of our upload sequence against
+  Linux 7.0-rc2 iwl_pcie_load_given_ucode_8000() found three operations we
+  do that Linux does NOT do in the 8000+ path.
+
+Root cause analysis:
+  Read Linux iwl_pcie_load_given_ucode_8000() (line 973, gen1_2/trans.c)
+  and iwl_pcie_load_cpu_sections_8000() (line 715).  The 8000+ upload path:
+    1. WFPM_GP2 = 0x01010101
+    2. RELEASE_CPU_RESET = BIT(24)
+    3. Upload CPU1 sections, per-section FH_UCODE_LOAD_STATUS bits
+    4. iwl_enable_interrupts() (full mask CSR_INI_SET_MASK)
+    5. FH_UCODE_LOAD_STATUS = 0xFFFF
+    6. Upload CPU2 sections (or empty pass)
+    7. iwl_enable_interrupts() again
+    8. FH_UCODE_LOAD_STATUS = 0xFFFFFFFF
+    9. Return immediately — NO other operations
+
+  Our code had three extra operations not in the Linux 8000+ path:
+  (A) LMPM_SECURE_CPU1_HDR_ADDR write — only the OLD non-8000 path writes
+      LMPM_SECURE_CPU2_HDR (not CPU1).  The 8000+ path writes NEITHER.
+      Added in fry705 based on misreading the code.
+  (B) SRAM reads via HBUS after done markers — the firmware is actively
+      booting at this point.  Reading device SRAM via HBUS_TARG_MEM while
+      firmware is executing causes bus contention that can crash the FW.
+  (C) CSR_RESET=0 write — Linux does NOT write CSR_RESET=0 in the 8000+
+      path.  Only the non-8000 path (iwl_pcie_load_given_ucode) does.
+      The comment claiming Linux does this was wrong.
+
+Changes in wifi_9260.c:
+
+  1. REMOVED: LMPM_SECURE_CPU1_HDR_ADDR write (was line ~2241)
+     Why: Linux never writes this register in the 8000+ upload path.
+     Writing to a write-only register the boot ROM reads could point it
+     to a wrong location and confuse secure boot validation.
+
+  2. REMOVED: LMPM_SECURE_CPU2_HDR_ADDR write (was in CPU2 section path)
+     Why: Same — not done in 8000+ path.  Only the old non-8000 path
+     writes it.  Currently unreachable (INIT has no CPU2 sections) but
+     fixed for correctness when we later upload RT firmware.
+
+  3. REMOVED: SRAM verification reads after done markers (was lines ~2308-2321)
+     Why: After writing FH_UCODE_LOAD_STATUS=0xFFFFFFFF, the firmware is
+     actively executing.  Linux does NOTHING after the done marker — it
+     returns immediately.  Our iwl_read_sram() calls use HBUS_TARG_MEM_RADDR/
+     RDAT which access device SRAM through a shared bus, contending with the
+     firmware's own SRAM access.  This is the most likely cause of SYSASSERT.
+
+  4. REMOVED: CSR_RESET=0 write (was line ~2349)
+     Why: Not done by Linux in the 8000+ path.  The CSR_RESET register
+     controls SW_RESET, FORCE_NMI, MASTER_DISABLED etc.  Writing 0 while
+     the firmware is actively running is unnecessary (these bits should
+     already be clear) and potentially disruptive.
+
+  5. FIXED: nic_config CSR_HW_IF_CONFIG_REG mask now includes MAC_SI
+     Why: Linux clears both RADIO_SI and MAC_SI for 8000+ family.  We
+     were only masking RADIO_SI, leaving MAC_SI at whatever value it had.
+
+Expected Dell test results:
+  - If ALIVE fires + NO SW_ERR: init firmware alive → can proceed to hcmd
+  - If ALIVE + SW_ERR still: the assert has a different root cause
+    (investigate UMAC error data, ilink addresses)
+  - If no ALIVE: removing one of these operations broke something
+    (most likely the CSR_RESET=0 was actually needed — re-add it only)
+
+Build: make clean && build_iso.sh — SUCCESS, ISO exported.

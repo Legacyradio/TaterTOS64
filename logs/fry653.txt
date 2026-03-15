@@ -1,0 +1,44 @@
+fry653 — 2026-03-07
+WiFi Intel 9260: Switch from context-info to gen1 FH DMA firmware upload
+
+ROOT CAUSE (confirmed via Linux 7.0-rc2 source):
+  The Intel 9260 (PCI 8086:2526) is gen1 transport, NOT gen2.
+  Linux: PCI ID -> iwl9000_mac_cfg -> gen2=false -> iwl_trans_pcie_start_fw()
+         -> iwl_pcie_load_given_ucode_8000() -> FH service channel DMA.
+
+  Context-info boot (CSR_CTXT_INFO_BA + UREG_CPU_INIT_RUN) is gen2-only,
+  used by 22000-series (AX200/AX201) and newer. The 9260 doesn't understand
+  it — CSR_CTXT_INFO_BA (0x040) returned garbage, UREG_CPU_INIT_RUN (0xa05c44)
+  doesn't exist on 9000-series hardware.
+
+  The correct 9260 FW upload path (from Linux iwl_pcie_load_given_ucode_8000):
+  1. grab_nic_access (ensure NIC awake for prph writes)
+  2. Clear FH_UCODE_LOAD_STATUS (0x1AF0)
+  3. iwl_write_prph(WFPM_GP2, 0x01010101)
+  4. iwl_write_prph(RELEASE_CPU_RESET, BIT(24))  — release CPU BEFORE upload
+  5. DMA each FW section via FH service channel 9
+  6. After each section: update FH_UCODE_LOAD_STATUS with bitmask
+  7. CPU1 done: write 0xFFFF to FH_UCODE_LOAD_STATUS
+  8. CPU2 done: write 0xFFFFFFFF
+  9. Wait for ALIVE via RFH RX queue
+
+CHANGES (src/drivers/net/wifi_9260.c):
+  1. Switched wifi_9260_init() from iwl_start_fw_with_ctxt_info() to
+     iwl_upload_firmware() — the gen1 FH DMA upload path
+  2. Fixed RELEASE_CPU_RESET_BIT: was (1u << 0), now (1u << 24)
+     per Linux 7.0-rc2 iwl-prph.h ("write to bit 24 to reset CPU")
+  3. Replaced IWL_FW_STATUS (0x848, non-standard) with
+     FH_UCODE_LOAD_STATUS (0x1AF0) — the correct register for 8000/9000
+  4. Added iwl_grab_nic_access() — re-asserts MAC_ACCESS_REQ and polls
+     MAC_CLOCK_READY before prph writes. Called before:
+     - iwl_dma_init_tfh() (RFH prph register setup)
+     - iwl_upload_firmware() (WFPM_GP2, RELEASE_CPU_RESET prph writes)
+  5. Added ALIVE+FH_RX interrupt enable before FW upload
+  6. Updated wd diagnostic to show gen1 path info + FH_LOAD_STATUS
+  7. Marked iwl_start_fw_with_ctxt_info() as __attribute__((unused))
+
+BUILD: clean + build_iso.sh OK, no warnings
+TEST: Boot Dell with fry653 ISO, run `wd` — expect:
+  - FH DMA section uploads to succeed (kprint messages)
+  - FH_UCODE_LOAD_STATUS = 0xFFFF or 0xFFFFFFFF after upload
+  - ALIVE notification via RFH RX queue

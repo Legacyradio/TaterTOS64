@@ -1,0 +1,95 @@
+fry672 - 2026-03-09 00:02:28 CDT - WiFi 9260: add VT-d disable logging and record built-in triage commands
+
+SESSION CONTEXT:
+  User was tired of chasing the Intel 9260 bring-up blindly and asked for
+  the shortest way to find where the failure really is. The current tree
+  already exposes shell commands for WiFi handoff / CPU / debug state, but
+  the new Intel VT-d disable work also needed to be logged per plan rules.
+
+WHY:
+  The bare-metal failure signature has been moving around between DMA setup,
+  firmware upload, and ALIVE handoff. To stop random debugging:
+    1. The driver now logs DMAR / DRHD / GCMD / GSTS state when attempting to
+       disable Intel VT-d before allocating DMA memory.
+    2. The existing shell-visible WiFi diagnostics are now explicitly recorded
+       here as the canonical hardware triage flow.
+
+FILES CHANGED:
+  - src/drivers/net/wifi_9260.c
+
+CODE CHANGES:
+  1. Added Intel VT-d register definitions and minimal DMAR/DRHD parsing.
+  2. Added `iwl_disable_intel_iommu()`:
+     - locates ACPI `DMAR`
+     - walks remapping entries
+     - maps each DRHD MMIO register window uncached
+     - clears `GCMD.TE`
+     - waits for `GSTS.TES` to clear
+     - logs per-DRHD state and a final disable summary
+  3. Called the VT-d disable helper immediately before `iwl_dma_alloc()`.
+
+RATIONALE:
+  This is a hardware-agnostic direct-DMA bring-up step, not a Dell-only hack.
+  It uses standard ACPI DMAR discovery and Intel VT-d global command/status
+  bits, and leaves the driver running even if disable is incomplete so the
+  next diagnostic layer can still be inspected.
+
+COMMANDS RUN:
+  Investigation:
+    - `rg -n "wifi_9260_init|DMA alloc|IOMMU|DMAR|vmm_phys_to_virt|vmm_ensure_physmap|acpi_sdt_header|RSDP|XSDT|ACPI" src/drivers/net/wifi_9260.c src/kernel`
+    - `sed -n '3880,4085p' src/drivers/net/wifi_9260.c`
+    - `sed -n '930,1045p' src/drivers/net/wifi_9260.c`
+    - `sed -n '1,240p' src/kernel/acpi/tables.h`
+    - `sed -n '120,220p' /home/jjsako/TatertOS64-clean/src/drivers/acpi.c`
+    - `sed -n '930,985p' linux-7.0-rc2/drivers/iommu/intel/iommu.c`
+    - `sed -n '1,260p' src/user/shell/shell.c`
+    - `sed -n '1108,1185p' src/user/shell/shell.c`
+    - `sed -n '3448,3765p' src/drivers/net/wifi_9260.c`
+
+  Build / verification:
+    - `make -C /home/jjsako/TaterTOS64v3 src/drivers/net/wifi_9260.o`
+
+RESULT:
+  - `src/drivers/net/wifi_9260.o` rebuild: PASS
+  - New VT-d logging is compiled into the driver.
+  - Shell diagnostics confirmed present in the tree:
+      `wl`, `wh`, `wc`, `wd`, `wd2`, `ws`, `wifi ...`
+
+CANONICAL HARDWARE TRIAGE FLOW:
+  Run these in TaterTOS on the Dell Precision 7530:
+    1. `wl`
+    2. `wh`
+    3. `wc`
+    4. `wd2`
+    5. `ws`
+
+  Meaning:
+    - `wl` = init log; first check for new VT-d / DMAR lines
+    - `wh` = small upload/ALIVE handoff summary
+    - `wc` = firmware CPU verdict (`FW IS RUNNING`, `CPU NEVER STARTED`,
+      or `CPU STUCK`)
+    - `wd2` = live regs, RFH state, CPU regs, SRAM verify
+    - `ws` = high-level WiFi status after bring-up
+
+EXPECTED SIGNALS:
+  - If `wl` shows `DMAR DRHD ...` and `DMAR disable summary ...`, the VT-d
+    path executed.
+  - If `wh` still fails before ALIVE, the problem is in firmware boot /
+    handoff rather than in shell-visible networking.
+  - If `wc` prints `CPU NEVER STARTED`, focus on upload/reset/done-marker
+    sequencing.
+  - If `wc` prints `FW IS RUNNING` but WiFi still fails, the issue is above
+    low-level transport bring-up.
+
+NEXT BARE-METAL TEST:
+  Boot the current image on the Dell Precision 7530 and capture:
+    1. `wl`
+    2. `wh`
+    3. `wc`
+
+  If deeper state is needed after that, run `wd2`.
+
+NOTES:
+  - This log exists to satisfy `planv3.txt` rule 5 and rule 6.
+  - No rebuild was requested in this step, so no SHA-256 hashes are recorded
+    per `planv3.txt` rule 16.

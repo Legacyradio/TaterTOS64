@@ -1,0 +1,29 @@
+fry736 — Default Boot Trace Cleanup
+===================================
+Timestamp: 2026-03-14 21:14:16 CDT
+
+Completed step:
+- Moved normal-boot trace controls into a shared header and turned the marker
+  noise off by default across the kernel boot path.
+
+What changed:
+- Added `src/include/tater_trace.h` as the shared source of truth for
+  `TATER_BOOT_VISUAL_DEBUG` and `TATER_BOOT_SERIAL_TRACE`.
+- Updated `src/kernel/main.c`, `src/kernel/proc/sched.c`,
+  `src/drivers/timer/lapic_timer.c`, and `src/kernel/proc/syscall.c` so the
+  `B:*`, `K_*`, `SPAWN_ENTER`, `SPAWN_OK`, and `DBG_VFS` success-path markers
+  only emit when boot tracing is explicitly enabled.
+- Updated `src/kernel/mm/vmm.c`, `src/kernel/mm/pmm.c`, and
+  `src/kernel/mm/heap.c` so early MM bring-up trace tags stop cluttering the
+  default serial boot, while debug-port output and real error paths stay intact.
+- Fixed the scheduler, syscall, and timer framebuffer marker helpers to respect
+  the shared visual-debug toggle instead of painting unconditionally.
+
+Why:
+- The live boot path was already stable, but normal boots still emitted a large
+  amount of bring-up instrumentation and some framebuffer probe markers.
+- A clean default boot should keep this trace noise off unless early bring-up
+  debugging is explicitly requested.
+
+Test status:
+- Rebuild and verification rerun pending.

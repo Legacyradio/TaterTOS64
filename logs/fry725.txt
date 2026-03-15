@@ -1,0 +1,51 @@
+fry725 — 2026-03-14
+Complete phase one VM hardening and file-backed mmap path
+
+WHAT:
+- Fixed NX preservation in page-table map helpers by carrying `VMM_FLAG_NO_EXECUTE`
+  through initial kernel and user mappings
+- Added `vmm_query_user_flags()` and made syscall-side buffer validation honor
+  user writability before kernel writes into userspace
+- Expanded anonymous `mmap` support to allow subrange `munmap` / `mprotect`
+  within a tracked mapping instead of exact-region-only behavior
+- Added `PROT_NONE`-style support by clearing the user bit while keeping pages
+  resident and recoverable
+- Added read-only, offset-0 file-backed `mmap` through the existing 5-arg syscall
+  ABI via `fry_mmap_fd()`
+- Extended `vmtest` to exercise partial protect/unmap and `PROT_NONE` restore
+
+WHY:
+- Phase one was not done at the first anonymous-map checkpoint
+- NX had to be correct at initial map time, not just after `mprotect`
+- Read-only mappings are unsafe if unrelated syscalls can still fault in kernel
+  mode by writing through presence-only validation
+- Partial VMA operations are required for a usable VM surface
+- File-backed mappings needed a real implementation decision instead of being
+  hand-waved away
+
+PHASE ONE STATUS:
+- Anonymous private mappings: implemented
+- Read-only / read-write / read-exec / prot-none transitions: implemented
+- Partial `munmap` / `mprotect` inside one tracked mapping: implemented
+- Read-only file-backed mapping from fd at offset 0: implemented
+- W^X policy at syscall validation layer: enforced by rejecting write+exec
+- Build verification: `make kernel vmtest` succeeds
+
+CURRENT LIMITS AFTER PHASE ONE:
+- File-backed mappings are still offset-0 only because the syscall ABI still has
+  five user arguments and the generic fd/VFS layer still lacks clean seek/pread
+  semantics
+- Multi-region `munmap` / `mprotect` transactions are not yet generalized
+- No lazy faulting or demand paging; user faults still kill the current process
+- No runtime QEMU/hardware execution pass has been logged yet for `vmtest`
+
+FILES CHANGED IN THIS PASS:
+- src/kernel/mm/vmm.h
+- src/kernel/mm/vmm.c
+- src/kernel/proc/process.h
+- src/kernel/proc/syscall.c
+- src/user/libc/libc.h
+- src/user/libc/libc.c
+- src/user/apps/vmtest.c
+- Makefile
+- logs/fry724.txt

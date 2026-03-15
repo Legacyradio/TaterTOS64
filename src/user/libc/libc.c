@@ -163,6 +163,33 @@ static inline long syscall3(long n, long a, long b, long c) {
     return ret;
 }
 
+static inline long syscall4(long n, long a, long b, long c, long d) {
+    long ret;
+    register long ra __asm__("rdi") = a;
+    register long rb __asm__("rsi") = b;
+    register long rc __asm__("rdx") = c;
+    register long rd __asm__("r10") = d;
+    __asm__ volatile("syscall"
+                     : "=a"(ret), "+D"(ra), "+S"(rb), "+d"(rc), "+r"(rd)
+                     : "a"(n)
+                     : "rcx", "r11", "r8", "r9", "memory");
+    return ret;
+}
+
+static inline long syscall5(long n, long a, long b, long c, long d, long e) {
+    long ret;
+    register long ra __asm__("rdi") = a;
+    register long rb __asm__("rsi") = b;
+    register long rc __asm__("rdx") = c;
+    register long rd __asm__("r10") = d;
+    register long re __asm__("r8") = e;
+    __asm__ volatile("syscall"
+                     : "=a"(ret), "+D"(ra), "+S"(rb), "+d"(rc), "+r"(rd), "+r"(re)
+                     : "a"(n)
+                     : "rcx", "r11", "r9", "memory");
+    return ret;
+}
+
 static inline long syscall2(long n, long a, long b) {
     long ret;
     register long ra __asm__("rdi") = a;
@@ -230,7 +257,25 @@ enum {
     SYS_PATH_FS_INFO = 33,
     SYS_MOUNTS_INFO = 34,
     SYS_READDIR_EX = 35,
-    SYS_MOUNTS_DEBUG = 36
+    SYS_MOUNTS_DEBUG = 36,
+    SYS_WIFI_STATUS = 37,
+    SYS_WIFI_SCAN = 38,
+    SYS_WIFI_CONNECT = 39,
+    SYS_WIFI_DEBUG = 40,
+    SYS_WIFI_CPU_STATUS = 41,
+    SYS_WIFI_INIT_LOG = 42,
+    SYS_WIFI_DEBUG2 = 43,
+    SYS_WIFI_HANDOFF = 44,
+    SYS_WIFI_DEBUG3 = 45,
+    SYS_WIFI_REINIT = 46,
+    SYS_WIFI_CMD_TRACE = 47,
+    SYS_WIFI_SRAM = 48,
+    SYS_WIFI_DEEP_DIAG = 49,
+    SYS_WIFI_VERIFY = 50,
+    SYS_ETH_DIAG = 51,
+    SYS_MMAP = 52,
+    SYS_MUNMAP = 53,
+    SYS_MPROTECT = 54
 };
 
 long fry_write(int fd, const void *buf, size_t len) {
@@ -271,6 +316,39 @@ long fry_gettime(void) {
 
 long fry_sbrk(intptr_t increment) {
     return syscall1(SYS_SBRK, (long)increment);
+}
+
+void *fry_mmap(void *addr, size_t len, uint32_t prot, uint32_t flags) {
+    return fry_mmap_fd(addr, len, prot, flags, -1);
+}
+
+void *fry_mmap_fd(void *addr, size_t len, uint32_t prot, uint32_t flags, int fd) {
+    return (void *)(uintptr_t)syscall5(SYS_MMAP, (long)addr, (long)len,
+                                       (long)prot, (long)flags, (long)fd);
+}
+
+void *fry_mreserve(void *addr, size_t len, uint32_t flags) {
+    return fry_mmap(addr, len, 0, flags | FRY_MAP_ANON | FRY_MAP_RESERVE);
+}
+
+void *fry_mguard(void *addr, size_t len) {
+    return fry_mmap(addr, len, 0, FRY_MAP_PRIVATE | FRY_MAP_ANON | FRY_MAP_GUARD);
+}
+
+long fry_mcommit(void *addr, size_t len, uint32_t prot) {
+    return fry_mprotect(addr, len, prot);
+}
+
+long fry_munmap(void *addr, size_t len) {
+    return syscall2(SYS_MUNMAP, (long)addr, (long)len);
+}
+
+long fry_mprotect(void *addr, size_t len, uint32_t prot) {
+    return syscall3(SYS_MPROTECT, (long)addr, (long)len, (long)prot);
+}
+
+long fry_syscall_raw(long num, long a1) {
+    return syscall1(num, a1);
 }
 
 long fry_shm_alloc(size_t size) {
@@ -378,6 +456,66 @@ long fry_mkdir(const char *path) {
 
 long fry_unlink(const char *path) {
     return syscall1(SYS_UNLINK, (long)path);
+}
+
+long fry_wifi_status(struct fry_wifi_status *out) {
+    return syscall1(SYS_WIFI_STATUS, (long)out);
+}
+
+long fry_wifi_scan(struct fry_wifi_scan_entry *out, uint32_t max_entries, uint32_t *out_count) {
+    return syscall3(SYS_WIFI_SCAN, (long)out, (long)max_entries, (long)out_count);
+}
+
+long fry_wifi_connect(const char *ssid, const char *passphrase) {
+    return syscall2(SYS_WIFI_CONNECT, (long)ssid, (long)passphrase);
+}
+
+long fry_wifi_debug(char *buf, uint32_t bufsz) {
+    return syscall2(SYS_WIFI_DEBUG, (long)buf, (long)bufsz);
+}
+
+long fry_wifi_cpu_status(char *buf, uint32_t bufsz) {
+    return syscall2(SYS_WIFI_CPU_STATUS, (long)buf, (long)bufsz);
+}
+
+long fry_wifi_init_log(char *buf, uint32_t bufsz) {
+    return syscall2(SYS_WIFI_INIT_LOG, (long)buf, (long)bufsz);
+}
+
+long fry_wifi_debug2(char *buf, uint32_t bufsz) {
+    return syscall2(SYS_WIFI_DEBUG2, (long)buf, (long)bufsz);
+}
+
+long fry_wifi_handoff(char *buf, uint32_t bufsz) {
+    return syscall2(SYS_WIFI_HANDOFF, (long)buf, (long)bufsz);
+}
+
+long fry_wifi_debug3(char *buf, uint32_t bufsz) {
+    return syscall2(SYS_WIFI_DEBUG3, (long)buf, (long)bufsz);
+}
+
+long fry_wifi_reinit(void) {
+    return syscall0(SYS_WIFI_REINIT);
+}
+
+long fry_wifi_cmd_trace(char *buf, uint32_t bufsz) {
+    return syscall2(SYS_WIFI_CMD_TRACE, (long)buf, (long)bufsz);
+}
+
+long fry_wifi_sram(char *buf, uint32_t bufsz) {
+    return syscall2(SYS_WIFI_SRAM, (long)buf, (long)bufsz);
+}
+
+long fry_wifi_deep_diag(char *buf, uint32_t bufsz) {
+    return syscall2(SYS_WIFI_DEEP_DIAG, (long)buf, (long)bufsz);
+}
+
+long fry_wifi_verify(char *buf, uint32_t bufsz) {
+    return syscall2(SYS_WIFI_VERIFY, (long)buf, (long)bufsz);
+}
+
+long fry_eth_diag(char *buf, uint32_t bufsz) {
+    return syscall2(SYS_ETH_DIAG, (long)buf, (long)bufsz);
 }
 
 int getchar_nb(void) {
@@ -603,35 +741,71 @@ char *gets_bounded(char *buf, int max) {
 
 struct malloc_block {
     size_t size;
-    int free;
+    size_t map_len;
     struct malloc_block *next;
-};
+    uint32_t magic;
+    uint32_t flags;
+} __attribute__((aligned(16)));
 
 static struct malloc_block *free_list = NULL;
+
+#define MALLOC_MAGIC 0x4D414C4Cu
+#define MALLOC_FLAG_FREE 0x01u
+#define MALLOC_FLAG_MMAP 0x02u
+#define MALLOC_MMAP_THRESHOLD (64u * 1024u)
+#define MALLOC_PAGE_SIZE 4096u
+
+static size_t malloc_align_up(size_t value, size_t align) {
+    size_t mask = align - 1;
+    return (value + mask) & ~mask;
+}
+
+static int malloc_is_mmap_block(const struct malloc_block *block) {
+    return block && block->magic == MALLOC_MAGIC &&
+           (block->flags & MALLOC_FLAG_MMAP) != 0;
+}
 
 void *malloc(size_t size) {
     size_t max_size_t = (size_t)-1;
     if (size == 0) return NULL;
     if (size > max_size_t - 15) return NULL;
-    size = (size + 15) & ~15; // 16-byte alignment
+    size = malloc_align_up(size, 16); // 16-byte alignment
     if (size > max_size_t - sizeof(struct malloc_block)) return NULL;
+
+    size_t total_size = size + sizeof(struct malloc_block);
+    if (total_size >= MALLOC_MMAP_THRESHOLD) {
+        size_t map_len = malloc_align_up(total_size, MALLOC_PAGE_SIZE);
+        struct malloc_block *block = (struct malloc_block *)fry_mmap(
+            0, map_len, FRY_PROT_READ | FRY_PROT_WRITE,
+            FRY_MAP_PRIVATE | FRY_MAP_ANON);
+        if (!FRY_IS_ERR(block)) {
+            block->size = size;
+            block->map_len = map_len;
+            block->next = NULL;
+            block->magic = MALLOC_MAGIC;
+            block->flags = MALLOC_FLAG_MMAP;
+            return (void *)(block + 1);
+        }
+    }
+
     struct malloc_block *prev = NULL;
     struct malloc_block *curr = free_list;
     while (curr) {
-        if (curr->free && curr->size >= size) {
-            curr->free = 0;
+        if ((curr->flags & MALLOC_FLAG_FREE) != 0 && curr->size >= size) {
+            curr->flags &= ~MALLOC_FLAG_FREE;
             return (void *)(curr + 1);
         }
         prev = curr;
         curr = curr->next;
     }
-    size_t total_size = size + sizeof(struct malloc_block);
     long res = fry_sbrk((intptr_t)total_size);
-    if (res == -1) return NULL;
+    if (res < 0) return NULL;
     struct malloc_block *block = (struct malloc_block *)res;
     block->size = size;
-    block->free = 0;
+    block->map_len = 0;
     block->next = NULL;
+    block->magic = MALLOC_MAGIC;
+    block->flags = 0;
     if (prev) prev->next = block;
     else free_list = block;
     return (void *)(block + 1);
@@ -640,7 +814,12 @@ void *malloc(size_t size) {
 void free(void *ptr) {
     if (!ptr) return;
     struct malloc_block *block = (struct malloc_block *)ptr - 1;
-    block->free = 1;
+    if (block->magic != MALLOC_MAGIC) return;
+    if (malloc_is_mmap_block(block)) {
+        (void)fry_munmap(block, block->map_len);
+        return;
+    }
+    block->flags |= MALLOC_FLAG_FREE;
 }
 
 void *calloc(size_t nmemb, size_t size) {
@@ -656,7 +835,11 @@ void *realloc(void *ptr, size_t size) {
     if (!ptr) return malloc(size);
     if (size == 0) { free(ptr); return NULL; }
     struct malloc_block *block = (struct malloc_block *)ptr - 1;
-    if (block->size >= size) return ptr;
+    if (block->magic != MALLOC_MAGIC) return NULL;
+    if (block->size >= size) {
+        block->size = size;
+        return ptr;
+    }
     void *new_ptr = malloc(size);
     if (new_ptr) {
         memcpy(new_ptr, ptr, block->size);

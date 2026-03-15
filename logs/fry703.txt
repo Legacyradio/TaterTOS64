@@ -1,0 +1,254 @@
+fry703 - 2026-03-11 23:16:45 CDT - WiFi 9260: add a dedicated deep-diagnostics command surface for decoded UMAC assert state plus FSEQ / PD registers without changing existing wc/wh/sram output conventions
+
+SESSION CONTEXT:
+  The active continuation state after `fry702` changed in one important way:
+    - there was now real hardware output again
+    - and that output still landed on the same old outer branch
+
+  The user-provided shell captures showed:
+    - `step=9`
+    - `rc=-3`
+    - ALIVE boundary reached
+    - immediate software error afterward
+    - `hostcmd=0`
+    - no usable RX progress
+
+  More concretely, the posted outputs established:
+    - `wcmd`
+      - retained only ALIVE / SW_ERR markers
+      - no host-command trace entries
+    - `wd3`
+      - ALIVE interrupt observed as `CSR_INT=0x02000001`
+      - immediate transition into the same SW_ERR branch
+    - `wc`
+      - `CPU1_ST=0x00000003`
+      - `CPU2_ST=0x00002320`
+      - `UMAC_PC=0xc0000000->0xc0000000`
+      - `LMAC_PC=0x000000e8->0x000000e8`
+      - no RX completion movement
+    - `sram`
+      - secure-section probes remained sane under the rewritten payload-only
+        uploader model
+      - `exp == stg == now` for the probed sections
+      - the UMAC error table was clearly present and decodable
+
+  That mattered because it selected the honest interpretation from the
+  `eventually14` decision matrix:
+    - the serious uploader contract rewrite had now been spent honestly
+    - the current live lead had moved deeper into:
+      - firmware-side preconditions
+      - platform / power-state requirements
+      - or earlier firmware assert context before the first host command
+
+  The user then added one explicit interface requirement:
+    - if new output was added, it needed its own command surface
+    - existing command outputs should keep their current conventions
+
+WHY THIS PATCH:
+  The current hardware run did not justify more anonymous register dumping
+  inside existing commands.
+
+  It justified one narrower observability improvement:
+    - decode the already-visible UMAC assert table into named fields
+    - expose key FSEQ registers
+    - expose power-domain / OTP state likely relevant to a pre-host-command
+      firmware assert
+    - do it on a dedicated shell-visible surface
+
+  The raw UMAC error words were already enough to show that the failure was
+  not "nothing happened."
+  But the existing surfaces only exposed those words as raw offsets.
+
+  The next useful step was therefore:
+    - not another uploader rewrite
+    - not another ALIVE delay tweak
+    - not another RFH shuffle
+    - but a clean dedicated diagnostic command that preserves existing output
+      stability while giving the next hardware run a more informative capture
+
+SOURCE REFERENCES USED:
+  Continuation / diagnosis basis:
+    - `eventually/eventually12.txt`
+    - `eventually/eventually13.txt`
+    - `eventually/eventually14.txt`
+    - the user-provided `wcmd`, `wd3`, `wc`, `wh`, and `sram` captures from the
+      current failing hardware run
+
+  Existing fry-log format anchors:
+    - `logs/fry700.txt`
+    - `logs/fry701.txt`
+    - `logs/fry702.txt`
+
+  Current local source:
+    - `src/drivers/net/wifi_9260.c`
+    - `src/kernel/proc/syscall.c`
+    - `src/user/libc/libc.c`
+    - `src/user/libc/libc.h`
+    - `src/user/shell/shell.c`
+
+  Linux comparison point used for field layout:
+    - `linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/fw/dump.c`
+
+EXACT CODE CHANGES:
+  File:
+    - `src/drivers/net/wifi_9260.c`
+
+  1. Added a local decoded UMAC error-table reader / formatter.
+     New behavior:
+       - reads the UMAC error structure from device SRAM
+       - prints named fields instead of only raw dwords
+       - applies the Linux-style field layout used for this firmware family
+
+     Why this matters:
+       - the current branch is a pre-host-command assert
+       - the next run needs a named assert surface, not just anonymous words
+
+  2. Added local helpers to print:
+       - decoded assert description
+       - `FSEQ_*` register values
+       - PD / OTP related registers
+
+     Why this matters:
+       - these are the right next precondition surfaces for the branch that now
+         remains after the uploader rewrite
+
+  3. Added a dedicated command backend:
+       - `wifi_9260_get_deep_diag(...)`
+
+     New behavior:
+       - prints:
+         - `--- WiFi Deep Diag ---`
+         - decoded UMAC error table
+         - `--- FSEQ ---`
+         - `--- PD/OTP ---`
+
+  File:
+    - `src/kernel/proc/syscall.c`
+
+  4. Added a new syscall entry for the deep-diagnostics surface.
+
+  File:
+    - `src/user/libc/libc.h`
+    - `src/user/libc/libc.c`
+
+  5. Added the userspace wrapper:
+       - `fry_wifi_deep_diag(...)`
+
+  File:
+    - `src/user/shell/shell.c`
+
+  6. Added shell entry points:
+       - `wifi deep`
+       - `wdeep`
+
+     Why this matters:
+       - the user explicitly required a new command surface for new output
+
+WHAT THIS PATCH INTENTIONALLY DID NOT CHANGE:
+  - no ALIVE wait timing
+  - no interrupt-mask policy
+  - no RFH programming
+  - no uploader semantics
+  - no secure-section parser behavior
+  - no host-command sequencing
+  - no extra fields added to `wc`
+  - no extra fields added to `wh`
+  - no extra fields added to `sram`
+  - no claim that the boot failure is fixed
+
+IMPORTANT INTERPRETATION:
+  fry703 is observability work, not a root-cause fix claim.
+
+  The important interpretation after the user’s current hardware run is now:
+    - the uploader rewrite from `fry702` did not obviously change the outer
+      failure branch
+    - the posted `sram` output remained sane under the new payload-only model
+    - the live clue is still:
+      - ALIVE boundary reached
+      - immediate firmware-side assert
+      - before the first host command
+
+  The decoded UMAC table reinforces that reading:
+    - `cmd_header=0`
+    - `hostcmd=0`
+    align with the same pre-host-command failure boundary
+
+  The next hardware report should therefore capture:
+    - `wcmd`
+    - `wd3`
+    - `wc`
+    - `wh`
+    - `sram`
+    - `wdeep`
+
+  Companion continuation file for this session:
+    - `eventually/eventually15.txt`
+
+COMMANDS RUN:
+  Continuation / source review:
+    - `rg -n "^" /home/jjsako/TaterTOS64v3/logs/fry702.txt`
+    - `rg -n "^" /home/jjsako/TaterTOS64v3/eventually/eventually14.txt`
+    - `rg -n "wifi_9260_get_deep_diag|fry_wifi_deep_diag|wifi deep|wdeep|FSEQ_|WFPM_ARC1_PD_NOTIFICATION|iwl_read_umac_error_table" src/drivers/net/wifi_9260.c src/kernel/proc/syscall.c src/user/libc/libc.c src/user/libc/libc.h src/user/shell/shell.c`
+    - `sed -n '5180,5405p' src/drivers/net/wifi_9260.c`
+    - `sed -n '1115,1140p' src/kernel/proc/syscall.c`
+    - `sed -n '236,250p' src/user/libc/libc.c`
+    - `sed -n '438,448p' src/user/libc/libc.c`
+    - `sed -n '118,128p' src/user/libc/libc.h`
+    - `sed -n '620,735p' src/user/shell/shell.c`
+    - `sed -n '1318,1334p' src/user/shell/shell.c`
+    - `sed -n '1,220p' linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/fw/dump.c`
+
+  Build / package:
+    - `make -C /home/jjsako/TaterTOS64v3 -j4`
+    - `/bin/bash -lc 'PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh'`
+
+  Artifact verification:
+    - `date '+%Y-%m-%d %H:%M:%S %Z'`
+    - `sha256sum out/tatertos64v3.iso out/tater_nvme.img out/efiboot.img`
+    - `stat -c '%n|%s|%y' out/tatertos64v3.iso out/tater_nvme.img out/efiboot.img /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+
+BUILD RESULT:
+  Incremental driver / userspace rebuild:
+    - PASS
+
+  Full rebuild / packaging:
+    - PASS
+
+  New command surface built into the packaged image:
+    - `wifi deep`
+    - `wdeep`
+
+  Export to Windows ISO drop path:
+    - PASS
+
+  Rebuild warnings remained in the same known areas:
+    - `src/kernel/acpi/aml_exec.c:973` unused parameter `ctx`
+    - `src/kernel/acpi/extended.c:618` `str_eq` unused
+    - `src/kernel/acpi/extended.c:613` `obj_to_str` unused
+    - `src/kernel/acpi/extended.c:285` `pci_cf8_write32` unused
+    - `src/boot/efi_loader.c:352` `gop_mask_size` unused
+    - `src/boot/efi_loader.c:346` `gop_mask_pos` unused
+
+  ISO packaging warning remained unchanged:
+    - `xorriso`: boot image load size exceeded 65535 blocks of 512 bytes, so
+      El Torito recorded `0` to extend the ESP to end-of-medium
+
+ARTIFACTS:
+  - `out/tatertos64v3.iso`
+    - sha256 `ba5aa309dc343c55f4d9787459764c2fba3d0fba0eed0367d3308ec093f611d8`
+    - size `151449600`
+    - mtime `2026-03-11 23:14:50 -0500`
+
+  - `out/tater_nvme.img`
+    - sha256 `65a9f20e9524240cf4d16239fdfc5583f7797d8de4815349d239bdbac3698dd2`
+    - size `104857600`
+    - mtime `2026-03-11 23:14:48 -0500`
+
+  - `out/efiboot.img`
+    - sha256 `c7885e78545c7dad050cdb2bb35586c21894802217a29d373b2584528a67addf`
+    - size `67108864`
+    - mtime `2026-03-11 23:14:49 -0500`
+
+  - `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`
+    - size `151449600`
+    - mtime `2026-03-11 23:14:51 -0500`

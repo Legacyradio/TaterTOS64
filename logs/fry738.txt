@@ -1,0 +1,20 @@
+fry738 — ACPI Serial Trace Leak Cleanup
+=======================================
+Timestamp: 2026-03-14 21:22:30 CDT
+
+Completed step:
+- Removed the last unconditional ACPI table stage tracer from the default
+  serial boot path.
+
+What changed:
+- Updated `src/kernel/acpi/tables.c` to use the shared
+  `TATER_BOOT_SERIAL_TRACE` switch for its single-character `STAGE()` serial
+  output while keeping the debug-port breadcrumbs intact.
+
+Why:
+- After the broader trace cleanup, the serial boot log still contained the
+  `RrrcCxSsEeLl` ACPI stage glyphs because this older path was bypassing the
+  shared trace controls.
+
+Test status:
+- Rebuild and verification rerun pending.

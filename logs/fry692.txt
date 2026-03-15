@@ -1,0 +1,559 @@
+fry692 - 2026-03-10 21:36:22 CDT - WiFi 9260: align ALIVE notification semantics to Core43/MVM legacy group/id; rebuild + artifact hashes
+
+SESSION CONTEXT:
+  User follow-up after live hardware analysis:
+    - requested that the next fry log capture "every last detail every bit"
+
+  Immediate prior state before this step:
+    - `fry691` had already removed the newer local INIT upload regression
+      (`step=8 rc=-11`) caused by treating an empty second INIT pass as fatal
+    - the next live hardware dump no longer matched the `fry689`-style upload
+      regression
+    - instead it matched the older deeper blocker documented in:
+      - `logs/fry687.txt`
+      - `logs/fry688.txt`
+      - `eventually/eventually4.txt`
+
+  Live hardware signature that motivated this patch:
+    - `wh` / `wc` / `wd3` showed:
+      - `step=9 rc=-1 irq=2`
+      - `FH_UCODE_LOAD_STATUS=0xffffffff`
+      - CPUs started (`CPU1_ST=0x00000003`, `CPU2_ST=0x00002320`)
+      - no RX progress:
+        - RFH `W=0 R=0 U=0`
+        - `rx_closed=0x00000000`
+        - `rx_finished=0x00000000`
+      - UMAC error table marker present:
+        - `0x0000dead`
+        - error_id `0x0000002e`
+        - crash PC `0x7e3e4b69`
+
+  Interpretation before changing code:
+    - upload was succeeding again
+    - the driver was back on the older ALIVE/RX handoff failure
+    - the next highest-confidence fix was no longer upload semantics
+    - it was ALIVE notification protocol semantics
+
+WHY THIS PATCH:
+  The current source still mixed protocol models on the ALIVE path.
+
+  Specifically, local code still treated ALIVE as:
+    - command/group pair:
+      - `group = 0xff`
+      - `cmd   = 0xff`
+
+  That does not match the Core43 / 9000-family MVM model used by this card.
+
+  Local upstream reference in the bundled Linux tree says:
+    - file:
+      `linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/fw/api/commands.h`
+    - command groups:
+      - `LEGACY_GROUP = 0x0`
+      - `SYSTEM_GROUP = 0x2`
+    - legacy command IDs:
+      - `UCODE_ALIVE_NTFY = 0x1`
+      - `INIT_COMPLETE_NOTIF = 0x4`
+
+  That means:
+    - ALIVE should be received as:
+      - `group = 0x00`
+      - `cmd   = 0x01`
+    - not `0xff/0xff`
+
+  This was already called out as one of the highest-confidence issues in:
+    - `eventually/eventually4.txt`
+    - diagnosis section:
+      "wrong ALIVE / INIT_COMPLETE IDs and group semantics"
+
+  Important clarification discovered during this step:
+    - `eventually4` contains one stale sub-detail when it says current source
+      still waits for `INIT_COMPLETE = 0x84`
+    - current `wifi_9260.c` was already corrected to:
+      - `IWL_INIT_COMPLETE_NOTIF = 0x04`
+    - so the concrete remaining mismatch in current source was ALIVE semantics,
+      not INIT_COMPLETE
+
+SOURCE REFERENCES USED:
+  Primary local driver source:
+    - `src/drivers/net/wifi_9260.c`
+
+  Local case file:
+    - `eventually/eventually4.txt`
+
+  Local Linux reference:
+    - `linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/fw/api/commands.h`
+    - `linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/mvm/fw.c`
+
+FILES INTENTIONALLY CHANGED IN THIS STEP:
+  - `src/drivers/net/wifi_9260.c`
+  - `logs/fry692.txt`
+
+FILES INTENTIONALLY NOT CHANGED IN THIS STEP:
+  - no INIT-phase ordering changes
+  - no NVM/PHY reordering changes
+  - no RFH register programming changes
+  - no `INIT_COMPLETE` constant changes
+  - no shell/UI/debug command changes
+  - no attempt to reinterpret error_id `0x2e`
+
+WORKTREE SAFETY NOTE:
+  The repo was already dirty with many unrelated modified/untracked files.
+  This step did not revert or rewrite unrelated user work.
+  The only source edit intentionally made by this step was in:
+    - `src/drivers/net/wifi_9260.c`
+
+EXACT CODE CHANGES:
+  File:
+    - `src/drivers/net/wifi_9260.c`
+
+  1. Constant block update in ALIVE-handshake section
+     Current line range after patch:
+       - `src/drivers/net/wifi_9260.c:2152-2161`
+
+     Old values:
+       - `IWL_ALIVE_CMD_ID  = 0xFF`
+       - `IWL_SYSTEM_GROUP  = 0xFF`
+       - `IWL_MVM_ALIVE_CMD = 0xFF`
+
+     New values:
+       - `IWL_LEGACY_GROUP  = 0x00`
+       - `IWL_SYSTEM_GROUP  = 0x02`
+       - `IWL_ALIVE_CMD_ID  = 0x01`
+       - `IWL_MVM_ALIVE_CMD = IWL_ALIVE_CMD_ID`
+
+     Rationale for each:
+       - `IWL_LEGACY_GROUP = 0x00`
+         because Core43/MVM ALIVE is a legacy-group notification
+       - `IWL_SYSTEM_GROUP = 0x02`
+         corrected to match upstream command-group definitions even though this
+         particular patch does not yet consume `SYSTEM_GROUP` on the ALIVE path
+       - `IWL_ALIVE_CMD_ID = 0x01`
+         because upstream defines `UCODE_ALIVE_NTFY = 0x1`
+       - `IWL_MVM_ALIVE_CMD = IWL_ALIVE_CMD_ID`
+         removes duplicate divergent meaning for the same notification
+
+  2. ALIVE wait-path RX filter update
+     Current line:
+       - `src/drivers/net/wifi_9260.c:2664`
+
+     Old logic:
+       - accepted ALIVE only if:
+         - `group == IWL_SYSTEM_GROUP`
+         - `cmd == IWL_ALIVE_CMD_ID`
+       - with old constants, that reduced to `0xff/0xff`
+
+     New logic:
+       - accepts ALIVE only if:
+         - `group == IWL_LEGACY_GROUP`
+         - `cmd == IWL_ALIVE_CMD_ID`
+       - this now means `0x00/0x01`
+
+     Why this matters:
+       - `iwl_wait_alive()` is the authoritative bring-up gate
+       - if this filter waits for the wrong notification ID/group, the driver
+         can time out in step 9 even if the RX transport is otherwise correct
+
+  3. Generic RX classifier ALIVE check update
+     Current line:
+       - `src/drivers/net/wifi_9260.c:3604`
+
+     Old logic:
+       - `if (group == 0xFF && cmd == 0xFF) return 1;`
+
+     New logic:
+       - `if (group == IWL_LEGACY_GROUP && cmd == IWL_ALIVE_CMD_ID) return 1;`
+
+     Why this matters:
+       - this keeps the secondary RX classification path consistent with the
+         explicit ALIVE wait path
+       - avoids one path being fixed while another still silently assumes
+         `0xff/0xff`
+
+POST-PATCH SOURCE STATE VERIFIED:
+  After the edit, grep confirmed no remaining hard-coded ALIVE checks of the
+  old `0xff/0xff` form in `wifi_9260.c`.
+
+  Verified remaining ALIVE-related lines:
+    - `IWL_LEGACY_GROUP        = 0x00`
+    - `IWL_ALIVE_CMD_ID        = 0x01`
+    - `if (group == IWL_LEGACY_GROUP && cmd == IWL_ALIVE_CMD_ID)` in
+      `iwl_wait_alive()`
+    - `if (group == IWL_LEGACY_GROUP && cmd == IWL_ALIVE_CMD_ID)` in
+      `iwl_rx_process_one()`
+
+COMMANDS RUN FOR THIS STEP:
+  Evidence / source inspection:
+    - `rg -n "IWL_ALIVE_CMD_ID|IWL_SYSTEM_GROUP|IWL_MVM_ALIVE_CMD|group == 0xFF && cmd == 0xFF|ALIVE notification" src/drivers/net/wifi_9260.c linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi -g '!**/*.o'`
+    - `rg -n "UCODE_ALIVE_NTFY|INIT_COMPLETE_NOTIF|LEGACY_GROUP|SYSTEM_GROUP|group.*0xff|SCAN_COMPLETE_UMAC" linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi -g '!**/*.o'`
+    - `sed -n '1,140p' linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/fw/api/commands.h`
+    - `sed -n '90,140p' linux-7.0-rc2/drivers/net/wireless/intel/iwlwifi/mvm/fw.c`
+    - `nl -ba src/drivers/net/wifi_9260.c | sed -n '2148,2162p; 2658,2666p; 3598,3605p'`
+    - `rg -n "0xFF && cmd == 0xFF|group == 0xFF|UCODE_ALIVE_NTFY|IWL_ALIVE_CMD_ID|IWL_LEGACY_GROUP" src/drivers/net/wifi_9260.c`
+
+  Timing / bookkeeping:
+    - `date '+%Y-%m-%d %H:%M:%S %Z'`
+
+  Patch verification:
+    - `git -C /home/jjsako/TaterTOS64v3 diff --unified=8 -- src/drivers/net/wifi_9260.c`
+
+  Targeted compile:
+    - `make -C /home/jjsako/TaterTOS64v3 src/drivers/net/wifi_9260.o`
+
+  Full rebuild:
+    - `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+
+  Artifact verification:
+    - `sha256sum /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /home/jjsako/TaterTOS64v3/out/tater_nvme.img /home/jjsako/TaterTOS64v3/out/efiboot.img`
+    - `stat -c '%n|%s|%y' /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso /home/jjsako/TaterTOS64v3/out/tater_nvme.img /home/jjsako/TaterTOS64v3/out/efiboot.img`
+
+BUILD / VERIFICATION RESULT:
+  Targeted compile:
+    - `make -C ... src/drivers/net/wifi_9260.o`: PASS
+
+  Full rebuild:
+    - `build_iso.sh`: PASS
+
+  Build completed through:
+    - kernel rebuild
+    - userland rebuild
+    - ToTFS host-tool run
+    - NVMe image creation and population
+    - EFI loader build
+    - EFI system partition image creation
+    - ISO staging-tree population
+    - final ISO packaging
+    - live-app fallback verification
+
+  Windows export:
+    - skipped
+    - exact message:
+      `Skipping Windows ISO export: /mnt/c/Users/jjsako/Documents is not writable.`
+
+ARTIFACT OUTPUTS FROM THIS STEP:
+  ISO:
+    - path:
+      `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+    - size:
+      `151402496` bytes
+    - mtime:
+      `2026-03-10 21:33:39.349228336 -0500`
+    - sha256:
+      `2d4bebeff485d55071f8e2d275b66aaf538918aff89dbdcda25f8a4f887f76fd`
+
+  NVMe image:
+    - path:
+      `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+    - size:
+      `104857600` bytes
+    - mtime:
+      `2026-03-10 21:33:38.088806955 -0500`
+    - sha256:
+      `0eee46af8075a63f317982e55da68d2c76256921bc8e157d2633e61b52d9d0b4`
+
+  EFI image:
+    - path:
+      `/home/jjsako/TaterTOS64v3/out/efiboot.img`
+    - size:
+      `67108864` bytes
+    - mtime:
+      `2026-03-10 21:33:38.789247991 -0500`
+    - sha256:
+      `97447515324b0271818ef5fb9d1a3f89c5b2b36b157aec7069773525d1c4171a`
+
+PACKAGING DETAILS OBSERVED:
+  NVMe ToTFS population completed successfully with:
+    - `SHELL.TOT`
+    - `INIT.FRY`
+    - `GUI.FRY`
+    - `SYSINFO.FRY`
+    - `UPTIME.FRY`
+    - `PS.FRY`
+    - `FILEMAN.FRY`
+    - `NETMGR.FRY`
+
+  Reported final outputs:
+    - `/home/jjsako/TaterTOS64v3/out/tater_nvme.img`
+    - `/home/jjsako/TaterTOS64v3/out/efiboot.img`
+    - `/home/jjsako/TaterTOS64v3/out/tatertos64v3.iso`
+
+BUILD WARNINGS OBSERVED:
+  Unchanged compiler warnings during rebuild:
+    - `src/kernel/acpi/aml_exec.c:973`
+      unused parameter `ctx`
+    - `src/kernel/acpi/extended.c:618`
+      `str_eq` defined but not used
+    - `src/kernel/acpi/extended.c:613`
+      `obj_to_str` defined but not used
+    - `src/kernel/acpi/extended.c:285`
+      `pci_cf8_write32` defined but not used
+    - `src/boot/efi_loader.c:352`
+      `gop_mask_size` defined but not used
+    - `src/boot/efi_loader.c:346`
+      `gop_mask_pos` defined but not used
+
+  ISO packaging warning:
+    - `xorriso`
+      warning that boot image load size exceeded 65535 blocks of 512 bytes and
+      El Torito recorded 0 to extend the ESP to end-of-medium
+
+  None of these warnings blocked artifact creation.
+
+WHAT THIS STEP DOES NOT CLAIM:
+  This patch does NOT prove that the remaining failure was only an ALIVE ID
+  mismatch.
+
+  It only removes one high-confidence protocol inconsistency so the next
+  hardware result can answer a cleaner question:
+    - was the driver missing a valid ALIVE notification because it was waiting
+      for the wrong group/id?
+    - or does the firmware still assert even after ALIVE semantics match the
+      Core43 model?
+
+WHAT THIS STEP VERY SPECIFICALLY DID NOT CHANGE:
+  1. `INIT_COMPLETE_NOTIF`
+     - left at `0x04`
+     - already matched current source
+
+  2. INIT-phase sequencing
+     - NVM/PHY work is still ordered the old local way
+     - this remains the next likely major issue if ALIVE semantics alone do not
+       change hardware behavior
+
+  3. RFH / RX ring programming
+     - no DMA register or doorbell writes changed in this step
+
+  4. UMAC assert handling
+     - no change to SRAM dump logic or error-table reads
+
+EXPECTED NEXT HARDWARE TEST:
+  Boot the newly rebuilt image and run:
+    1. `wl`
+    2. `wc`
+    3. `wd3`
+    4. optionally `wh`
+
+WHAT TO LOOK FOR FIRST:
+  Strong success signal for this exact patch:
+    - step 9 no longer times out in the same way
+    - ALIVE is recognized
+    - driver moves beyond the old ALIVE wait
+    - visible progress may shift to:
+      - `INIT_COMPLETE` wait
+      - `HCMD_INIT`
+      - a later command/ordering failure
+
+  Medium success signal:
+    - RFH / RX state finally shows non-zero progress
+    - `wd3` shows received RX entries instead of total zero movement
+    - `wl` prints an ALIVE status line instead of pure timeout path
+
+  Failure pattern meaning "this patch was not sufficient":
+    - still `step=9 rc=-1`
+    - still no RX progress
+    - still same UMAC error marker:
+      - `0x0000dead`
+      - error_id `0x2e`
+      - crash PC `0x7e3e4b69`
+
+  If the failure remains unchanged after this patch:
+    - the next highest-confidence target should stay:
+      - INIT-phase ordering
+      - NVM during INIT
+      - PHY configuration during INIT
+      - then wait for calibration / INIT_COMPLETE
+      - only later boot runtime and send PHY DB to runtime
+
+RANKED TAKEAWAY AFTER THIS STEP:
+  1. `fry691` removed the local upload regression.
+  2. `fry692` removes the remaining high-confidence ALIVE protocol mismatch in
+     current source.
+  3. If hardware still shows the same step-9 UMAC assert signature after this,
+     the next patch should move to INIT-phase ordering rather than more ALIVE
+     constant experiments.
+
+LIMITS / EXPLICIT NON-USE:
+  - no QEMU logs used
+  - no internet lookup used
+  - no attempt to compare against non-local firmware packages
+
+NEXT ACTION MATRIX: WHAT TO DO DEPENDING ON THE NEXT OUTPUT
+-----------------------------------------------------------
+Run this exact capture set on hardware:
+  1. `wl`
+  2. `wh`
+  3. `wc`
+  4. `wd3`
+
+Then branch by the first decisive signature you see:
+
+CASE A: The old upload regression reappears
+  Output shape:
+    - `step=8 rc=-11`
+    - or `FW upload FAILED rc=-11`
+
+  Meaning:
+    - the newly rebuilt artifact is probably not what actually booted
+    - or a second independent `-11` path exists and needs to be identified
+
+  What to do next:
+    - first verify the booted image really corresponds to this rebuild
+    - compare the deployed media against:
+      - ISO sha256
+        `2d4bebeff485d55071f8e2d275b66aaf538918aff89dbdcda25f8a4f887f76fd`
+      - NVMe sha256
+        `0eee46af8075a63f317982e55da68d2c76256921bc8e157d2633e61b52d9d0b4`
+      - EFI sha256
+        `97447515324b0271818ef5fb9d1a3f89c5b2b36b157aec7069773525d1c4171a`
+    - if the correct artifact definitely booted and `-11` still appears:
+      - inspect every remaining return `-11` path in `wifi_9260.c`
+      - do NOT move to INIT ordering yet
+
+CASE B: ALIVE is now recognized and INIT advances further
+  Output shape:
+    - `wl` shows an ALIVE success line such as:
+      - `ALIVE st=cafe`
+      - or `*** FIRMWARE IS ALIVE ***`
+    - `step` moves past `9`
+    - likely lands in:
+      - `step=10`
+      - or `step=11`
+
+  Meaning:
+    - this patch fixed a real protocol mismatch
+    - the previous step-9 timeout was at least partly caused by waiting for the
+      wrong notification group/id
+
+  What to do next:
+    - stop touching ALIVE semantics
+    - debug the next failing stage exactly where it lands:
+      - `step=10` means host-command init / post-ALIVE bring-up
+      - `step=11` means MAC-layer init after host commands
+    - capture the first host command that fails and patch only that path
+
+CASE C: ALIVE is recognized, but INIT_COMPLETE times out
+  Output shape:
+    - `wl` shows ALIVE success
+    - later `wl` shows:
+      - `waiting for INIT_COMPLETE/PHY_DB notifications...`
+      - followed by `INIT_COMPLETE timeout`
+    - `step` likely lands around `10`
+
+  Meaning:
+    - ALIVE semantics are no longer the lead bug
+    - the next highest-confidence issue becomes the INIT-phase ordering mismatch
+
+  What to do next:
+    - move NVM and PHY preparation into INIT phase before waiting for final
+      calibration / INIT_COMPLETE
+    - target sequence should become:
+      1. boot INIT
+      2. wait INIT ALIVE
+      3. read NVM during INIT
+      4. load NVM to NIC if needed
+      5. send antenna / PHY setup during INIT
+      6. then wait for PHY DB / INIT_COMPLETE
+      7. only later boot runtime and send PHY DB to runtime
+
+CASE D: Step 9 still fails with the same old UMAC assert and zero RX progress
+  Output shape:
+    - `step=9 rc=-1`
+    - `RFH_ACT=0x00010001 W=0 R=0 U=0`
+    - `rx_closed=0x00000000`
+    - `rx_fin=0x00000000`
+    - UMAC error table still shows:
+      - `+00000000=0x0000dead`
+      - `+00000004=0x0000002e`
+      - `+00000008=0x7e3e4b69`
+    - `wh` still says:
+      - `cpu-stuck-no-rx-progress`
+
+  Meaning:
+    - fixing ALIVE IDs alone was not enough
+    - the firmware is still asserting before a usable RX/ALIVE handoff
+    - the next best target is no longer constants
+    - it is INIT-phase sequencing
+
+  What to do next:
+    - do NOT spend another round on ALIVE constant guessing
+    - next patch should be the INIT ordering correction described above
+
+CASE E: RX progress appears, but ALIVE parse fails
+  Output shape:
+    - `wd3` or `wl` shows RX entries arriving
+    - but `wl` shows one of:
+      - `ALIVE too short (...)`
+      - `ALIVE bad status`
+      - or a visible `RX[...] cmd=01 grp=00` without successful ALIVE handling
+
+  Meaning:
+    - transport is working better
+    - but the ALIVE payload version/structure parsing is wrong or incomplete
+
+  What to do next:
+    - patch ALIVE payload parsing, not transport ordering
+    - compare actual payload length against the supported alive struct layouts in
+      the local Linux reference
+    - keep the new group/id constants; do not revert them
+
+CASE F: PHY DB notifications appear, but parser fails
+  Output shape:
+    - `wl` shows:
+      - `PHY DB notif parse failed rc=...`
+    - or `wd3`/`wl` clearly shows command `0x6b` traffic before failure
+
+  Meaning:
+    - ALIVE and at least part of INIT RX handling are working
+    - the next bug is in `iwl_phy_db_store_notif()`
+
+  What to do next:
+    - inspect the received PHY DB notification lengths/types
+    - patch PHY DB parsing only
+    - do not touch ALIVE constants again
+
+CASE G: Driver reaches host-command init and NVM/PHY commands fail
+  Output shape:
+    - `wl` shows failures like:
+      - `PHY_CFG_CMD failed rc=...`
+      - `NVM read section=... failed rc=...`
+      - `hcmd init FAILED rc=...`
+    - `step` lands at `10`
+
+  Meaning:
+    - INIT ALIVE path is probably fixed enough to move on
+    - the new lead issue is command sequencing or command semantics after ALIVE
+
+  What to do next:
+    - inspect the exact failing command first
+    - only patch the failing host-command path
+    - if these failures happen immediately after INIT ALIVE, the INIT ordering
+      correction is still the highest-confidence umbrella fix
+
+CASE H: Driver reaches scan / ready state
+  Output shape:
+    - `step=13`
+    - scan output appears
+    - `wifi status` / `wc` / `wl` no longer show bring-up failure
+
+  Meaning:
+    - the current boot path is finally past firmware bring-up
+
+  What to do next:
+    - stop touching boot firmware logic
+    - shift effort to:
+      - scan reliability
+      - association/authentication
+      - WPA2
+      - DHCP/data path
+
+FAST TRIAGE RULE:
+  For the very next hardware run, the most important discriminator is this:
+
+  1. If you still get the same `step=9 rc=-1` + `0xdead/0x2e/0x7e3e4b69`
+     signature:
+     - next patch = INIT-phase ordering
+
+  2. If you move past step 9:
+     - next patch = whatever the new first failure actually is
+
+  3. If you fall back to `step=8 rc=-11`:
+     - first verify the artifact/media before changing code again

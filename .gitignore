@@ -58,3 +58,6 @@ iwl_*.txt
 # Debug scratch
 debug.log
 vmtest_fixture.txt
+
+# Private application drafts
+NLNET_APPLICATION.md

@@ -1,0 +1,65 @@
+{
+  "version": "v1.0.0",
+  "entity": {
+    "type": "individual",
+    "role": "owner",
+    "name": "Zackery Sayers / TaterLabs",
+    "email": "legacyindiesubmissions@gmail.com",
+    "phone": "",
+    "description": "Independent developer building TaterTOS64v3, a fully independent 64-bit operating system written from scratch. Every subsystem — kernel, device drivers, TCP/IP stack, TLS, web browser with JavaScript, custom filesystem, GUI compositor — is original code with no Linux or Windows source. Built in ~10 weeks by one person on a $140 refurbished Dell Precision 7530. Also builds Legacy Indie Radio (AI-powered radio station) and published embodied LLM research on Zenodo.",
+    "webpageUrl": {
+      "url": "https://github.com/Legacyradio/TaterTOS64"
+    }
+  },
+  "projects": [
+    {
+      "guid": "tatertos64v3",
+      "name": "TaterTOS64v3",
+      "description": "A ground-up open-source 64-bit operating system for digital sovereignty. Includes: custom kernel with ACPI 6.2 AML interpreter, NVMe/WiFi 802.11ac/HD Audio/USB 3.0 drivers, TCP/IP networking with TLS 1.3, ToTFS custom filesystem, TaterSurf web browser (HTML5/CSS3/JS/video/audio), GUI compositor with TaterWin IPC, custom libc and .fry binary format. 2.3 million lines, 1,112 files. Boots on bare metal Dell Precision 7530 and QEMU. GPL v3.",
+      "webpageUrl": {
+        "url": "https://github.com/Legacyradio/TaterTOS64"
+      },
+      "repositoryUrl": {
+        "url": "https://github.com/Legacyradio/TaterTOS64"
+      },
+      "licenses": ["GPL-3.0-only"],
+      "tags": ["operating-system", "kernel", "browser", "networking", "filesystem", "bare-metal", "digital-sovereignty", "systems-programming"]
+    }
+  ],
+  "funding": {
+    "channels": [
+      {
+        "guid": "kofi",
+        "type": "payment-provider",
+        "address": "https://ko-fi.com/legacyindie",
+        "description": "One-time donations via Ko-fi"
+      },
+      {
+        "guid": "patreon",
+        "type": "payment-provider",
+        "address": "https://patreon.com/c/TaterLabs",
+        "description": "Recurring support via Patreon"
+      }
+    ],
+    "plans": [
+      {
+        "guid": "one-time-any",
+        "status": "active",
+        "name": "One-time donation",
+        "amount": 0,
+        "currency": "USD",
+        "frequency": "one-time",
+        "channels": ["kofi"]
+      },
+      {
+        "guid": "monthly-support",
+        "status": "active",
+        "name": "Monthly development support",
+        "amount": 0,
+        "currency": "USD",
+        "frequency": "monthly",
+        "channels": ["patreon"]
+      }
+    ]
+  }
+}

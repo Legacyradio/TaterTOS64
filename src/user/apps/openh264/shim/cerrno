@@ -1,0 +1,4 @@
+#ifndef _TATER_CERRNO
+#define _TATER_CERRNO
+#include <errno.h>
+#endif

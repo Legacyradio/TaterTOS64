@@ -1,0 +1,45 @@
+fry779 — TaterSurf abort-on-launch fix + keyboard input fix
+=====================================================================
+Timestamp: 2026-03-28T02:00:00Z
+
+BUG 1: TaterSurf aborts immediately on launch
+  Root cause: ts_dom_init() used JS_NewContext() which registers all
+  QuickJS intrinsics (BaseObjects, Date, Eval, RegExp, JSON, Proxy,
+  MapSet, TypedArrays, Promise, BigInt). Then lines 912-921 called
+  JS_AddIntrinsic*() for the same set AGAIN. QuickJS's
+  JS_DefineAutoInitProperty() aborts when a property already exists
+  on the target object — duplicate registration = instant abort().
+
+  Fix: src/user/apps/ts_dom.h:904
+    JS_NewContext(dom->rt)  →  JS_NewContextRaw(dom->rt)
+  JS_NewContextRaw creates a bare context without intrinsics, so the
+  explicit JS_AddIntrinsic*() calls that follow work correctly.
+
+  Verified: headless QEMU boot with serial capture. Before fix:
+    "ABORT called" immediately after g_dom allocation.
+  After fix: all init stages complete, TaterSurf enters event loop.
+
+BUG 2: Keyboard input ignored in TaterSurf
+  Root cause: tatersurf.c:959 had:
+    if (key->flags != 1) return; /* only pressed events */
+  But FRY_KEY_PRESSED is defined as 0x00 (fry_input.h:94), not 0x01.
+  FRY_KEY_RELEASED is 0x01. So the check was backwards — it rejected
+  all key-press events and only processed key-release events, which
+  have ascii=0 for most keys. Result: clicking the URL bar worked
+  (mouse events use a different path) but typing did nothing.
+
+  Fix: src/user/apps/tatersurf.c:959
+    key->flags != 1  →  key->flags != FRY_KEY_PRESSED
+
+Files changed:
+  MODIFIED:
+    src/user/apps/ts_dom.h       (JS_NewContext → JS_NewContextRaw)
+    src/user/apps/tatersurf.c    (key flags check fix)
+
+KNOWN STATE (dirty, not yet cleaned up):
+  src/user/init/init.c has a temporary DEBUG auto-launch block for
+  headless QEMU testing. Must be reverted before final build.
+
+RESOLVED from fry778 KNOWN ISSUES:
+  - TaterSurf aborts on launch — FIXED (QuickJS double-init)
+  - Keyboard not working — FIXED (wrong key flags constant)

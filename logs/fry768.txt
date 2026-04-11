@@ -1,0 +1,75 @@
+fry768 — TaterSurf Phase B4+B5: main application + Makefile integration
+=====================================================================
+Timestamp: 2026-03-27T19:12:00Z
+
+Context:
+  TaterSurf main application — ties all Phase A+B components together
+  into a working TaterWin browser app. Makefile integration to build
+  as part of the standard OS image.
+
+Changes:
+
+  New file: src/user/apps/tatersurf.c (~780 LOC)
+    TaterWin application with:
+    - Toolbar: back/forward/reload buttons + editable URL bar
+    - Viewport: scrollable page content rendered via ts_doc_render
+    - Status bar: connection state, page title, bytes loaded
+    - Navigation: type URL + Enter, click links, back/forward, history
+    - Scrolling: wheel, Page Up/Down, Home/End, arrow keys, Space
+    - Keyboard: Tab=focus URL bar, Ctrl+L=focus+select, Escape=cancel,
+      R=reload, Q=quit, Backspace=back
+    - Mouse: toolbar button clicks, URL bar click-to-place-cursor,
+      viewport link detection via ts_doc_hit_test
+    - HTTP pipeline: navigate → DNS → TCP → TLS(if HTTPS) → send GET
+      → poll recv → parse headers → collect body → build document
+      → layout → render
+    - Redirect following (301/302/303/307/308)
+    - Cookie jar (in-memory, per session)
+    - Window resize support (re-layout on resize)
+    - TLS indicator in URL bar ('S' in green for HTTPS)
+    - Dark theme matching TaterTOS64v3 desktop
+
+  New file: src/user/apps/mbedtls/tatertos_stubs.c (~200 LOC)
+    Stub symbols for mbedTLS features we excluded (DES, ARIA,
+    Camellia, CCM, MD5, SHA-1, SHA-3, RIPEMD-160, CMAC, HMAC-DRBG,
+    ECJPAKE, FFDH, PAKE). PSA crypto wrappers reference these
+    unconditionally even when config macros are absent.
+    All stubs return -1 (feature unavailable).
+    Also provides __udivti3/__umodti3 for 128-bit division needed
+    by bignum on x86_64.
+    Why: avoids modifying mbedTLS source, keeps it as-is from upstream.
+
+  Modified: Makefile
+    Added TATERSURF_OBJS (libc + mbedTLS + platform + stubs + tatersurf.o)
+    Added MBEDTLS_DIR wildcard for library/*.c objects
+    Added compile rules for mbedTLS objects (with shim include path),
+    platform shim, stubs, and tatersurf.c
+    Added 'tatersurf' target: link → frypack
+    Added to 'all' target and 'clean' target
+
+  Removed: src/user/apps/mbedtls/library/psa_crypto_pake.c (ECJPAKE,
+    not needed), src/user/apps/mbedtls/library/psa_crypto_ffdh.c
+    (FFDH DH, not needed)
+
+Build result:
+  tatersurf.elf: 704 KB
+  tatersurf.fry: 704 KB
+
+  That's a complete HTTPS web browser with TLS 1.2+1.3 in 704 KB.
+  For comparison, Firefox was 20 GB.
+
+Build command:
+  make tatersurf
+
+  Full list linked:
+    11 libc objects + 74 mbedTLS objects + 1 platform shim +
+    1 stubs file + 1 tatersurf.o = 88 object files linked.
+
+Note: build_iso.sh integration (copying TATERSURF.FRY to ISO image
+and ToTFS partition) not yet done — will be in next step.
+
+Artifacts:
+  src/user/apps/tatersurf.c
+  src/user/apps/mbedtls/tatertos_stubs.c
+  tatersurf.elf (704 KB)
+  tatersurf.fry (704 KB)

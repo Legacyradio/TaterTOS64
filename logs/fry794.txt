@@ -1,0 +1,63 @@
+fry794 — TLS resource crash: 8+ trace iterations, stack fix, connection reuse
+=====================================================================
+Timestamp: 2026-04-02
+
+STATUS: BLOCKER REMAINS — mbedTLS crashes on Nth TLS operation
+
+SESSION SUMMARY:
+  Spent full session tracing the resource TLS crash from fry793. Over 8
+  build-test iterations narrowed the crash location but did NOT find the
+  root cause in mbedTLS.
+
+CONFIRMED FINDINGS:
+  1. TLS 1.2 cap (from fry793) IS applied correctly — doesn't help.
+     Crash happens in BOTH TLS 1.2 and TLS 1.3.
+  2. Crash location: state 5 (CERTIFICATE_REQUEST) of TLS 1.2 handshake,
+     inside ssl_get_next_record → ssl_fetch_input → f_recv callback.
+     f_recv pointer is valid (non-NULL) at trace time but RIP=0x0 at crash.
+  3. transform_in is properly NULL for the 2nd connection (NOT stale).
+  4. Kernel sysret frame is NOT corrupted (added guard, didn't trigger).
+  5. Stack overflow WAS masking progress: 4MB user stack too small for
+     mbedTLS + QuickJS + full browser. Fixed: 4MB→8MB user, 16KB→32KB kernel.
+
+TLS CONNECTION REUSE (partially working):
+  Implemented HTTP/1.1 keep-alive on the main TLS connection:
+  - ts_http_reuse_get() sends new GET on existing socket+TLS
+  - Same-host resources queued in g_reuse_queue, fetched serially
+  - First reuse request SUCCEEDS (Google logo, 5482 bytes downloaded)
+  - Second reuse request CRASHES with RIP=0x0
+
+  This confirms: mbedTLS works for exactly ONE full request-response cycle
+  on a connection. The second request-response crashes during the response
+  read phase. This is consistent across new connections AND keep-alive reuse.
+
+WHAT WAS RULED OUT:
+  - Stack overflow (fixed with larger stacks)
+  - TLS version (both 1.2 and 1.3 crash)
+  - Stale transform_in pointer (confirmed NULL for 2nd conn)
+  - Corrupted kernel sysret frame (guard didn't fire)
+  - NULL f_rng/f_send/f_recv/update_checksum (all validated non-NULL)
+  - calloc not zeroing (confirmed proper implementation)
+
+FILES CHANGED:
+  MODIFIED:
+    src/kernel/proc/elf.c            (USER_STACK_PAGES 1024→2048)
+    src/kernel/proc/process.c        (KSTACK_SIZE 16384→32768)
+    src/user/apps/ts_http.h          (Connection: keep-alive, ts_http_reuse_get,
+                                      cleaned debug traces)
+    src/user/apps/tatersurf.c        (TLS reuse queue, g_page_html save,
+                                      deferred reuse start)
+    src/user/apps/ts_resource.h      (reverted HTTPS→HTTP downgrade attempt)
+    src/user/apps/mbedtls/library/ssl_tls.c          (cleaned debug traces)
+    src/user/apps/mbedtls/library/ssl_tls12_client.c (cleaned debug traces)
+    src/user/apps/mbedtls/library/ssl_msg.c          (cleaned debug traces)
+    src/kernel/proc/syscall.c        (added+removed sysret guard)
+
+NEXT SESSION:
+  Stop tracing mbedTLS internals. Consider:
+  1. Build mbedTLS WITHOUT PSA crypto (use legacy crypto backend)
+  2. Replace mbedTLS with BearSSL or wolfSSL
+  3. Disassemble crash point in tatersurf.elf to find exact call instruction
+  4. Kernel-level TLS offload (kTLS-like approach)
+
+Build: clean. ISO exported. QEMU launch via PowerShell confirmed working.

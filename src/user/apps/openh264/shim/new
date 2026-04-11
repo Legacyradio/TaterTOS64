@@ -1,0 +1,8 @@
+#ifndef _TATER_NEW
+#define _TATER_NEW
+/* Minimal <new> for freestanding C++.
+   operator new/delete are provided by cxxrt.cpp */
+#include <stddef.h>
+inline void *operator new(size_t, void *p) noexcept { return p; }
+inline void *operator new[](size_t, void *p) noexcept { return p; }
+#endif

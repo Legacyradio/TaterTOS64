@@ -1,0 +1,77 @@
+fry797 — BearSSL swap complete — mbedTLS replaced
+=====================================================================
+Timestamp: 2026-04-02
+
+CHANGE:
+  Replaced mbedTLS with BearSSL as the TLS library for TaterSurf.
+  Complete rewrite of the TLS integration layer in ts_http.h.
+
+  BearSSL advantages over mbedTLS for TaterTOS bare-metal:
+    - Zero dynamic allocation (all buffers caller-provided)
+    - Zero global state (all state in caller-owned structs)
+    - Designed for embedded/bare-metal
+    - TLS 1.2 only (sufficient — Google/most sites still accept)
+
+WHY:
+  mbedTLS crashed on the 2nd TLS read operation on any connection,
+  regardless of TLS version (1.2/1.3) or crypto backend (PSA/legacy).
+  RIP=0x0 deep in ssl_fetch_input. After 10+ trace iterations
+  (fry793-795), every mbedTLS-internal theory was ruled out. The crash
+  was a fundamental incompatibility between mbedTLS 3.x and TaterTOS's
+  bare-metal environment.
+
+INTEGRATION APPROACH:
+  - BearSSL low-level engine API (non-blocking, poll-based)
+  - Custom X.509 "no-validate" wrapper: delegates to br_x509_minimal
+    for server public key extraction, but overrides end_chain() to
+    always return 0 (accept all certificates, same as mbedTLS VERIFY_NONE)
+  - Entropy from fry_getrandom() injected via br_ssl_engine_inject_entropy()
+  - BR_SSL_BUFSIZE_BIDI (~33KB) static buffer per connection
+  - Engine pump functions (ts_tls_pump_send/recv) called each poll cycle
+
+FILES CHANGED:
+  CREATED:
+    src/user/apps/bearssl/        — BearSSL source tree (inc/ + src/)
+    src/user/apps/bearssl/tatertos_rt.c — 128-bit division stubs (__udivti3 etc.)
+
+  MODIFIED:
+    src/user/apps/bearssl/src/config.h
+      - Added bare-metal defines: BR_64, BR_LE_UNALIGNED
+      - Disabled: BR_USE_URANDOM, BR_USE_GETENTROPY, BR_USE_UNIX_TIME,
+        BR_USE_WIN32_RAND, BR_USE_WIN32_TIME, BR_RDRAND, BR_AES_X86NI, BR_SSE2
+
+    src/user/apps/ts_http.h
+      - Replaced mbedTLS includes with bearssl/inc/bearssl.h
+      - New: ts_x509_novalidate_context + vtable (accept-all x509 wrapper)
+      - Replaced struct ts_tls_ctx internals:
+        * mbedtls_ssl_context → br_ssl_client_context
+        * mbedtls_ssl_config → (embedded in client context)
+        * mbedtls_x509_crt → ts_x509_novalidate_context
+        * Added: unsigned char iobuf[BR_SSL_BUFSIZE_BIDI]
+      - Removed: g_tls_initialized, ts_psa_rng(), ts_tls_global_init()
+      - Removed: ts_tls_send/recv mbedTLS callbacks
+      - New: ts_tls_pump_send(), ts_tls_pump_recv() — engine record I/O
+      - Rewrote ts_tls_setup(): br_ssl_client_init_full + novalidate wrapper
+      - Rewrote ts_tls_handshake(): engine state machine pump
+      - Rewrote ts_tls_teardown(): br_ssl_engine_close
+      - Rewrote ts_http__send(): engine SENDAPP + flush
+      - Rewrote ts_http__recv(): engine RECVREC + RECVAPP
+
+    Makefile
+      - Replaced MBEDTLS_DIR/MBEDTLS_OBJS with BEARSSL_SRC/BEARSSL_OBJS
+      - Replaced mbedTLS build rules with BearSSL pattern rules (per-subdir)
+      - Updated TATERSURF_OBJS, tatersurf.o compile rule, clean rule
+
+  NOT CHANGED:
+    tatersurf.c — no direct mbedTLS calls (all through ts_http.h)
+    ts_url.h, ts_html.h, ts_css.h, ts_layout.h, ts_dom.h, ts_resource.h
+    ts_image.h, ts_video.h, ts_h264_wrap.h/.cpp, ts_dash.h
+
+Build: clean (0 errors, warnings only from pre-existing unused functions).
+ISO exported to C:\Users\jjsako\Documents\tateriso\tatertos64v3.iso
+
+NEXT: Boot QEMU, navigate to google.com, verify:
+  1. TLS handshake completes (no crash)
+  2. Main page loads
+  3. Keep-alive reuse works (resource loading)
+  4. Second connection works (the mbedTLS crash point)

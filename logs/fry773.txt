@@ -1,0 +1,80 @@
+fry773 — TaterSurf Phase D1-D2: Intel HDA audio driver + syscalls
+=====================================================================
+Timestamp: 2026-03-27T22:00:00Z
+
+Context:
+  TaterTOS64v3 had ZERO audio capability. TaterSurf needs audio for
+  YouTube/TikTok video playback. Intel HDA is on the Coffee Lake PCH.
+
+Changes:
+
+  New files:
+    src/drivers/audio/hda.h (~200 LOC)
+      Complete HDA register definitions, verb encoding macros,
+      widget types, pin device types, BDL entry struct, stream format
+      encoding, driver API declarations.
+
+    src/drivers/audio/hda.c (~350 LOC)
+      Full HDA controller driver:
+        - PCI detection (class 0x04, subclass 0x03)
+        - BAR0 MMIO mapping via physmap
+        - Controller reset (GCTL.CRST assert/deassert with timeout)
+        - CORB setup: 256-entry command ring, DMA enabled
+        - RIRB setup: 256-entry response ring, DMA enabled
+        - Codec discovery via STATESTS register
+        - Widget enumeration: root → AFG → widgets
+        - Output path detection: find first DAC + output Pin
+          (speaker/headphone/line-out by default config)
+        - Output path configuration:
+          DAC: set format (48kHz/16-bit/stereo), set stream tag,
+               unmute output amp, power on
+          Pin: enable output, unmute, EAPD enable, power on
+        - Stream setup: BDL with 2 entries (double-buffer),
+          16KB DMA buffer, stream format register, stream tag
+        - PCM playback: circular DMA buffer write with hw position
+          tracking (LPIB register), wrap-around handling
+        - Stream open/close/info API
+
+  Modified: src/kernel/main.c
+    Added hda_init() call in driver initialization sequence.
+
+  Modified: src/kernel/proc/syscall.c
+    Added 4 new syscalls (96-99):
+      SYS_AUDIO_OPEN(sample_rate, channels, bits) — open output stream
+      SYS_AUDIO_WRITE(buf, len) — write PCM to DMA buffer
+      SYS_AUDIO_CLOSE() — stop stream
+      SYS_AUDIO_INFO(info_buf) — get stream format info
+    All validate user buffer mappings before access.
+
+  Modified: src/user/libc/libc.h + libc.c
+    Added userspace wrappers:
+      fry_audio_open, fry_audio_write, fry_audio_close, fry_audio_info
+
+  Modified: Makefile
+    Added src/drivers/audio/hda.o to KERNEL_OBJS
+
+  HDA audio format: 48kHz, 16-bit signed, stereo (default).
+  DMA buffer: 16KB (4 pages), double-buffered via 2 BDL entries.
+  Stream tag: 1 (links DAC widget to DMA stream).
+
+  Why 48kHz/16-bit/stereo: this is the standard PCM format that
+  all audio decoders (Opus, AAC) output. YouTube and TikTok
+  audio streams decode to this format.
+
+Verification:
+  Compiled all modified files individually:
+    src/drivers/audio/hda.o — kernel driver, clean
+    src/kernel/proc/syscall.o — with new audio syscalls, clean
+    src/kernel/main.o — with hda_init() call, clean
+    src/user/libc/libc.o — with audio wrappers, clean
+  Result: zero errors.
+
+Note:
+  The HDA driver init runs during boot. On hardware without HDA
+  (or in QEMU without -device intel-hda), it logs "no audio
+  controller found" and continues. hda_is_ready() returns 0,
+  SYS_AUDIO_OPEN returns -ENODEV (19).
+
+Artifacts:
+  src/drivers/audio/hda.h
+  src/drivers/audio/hda.c

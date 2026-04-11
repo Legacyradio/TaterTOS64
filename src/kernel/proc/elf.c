@@ -14,7 +14,7 @@ uint32_t vfs_size(struct vfs_file *f);
 #define FRY_MAGIC 0x30595246u // "FRY0"
 #define TOT_MAGIC 0x31544F54u // "TOT1"
 #define USER_STACK_TOP USER_VA_TOP
-#define USER_STACK_PAGES 8
+#define USER_STACK_PAGES 4096   /* 16MB — TaterSurf build_page needs ~5MB frame */
 
 struct fry_header {
     uint32_t magic;

@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+wrapper_path=$(readlink -f "$0")
+
+for real_mkfs in /usr/sbin/mkfs.fat /sbin/mkfs.fat /usr/bin/mkfs.fat /bin/mkfs.fat; do
+  if [ -x "$real_mkfs" ] && [ "$(readlink -f "$real_mkfs")" != "$wrapper_path" ]; then
+    exec "$real_mkfs" "$@"
+  fi
+done
+
+usage() {
+  cat <<'EOF'
+Usage: mkfs.fat [-F 12|16|32] [-n LABEL] IMAGE
+
+Repo-local compatibility wrapper for environments where dosfstools is
+unavailable. Supports the argument forms used by TaterTOS64v3 build scripts by
+delegating to mtools mformat on an existing image file.
+EOF
+}
+
+if ! command -v mformat >/dev/null 2>&1; then
+  echo "mkfs.fat wrapper: neither mkfs.fat nor mformat is available" >&2
+  exit 127
+fi
+
+fat_type=""
+label=""
+image=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -F)
+      [ $# -ge 2 ] || { echo "mkfs.fat wrapper: missing value for -F" >&2; exit 2; }
+      fat_type="$2"
+      shift 2
+      ;;
+    -n)
+      [ $# -ge 2 ] || { echo "mkfs.fat wrapper: missing value for -n" >&2; exit 2; }
+      label="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "mkfs.fat wrapper: unsupported option $1" >&2
+      exit 2
+      ;;
+    *)
+      if [ -n "$image" ]; then
+        echo "mkfs.fat wrapper: multiple image paths given" >&2
+        exit 2
+      fi
+      image="$1"
+      shift
+      ;;
+  esac
+done
+
+if [ $# -gt 0 ]; then
+  echo "mkfs.fat wrapper: unexpected trailing arguments: $*" >&2
+  exit 2
+fi
+
+if [ -z "$image" ]; then
+  echo "mkfs.fat wrapper: image path is required" >&2
+  exit 2
+fi
+
+if [ ! -f "$image" ]; then
+  echo "mkfs.fat wrapper: image does not exist: $image" >&2
+  exit 2
+fi
+
+case "${fat_type:-32}" in
+  12|16|32) ;;
+  *)
+    echo "mkfs.fat wrapper: unsupported FAT type ${fat_type:-}" >&2
+    exit 2
+    ;;
+esac
+
+cmd=(mformat -i "$image" -F ::)
+if [ -n "$label" ]; then
+  cmd+=(-v "$label")
+fi
+
+exec "${cmd[@]}"

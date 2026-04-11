@@ -1,0 +1,47 @@
+fry784 — Stack size increase for TaterSurf (64KB -> multi-MB)
+=====================================================================
+Timestamp: 2026-03-31
+
+GOAL: Fix crash caused by stack overflow. TaterSurf runs mbedTLS (TLS
+handshake uses 20-40KB stack alone for cert chain + RSA/ECDSA), QuickJS
+(deep JS call chains for YouTube), DOM/HTML parsing (recursive tree ops),
+OpenH264 video decode, and Opus audio — all stack-hungry. The previous
+64KB thread stack and 256KB main process stack were nowhere near enough.
+
+WHY:
+  TaterSurf crashed during HTTP data transfer (fry783 got TCP connected
+  to google.com but crashed before rendering). Stack overflow from deep
+  call chains in TLS/JS/DOM/video code on a 64KB stack. YouTube will be
+  even worse — its JS alone can produce hundreds of call frames.
+
+  System has 2GB RAM. TaterSurf is currently single-threaded (threading
+  architecture coming in a future fry). Even with 5+ threads at 2MB each,
+  total stack usage is ~10MB — negligible on 2GB. No thrashing risk.
+
+CHANGES:
+
+1) USER_STACK_PAGES: 64 -> 1024 (256KB -> 4MB main process stack)
+   File: src/kernel/proc/elf.c:17
+   Why: Main process stack is where all browser logic runs. 256KB is
+   too small for recursive DOM parsing + mbedTLS + QuickJS combined.
+   4MB gives plenty of headroom for YouTube-class pages.
+
+2) FRY_THREAD_STACK_SIZE: 64KB -> 2MB (thread stack allocation)
+   File: src/user/libc/libc.c:417
+   Why: fry_thread_create() mmap's this for every new thread. 64KB
+   is a crash waiting to happen for any thread doing TLS or JS work.
+
+3) pthread default _stacksize: 64KB -> 2MB (three locations)
+   File: src/user/libc/pthread.c:25 (attr defaults)
+   File: src/user/libc/pthread.c:390 (getstacksize fallback)
+   File: src/user/libc/pthread.c:398 (getstack fallback)
+   Why: pthread_attr defaults and query fallbacks must match the actual
+   thread stack size. mbedTLS uses pthreads internally.
+
+Files changed:
+  MODIFIED:
+    src/kernel/proc/elf.c        (USER_STACK_PAGES 64 -> 1024)
+    src/user/libc/libc.c         (FRY_THREAD_STACK_SIZE 64KB -> 2MB)
+    src/user/libc/pthread.c      (pthread default stacksize 64KB -> 2MB, 3 locations)
+
+Build: clean rebuild. ISO 89758 sectors. Exported to C:\Users\jjsako\Documents\tateriso\. No warnings.

@@ -1,0 +1,54 @@
+fry766 — TaterSurf Phase B2: CSS parser (ts_css.h)
+=====================================================================
+Timestamp: 2026-03-27T17:00:00Z
+
+Context:
+  TaterSurf needs CSS parsing for <style> blocks and style=""
+  attributes. Web pages use CSS for colors, layout, typography.
+
+Changes:
+  New file: src/user/apps/ts_css.h (header-only, ~620 LOC)
+
+  Stylesheet parsing (ts_css_parse):
+    Parses CSS rule blocks: selector { property: value; ... }
+    Handles: comments (/* */), @-rules (skipped), comma-separated
+    selectors, !important (stripped), whitespace tolerance.
+    Max 512 rules, 24 properties per rule, 8 selectors per rule.
+
+  Selector parsing (ts_css__parse_selector):
+    Components: tag, .class, #id, :pseudo-class
+    Combinators: descendant (space), child (>)
+    Universal selector (*)
+    Attribute selectors [attr] (recognized, matched by specificity)
+    Specificity computation: id*100 + class*10 + tag
+
+  Inline style parsing (ts_css_parse_inline):
+    Parses style="" attribute into property/value array.
+
+  Color parsing (ts_css_color):
+    #RGB, #RRGGBB, #RRGGBBAA
+    rgb(r,g,b), rgba(r,g,b,a) with % support
+    120+ named colors (full CSS named color list)
+    Returns 0xRRGGBB, 0xFF000000 for transparent
+
+  Unit conversion (ts_css_to_px):
+    px (direct), em (relative to parent), rem (16px base),
+    % (relative to parent), pt (1.333x), vw/vh (viewport %).
+    "auto" returns 0 (caller handles semantics).
+
+  Selector matching (ts_css_match_part):
+    Tag name match (case-insensitive)
+    ID match (case-insensitive)
+    Class match (space-separated class list, case-insensitive)
+
+  Property lookup (ts_css_find_property):
+    Find property value by name in a property array.
+
+Verification:
+  Compile test: parse multi-rule stylesheet, inline styles, test
+  color parsing (#hex, rgb(), named), unit conversion (px, em, %),
+  selector matching, property lookup.
+  Result: compiles clean, zero errors.
+
+Artifacts:
+  src/user/apps/ts_css.h

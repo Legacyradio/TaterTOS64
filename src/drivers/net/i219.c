@@ -785,19 +785,6 @@ void i219_init(void) {
         if (found) break;
     }
 
-    /* Fallback: match any Intel Ethernet controller (class 02:00) */
-    if (!found) {
-        for (uint32_t i = 0; i < dev_count; i++) {
-            if (devs[i].vendor_id == I219_VENDOR_INTEL &&
-                devs[i].class_code == 0x02 && devs[i].subclass == 0x00) {
-                found = &devs[i];
-                kprint("I219: matched by class 02:00 (device_id=0x%04x)\n",
-                       found->device_id);
-                break;
-            }
-        }
-    }
-
     if (!found) {
         kprint("I219: not found on PCI bus\n");
         return;

@@ -3,14 +3,34 @@
 #include <stdint.h>
 #include "irqdesc.h"
 #include "../../boot/early_serial.h"
+#include "../../drivers/irqchip/lapic.h"
+#include "../../drivers/smp/smp.h"
 #include "../proc/process.h"
 #include "../proc/sched.h"
+#include "../proc/syscall.h"
+#include "../mm/vmm.h"
 
 void kprint(const char *fmt, ...);
 void kernel_panic(const char *msg);
 
 static struct irq_desc irq_descs[256];
-static uint8_t g_pf_exit_stack[16384] __attribute__((aligned(16)));
+
+/* Per-CPU exit stacks for killing user processes from exception handlers.
+ * A single global stack was unsafe: concurrent user faults on different CPUs
+ * would corrupt each other's stack frames, leading to kernel #UD. */
+#define EXC_EXIT_STACK_SIZE 16384
+#define EXC_MAX_CPUS 64
+static uint8_t g_exc_exit_stacks[EXC_MAX_CPUS][EXC_EXIT_STACK_SIZE]
+    __attribute__((aligned(16)));
+
+static uint32_t exc_cpu_index(void) {
+    uint8_t id = lapic_get_id();
+    uint32_t count = smp_cpu_count();
+    for (uint32_t i = 0; i < count && i < EXC_MAX_CPUS; i++) {
+        if (smp_cpu_apic_id(i) == id) return i;
+    }
+    return 0;
+}
 
 // Kernel CR3 for interrupt handlers; set once by irq_cr3_init() before sti.
 // common_isr saves the current (possibly user) CR3 in the callee-saved
@@ -67,9 +87,9 @@ static inline uint64_t read_cr3_irq(void) {
 
 static const struct fry_vm_region *pf_find_vm_region(const struct fry_process *p,
                                                      uint64_t addr) {
-    if (!p) return 0;
+    if (!p || !p->shared) return 0;
     for (uint32_t i = 0; i < PROC_VMREG_MAX; i++) {
-        const struct fry_vm_region *r = &p->vm_regions[i];
+        const struct fry_vm_region *r = &p->shared->vm_regions[i];
         if (!r->used) continue;
         if (addr >= r->base && addr < r->base + r->length) return r;
     }
@@ -117,49 +137,89 @@ static void pf_log_region_detail(const struct fry_process *cur,
 }
 
 __attribute__((noreturn))
-static void pf_kill_finish(uint32_t pid) {
-    proc_free(pid);
+static void pf_kill_finish(uint32_t tgid, uint32_t code) {
+    process_exit_group(tgid, code);
     sched_yield();
     for (;;) {
         __asm__ volatile("hlt");
     }
 }
 
+static void dump_pte_chain(uint64_t cr3_phys, uint64_t va) {
+    if (!cr3_phys || va >= USER_VA_TOP) return;
+
+    uint64_t pml4_i = (va >> 39) & 0x1FF;
+    uint64_t pdpt_i = (va >> 30) & 0x1FF;
+    uint64_t pd_i   = (va >> 21) & 0x1FF;
+    uint64_t pt_i   = (va >> 12) & 0x1FF;
+
+    uint64_t *pml4 = (uint64_t *)(uintptr_t)vmm_phys_to_virt(cr3_phys);
+    uint64_t pml4e = pml4[pml4_i];
+    kprint("  PTE CHAIN va=0x%llx cr3=0x%llx pml4[%llu]=0x%llx\n",
+           (unsigned long long)va, (unsigned long long)cr3_phys,
+           (unsigned long long)pml4_i, (unsigned long long)pml4e);
+    if (!(pml4e & 1ULL)) return;
+
+    uint64_t *pdpt = (uint64_t *)(uintptr_t)vmm_phys_to_virt(pml4e & 0x000FFFFFFFFFF000ULL);
+    uint64_t pdpte = pdpt[pdpt_i];
+    kprint("  pdpt[%llu]=0x%llx\n", (unsigned long long)pdpt_i, (unsigned long long)pdpte);
+    if (!(pdpte & 1ULL) || (pdpte & 0x80ULL)) return;
+
+    uint64_t *pd = (uint64_t *)(uintptr_t)vmm_phys_to_virt(pdpte & 0x000FFFFFFFFFF000ULL);
+    uint64_t pde = pd[pd_i];
+    kprint("  pd[%llu]=0x%llx\n", (unsigned long long)pd_i, (unsigned long long)pde);
+    if (!(pde & 1ULL) || (pde & 0x80ULL)) return;
+
+    uint64_t *pt = (uint64_t *)(uintptr_t)vmm_phys_to_virt(pde & 0x000FFFFFFFFFF000ULL);
+    uint64_t pte = pt[pt_i];
+    kprint("  pt[%llu]=0x%llx\n", (unsigned long long)pt_i, (unsigned long long)pte);
+}
+
+/* Kill a user process that triggered a CPU exception.
+ * Handles ALL exception vectors (0-31), not just #PF (vec 14). */
 __attribute__((noreturn))
-static void pf_kill_current_user(uint64_t vector, uint64_t error, void *ctx) {
+static void exc_kill_current_user(uint64_t vector, uint64_t error, void *ctx) {
     struct fry_process *cur = proc_current();
     if (!cur || cur->is_kernel) {
-        kernel_panic("page fault in invalid current context");
+        kernel_panic("cpu exception in invalid current context");
     }
 
     uint64_t *frame = (uint64_t *)ctx;
     uint64_t rip = frame[17];
     uint64_t cr2 = read_cr2_irq();
-    uint32_t pid = cur->pid;
+    uint32_t tgid = process_group_id(cur);
+    uint32_t tid = cur->pid;
 
-    kprint("USER FAULT: pid=%u vec=%llu err=0x%llx rip=0x%llx cr2=0x%llx\n",
-           (unsigned)pid,
+    kprint("USER FAULT: pid=%u tid=%u vec=%llu err=0x%llx rip=0x%llx cr2=0x%llx\n",
+           (unsigned)tgid,
+           (unsigned)tid,
            (unsigned long long)vector,
            (unsigned long long)error,
            (unsigned long long)rip,
            (unsigned long long)cr2);
-    pf_log_region_detail(cur, cr2, error);
 
-    cur->exit_code = 139; /* SIGSEGV-like exit code */
+    if (vector == 14) {
+        pf_log_region_detail(cur, cr2, error);
+        /* Dump actual PTE chain for the faulting address */
+        dump_pte_chain(cur->cr3, cr2);
+    }
 
+    uint32_t cpu = exc_cpu_index();
     uint64_t kcr3 = irq_kernel_cr3 ? irq_kernel_cr3 : read_cr3_irq();
-    uint64_t exit_sp = ((uint64_t)(uintptr_t)&g_pf_exit_stack[sizeof(g_pf_exit_stack)]) & ~0xFULL;
+    uint64_t exit_sp = ((uint64_t)(uintptr_t)&g_exc_exit_stacks[cpu][EXC_EXIT_STACK_SIZE]) & ~0xFULL;
     __asm__ volatile(
         "mov %0, %%cr3\n"
         "mov %1, %%rsp\n"
         "mov %2, %%edi\n"
-        "call *%3\n"
+        "mov %3, %%esi\n"
+        "call *%4\n"
         :
         : "r"(kcr3),
           "r"(exit_sp),
-          "r"(pid),
+          "r"(tgid),
+          "r"(139u),
           "r"(pf_kill_finish)
-        : "rdi", "memory");
+        : "rdi", "rsi", "memory");
     __builtin_unreachable();
 }
 
@@ -194,17 +254,21 @@ void irq_dispatch(uint64_t vector, uint64_t error, void *ctx) {
     }
 
     /*
-     * If user mode triggers #PF and no dedicated page-fault handler is
-     * installed, terminate only that process instead of stalling the kernel.
+     * Any CPU exception (vec 0-31) from user mode without a registered handler
+     * terminates the process instead of iretq-ing back to the faulting
+     * instruction (which would cause an infinite loop).
+     * Previously only vec=14 (#PF) was handled; vec 0-13,15-31 fell through.
      */
-    if (vector == 14 && !irq_descs[14].handler) {
+    if (vector < 32 && !irq_descs[vector].handler) {
         uint64_t *frame = (uint64_t *)ctx;
         uint64_t cs = frame[18];
         if ((cs & 3ULL) == 3ULL) {
-            pf_kill_current_user(vector, error, ctx);
-        } else {
+            exc_kill_current_user(vector, error, ctx);
+        } else if (vector == 14) {
             kernel_panic("unhandled kernel page fault");
         }
+        /* Kernel-mode non-#PF exceptions without handlers fall through
+         * to the "EXC unhandled" log below and iretq. */
     }
 
     if (vector < 256 && irq_descs[vector].chip && irq_descs[vector].chip->ack) {
@@ -242,9 +306,21 @@ void irq_dispatch(uint64_t vector, uint64_t error, void *ctx) {
 // saves %r15 onto its own frame; if a context_switch happens inside,
 // context_switch saves/restores it per-stack, so each process independently
 // recovers its own saved CR3 when irq_dispatch eventually returns.
+// SWAPGS on interrupt entry/exit:
+// At common_isr entry, the stack is:
+//   (%rsp)=vector  8(%rsp)=error  16(%rsp)=RIP  24(%rsp)=CS ...
+// If CS & 3 != 0, we came from user mode and must SWAPGS to load kernel GS.
+// On exit (after register+vector+error pops), CS is at 8(%rsp):
+//   (%rsp)=RIP  8(%rsp)=CS ...
+// If CS & 3 != 0, returning to user mode, do SWAPGS to restore user GS.
 __asm__(
     ".global common_isr\n"
     "common_isr:\n"
+    // SWAPGS if interrupted from user mode (CPL 3)
+    "    testb $3, 24(%rsp)\n"                // test CS RPL bits
+    "    jz .Lno_swapgs_entry\n"
+    "    swapgs\n"
+    ".Lno_swapgs_entry:\n"
     "    push %r15\n"
     "    push %r14\n"
     "    push %r13\n"
@@ -291,5 +367,10 @@ __asm__(
     "    pop %r14\n"
     "    pop %r15\n"
     "    add $16, %rsp\n"                     // pop vector + error
+    // SWAPGS if returning to user mode (CPL 3)
+    "    testb $3, 8(%rsp)\n"                 // test CS RPL bits
+    "    jz .Lno_swapgs_exit\n"
+    "    swapgs\n"
+    ".Lno_swapgs_exit:\n"
     "    iretq\n"
 );

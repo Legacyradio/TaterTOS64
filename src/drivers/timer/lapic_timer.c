@@ -43,25 +43,18 @@ static void boot_diag_stage(uint64_t stage) {
 
 static void lapic_timer_handler(uint32_t vector, void *ctx, void *dev_id, uint64_t error) {
     (void)vector; (void)ctx; (void)dev_id; (void)error;
-    uint32_t count = smp_cpu_count();
-    uint32_t bsp = smp_bsp_index();
-    if (count == 0) {
-        if (!g_first_bsp_tick_seen) {
+    /* BSP boot diagnostic: first-tick marker */
+    if (!g_first_bsp_tick_seen) {
+        uint32_t count = smp_cpu_count();
+        uint32_t bsp = smp_bsp_index();
+        if (count == 0 || (bsp < count && lapic_get_id() == smp_cpu_apic_id(bsp))) {
             g_first_bsp_tick_seen = 1;
             boot_diag_stage(33);
             if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("K_FIRST_TICK\n");
         }
-        sched_tick();
-        return;
     }
-    if (bsp < count && lapic_get_id() == smp_cpu_apic_id(bsp)) {
-        if (!g_first_bsp_tick_seen) {
-            g_first_bsp_tick_seen = 1;
-            boot_diag_stage(33);
-            if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("K_FIRST_TICK\n");
-        }
-        sched_tick();
-    }
+    /* All CPUs drive their own runqueue via sched_tick */
+    sched_tick();
 }
 
 #define LAPIC_REG_LVT_TIMER 0x320

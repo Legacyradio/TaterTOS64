@@ -1,0 +1,37 @@
+fry789 — Fix TLS handshake failure (EAGAIN treated as fatal error)
+=====================================================================
+Timestamp: 2026-03-31
+
+GOAL: Fix YouTube/HTTPS TLS handshake failing in a retry loop.
+
+ROOT CAUSE:
+  ts_tls_recv() in ts_http.h treated ALL negative fry_recv() returns as
+  MBEDTLS_ERR_SSL_INTERNAL_ERROR. When fry_recv returns -EAGAIN (no data
+  yet, try later), mbedTLS interpreted this as a fatal I/O error and
+  aborted the handshake. Same issue in ts_tls_send().
+
+  The handshake flow:
+  1. mbedTLS sends ClientHello via ts_tls_send → fry_send (works)
+  2. mbedTLS reads ServerHello via ts_tls_recv → fry_recv
+  3. fry_recv → SYS_RECV → net_poll() + tcp_recv()
+  4. No data yet (ServerHello in transit) → SYS_RECV returns -EAGAIN
+  5. ts_tls_recv returns INTERNAL_ERROR → handshake ABORTED
+  6. ts_http retries the whole connection → infinite loop
+
+  Serial showed: SYS_CONNECT :443 repeating with no SYS_SEND after,
+  because the TLS handshake died before completing.
+
+FIX:
+  ts_tls_recv: -EAGAIN/-EWOULDBLOCK → MBEDTLS_ERR_SSL_WANT_READ
+  ts_tls_send: -EAGAIN/-EWOULDBLOCK → MBEDTLS_ERR_SSL_WANT_WRITE
+  These tell mbedTLS "retry later" instead of "I/O failed permanently."
+
+ADDITIONAL:
+  Added fprintf(stderr, ...) tracing to ts_tls_handshake for success/fail
+  with error code and hostname. stderr goes to serial (fd 2 → COM1).
+
+Files changed:
+  MODIFIED:
+    src/user/apps/ts_http.h    (EAGAIN handling in TLS callbacks + handshake tracing)
+
+Build: clean. ISO 89776 sectors. Exported.

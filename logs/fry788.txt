@@ -1,0 +1,63 @@
+fry788 — JS crash fixed, stubs added, serial tracing for scripts
+=====================================================================
+Timestamp: 2026-03-31
+
+GOAL: Fix NULL function pointer crash during JS execution, add missing
+browser API stubs, add serial tracing to diagnose JS errors.
+
+RESULTS:
+  JS no longer crashes! All 9 Google scripts execute and either succeed
+  or throw JS-level exceptions (caught properly by QuickJS). No segfault.
+
+  Stubs were the fix — previous crash was caused by Google's JS calling
+  browser APIs that weren't registered in the QuickJS environment. Now
+  all expected globals exist (even if they're no-ops).
+
+CHANGES:
+
+1) Removed duplicate TaterSurf auto-launch from init.c
+   File: src/user/init/init.c:90-101
+   Why: GUI already handles launching. Two instances was confusing.
+
+2) Added window.addEventListener/removeEventListener/dispatchEvent stubs
+   File: src/user/apps/ts_dom_bindings.h
+   Why: Google JS calls window.addEventListener('load', ...) which was
+   missing from the global object.
+
+3) Added fetch stub (returns rejected Promise)
+   Added XMLHttpRequest constructor stub
+   Added Image constructor stub (Google uses new Image() for beacons)
+   Added Event/CustomEvent constructor stubs
+   Added document.cookie property
+   File: src/user/apps/ts_dom_bindings.h
+
+4) Added serial tracing to ts_dom_run_scripts
+   File: src/user/apps/ts_dom.h
+   Traces to stderr (fd 2 → serial) before/after each JS_Eval call.
+   Shows script index, node ID, length, first 40 chars, and result.
+
+REMAINING ISSUES (next frys):
+
+A) Script text truncated at 4095 bytes:
+   Scripts [0], [1], [7], [8] are exactly len=4095. ts_dom_get_text_content
+   or the HTML parser is capping text node content. Google's main script
+   is ~20KB+. This truncation causes SyntaxError cascades (script[0]
+   defines window.google, all later scripts depend on it).
+
+B) YouTube TLS handshake fails:
+   youtube.com HTTP redirects to HTTPS (:443). TCP connects succeed but
+   mbedTLS handshake never completes — no ClientHello sent. TaterSurf
+   retries in a loop (SYS_CONNECT :443 repeating with no SYS_SEND).
+   This blocks ALL HTTPS sites (YouTube, Google HTTPS, etc.).
+
+C) Google renders plain HTML, no CSS/logo:
+   HTTP google.com serves a basic page without the full CSS/logo.
+   Full Google experience requires HTTPS.
+
+Files changed:
+  MODIFIED:
+    src/user/init/init.c           (removed auto-launch)
+    src/user/apps/ts_dom_bindings.h (stubs + window event listeners)
+    src/user/apps/ts_dom.h          (serial tracing in run_scripts)
+
+Build: clean. ISO 89776 sectors. Exported.

@@ -1,0 +1,68 @@
+fry793 — Resource TLS crash: traced to mbedTLS TLS 1.3 PSA state-reuse bug
+=====================================================================
+Timestamp: 2026-04-02
+
+STATUS: ROOT CAUSE IDENTIFIED, FIX IN PROGRESS (untested)
+
+DIAGNOSIS (confirmed via serial trace instrumentation):
+
+  The crash rip=0x0 happens INSIDE mbedtls_ssl_handshake() during the
+  SECOND TLS connection (resource fetch), after the FIRST connection
+  (main page) completed successfully.
+
+  Trace narrowed it to:
+    - TLS 1.3 (version 0x304) is negotiated for both connections
+    - Main page: all handshake states complete (state 0→27)
+    - Resource: handshake states 0→2 OK (ClientHello sent), then
+      states 2→3→9→13→7→11→14 all OK for main page, but resource
+      crashes deep in the TLS 1.3 state machine
+
+  Exact crash point (confirmed):
+    - ServerHello (state 2): OK — fetch, preprocess, parse, checksum, postprocess all succeed
+    - EncryptedExtensions: OK — fetch (len=2), parse, checksum succeed
+    - CCS compatibility mode: OK — 69 bytes sent
+    - CRASH happens in the NEXT state after CCS (CLIENT_CERTIFICATE or CLIENT_FINISHED)
+    - The crash is a NULL function pointer call (rip=0x0, err=0x14 = user-mode instruction fetch)
+
+  The same heap-recycled handshake struct (0x10000027aa0) is used for
+  both connections. All function pointers checked before the handshake
+  call (conf, f_rng, f_send, f_recv, update_checksum) are valid.
+  The crash is inside mbedTLS's TLS 1.3 key derivation / record
+  encryption path — likely PSA AEAD state not properly isolated
+  between sequential TLS 1.3 connections.
+
+WHAT WAS RULED OUT:
+  - NOT conf->f_rng NULL (validated = 0x5747c0)
+  - NOT f_send/f_recv NULL (validated = 0x574790/0x574760)
+  - NOT update_checksum NULL (validated = 0x4489c0)
+  - NOT stack overflow from MBEDTLS_DEBUG_C (disabled, still crashes)
+  - NOT broken CTR-DRBG RNG (replaced with PSA wrapper, still crashes)
+  - NOT heap exhaustion from main TLS (freed before resources, still crashes)
+
+FIX APPLIED (build ready, untested):
+  Force TLS 1.2 for second-and-later connections via
+  mbedtls_ssl_conf_max_tls_version(). TLS 1.2 has a simpler handshake
+  path that doesn't use the PSA AEAD/key derivation code paths that
+  trigger the crash. Main page still uses TLS 1.3.
+
+  Also applied (from earlier in this session):
+  A) Replaced broken entropy/CTR-DRBG with PSA-based RNG (ts_psa_rng)
+  B) Free main TLS before resource fetches
+  C) NULL pointer guards in ts_tls_handshake
+  D) Disabled MBEDTLS_DEBUG_C (unused, wastes stack)
+
+FILES CHANGED:
+  MODIFIED:
+    src/user/apps/ts_http.h              (RNG fix, guards, TLS 1.2 cap, traces)
+    src/user/apps/tatersurf.c            (TLS cleanup before resources)
+    src/user/apps/mbedtls/tatertos_config.h  (disabled MBEDTLS_DEBUG_C)
+    src/user/apps/mbedtls/library/ssl_tls.c  (trace code — REVERT before release)
+    src/user/apps/mbedtls/library/ssl_tls13_client.c  (trace code — REVERT before release)
+
+NEXT SESSION:
+  1. Boot the latest ISO and verify resource TLS 1.2 handshake succeeds
+  2. If it works: CSS loads → page re-styled, images load → Google logo
+  3. Clean up debug traces from ssl_tls.c and ssl_tls13_client.c
+  4. Write fry794 with confirmed results
+  5. If TLS 1.2 ALSO crashes: the bug is in PSA Crypto, not TLS 1.3 specific
+     → investigate PSA key slot exhaustion or PSA global state corruption

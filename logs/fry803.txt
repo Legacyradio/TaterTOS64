@@ -1,0 +1,68 @@
+fry803 — TaterSurf Browser Upgrade: Step 10 (Web APIs)
+======================================================
+Date: 2026-04-03
+Build: clean, zero errors
+Binary: TATERSURF.FRY 2,337,056 bytes (+13KB from Step 9)
+
+STEP 10: Web APIs (ts_dom_bindings.h)
+--------------------------------------
+
+10a) Real fetch() API
+  - ts_js_fetch(): C function wrapping ts_http for real HTTP requests
+    * Resolves relative URLs against page URL
+    * Extracts method/body from options argument (POST/PUT/PATCH)
+    * Allocates ts_http on heap, calls ts_http_get + poll loop (synchronous)
+    * Builds Response object: status, ok, statusText, url, headers
+    * headers.get(name) method for spec compatibility
+    * Stores body as __body string for .text()/.json() methods
+    * Returns resolved/rejected Promise via JS_NewPromiseCapability
+    * Serial trace logging: FETCH: url, FETCH: done status=N len=N
+    * Safety limit of 50000 polls to prevent infinite hang
+  - ts_js_response_text(): returns Promise resolved with body string
+  - ts_js_response_json(): parses body with JS_ParseJSON, returns Promise
+  - Replaces old stub that always rejected
+
+10b) localStorage / sessionStorage
+  - In-memory store: 128 items max, 128-char keys, 4096-char values
+  - ts_js_storage_get_item/set_item/remove_item/clear/key/length
+  - ts_js__build_storage_obj() creates fully-wired storage objects
+  - Both localStorage and sessionStorage share same backing store
+  - Replaces old empty object stubs
+
+10c) Real URL / URLSearchParams
+  - ts_js_url_constructor(): C function using ts_url_parse
+    * Supports base URL for relative resolution
+    * Sets: href, hostname, host, pathname, protocol, origin,
+      search, hash, port, toString()
+    * searchParams sub-object with query params as properties
+    * searchParams.get(name) and searchParams.has(name) methods
+  - Replaces old stub that stored only href
+
+10d) performance.now() — real timestamps
+  - ts_js_performance_now(): returns (fry_gettime() - start_time) as float64
+  - ts_js__perf_start_time captured at register_globals time
+  - performance.timing.navigationStart also set
+  - Replaces old stub that called setTimeout handler (wrong behavior)
+
+10e) atob / btoa (Base64)
+  - ts_js_btoa(): encodes string to base64 with padding
+  - ts_js_atob(): decodes base64 string, handles padding
+  - Both handle binary data correctly via unsigned char casts
+
+10f) DOMParser
+  - ts_js_domparser_parse(): C function that:
+    * Creates document fragment node
+    * Parses HTML via ts_dom_build_from_html into fragment
+    * Sets documentElement and body properties on result
+    * Adds querySelector/querySelectorAll
+  - Registered as __domparser_parse, called from JS DOMParser wrapper
+
+10g) FormData
+  - JS-implemented: append/get/set/has/delete/entries/keys/values
+  - Backed by plain JS object (this._data)
+
+Files modified:
+  src/user/apps/ts_dom_bindings.h — all Step 10 (~500 lines added)
+  No changes needed to ts_layout.h or tatersurf.c
+
+Plan reference: TATERSURF_UPGRADE_PLAN.md Step 10

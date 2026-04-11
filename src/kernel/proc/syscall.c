@@ -2,11 +2,14 @@
 
 #include <stdint.h>
 #include <errno.h>
+#include <fry_limits.h>
+#include <fry_fcntl.h>
 #include "syscall.h"
 #include "process.h"
 #include "elf.h"
 #include "sched.h"
 #include "../fs/vfs.h"
+#include "../fs/fat32.h"
 #include "../acpi/extended.h"
 #include "../mm/pmm.h"
 #include "../../drivers/timer/hpet.h"
@@ -15,6 +18,14 @@
 #include "../../boot/early_serial.h"
 #include "../../include/tater_trace.h"
 #include "../../shared/wifi_abi.h"
+#include "../../drivers/net/netcore.h"
+#include <fry_socket.h>
+#include <fry_random.h>
+#include <fry_time.h>
+#include "../entropy/entropy.h"
+#include "../../drivers/timer/rtc.h"
+#include <fry_seek.h>
+#include <fry_input.h>
 
 void kprint_write(const char *buf, uint64_t len);
 void kprint_serial_only(const char *fmt, ...);
@@ -23,8 +34,13 @@ uint64_t kread_serial(char *buf, uint64_t len);
 void *kmalloc(uint64_t size);
 void kfree(void *ptr);
 int ps2_kbd_read(char *buf, uint32_t len);
+int ps2_kbd_read_event(struct fry_key_event *out);
+uint8_t ps2_kbd_get_mods(void);
 void ps2_mouse_get(int32_t *x, int32_t *y, uint8_t *btns,
                    int32_t *dx, int32_t *dy);
+void ps2_mouse_get_ext(int32_t *x, int32_t *y, uint8_t *btns,
+                       int32_t *dx, int32_t *dy, int32_t *wheel);
+uint8_t ps2_mouse_has_wheel(void);
 void acpi_reset(void);
 void acpi_shutdown(void);
 extern void syscall_entry(void);
@@ -35,13 +51,8 @@ int wifi_9260_get_scan_entries(struct fry_wifi_scan_entry *out,
 int wifi_9260_connect_user(const char *ssid, const char *passphrase);
 int wifi_9260_get_debug_log(char *buf, uint32_t bufsz);
 
-// Set by sched_tick() to the kernel_stack_top of the current process.
-// syscall_entry switches to this stack so that sched_yield/context_switch
-// never saves a user-space RSP as the process's kernel saved context.
-extern uint64_t g_syscall_kstack_top;
-// Scratch storage for the user RSP during the stack-switch in syscall_entry.
-// Only touched with IF=0 (SFMASK clears IF on syscall), so no race on BSP.
-static uint64_t g_syscall_user_rsp __attribute__((used)) = 0;
+/* Per-CPU data is in sched.c — syscall_entry accesses it via SWAPGS + %gs:0/8 */
+void *sched_percpu_ptr(uint32_t cpu);
 static int32_t g_gui_slot_hint = -1;
 static uint32_t g_gui_pid_hint = 0;
 static uint8_t g_first_user_syscall_seen = 0;
@@ -49,6 +60,10 @@ static uint8_t g_first_init_syscall_seen = 0;
 static uint8_t g_first_init_gui_spawn_seen = 0;
 static uint8_t g_first_gui_fb_seen = 0;
 static uint32_t g_spawn_attempt_count = 0;  /* visual spawn tracker */
+
+/* Phase 7: kernel clipboard buffer */
+static char g_clipboard_buf[FRY_CLIPBOARD_MAX];
+static uint32_t g_clipboard_len = 0;
 /*
  * SYS_EXIT must not free the currently active process CR3/stack while still
  * executing on them.  Use a dedicated kernel-owned stack for exit teardown.
@@ -58,8 +73,9 @@ static uint8_t g_sys_exit_stack[16384] __attribute__((aligned(16)));
 #define USER_TOP USER_VA_TOP
 #define PAGE_SIZE 4096ULL
 #define FB_USER_BASE 0x0000000100000000ULL
-#define VM_USER_BASE 0x0000100000000000ULL
-#define VM_USER_LIMIT 0x00007FFF00000000ULL
+#define VM_USER_BASE FRY_VM_USER_BASE
+#define VM_USER_LIMIT FRY_VM_USER_LIMIT
+#define MSR_FS_BASE 0xC0000100u
 
 #define FRY_PROT_READ  0x01u
 #define FRY_PROT_WRITE 0x02u
@@ -73,7 +89,317 @@ static uint8_t g_sys_exit_stack[16384] __attribute__((aligned(16)));
 #define FRY_MAP_RESERVE 0x80u
 #define FRY_MAP_GUARD   0x100u
 
+static struct fry_process_shared *proc_shared_state(struct fry_process *p) {
+    return p ? p->shared : 0;
+}
+
+static const struct fry_process_shared *proc_shared_state_const(const struct fry_process *p) {
+    return p ? p->shared : 0;
+}
+
+static struct fry_process *proc_find_task(uint32_t pid) {
+    if (pid == 0) return 0;
+    for (uint32_t i = 0; i < PROC_MAX; i++) {
+        if (procs[i].pid == pid &&
+            procs[i].state != PROC_UNUSED &&
+            procs[i].state != PROC_DEAD) {
+            return &procs[i];
+        }
+    }
+    return 0;
+}
+
+static struct fry_process *proc_find_task_any(uint32_t pid) {
+    if (pid == 0) return 0;
+    for (uint32_t i = 0; i < PROC_MAX; i++) {
+        if (procs[i].pid == pid &&
+            procs[i].state != PROC_UNUSED) {
+            return &procs[i];
+        }
+    }
+    return 0;
+}
+
+static struct fry_process *proc_find_group_leader(uint32_t tgid) {
+    struct fry_process *p = proc_find_task(tgid);
+    if (!p || p->pid != p->tgid) return 0;
+    return p;
+}
+
+static struct fry_process *proc_find_group_leader_any(uint32_t tgid) {
+    struct fry_process *p = proc_find_task_any(tgid);
+    if (!p || p->pid != p->tgid) return 0;
+    return p;
+}
+
+static inline void wrmsr(uint32_t msr, uint64_t val);
+
+static inline void write_user_fs_base(uint64_t base) {
+    wrmsr(MSR_FS_BASE, base);
+}
+
+#define PROC_VMREGS(p) (proc_shared_state((p))->vm_regions)
+#define PROC_VMREGS_CONST(p) (proc_shared_state_const((p))->vm_regions)
+#define PROC_FD_PTRS(p) (proc_shared_state((p))->fd_ptrs)
+#define PROC_FD_TABLE(p) (proc_shared_state((p))->fd_table)
+#define PROC_FD_KIND(p) (proc_shared_state((p))->fd_kind)
+#define PROC_FD_FLAGS(p) (proc_shared_state((p))->fd_flags)
+
 static int vm_unmap_region_range(struct fry_process *p, uint64_t base, uint64_t length);
+
+/* ====================================================================
+ * Poll event definitions (matching POSIX numbering)
+ * ==================================================================== */
+struct fry_pollfd {
+    int32_t  fd;
+    uint16_t events;    /* requested events */
+    uint16_t revents;   /* returned events */
+};
+
+#define FRY_POLLIN   0x0001u
+#define FRY_POLLOUT  0x0002u
+#define FRY_POLLERR  0x0008u
+#define FRY_POLLHUP  0x0010u
+#define FRY_POLLNVAL 0x0020u
+
+/* ====================================================================
+ * Pipe helpers
+ * ==================================================================== */
+static int pipe_data_avail(const struct fry_pipe *pp) {
+    return pp->head != pp->tail;
+}
+
+static uint32_t pipe_bytes_avail(const struct fry_pipe *pp) {
+    if (pp->tail >= pp->head)
+        return pp->tail - pp->head;
+    return FRY_PIPE_BUFSZ - pp->head + pp->tail;
+}
+
+static uint32_t pipe_space_avail(const struct fry_pipe *pp) {
+    return FRY_PIPE_BUFSZ - 1u - pipe_bytes_avail(pp);
+}
+
+static int pipe_alloc(void) {
+    for (int i = 0; i < FRY_PIPE_MAX; i++) {
+        if (!g_pipes[i].used) {
+            g_pipes[i].used = 1;
+            g_pipes[i].head = 0;
+            g_pipes[i].tail = 0;
+            g_pipes[i].readers = 0;
+            g_pipes[i].writers = 0;
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int fd_alloc(struct fry_process *p) {
+    struct fry_process_shared *shared = proc_shared_state(p);
+    if (!shared) return -1;
+    for (int fd = 3; fd < FRY_FD_MAX; fd++) {
+        if (shared->fd_kind[fd] == FD_NONE && !shared->fd_ptrs[fd]) {
+            return fd;
+        }
+    }
+    return -1;
+}
+
+static void fd_install(struct fry_process *p, int fd, void *ptr, uint8_t kind, uint32_t flags) {
+    struct fry_process_shared *shared = proc_shared_state(p);
+    if (!shared || fd < 3 || fd >= FRY_FD_MAX) return;
+    shared->fd_ptrs[fd] = ptr;
+    shared->fd_table[fd] = 1;
+    shared->fd_kind[fd] = kind;
+    shared->fd_flags[fd] = flags;
+    shared->open_fds++;
+}
+
+static void fd_release(struct fry_process *p, int fd) {
+    struct fry_process_shared *shared = proc_shared_state(p);
+    if (!shared || fd < 3 || fd >= FRY_FD_MAX) return;
+    shared->fd_ptrs[fd] = 0;
+    shared->fd_table[fd] = -1;
+    shared->fd_kind[fd] = FD_NONE;
+    shared->fd_flags[fd] = 0;
+    if (shared->open_fds > 0) shared->open_fds--;
+}
+
+static int64_t pipe_read(struct fry_pipe *pp, char *buf, uint64_t len, uint32_t flags) {
+    if (!pp || !buf || len == 0) return -EINVAL;
+
+    /* No data available */
+    if (!pipe_data_avail(pp)) {
+        /* All writers closed → EOF */
+        if (pp->writers == 0) return 0;
+        /* Non-blocking → EAGAIN */
+        if (flags & O_NONBLOCK) return -EAGAIN;
+        /* Caller should block and retry */
+        return -EAGAIN;
+    }
+
+    uint64_t nr = 0;
+    while (nr < len && pp->head != pp->tail) {
+        buf[nr++] = (char)pp->buf[pp->head];
+        pp->head = (pp->head + 1u) % FRY_PIPE_BUFSZ;
+    }
+    /* Wake poll waiters — pipe became writable */
+    sched_wake_poll_waiters();
+    return (int64_t)nr;
+}
+
+static int64_t pipe_write(struct fry_pipe *pp, const char *buf, uint64_t len, uint32_t flags) {
+    if (!pp || !buf || len == 0) return -EINVAL;
+
+    /* No readers → broken pipe */
+    if (pp->readers == 0) return -EPIPE;
+
+    /* Buffer full */
+    if (pipe_space_avail(pp) == 0) {
+        if (flags & O_NONBLOCK) return -EAGAIN;
+        return -EAGAIN; /* caller should block and retry */
+    }
+
+    uint64_t nw = 0;
+    while (nw < len && pipe_space_avail(pp) > 0) {
+        pp->buf[pp->tail] = (uint8_t)buf[nw++];
+        pp->tail = (pp->tail + 1u) % FRY_PIPE_BUFSZ;
+    }
+    /* Wake poll waiters — pipe became readable */
+    sched_wake_poll_waiters();
+    return (int64_t)nw;
+}
+
+/* Check pollability of a single fd. Returns revents. */
+static uint16_t poll_check_fd(struct fry_process *p, int32_t fd, uint16_t events) {
+    struct fry_process_shared *shared = proc_shared_state(p);
+    if (!shared) return FRY_POLLNVAL;
+    if (fd < 0 || fd >= FRY_FD_MAX) return FRY_POLLNVAL;
+
+    /* stdin/stdout/stderr: always ready for their direction */
+    if (fd == 0) return FRY_POLLIN;
+    if (fd == 1 || fd == 2) return FRY_POLLOUT;
+
+    uint8_t kind = shared->fd_kind[fd];
+    if (kind == FD_NONE || !shared->fd_ptrs[fd]) return FRY_POLLNVAL;
+
+    uint16_t revents = 0;
+
+    if (kind == FD_FILE) {
+        /* Files are always ready for read and write */
+        if (events & FRY_POLLIN) revents |= FRY_POLLIN;
+        if (events & FRY_POLLOUT) revents |= FRY_POLLOUT;
+    } else if (kind == FD_PIPE_READ) {
+        struct fry_pipe *pp = (struct fry_pipe *)shared->fd_ptrs[fd];
+        if (!pp || !pp->used) return FRY_POLLNVAL;
+        if (pipe_data_avail(pp)) {
+            revents |= FRY_POLLIN;
+        }
+        if (pp->writers == 0) {
+            revents |= FRY_POLLHUP;  /* all writers closed — EOF pending */
+        }
+    } else if (kind == FD_PIPE_WRITE) {
+        struct fry_pipe *pp = (struct fry_pipe *)shared->fd_ptrs[fd];
+        if (!pp || !pp->used) return FRY_POLLNVAL;
+        if (pipe_space_avail(pp) > 0) {
+            revents |= FRY_POLLOUT;
+        }
+        if (pp->readers == 0) {
+            revents |= FRY_POLLERR;  /* broken pipe */
+        }
+    } else if (kind == FD_SOCKET) {
+        struct fry_socket *sk = (struct fry_socket *)shared->fd_ptrs[fd];
+        if (!sk || !sk->used) return FRY_POLLNVAL;
+        if (sk->type == SOCK_STREAM) {
+            if (sk->state == SOCK_ST_CONNECTED && sk->tcp_handle >= 0) {
+                if (tcp_rx_available(sk->tcp_handle) > 0)
+                    revents |= FRY_POLLIN;
+                if (tcp_is_connected(sk->tcp_handle))
+                    revents |= FRY_POLLOUT;
+                else
+                    revents |= FRY_POLLHUP;
+            } else if (sk->state == SOCK_ST_LISTENING && sk->listen_handle >= 0) {
+                /* Readable when accept() would succeed */
+                if (tcp_accept(sk->listen_handle) >= 0) {
+                    /* Undo the accept — we just peeked */
+                    /* Can't easily undo, so don't call accept here.
+                       Instead check for un-accepted ESTABLISHED children. */
+                }
+                /* Scan for pending connections */
+                for (int i = 0; i < TCP_MAX_CONNECTIONS; i++) {
+                    int st = tcp_get_state(i);
+                    if (st == TCP_ESTABLISHED || st == TCP_SYN_RECV) {
+                        /* This is a simplified check */
+                        revents |= FRY_POLLIN;
+                        break;
+                    }
+                }
+            } else if (sk->state == SOCK_ST_SHUTDOWN || sk->state == SOCK_ST_CLOSED) {
+                revents |= FRY_POLLHUP;
+            }
+        } else if (sk->type == SOCK_DGRAM) {
+            if (sk->udp_rx_head != sk->udp_rx_tail)
+                revents |= FRY_POLLIN;
+            revents |= FRY_POLLOUT; /* UDP is always writable */
+        }
+    }
+
+    return revents & (events | FRY_POLLERR | FRY_POLLHUP | FRY_POLLNVAL);
+}
+
+/* ====================================================================
+ * Socket helpers
+ * ==================================================================== */
+static int sock_alloc(void) {
+    for (int i = 0; i < FRY_SOCK_MAX; i++) {
+        if (!g_sockets[i].used) {
+            uint8_t *p = (uint8_t *)&g_sockets[i];
+            for (uint32_t j = 0; j < sizeof(struct fry_socket); j++) p[j] = 0;
+            g_sockets[i].used = 1;
+            g_sockets[i].tcp_handle = -1;
+            g_sockets[i].listen_handle = -1;
+            return i;
+        }
+    }
+    return -1;
+}
+
+static uint16_t g_sock_next_port = 49200;
+
+static uint16_t sock_ephemeral_port(void) {
+    return g_sock_next_port++;
+}
+
+/* UDP socket handler — called by netcore for unmatched UDP datagrams */
+static void sock_udp_rx(uint16_t dst_port, uint32_t src_ip,
+                         uint16_t src_port,
+                         const uint8_t *data, uint16_t len) {
+    for (int i = 0; i < FRY_SOCK_MAX; i++) {
+        struct fry_socket *sk = &g_sockets[i];
+        if (sk->used && sk->type == SOCK_DGRAM && sk->local_port == dst_port) {
+            uint8_t next = (sk->udp_rx_head + 1) % FRY_SOCK_UDP_RXMAX;
+            if (next == sk->udp_rx_tail) return; /* queue full, drop */
+            struct fry_udp_pkt *pkt = &sk->udp_rxq[sk->udp_rx_head];
+            pkt->src_ip = src_ip;
+            pkt->src_port = src_port;
+            uint16_t copylen = len;
+            if (copylen > FRY_SOCK_UDP_PKTSZ) copylen = FRY_SOCK_UDP_PKTSZ;
+            pkt->len = copylen;
+            for (uint16_t j = 0; j < copylen; j++) pkt->data[j] = data[j];
+            sk->udp_rx_head = next;
+            sched_wake_poll_waiters();
+            return;
+        }
+    }
+}
+
+static uint8_t g_sock_udp_handler_installed = 0;
+
+static void sock_ensure_udp_handler(void) {
+    if (!g_sock_udp_handler_installed) {
+        udp_set_socket_handler(sock_udp_rx);
+        g_sock_udp_handler_installed = 1;
+    }
+}
 
 struct readdir_ctx {
     char *buf;
@@ -376,12 +702,46 @@ static int readdir_ex_cb(const char *name, uint64_t size, uint32_t attr, void *c
 }
 
 __attribute__((noreturn))
-static void syscall_exit_finish(uint32_t pid) {
-    proc_free(pid);
+static void syscall_exit_group_finish(uint32_t tgid, uint32_t code) {
+    process_exit_group(tgid, code);
     sched_yield();
     for (;;) {
         __asm__ volatile("hlt");
     }
+}
+
+__attribute__((noreturn))
+static void syscall_thread_exit_finish(uint32_t tid, uint32_t code) {
+    if (process_thread_exit(tid, code) < 0) {
+        proc_free(tid);
+    }
+    sched_yield();
+    for (;;) {
+        __asm__ volatile("hlt");
+    }
+}
+
+__attribute__((noreturn))
+static void syscall_exit_on_safe_stack(uint32_t id, uint32_t code,
+                                       void (*finish)(uint32_t, uint32_t)) {
+    uint64_t kcr3 = vmm_get_kernel_pml4_phys();
+    uint64_t exit_sp = ((uint64_t)(uintptr_t)&g_sys_exit_stack[sizeof(g_sys_exit_stack)]) & ~0xFULL;
+
+    __asm__ volatile(
+        "mov %0, %%cr3\n"
+        "mov %1, %%rsp\n"
+        "mov %2, %%edi\n"
+        "mov %3, %%esi\n"
+        "call *%4\n"
+        :
+        : "r"(kcr3),
+          "r"(exit_sp),
+          "r"(id),
+          "r"(code),
+          "r"(finish)
+        : "rdi", "rsi", "memory");
+
+    __builtin_unreachable();
 }
 
 __attribute__((noreturn))
@@ -390,25 +750,19 @@ static void syscall_exit_current(uint32_t code) {
     if (!cur) {
         for (;;) __asm__ volatile("hlt");
     }
+    syscall_exit_on_safe_stack(process_group_id(cur), code, syscall_exit_group_finish);
+}
 
-    cur->exit_code = code;
-    uint32_t pid = cur->pid;
-    uint64_t kcr3 = vmm_get_kernel_pml4_phys();
-    uint64_t exit_sp = ((uint64_t)(uintptr_t)&g_sys_exit_stack[sizeof(g_sys_exit_stack)]) & ~0xFULL;
-
-    __asm__ volatile(
-        "mov %0, %%cr3\n"
-        "mov %1, %%rsp\n"
-        "mov %2, %%edi\n"
-        "call *%3\n"
-        :
-        : "r"(kcr3),
-          "r"(exit_sp),
-          "r"(pid),
-          "r"(syscall_exit_finish)
-        : "rdi", "memory");
-
-    __builtin_unreachable();
+__attribute__((noreturn))
+static void syscall_thread_exit_current(uint32_t code) {
+    struct fry_process *cur = proc_current();
+    if (!cur) {
+        for (;;) __asm__ volatile("hlt");
+    }
+    if (cur->pid == cur->tgid) {
+        syscall_exit_current(code);
+    }
+    syscall_exit_on_safe_stack(cur->pid, code, syscall_thread_exit_finish);
 }
 
 /*
@@ -423,7 +777,9 @@ static void syscall_exit_current(uint32_t code) {
  *             an unrelated purpose within the same major release.
  *  51 -  63  Reserved for future driver syscalls.
  *  52 -  54  VM syscalls (mmap/munmap/mprotect) — STABLE.
- *  64 - 127  Reserved for future POSIX-compat expansion.
+ *  64 -  67  User thread syscalls — STABLE.
+ *  68 -  71  Synchronization/TLS syscalls — STABLE.
+ *  72 - 127  Reserved for future POSIX-compat expansion.
  * 128 - 255  Available for experimental / debug syscalls.
  * 256+       Undefined; returns -ENOSYS.
  *
@@ -494,7 +850,68 @@ enum {
     /* --- VM syscalls (STABLE) --- */
     SYS_MMAP = 52,
     SYS_MUNMAP = 53,
-    SYS_MPROTECT = 54
+    SYS_MPROTECT = 54,
+
+    /* --- User threads (STABLE) --- */
+    SYS_THREAD_CREATE = 64,
+    SYS_THREAD_EXIT = 65,
+    SYS_THREAD_JOIN = 66,
+    SYS_GETTID = 67,
+
+    /* --- IPC / descriptor model (Phase 3, STABLE) --- */
+    SYS_PIPE = 55,
+    SYS_DUP = 56,
+    SYS_DUP2 = 57,
+    SYS_POLL = 58,
+    SYS_FCNTL = 59,
+    SYS_SPAWN_ARGS = 60,
+    SYS_GET_ARGC = 61,
+    SYS_GET_ARGV = 62,
+    SYS_GETENV = 63,
+
+    /* --- Synchronization / TLS (STABLE) --- */
+    SYS_FUTEX_WAIT = 68,
+    SYS_FUTEX_WAKE = 69,
+    SYS_SET_TLS_BASE = 70,
+    SYS_GET_TLS_BASE = 71,
+
+    /* --- Socket ABI (Phase 4, STABLE) --- */
+    SYS_SOCKET = 72,
+    SYS_CONNECT = 73,
+    SYS_BIND = 74,
+    SYS_LISTEN = 75,
+    SYS_ACCEPT = 76,
+    SYS_SEND = 77,
+    SYS_RECV = 78,
+    SYS_SHUTDOWN_SOCK = 79,
+    SYS_GETSOCKOPT = 80,
+    SYS_SETSOCKOPT = 81,
+    SYS_SENDTO = 82,
+    SYS_RECVFROM = 83,
+    SYS_DNS_RESOLVE = 84,
+
+    /* --- Randomness/Time/Runtime (Phase 5, STABLE) --- */
+    SYS_GETRANDOM = 85,
+    SYS_CLOCK_GETTIME = 86,
+    SYS_NANOSLEEP = 87,
+
+    /* --- Filesystem expansion (Phase 6, STABLE) --- */
+    SYS_LSEEK = 88,
+    SYS_FTRUNCATE = 89,
+    SYS_RENAME = 90,
+    SYS_FSTAT = 91,
+
+    /* --- GUI/Input expansion (Phase 7) --- */
+    SYS_KBD_EVENT = 92,
+    SYS_MOUSE_GET_EXT = 93,
+    SYS_CLIPBOARD_GET = 94,
+    SYS_CLIPBOARD_SET = 95,
+
+    /* Audio syscalls (TaterSurf Phase D) */
+    SYS_AUDIO_OPEN  = 96,
+    SYS_AUDIO_WRITE = 97,
+    SYS_AUDIO_CLOSE = 98,
+    SYS_AUDIO_INFO  = 99
 };
 
 struct fry_fb_info {
@@ -507,7 +924,6 @@ struct fry_fb_info {
     uint32_t format;
 };
 
-#define SHM_MAX 128
 #define SHM_USER_BASE 0x20000000000ULL
 #define SHM_SLOT_STRIDE 0x10000000ULL
 struct shm_region {
@@ -518,7 +934,7 @@ struct shm_region {
     uint32_t mapped_pids[PROC_MAX]; /* slot-indexed pid guard against slot reuse */
     int used;
 };
-static struct shm_region shm_regions[SHM_MAX];
+static struct shm_region shm_regions[FRY_SHM_MAX];
 
 static int shm_proc_slot_by_pid(uint32_t pid) {
     for (uint32_t i = 0; i < PROC_MAX; i++) {
@@ -577,7 +993,7 @@ static void shm_unmap_from_all_processes(int id, struct shm_region *r) {
 }
 
 static void shm_destroy_region(int id) {
-    if (id < 0 || id >= SHM_MAX) return;
+    if (id < 0 || id >= FRY_SHM_MAX) return;
     struct shm_region *r = &shm_regions[id];
     if (!r->used) return;
     shm_unmap_from_all_processes(id, r);
@@ -587,7 +1003,7 @@ static void shm_destroy_region(int id) {
 
 void syscall_shm_process_exit(uint32_t pid) {
     int slot = shm_proc_slot_by_pid(pid);
-    for (int id = 0; id < SHM_MAX; id++) {
+    for (int id = 0; id < FRY_SHM_MAX; id++) {
         struct shm_region *r = &shm_regions[id];
         if (!r->used) continue;
         if (r->owner_pid == pid) {
@@ -600,7 +1016,6 @@ void syscall_shm_process_exit(uint32_t pid) {
     }
 }
 
-#define VM_SHARED_MAX 128
 #define VM_BACKING_NONE UINT32_MAX
 
 struct vm_shared_object {
@@ -611,12 +1026,12 @@ struct vm_shared_object {
     uint8_t _pad[3];
 };
 
-static struct vm_shared_object vm_shared_objects[VM_SHARED_MAX];
+static struct vm_shared_object vm_shared_objects[FRY_VM_SHARED_MAX];
 
 static int vm_region_alloc_slot(struct fry_process *p) {
-    if (!p) return -1;
+    if (!p || !proc_shared_state(p)) return -1;
     for (int i = 0; i < PROC_VMREG_MAX; i++) {
-        if (!p->vm_regions[i].used) return i;
+        if (!PROC_VMREGS(p)[i].used) return i;
     }
     return -1;
 }
@@ -625,9 +1040,9 @@ static int vm_region_alloc_slots(struct fry_process *p, int needed, int *slot1, 
     if (slot1) *slot1 = -1;
     if (slot2) *slot2 = -1;
     if (needed <= 0) return 0;
-    if (!p) return -1;
+    if (!p || !proc_shared_state(p)) return -1;
     for (int i = 0; i < PROC_VMREG_MAX; i++) {
-        if (p->vm_regions[i].used) continue;
+        if (PROC_VMREGS(p)[i].used) continue;
         if (slot1 && *slot1 < 0) {
             *slot1 = i;
             needed--;
@@ -699,16 +1114,16 @@ static int vm_regions_can_merge(const struct fry_vm_region *a,
 }
 
 static void vm_region_merge_neighbors(struct fry_process *p) {
-    if (!p) return;
+    if (!p || !proc_shared_state(p)) return;
     int merged = 1;
     while (merged) {
         merged = 0;
         for (int i = 0; i < PROC_VMREG_MAX && !merged; i++) {
-            if (!p->vm_regions[i].used) continue;
+            if (!PROC_VMREGS(p)[i].used) continue;
             for (int j = 0; j < PROC_VMREG_MAX; j++) {
-                if (i == j || !p->vm_regions[j].used) continue;
-                struct fry_vm_region *a = &p->vm_regions[i];
-                struct fry_vm_region *b = &p->vm_regions[j];
+                if (i == j || !PROC_VMREGS(p)[j].used) continue;
+                struct fry_vm_region *a = &PROC_VMREGS(p)[i];
+                struct fry_vm_region *b = &PROC_VMREGS(p)[j];
                 if (b->base < a->base) {
                     struct fry_vm_region *tmp = a;
                     a = b;
@@ -732,23 +1147,23 @@ static int vm_region_overlaps(const struct fry_vm_region *r, uint64_t base, uint
 }
 
 static int vm_any_region_overlap(const struct fry_process *p, uint64_t base, uint64_t length) {
-    if (!p || length == 0) return 0;
+    if (!p || !proc_shared_state_const(p) || length == 0) return 0;
     if (base + length < base) return 1;
     uint64_t end = base + length;
     for (int i = 0; i < PROC_VMREG_MAX; i++) {
-        if (vm_region_overlaps(&p->vm_regions[i], base, end)) return 1;
+        if (vm_region_overlaps(&PROC_VMREGS_CONST(p)[i], base, end)) return 1;
     }
     return 0;
 }
 
 static int vm_region_find_containing(const struct fry_process *p, uint64_t base, uint64_t length) {
-    if (!p || length == 0) return -1;
+    if (!p || !proc_shared_state_const(p) || length == 0) return -1;
     if (base + length < base) return -1;
     uint64_t end = base + length;
     for (int i = 0; i < PROC_VMREG_MAX; i++) {
-        if (!p->vm_regions[i].used) continue;
-        uint64_t r_base = p->vm_regions[i].base;
-        uint64_t r_end = r_base + p->vm_regions[i].length;
+        if (!PROC_VMREGS_CONST(p)[i].used) continue;
+        uint64_t r_base = PROC_VMREGS_CONST(p)[i].base;
+        uint64_t r_end = r_base + PROC_VMREGS_CONST(p)[i].length;
         if (r_end < r_base) continue;
         if (base >= r_base && end <= r_end) return i;
     }
@@ -758,7 +1173,7 @@ static int vm_region_find_containing(const struct fry_process *p, uint64_t base,
 static int vm_region_collect_covering_slots(const struct fry_process *p,
                                             uint64_t base, uint64_t length,
                                             int *slots, int max_slots) {
-    if (!p || !slots || max_slots <= 0 || length == 0) return -1;
+    if (!p || !proc_shared_state_const(p) || !slots || max_slots <= 0 || length == 0) return -1;
     if (base + length < base) return -1;
 
     uint64_t cursor = base;
@@ -769,7 +1184,7 @@ static int vm_region_collect_covering_slots(const struct fry_process *p,
         int slot = -1;
         uint64_t slot_end = 0;
         for (int i = 0; i < PROC_VMREG_MAX; i++) {
-            const struct fry_vm_region *r = &p->vm_regions[i];
+            const struct fry_vm_region *r = &PROC_VMREGS_CONST(p)[i];
             if (!r->used) continue;
             uint64_t r_end = r->base + r->length;
             if (r_end < r->base) continue;
@@ -890,11 +1305,23 @@ static int vm_commit_private_pages(struct fry_process *p, uint64_t base,
             return -1;
         }
         vmm_map_user(p->cr3, va, pa, pte_flags);
-        if ((vmm_virt_to_phys_user(p->cr3, va) & 0x000FFFFFFFFFF000ULL) != pa) {
+        uint64_t verify = vmm_virt_to_phys_user(p->cr3, va);
+        if ((verify & 0x000FFFFFFFFFF000ULL) != pa) {
+            kprint_serial_only("VM COMMIT FAIL: va=0x%llx pa=0x%llx verify=0x%llx cr3=0x%llx flags=0x%llx\n",
+                   (unsigned long long)va, (unsigned long long)pa,
+                   (unsigned long long)verify, (unsigned long long)p->cr3,
+                   (unsigned long long)pte_flags);
             vmm_unmap_user(p->cr3, va);
             pmm_free_page(pa);
             vm_release_private_pages(p, base, mapped);
             return -1;
+        }
+        /* Diagnostic: log first page of each mmap commit for debugging */
+        if (mapped == 0) {
+            kprint_serial_only("VM COMMIT OK: pid=%u va=0x%llx pa=0x%llx cr3=0x%llx pte=0x%llx pages=%llu\n",
+                   (unsigned)(p->pid), (unsigned long long)va, (unsigned long long)pa,
+                   (unsigned long long)p->cr3, (unsigned long long)pte_flags,
+                   (unsigned long long)(length / PAGE_SIZE));
         }
         vm_zero_page(pa);
         mapped += PAGE_SIZE;
@@ -911,7 +1338,7 @@ static void vm_shared_reset(struct vm_shared_object *obj) {
 }
 
 static int vm_shared_alloc_slot(void) {
-    for (int i = 0; i < VM_SHARED_MAX; i++) {
+    for (int i = 0; i < FRY_VM_SHARED_MAX; i++) {
         if (!vm_shared_objects[i].used) return i;
     }
     return -1;
@@ -926,7 +1353,7 @@ static int vm_shared_all_released(const struct vm_shared_object *obj) {
 }
 
 static void vm_shared_destroy(int id) {
-    if (id < 0 || id >= VM_SHARED_MAX) return;
+    if (id < 0 || id >= FRY_VM_SHARED_MAX) return;
     struct vm_shared_object *obj = &vm_shared_objects[id];
     if (!obj->used) return;
     if (obj->pages) {
@@ -977,7 +1404,7 @@ static int vm_shared_create(uint32_t page_count) {
 
 static void vm_shared_release_range(uint32_t id, uint32_t page_start,
                                     uint32_t page_count) {
-    if (id >= VM_SHARED_MAX) return;
+    if (id >= FRY_VM_SHARED_MAX) return;
     struct vm_shared_object *obj = &vm_shared_objects[id];
     if (!obj->used || page_start > obj->page_count) return;
     if (page_count > obj->page_count - page_start) return;
@@ -997,7 +1424,7 @@ static void vm_shared_release_range(uint32_t id, uint32_t page_start,
 static int vm_map_shared_pages(struct fry_process *p, uint64_t base, uint64_t length,
                                uint32_t prot, uint32_t backing_id,
                                uint32_t page_start) {
-    if (!p || backing_id >= VM_SHARED_MAX) return -1;
+    if (!p || backing_id >= FRY_VM_SHARED_MAX) return -1;
     struct vm_shared_object *obj = &vm_shared_objects[backing_id];
     if (!obj->used) return -1;
     uint32_t page_count = (uint32_t)(length / PAGE_SIZE);
@@ -1039,7 +1466,7 @@ static int vm_map_anon_private_region(struct fry_process *p, uint64_t base, uint
         return -1;
     }
 
-    vm_region_fill(&p->vm_regions[slot], base, length,
+    vm_region_fill(&PROC_VMREGS(p)[slot], base, length,
                    ((flags & FRY_MAP_RESERVE) != 0) ? 0 : prot,
                    flags, FRY_VM_REGION_ANON_PRIVATE, VM_BACKING_NONE, 0,
                    ((flags & FRY_MAP_RESERVE) == 0));
@@ -1052,7 +1479,7 @@ static int vm_map_guard_region(struct fry_process *p, uint64_t base, uint64_t le
     if (!vm_range_available(p, base, length)) return -1;
     int slot = vm_region_alloc_slot(p);
     if (slot < 0) return -1;
-    vm_region_fill(&p->vm_regions[slot], base, length, 0, flags,
+    vm_region_fill(&PROC_VMREGS(p)[slot], base, length, 0, flags,
                    FRY_VM_REGION_GUARD, VM_BACKING_NONE, 0, 0);
     return 0;
 }
@@ -1076,18 +1503,20 @@ static int vm_map_anon_shared_region(struct fry_process *p, uint64_t base, uint6
         return -1;
     }
 
-    vm_region_fill(&p->vm_regions[slot], base, length, prot, flags,
+    vm_region_fill(&PROC_VMREGS(p)[slot], base, length, prot, flags,
                    FRY_VM_REGION_ANON_SHARED, (uint32_t)backing_id, 0, 1);
     return 0;
 }
 
 static int vm_map_file_region(struct fry_process *p, uint64_t base, uint64_t length,
                               uint32_t prot, uint32_t flags, int fd) {
-    if (!p || fd < 3 || fd >= 64 || !p->fd_ptrs[fd]) return -1;
+    if (!p || !proc_shared_state(p) || fd < 3 || fd >= FRY_FD_MAX || !PROC_FD_PTRS(p)[fd]) {
+        return -1;
+    }
     if (!vm_range_available(p, base, length)) return -1;
     if (vm_commit_private_pages(p, base, length, prot) != 0) return -1;
 
-    struct vfs_file file = *(struct vfs_file *)p->fd_ptrs[fd];
+    struct vfs_file file = *(struct vfs_file *)PROC_FD_PTRS(p)[fd];
     uint64_t remaining = file.size;
     if (remaining > length) remaining = length;
     uint64_t va = base;
@@ -1114,7 +1543,7 @@ static int vm_map_file_region(struct fry_process *p, uint64_t base, uint64_t len
         return -1;
     }
 
-    vm_region_fill(&p->vm_regions[slot], base, length, prot, flags,
+    vm_region_fill(&PROC_VMREGS(p)[slot], base, length, prot, flags,
                    FRY_VM_REGION_FILE_PRIVATE, VM_BACKING_NONE, 0, 1);
     return 0;
 }
@@ -1151,7 +1580,7 @@ static int vm_unmap_region_range(struct fry_process *p, uint64_t base, uint64_t 
 
     int spill_slot = -1;
     if (count == 1) {
-        const struct fry_vm_region *r = &p->vm_regions[slots[0]];
+        const struct fry_vm_region *r = &PROC_VMREGS(p)[slots[0]];
         uint64_t r_end = r->base + r->length;
         if (base > r->base && end < r_end) {
             if (vm_region_alloc_slots(p, 1, &spill_slot, 0) != 0) return -1;
@@ -1159,7 +1588,7 @@ static int vm_unmap_region_range(struct fry_process *p, uint64_t base, uint64_t 
     }
 
     for (int i = 0; i < count; i++) {
-        const struct fry_vm_region *r = &p->vm_regions[slots[i]];
+        const struct fry_vm_region *r = &PROC_VMREGS(p)[slots[i]];
         uint64_t overlap_base = (base > r->base) ? base : r->base;
         uint64_t r_end = r->base + r->length;
         uint64_t overlap_end = (end < r_end) ? end : r_end;
@@ -1171,47 +1600,47 @@ static int vm_unmap_region_range(struct fry_process *p, uint64_t base, uint64_t 
 
     if (count == 1) {
         int slot = slots[0];
-        struct fry_vm_region r = p->vm_regions[slot];
+        struct fry_vm_region r = PROC_VMREGS(p)[slot];
         uint64_t r_end = r.base + r.length;
         if (base == r.base && end == r_end) {
-            vm_region_clear(&p->vm_regions[slot]);
+            vm_region_clear(&PROC_VMREGS(p)[slot]);
         } else if (base == r.base) {
-            vm_region_fill_span_from_parent(&p->vm_regions[slot], &r, end, r_end - end,
+            vm_region_fill_span_from_parent(&PROC_VMREGS(p)[slot], &r, end, r_end - end,
                                             r.prot, r.flags, r.committed);
         } else if (end == r_end) {
-            vm_region_fill_span_from_parent(&p->vm_regions[slot], &r, r.base,
+            vm_region_fill_span_from_parent(&PROC_VMREGS(p)[slot], &r, r.base,
                                             base - r.base, r.prot, r.flags, r.committed);
         } else {
-            vm_region_fill_span_from_parent(&p->vm_regions[slot], &r, r.base,
+            vm_region_fill_span_from_parent(&PROC_VMREGS(p)[slot], &r, r.base,
                                             base - r.base, r.prot, r.flags, r.committed);
-            vm_region_fill_span_from_parent(&p->vm_regions[spill_slot], &r, end,
+            vm_region_fill_span_from_parent(&PROC_VMREGS(p)[spill_slot], &r, end,
                                             r_end - end, r.prot, r.flags, r.committed);
         }
     } else {
         int first_slot = slots[0];
         int last_slot = slots[count - 1];
-        struct fry_vm_region first = p->vm_regions[first_slot];
-        struct fry_vm_region last = p->vm_regions[last_slot];
+        struct fry_vm_region first = PROC_VMREGS(p)[first_slot];
+        struct fry_vm_region last = PROC_VMREGS(p)[last_slot];
         uint64_t last_end = last.base + last.length;
 
         if (base > first.base) {
-            vm_region_fill_span_from_parent(&p->vm_regions[first_slot], &first, first.base,
+            vm_region_fill_span_from_parent(&PROC_VMREGS(p)[first_slot], &first, first.base,
                                             base - first.base, first.prot, first.flags,
                                             first.committed);
         } else {
-            vm_region_clear(&p->vm_regions[first_slot]);
+            vm_region_clear(&PROC_VMREGS(p)[first_slot]);
         }
 
         for (int i = 1; i < count - 1; i++) {
-            vm_region_clear(&p->vm_regions[slots[i]]);
+            vm_region_clear(&PROC_VMREGS(p)[slots[i]]);
         }
 
         if (end < last_end) {
-            vm_region_fill_span_from_parent(&p->vm_regions[last_slot], &last, end,
+            vm_region_fill_span_from_parent(&PROC_VMREGS(p)[last_slot], &last, end,
                                             last_end - end, last.prot, last.flags,
                                             last.committed);
         } else {
-            vm_region_clear(&p->vm_regions[last_slot]);
+            vm_region_clear(&PROC_VMREGS(p)[last_slot]);
         }
     }
     vm_region_merge_neighbors(p);
@@ -1222,7 +1651,7 @@ static int vm_mprotect_region_range(struct fry_process *p, uint64_t base, uint64
                                     uint32_t prot) {
     int slot = vm_region_find_containing(p, base, length);
     if (slot < 0) return -1;
-    struct fry_vm_region r = p->vm_regions[slot];
+    struct fry_vm_region r = PROC_VMREGS(p)[slot];
     uint64_t end = base + length;
     uint64_t r_end = r.base + r.length;
     int slot1 = -1;
@@ -1242,24 +1671,24 @@ static int vm_mprotect_region_range(struct fry_process *p, uint64_t base, uint64
 
         uint32_t committed_flags = r.flags & ~FRY_MAP_RESERVE;
         if (base == r.base && end == r_end) {
-            vm_region_fill(&p->vm_regions[slot], base, length, prot, committed_flags,
+            vm_region_fill(&PROC_VMREGS(p)[slot], base, length, prot, committed_flags,
                            r.kind, r.backing_id, vm_region_page_start_at(&r, base), 1);
         } else if (base == r.base) {
-            vm_region_fill(&p->vm_regions[slot], base, length, prot, committed_flags,
+            vm_region_fill(&PROC_VMREGS(p)[slot], base, length, prot, committed_flags,
                            r.kind, r.backing_id, vm_region_page_start_at(&r, base), 1);
-            vm_region_fill_span_from_parent(&p->vm_regions[slot1], &r, end, r_end - end,
+            vm_region_fill_span_from_parent(&PROC_VMREGS(p)[slot1], &r, end, r_end - end,
                                             0, r.flags, 0);
         } else if (end == r_end) {
-            vm_region_fill_span_from_parent(&p->vm_regions[slot], &r, r.base,
+            vm_region_fill_span_from_parent(&PROC_VMREGS(p)[slot], &r, r.base,
                                             base - r.base, 0, r.flags, 0);
-            vm_region_fill(&p->vm_regions[slot1], base, length, prot, committed_flags,
+            vm_region_fill(&PROC_VMREGS(p)[slot1], base, length, prot, committed_flags,
                            r.kind, r.backing_id, vm_region_page_start_at(&r, base), 1);
         } else {
-            vm_region_fill_span_from_parent(&p->vm_regions[slot], &r, r.base,
+            vm_region_fill_span_from_parent(&PROC_VMREGS(p)[slot], &r, r.base,
                                             base - r.base, 0, r.flags, 0);
-            vm_region_fill(&p->vm_regions[slot1], base, length, prot, committed_flags,
+            vm_region_fill(&PROC_VMREGS(p)[slot1], base, length, prot, committed_flags,
                            r.kind, r.backing_id, vm_region_page_start_at(&r, base), 1);
-            vm_region_fill_span_from_parent(&p->vm_regions[slot2], &r, end, r_end - end,
+            vm_region_fill_span_from_parent(&PROC_VMREGS(p)[slot2], &r, end, r_end - end,
                                             0, r.flags, 0);
         }
         vm_region_merge_neighbors(p);
@@ -1274,24 +1703,24 @@ static int vm_mprotect_region_range(struct fry_process *p, uint64_t base, uint64
     }
 
     if (base == r.base && end == r_end) {
-        vm_region_fill(&p->vm_regions[slot], r.base, r.length, prot, r.flags,
+        vm_region_fill(&PROC_VMREGS(p)[slot], r.base, r.length, prot, r.flags,
                        r.kind, r.backing_id, r.backing_page_start, 1);
     } else if (base == r.base) {
-        vm_region_fill(&p->vm_regions[slot], base, length, prot, r.flags,
+        vm_region_fill(&PROC_VMREGS(p)[slot], base, length, prot, r.flags,
                        r.kind, r.backing_id, vm_region_page_start_at(&r, base), 1);
-        vm_region_fill_span_from_parent(&p->vm_regions[slot1], &r, end, r_end - end,
+        vm_region_fill_span_from_parent(&PROC_VMREGS(p)[slot1], &r, end, r_end - end,
                                         r.prot, r.flags, 1);
     } else if (end == r_end) {
-        vm_region_fill_span_from_parent(&p->vm_regions[slot], &r, r.base, base - r.base,
+        vm_region_fill_span_from_parent(&PROC_VMREGS(p)[slot], &r, r.base, base - r.base,
                                         r.prot, r.flags, 1);
-        vm_region_fill(&p->vm_regions[slot1], base, length, prot, r.flags,
+        vm_region_fill(&PROC_VMREGS(p)[slot1], base, length, prot, r.flags,
                        r.kind, r.backing_id, vm_region_page_start_at(&r, base), 1);
     } else {
-        vm_region_fill_span_from_parent(&p->vm_regions[slot], &r, r.base, base - r.base,
+        vm_region_fill_span_from_parent(&PROC_VMREGS(p)[slot], &r, r.base, base - r.base,
                                         r.prot, r.flags, 1);
-        vm_region_fill(&p->vm_regions[slot1], base, length, prot, r.flags,
+        vm_region_fill(&PROC_VMREGS(p)[slot1], base, length, prot, r.flags,
                        r.kind, r.backing_id, vm_region_page_start_at(&r, base), 1);
-        vm_region_fill_span_from_parent(&p->vm_regions[slot2], &r, end, r_end - end,
+        vm_region_fill_span_from_parent(&PROC_VMREGS(p)[slot2], &r, end, r_end - end,
                                         r.prot, r.flags, 1);
     }
     vm_region_merge_neighbors(p);
@@ -1299,9 +1728,9 @@ static int vm_mprotect_region_range(struct fry_process *p, uint64_t base, uint64
 }
 
 void syscall_vm_process_exit(struct fry_process *p) {
-    if (!p) return;
+    if (!p || !proc_shared_state(p)) return;
     for (int i = 0; i < PROC_VMREG_MAX; i++) {
-        struct fry_vm_region *r = &p->vm_regions[i];
+        struct fry_vm_region *r = &PROC_VMREGS(p)[i];
         if (!r->used) continue;
         if (r->committed && r->kind == FRY_VM_REGION_ANON_SHARED) {
             vm_shared_release_range(r->backing_id, r->backing_page_start,
@@ -1311,6 +1740,67 @@ void syscall_vm_process_exit(struct fry_process *p) {
     }
 }
 
+static uint64_t sys_now_ms(void) {
+    uint64_t freq = hpet_get_freq_hz();
+    if (freq == 0) return 0;
+    return (hpet_read_counter() * 1000ULL) / freq;
+}
+
+static int futex_key_for_user_word(struct fry_process *p, uint64_t uaddr, uint64_t *key_out) {
+    uint64_t key;
+    if (!p || !key_out) return -EINVAL;
+    if ((uaddr & 3ULL) != 0) return -EINVAL;
+    if (!user_buf_mapped(p, uaddr, sizeof(uint32_t))) return -EFAULT;
+    key = vmm_virt_to_phys_user(p->cr3, uaddr);
+    if (!key) return -EFAULT;
+    *key_out = key;
+    return 0;
+}
+
+static int futex_wait_begin(struct fry_process *cur, uint64_t uaddr,
+                            uint32_t expected, uint64_t timeout_ms) {
+    uint64_t key;
+    volatile const uint32_t *word;
+    uint64_t wake_time_ms;
+    int rc;
+    if (!cur) return -ESRCH;
+    rc = futex_key_for_user_word(cur, uaddr, &key);
+    if (rc < 0) return rc;
+
+    word = (volatile const uint32_t *)(uintptr_t)uaddr;
+    if (timeout_ms == 0) {
+        wake_time_ms = UINT64_MAX;
+    } else {
+        wake_time_ms = sys_now_ms();
+        if (wake_time_ms > UINT64_MAX - timeout_ms) {
+            wake_time_ms = UINT64_MAX - 1ULL;
+        } else {
+            wake_time_ms += timeout_ms;
+        }
+    }
+
+    rc = sched_block_futex(cur->pid, word, expected, key, wake_time_ms);
+    if (rc < 0) return rc;
+    sched_yield();
+
+    cur = proc_current();
+    if (!cur) return -ESRCH;
+    rc = cur->wait_result;
+    cur->wait_result = 0;
+    cur->wait_futex_key = 0;
+    cur->wake_time_ms = 0;
+    return rc;
+}
+
+static int futex_wake_waiters(struct fry_process *cur, uint64_t uaddr, uint32_t max_wake) {
+    uint64_t key;
+    int rc;
+    if (!cur || max_wake == 0) return 0;
+    rc = futex_key_for_user_word(cur, uaddr, &key);
+    if (rc < 0) return rc;
+    return (int)sched_wake_futex(key, max_wake, 0);
+}
+
 uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                           uint64_t a4, uint64_t a5) {
     struct fry_process *cur = proc_current();
@@ -1318,6 +1808,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     switch (num) {
         case SYS_WRITE: {
             int fd = (int)a1;
+            struct fry_process_shared *shared = proc_shared_state(cur);
             if (!user_buf_mapped(cur, a2, a3)) {
                 return (uint64_t)-EFAULT;
             }
@@ -1330,12 +1821,12 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                     kprint_write(buf, a3);
                 }
                 /* also capture into the per-process stdout ring buffer */
-                if (cur) {
+                if (shared) {
                     for (uint64_t _i = 0; _i < a3; _i++) {
-                        uint32_t nt = (cur->outbuf_tail + 1u) % PROC_OUTBUF;
-                        if (nt != cur->outbuf_head) {
-                            cur->outbuf[cur->outbuf_tail] = (uint8_t)buf[_i];
-                            cur->outbuf_tail = nt;
+                        uint32_t nt = (shared->outbuf_tail + 1u) % PROC_OUTBUF;
+                        if (nt != shared->outbuf_head) {
+                            shared->outbuf[shared->outbuf_tail] = (uint8_t)buf[_i];
+                            shared->outbuf_tail = nt;
                         }
                         /* ring full: silently drop oldest byte */
                     }
@@ -1346,21 +1837,63 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                 kprint_serial_write(buf, a3);
                 return a3;
             }
-            if (fd >= 3 && cur && fd < 64 && cur->fd_ptrs[fd]) {
-                return (uint64_t)vfs_write((struct vfs_file *)cur->fd_ptrs[fd], (const void *)buf, (uint32_t)a3);
+            if (fd >= 3 && fd < FRY_FD_MAX && shared && shared->fd_ptrs[fd]) {
+                uint8_t kind = shared->fd_kind[fd];
+                if (kind == FD_FILE) {
+                    return (uint64_t)vfs_write((struct vfs_file *)shared->fd_ptrs[fd],
+                                               (const void *)buf, (uint32_t)a3);
+                }
+                if (kind == FD_PIPE_WRITE) {
+                    struct fry_pipe *pp = (struct fry_pipe *)shared->fd_ptrs[fd];
+                    uint32_t wrflags = shared->fd_flags[fd];
+                    int64_t ret = pipe_write(pp, buf, a3, wrflags);
+                    if (ret == -EAGAIN && !(wrflags & O_NONBLOCK) && pp->readers > 0) {
+                        /* Block until space available or readers close */
+                        sched_block_poll(cur->pid, UINT64_MAX);
+                        sched_yield();
+                        cur = proc_current();
+                        if (!cur) return (uint64_t)-ESRCH;
+                        shared = proc_shared_state(cur);
+                        if (!shared || !shared->fd_ptrs[fd]) return (uint64_t)-EBADF;
+                        pp = (struct fry_pipe *)shared->fd_ptrs[fd];
+                        ret = pipe_write(pp, buf, a3, wrflags | O_NONBLOCK);
+                    }
+                    return (uint64_t)ret;
+                }
+                if (kind == FD_PIPE_READ) return (uint64_t)-EBADF; /* can't write read end */
+                if (kind == FD_SOCKET) {
+                    struct fry_socket *sk = (struct fry_socket *)shared->fd_ptrs[fd];
+                    if (!sk || !sk->used) return (uint64_t)-EBADF;
+                    if (sk->type == SOCK_STREAM) {
+                        if (sk->state != SOCK_ST_CONNECTED) return (uint64_t)-ENOTCONN;
+                        if (sk->tcp_handle < 0) return (uint64_t)-ENOTCONN;
+                        int sent = tcp_send(sk->tcp_handle, (const uint8_t *)buf, (uint16_t)a3);
+                        if (sent < 0) return (uint64_t)-EIO;
+                        return (uint64_t)sent;
+                    }
+                    if (sk->type == SOCK_DGRAM) {
+                        if (sk->remote_ip == 0 && sk->remote_port == 0)
+                            return (uint64_t)-EDESTADDRREQ;
+                        int r = udp_send(sk->remote_ip, sk->remote_port,
+                                         sk->local_port, (const uint8_t *)buf, (uint16_t)a3);
+                        return r == 0 ? (uint64_t)a3 : (uint64_t)-EIO;
+                    }
+                    return (uint64_t)-EBADF;
+                }
             }
             return (uint64_t)-EBADF;
         }
         case SYS_READ: {
             int fd = (int)a1;
+            struct fry_process_shared *shared = proc_shared_state(cur);
             if (!user_buf_writable(cur, a2, a3)) return (uint64_t)-EFAULT;
             char *buf = (char *)(uintptr_t)a2;
             if (fd == 0) {
-                if (cur && cur->inbuf_head != cur->inbuf_tail) {
+                if (shared && shared->inbuf_head != shared->inbuf_tail) {
                     uint64_t nr = 0;
-                    while (nr < a3 && cur->inbuf_head != cur->inbuf_tail) {
-                        buf[nr++] = (char)cur->inbuf[cur->inbuf_head];
-                        cur->inbuf_head = (cur->inbuf_head + 1u) % PROC_INBUF;
+                    while (nr < a3 && shared->inbuf_head != shared->inbuf_tail) {
+                        buf[nr++] = (char)shared->inbuf[shared->inbuf_head];
+                        shared->inbuf_head = (shared->inbuf_head + 1u) % PROC_INBUF;
                     }
                     return nr;
                 }
@@ -1368,14 +1901,93 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                 if (n > 0) return (uint64_t)n;
                 uint64_t sn = kread_serial(buf, a3);
                 if (sn > 0) return sn;
-                // No input from either source - yield so the scheduler
-                // can give other processes (or the idle loop) a turn.
-                // This prevents the GUI from busy-spinning on SYS_READ.
                 if (cur) sched_yield();
                 return 0;
             }
-            if (fd >= 3 && cur && fd < 64 && cur->fd_ptrs[fd]) {
-                return (uint64_t)vfs_read((struct vfs_file *)cur->fd_ptrs[fd], buf, (uint32_t)a3);
+            if (fd >= 3 && fd < FRY_FD_MAX && shared && shared->fd_ptrs[fd]) {
+                uint8_t kind = shared->fd_kind[fd];
+                if (kind == FD_FILE) {
+                    return (uint64_t)vfs_read((struct vfs_file *)shared->fd_ptrs[fd],
+                                              buf, (uint32_t)a3);
+                }
+                if (kind == FD_PIPE_READ) {
+                    struct fry_pipe *pp = (struct fry_pipe *)shared->fd_ptrs[fd];
+                    uint32_t rdflags = shared->fd_flags[fd];
+                    int64_t ret = pipe_read(pp, buf, a3, rdflags);
+                    if (ret == -EAGAIN && !(rdflags & O_NONBLOCK) && pp->writers > 0) {
+                        /* Block until data available or writers close */
+                        sched_block_poll(cur->pid, UINT64_MAX);
+                        sched_yield();
+                        /* Re-read after wake */
+                        cur = proc_current();
+                        if (!cur) return (uint64_t)-ESRCH;
+                        shared = proc_shared_state(cur);
+                        if (!shared || !shared->fd_ptrs[fd]) return (uint64_t)-EBADF;
+                        pp = (struct fry_pipe *)shared->fd_ptrs[fd];
+                        ret = pipe_read(pp, buf, a3, rdflags | O_NONBLOCK);
+                        if (ret == -EAGAIN && pp->writers == 0) ret = 0; /* EOF */
+                    }
+                    return (uint64_t)ret;
+                }
+                if (kind == FD_PIPE_WRITE) return (uint64_t)-EBADF; /* can't read write end */
+                if (kind == FD_SOCKET) {
+                    struct fry_socket *sk = (struct fry_socket *)shared->fd_ptrs[fd];
+                    if (!sk || !sk->used) return (uint64_t)-EBADF;
+                    if (sk->type == SOCK_STREAM) {
+                        if (sk->state != SOCK_ST_CONNECTED) return (uint64_t)-ENOTCONN;
+                        if (sk->tcp_handle < 0) return (uint64_t)-ENOTCONN;
+                        /* Poll network before reading */
+                        net_poll();
+                        int nr = tcp_recv(sk->tcp_handle, (uint8_t *)buf, (uint32_t)a3);
+                        if (nr > 0) return (uint64_t)nr;
+                        /* Check if connection closed */
+                        if (!tcp_is_connected(sk->tcp_handle)) return 0; /* EOF */
+                        uint32_t rdflags = shared->fd_flags[fd];
+                        if (rdflags & O_NONBLOCK) return (uint64_t)-EAGAIN;
+                        /* Block briefly and retry once */
+                        sched_block_poll(cur->pid, UINT64_MAX);
+                        sched_yield();
+                        cur = proc_current();
+                        if (!cur) return (uint64_t)-ESRCH;
+                        shared = proc_shared_state(cur);
+                        if (!shared || !shared->fd_ptrs[fd]) return (uint64_t)-EBADF;
+                        sk = (struct fry_socket *)shared->fd_ptrs[fd];
+                        if (!sk || !sk->used || sk->tcp_handle < 0) return (uint64_t)-EBADF;
+                        net_poll();
+                        nr = tcp_recv(sk->tcp_handle, (uint8_t *)buf, (uint32_t)a3);
+                        if (nr > 0) return (uint64_t)nr;
+                        if (!tcp_is_connected(sk->tcp_handle)) return 0;
+                        return (uint64_t)-EAGAIN;
+                    }
+                    if (sk->type == SOCK_DGRAM) {
+                        /* Dequeue from UDP receive buffer */
+                        if (sk->udp_rx_head == sk->udp_rx_tail) {
+                            uint32_t rdflags = shared->fd_flags[fd];
+                            if (rdflags & O_NONBLOCK) return (uint64_t)-EAGAIN;
+                            /* Block and retry once */
+                            net_poll();
+                            sched_block_poll(cur->pid, UINT64_MAX);
+                            sched_yield();
+                            cur = proc_current();
+                            if (!cur) return (uint64_t)-ESRCH;
+                            shared = proc_shared_state(cur);
+                            if (!shared || !shared->fd_ptrs[fd]) return (uint64_t)-EBADF;
+                            sk = (struct fry_socket *)shared->fd_ptrs[fd];
+                            if (!sk || !sk->used) return (uint64_t)-EBADF;
+                            net_poll();
+                            if (sk->udp_rx_head == sk->udp_rx_tail)
+                                return (uint64_t)-EAGAIN;
+                        }
+                        struct fry_udp_pkt *pkt = &sk->udp_rxq[sk->udp_rx_tail];
+                        uint16_t copylen = pkt->len;
+                        if (copylen > (uint16_t)a3) copylen = (uint16_t)a3;
+                        for (uint16_t i = 0; i < copylen; i++)
+                            buf[i] = (char)pkt->data[i];
+                        sk->udp_rx_tail = (sk->udp_rx_tail + 1) % FRY_SOCK_UDP_RXMAX;
+                        return (uint64_t)copylen;
+                    }
+                    return (uint64_t)-EBADF;
+                }
             }
             return (uint64_t)-EBADF;
         }
@@ -1384,8 +1996,13 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                 syscall_exit_current((uint32_t)a1);
             }
             return 0;
+        case SYS_THREAD_EXIT:
+            if (cur) {
+                syscall_thread_exit_current((uint32_t)a1);
+            }
+            return 0;
         case SYS_SPAWN: {
-            char path[128];
+            char path[FRY_PATH_MAX];
             /* Row 1: yellow = spawn entered */
             uint32_t col = g_spawn_attempt_count;
             if (col < 80) boot_diag_color(col, 1, 0x00FFFF00u);
@@ -1408,9 +2025,8 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                 /* Row 1: green = spawn succeeded */
                 if (col < 80) boot_diag_color(col, 1, 0x0000FF00u);
                 if (col < 80) boot_diag_color(col, 2, 0x0000FF00u);
-                if (TATER_BOOT_SERIAL_TRACE) {
-                    kprint_serial_only("SPAWN_OK path=%s pid=%d\n", path, rc);
-                }
+                kprint_serial_only("SPAWN_OK path=%s pid=%d parent=%u\n",
+                    path, rc, cur ? cur->pid : 0);
             } else {
                 /* Row 1: red = spawn failed (file not found or ELF error) */
                 if (col < 80) boot_diag_color(col, 1, 0x00FF0000u);
@@ -1436,42 +2052,85 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             }
             return 0;
         case SYS_OPEN: {
-            char path[128];
+            char path[FRY_PATH_MAX];
+            struct fry_process_shared *shared;
             if (copy_user_string(cur, a1, path, sizeof(path)) != 0) return (uint64_t)-EFAULT;
             if (!cur) return (uint64_t)-ESRCH;
-            int flags = (int)a2;
-            for (int fd = 3; fd < 64; fd++) {
-                if (!cur->fd_ptrs[fd]) {
-                    struct vfs_file *f = vfs_open(path);
-                    if (!f && (flags & 0x40)) {  /* O_CREAT */
-                        vfs_create(path, 1);  /* TOTFS_TYPE_FILE */
-                        f = vfs_open(path);
-                    }
-                    if (!f) return (uint64_t)-ENOENT;
-                    cur->fd_ptrs[fd] = f;
-                    cur->fd_table[fd] = 1;
-                    cur->open_fds++;
-                    return (uint64_t)fd;
-                }
+            shared = proc_shared_state(cur);
+            if (!shared) return (uint64_t)-ESRCH;
+            uint32_t flags = (uint32_t)a2;
+            int fd = fd_alloc(cur);
+            if (fd < 0) return (uint64_t)-EMFILE;
+            struct vfs_file *f = vfs_open(path);
+            if (!f && (flags & O_CREAT)) {
+                vfs_create(path, 1);  /* TOTFS_TYPE_FILE */
+                f = vfs_open(path);
             }
-            return (uint64_t)-EMFILE;
+            if (!f) return (uint64_t)-ENOENT;
+            fd_install(cur, fd, f, FD_FILE, flags & O_NONBLOCK);
+            return (uint64_t)fd;
         }
-        case SYS_CLOSE:
-            if (!cur) return (uint64_t)-ESRCH;
-            if (a1 >= 3 && a1 < 64 && cur->fd_ptrs[a1]) {
-                vfs_close((struct vfs_file *)cur->fd_ptrs[a1]);
-                cur->fd_ptrs[a1] = 0;
-                cur->fd_table[a1] = -1;
-                if (cur->open_fds > 0) cur->open_fds--;
-                return 0;
+        case SYS_CLOSE: {
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            int cfd = (int)a1;
+            if (cfd < 3 || cfd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            uint8_t ckind = PROC_FD_KIND(cur)[cfd];
+            void *cptr = PROC_FD_PTRS(cur)[cfd];
+            if (ckind == FD_NONE || !cptr) return (uint64_t)-EBADF;
+            if (ckind == FD_FILE) {
+                vfs_close((struct vfs_file *)cptr);
+            } else if (ckind == FD_PIPE_READ) {
+                struct fry_pipe *pp = (struct fry_pipe *)cptr;
+                if (pp->readers > 0) pp->readers--;
+                if (pp->readers == 0 && pp->writers == 0) {
+                    pp->used = 0;
+                    pp->head = 0;
+                    pp->tail = 0;
+                }
+                sched_wake_poll_waiters();
+            } else if (ckind == FD_PIPE_WRITE) {
+                struct fry_pipe *pp = (struct fry_pipe *)cptr;
+                if (pp->writers > 0) pp->writers--;
+                if (pp->readers == 0 && pp->writers == 0) {
+                    pp->used = 0;
+                    pp->head = 0;
+                    pp->tail = 0;
+                }
+                sched_wake_poll_waiters();
+            } else if (ckind == FD_SOCKET) {
+                struct fry_socket *sk = (struct fry_socket *)cptr;
+                if (sk && sk->used) {
+                    if (sk->type == SOCK_STREAM) {
+                        if (sk->tcp_handle >= 0) tcp_close(sk->tcp_handle);
+                        if (sk->listen_handle >= 0) tcp_close(sk->listen_handle);
+                    }
+                    sk->used = 0;
+                    sk->state = SOCK_ST_CLOSED;
+                    sk->tcp_handle = -1;
+                    sk->listen_handle = -1;
+                }
+                sched_wake_poll_waiters();
             }
-            return (uint64_t)-EBADF;
+            fd_release(cur, cfd);
+            return 0;
+        }
         case SYS_GETPID:
+            return cur ? process_group_id(cur) : 0;
+        case SYS_GETTID:
             return cur ? cur->pid : 0;
+        case SYS_SET_TLS_BASE:
+            if (!cur || cur->is_kernel) return (uint64_t)-ESRCH;
+            if (a1 != 0 && !user_ptr_ok(a1, 1)) return (uint64_t)-EFAULT;
+            cur->user_fs_base = a1;
+            write_user_fs_base(a1);
+            return 0;
+        case SYS_GET_TLS_BASE:
+            if (!cur || cur->is_kernel) return 0;
+            return cur->user_fs_base;
         case SYS_STAT:
             if (!user_buf_writable(cur, a2, sizeof(struct vfs_stat))) return (uint64_t)-EFAULT;
             {
-                char path[128];
+                char path[FRY_PATH_MAX];
                 if (copy_user_string(cur, a1, path, sizeof(path)) != 0) return (uint64_t)-EFAULT;
                 struct vfs_stat st;
                 if (vfs_stat(path, &st) != 0) return (uint64_t)-ENOENT;
@@ -1481,7 +2140,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         }
         case SYS_READDIR: {
             if (!user_buf_writable(cur, a2, a3)) return (uint64_t)-EFAULT;
-            char path[128];
+            char path[FRY_PATH_MAX];
             if (copy_user_string(cur, a1, path, sizeof(path)) != 0) return (uint64_t)-EFAULT;
             struct readdir_ctx ctx = {(char *)(uintptr_t)a2, (uint32_t)a3, 0};
             if (vfs_readdir(path, readdir_cb, &ctx) != 0) return (uint64_t)-ENOENT;
@@ -1490,7 +2149,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         }
         case SYS_READDIR_EX: {
             if (!user_buf_writable(cur, a2, a3)) return (uint64_t)-EFAULT;
-            char path[128];
+            char path[FRY_PATH_MAX];
             if (copy_user_string(cur, a1, path, sizeof(path)) != 0) return (uint64_t)-EFAULT;
             struct readdir_ex_ctx ctx = {(uint8_t *)(uintptr_t)a2, (uint32_t)a3, 0};
             if (vfs_readdir_ex(path, readdir_ex_cb, &ctx) != 0) return (uint64_t)-ENOENT;
@@ -1510,7 +2169,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             return 0;
         case SYS_WAIT: {
             int ret = process_wait((uint32_t)a1);
-            if (ret < 0) return (uint64_t)-ESRCH;
+            if (ret < 0) return (uint64_t)ret;
             if (ret > 0) {
                 sched_yield();
             }
@@ -1581,19 +2240,16 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             uint32_t tpid = (uint32_t)a1;
             if (!user_buf_writable(cur, a2, a3)) return (uint64_t)-EFAULT;
             char *ubuf = (char *)(uintptr_t)a2;
-            struct fry_process *tp = 0;
-            for (uint32_t _i = 0; _i < PROC_MAX; _i++) {
-                if (procs[_i].pid == tpid &&
-                    procs[_i].state != PROC_UNUSED) {
-                    tp = &procs[_i];
-                    break;
-                }
-            }
+            struct fry_process *tp = proc_find_group_leader_any(tpid);
+            struct fry_process_shared *shared;
+            if (!tp) tp = proc_find_task_any(tpid);
             if (!tp) return (uint64_t)-ESRCH; /* never existed or fully freed */
+            shared = proc_shared_state(tp);
+            if (!shared) return (uint64_t)-ESRCH;
             uint64_t nr = 0;
-            while (nr < a3 && tp->outbuf_head != tp->outbuf_tail) {
-                ubuf[nr++] = (char)tp->outbuf[tp->outbuf_head];
-                tp->outbuf_head = (tp->outbuf_head + 1u) % PROC_OUTBUF;
+            while (nr < a3 && shared->outbuf_head != shared->outbuf_tail) {
+                ubuf[nr++] = (char)shared->outbuf[shared->outbuf_head];
+                shared->outbuf_head = (shared->outbuf_head + 1u) % PROC_OUTBUF;
             }
             if (nr > 0) return nr;
             if (tp->state == PROC_DEAD) return (uint64_t)-ESRCH; /* dead + empty */
@@ -1603,17 +2259,19 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             // struct fry_mouse_state {
             //   int32_t x, y, dx, dy;   // offsets 0,4,8,12
             //   uint8_t btns, _pad[3];  // offset 16
-            // }  size = 20 bytes
-            if (!user_buf_writable(cur, a1, 20)) return (uint64_t)-EFAULT;
-            int32_t mx, my, mdx, mdy;
+            //   int32_t wheel;          // offset 20 (Phase 7)
+            // }  size = 24 bytes
+            if (!user_buf_writable(cur, a1, 24)) return (uint64_t)-EFAULT;
+            int32_t mx, my, mdx, mdy, mwheel;
             uint8_t mb;
-            ps2_mouse_get(&mx, &my, &mb, &mdx, &mdy);
+            ps2_mouse_get_ext(&mx, &my, &mb, &mdx, &mdy, &mwheel);
             int32_t *out = (int32_t *)(uintptr_t)a1;
             out[0] = mx;
             out[1] = my;
             out[2] = mdx;
             out[3] = mdy;
             *((uint8_t *)(out + 4)) = mb;
+            out[5] = mwheel;
             return 0;
         }
         case SYS_PROC_INPUT: {
@@ -1622,20 +2280,18 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             uint32_t tpid = (uint32_t)a1;
             if (!user_buf_mapped(cur, a2, a3)) return (uint64_t)-EFAULT;
             const uint8_t *ubuf = (const uint8_t *)(uintptr_t)a2;
-            struct fry_process *tp = 0;
-            for (uint32_t _i = 0; _i < PROC_MAX; _i++) {
-                if (procs[_i].pid == tpid && procs[_i].state != PROC_UNUSED) {
-                    tp = &procs[_i];
-                    break;
-                }
-            }
+            struct fry_process *tp = proc_find_group_leader(tpid);
+            struct fry_process_shared *shared;
+            if (!tp) tp = proc_find_task(tpid);
             if (!tp || tp->state == PROC_DEAD) return (uint64_t)-ESRCH;
+            shared = proc_shared_state(tp);
+            if (!shared) return (uint64_t)-ESRCH;
             uint64_t nw = 0;
             for (uint64_t _i = 0; _i < a3; _i++) {
-                uint32_t nt = (tp->inbuf_tail + 1u) % PROC_INBUF;
-                if (nt != tp->inbuf_head) {
-                    tp->inbuf[tp->inbuf_tail] = ubuf[_i];
-                    tp->inbuf_tail = nt;
+                uint32_t nt = (shared->inbuf_tail + 1u) % PROC_INBUF;
+                if (nt != shared->inbuf_head) {
+                    shared->inbuf[shared->inbuf_tail] = ubuf[_i];
+                    shared->inbuf_tail = nt;
                     nw++;
                 } else {
                     break; // Buffer full
@@ -1644,9 +2300,12 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             return nw;
         }
         case SYS_SBRK: {
+            struct fry_process_shared *shared;
             if (!cur) return (uint64_t)-ESRCH;
+            shared = proc_shared_state(cur);
+            if (!shared) return (uint64_t)-ESRCH;
             int64_t inc = (int64_t)a1;
-            uint64_t old_end = cur->heap_end;
+            uint64_t old_end = shared->heap_end;
             if (inc == 0) return old_end;
             if (inc < 0) return (uint64_t)-EINVAL; // No shrinking for now
             uint64_t new_end = old_end + (uint64_t)inc;
@@ -1678,7 +2337,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                 uint8_t *kv = (uint8_t *)vmm_phys_to_virt(pa);
                 for (int i = 0; i < 4096; i++) kv[i] = 0;
             }
-            cur->heap_end = new_end;
+            shared->heap_end = new_end;
             return old_end;
         }
         case SYS_SHM_ALLOC: {
@@ -1686,7 +2345,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             uint64_t size = (uint64_t)a1;
             uint32_t pages = (size + 4095ULL) / 4096ULL;
             if (pages == 0) return (uint64_t)-EINVAL;
-            for (int i = 0; i < SHM_MAX; i++) {
+            for (int i = 0; i < FRY_SHM_MAX; i++) {
                 if (!shm_regions[i].used) {
                     uint64_t phys = 0;
                     // Allocate contiguous physical pages for simple mapping
@@ -1706,7 +2365,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                     }
                     shm_regions[i].phys_base = phys;
                     shm_regions[i].page_count = pages;
-                    shm_regions[i].owner_pid = cur->pid;
+                    shm_regions[i].owner_pid = process_group_id(cur);
                     shm_regions[i].map_count = 0;
                     shm_regions[i].used = 1;
                     return (uint64_t)i;
@@ -1716,7 +2375,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         }
         case SYS_SHM_MAP: {
             int id = (int)a1;
-            if (id < 0 || id >= SHM_MAX || !shm_regions[id].used || !cur) return (uint64_t)-EINVAL;
+            if (id < 0 || id >= FRY_SHM_MAX || !shm_regions[id].used || !cur) return (uint64_t)-EINVAL;
             int slot = shm_proc_slot_by_pid(cur->pid);
             if (slot < 0) return (uint64_t)-ENOMEM;
             // Map at a high address
@@ -1735,28 +2394,46 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         }
         case SYS_SHM_FREE: {
             int id = (int)a1;
-            if (!cur || id < 0 || id >= SHM_MAX || !shm_regions[id].used) return (uint64_t)-EINVAL;
-            if (shm_regions[id].owner_pid != cur->pid) return (uint64_t)-EPERM;
+            if (!cur || id < 0 || id >= FRY_SHM_MAX || !shm_regions[id].used) return (uint64_t)-EINVAL;
+            if (shm_regions[id].owner_pid != process_group_id(cur)) return (uint64_t)-EPERM;
             shm_destroy_region(id);
             return 0;
         }
         case SYS_KILL: {
             uint32_t tpid = (uint32_t)a1;
-            /* Don't allow killing pid 0, 1, or self */
-            if (tpid <= 1 || (cur && tpid == cur->pid)) return (uint64_t)-EPERM;
-            struct fry_process *tp = 0;
-            for (uint32_t _i = 0; _i < PROC_MAX; _i++) {
-                if (procs[_i].pid == tpid && procs[_i].state != PROC_UNUSED) {
-                    tp = &procs[_i];
-                    break;
-                }
-            }
+            struct fry_process *tp = proc_find_task(tpid);
+            uint32_t target_tgid;
             if (!tp) return (uint64_t)-ESRCH;
+            target_tgid = process_group_id(tp);
+            /* Don't allow killing pid 0, 1, or self group. */
+            if (target_tgid <= 1 || (cur && target_tgid == process_group_id(cur))) {
+                return (uint64_t)-EPERM;
+            }
             if (tp->state == PROC_DEAD) return 0;
-            proc_free(tpid);
+            process_exit_group(target_tgid, 0);
             sched_yield();
             return 0;
         }
+        case SYS_THREAD_CREATE: {
+            struct fry_process *thr;
+            if (!cur || cur->is_kernel || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            if (!user_ptr_ok(a1, 1) || a3 < 8 || !user_ptr_ok(a3 - 8, 8)) return (uint64_t)-EFAULT;
+            if (!user_buf_mapped(cur, a1, 1) || !user_buf_writable(cur, a3 - 8, 8)) {
+                return (uint64_t)-EFAULT;
+            }
+            thr = process_create_user_thread(cur, a1, a2, a3);
+            if (!thr) return (uint64_t)-ENOMEM;
+            sched_add(thr->pid);
+            return (uint64_t)thr->pid;
+        }
+        case SYS_THREAD_JOIN: {
+            int rc = process_thread_join((uint32_t)a1);
+            return (uint64_t)rc;
+        }
+        case SYS_FUTEX_WAIT:
+            return (uint64_t)futex_wait_begin(cur, a1, (uint32_t)a2, a3);
+        case SYS_FUTEX_WAKE:
+            return (uint64_t)futex_wake_waiters(cur, a1, (uint32_t)a2);
         case SYS_ACPI_DIAG: {
             if (!user_buf_writable(cur, a1, sizeof(struct fry_acpi_diag))) return (uint64_t)-EFAULT;
             struct fry_acpi_diag diag;
@@ -1766,18 +2443,18 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             return 0;
         }
         case SYS_CREATE: {
-            char path[128];
+            char path[FRY_PATH_MAX];
             if (copy_user_string(cur, a1, path, sizeof(path)) != 0) return (uint64_t)-EFAULT;
             uint16_t type = (uint16_t)a2;
             return (uint64_t)vfs_create(path, type);
         }
         case SYS_MKDIR: {
-            char path[128];
+            char path[FRY_PATH_MAX];
             if (copy_user_string(cur, a1, path, sizeof(path)) != 0) return (uint64_t)-EFAULT;
             return (uint64_t)vfs_mkdir(path);
         }
         case SYS_UNLINK: {
-            char path[128];
+            char path[FRY_PATH_MAX];
             if (copy_user_string(cur, a1, path, sizeof(path)) != 0) return (uint64_t)-EFAULT;
             return (uint64_t)vfs_unlink(path);
         }
@@ -2016,6 +2693,1127 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             if (!vm_prot_supported(prot)) return (uint64_t)-EINVAL;
             return (uint64_t)vm_mprotect_region_range(cur, base, length, prot);
         }
+        /* ================================================================
+         * Phase 3: IPC / Descriptor model syscalls
+         * ================================================================ */
+        case SYS_PIPE: {
+            /*
+             * SYS_PIPE(a1=user_int_array_ptr)
+             * Creates a pipe. Writes [read_fd, write_fd] to user buffer.
+             * Returns 0 on success, -errno on failure.
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            if (!user_buf_writable(cur, a1, 2 * sizeof(int32_t))) return (uint64_t)-EFAULT;
+            int pidx = pipe_alloc();
+            if (pidx < 0) return (uint64_t)-ENFILE;
+            int rfd = fd_alloc(cur);
+            if (rfd < 0) { g_pipes[pidx].used = 0; return (uint64_t)-EMFILE; }
+            fd_install(cur, rfd, &g_pipes[pidx], FD_PIPE_READ, 0);
+            g_pipes[pidx].readers++;
+            int wfd = fd_alloc(cur);
+            if (wfd < 0) {
+                g_pipes[pidx].readers--;
+                fd_release(cur, rfd);
+                g_pipes[pidx].used = 0;
+                return (uint64_t)-EMFILE;
+            }
+            fd_install(cur, wfd, &g_pipes[pidx], FD_PIPE_WRITE, 0);
+            g_pipes[pidx].writers++;
+            int32_t *ufds = (int32_t *)(uintptr_t)a1;
+            ufds[0] = rfd;
+            ufds[1] = wfd;
+            return 0;
+        }
+        case SYS_DUP: {
+            /*
+             * SYS_DUP(a1=oldfd)
+             * Returns new fd pointing to the same underlying object.
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            int oldfd = (int)a1;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            if (oldfd < 0 || oldfd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            if (oldfd < 3) return (uint64_t)-EBADF; /* don't dup stdin/stdout/stderr for now */
+            uint8_t okind = shared->fd_kind[oldfd];
+            void *optr = shared->fd_ptrs[oldfd];
+            if (okind == FD_NONE || !optr) return (uint64_t)-EBADF;
+            int newfd = fd_alloc(cur);
+            if (newfd < 0) return (uint64_t)-EMFILE;
+            fd_install(cur, newfd, optr, okind, shared->fd_flags[oldfd]);
+            /* Increment pipe refcount if duplicating a pipe end */
+            if (okind == FD_PIPE_READ) {
+                ((struct fry_pipe *)optr)->readers++;
+            } else if (okind == FD_PIPE_WRITE) {
+                ((struct fry_pipe *)optr)->writers++;
+            }
+            return (uint64_t)newfd;
+        }
+        case SYS_DUP2: {
+            /*
+             * SYS_DUP2(a1=oldfd, a2=newfd)
+             * Forces newfd to refer to the same object as oldfd.
+             * If newfd was open, it is closed first.
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            int oldfd2 = (int)a1;
+            int newfd2 = (int)a2;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            if (oldfd2 < 0 || oldfd2 >= FRY_FD_MAX || newfd2 < 3 || newfd2 >= FRY_FD_MAX) {
+                return (uint64_t)-EBADF;
+            }
+            uint8_t okind2 = shared->fd_kind[oldfd2];
+            void *optr2 = shared->fd_ptrs[oldfd2];
+            if (okind2 == FD_NONE || !optr2) return (uint64_t)-EBADF;
+            if (oldfd2 == newfd2) return (uint64_t)newfd2;
+            /* Close newfd if open */
+            if (shared->fd_kind[newfd2] != FD_NONE && shared->fd_ptrs[newfd2]) {
+                if (shared->fd_kind[newfd2] == FD_FILE) {
+                    vfs_close((struct vfs_file *)shared->fd_ptrs[newfd2]);
+                } else if (shared->fd_kind[newfd2] == FD_PIPE_READ) {
+                    struct fry_pipe *pp = (struct fry_pipe *)shared->fd_ptrs[newfd2];
+                    if (pp->readers > 0) pp->readers--;
+                    if (pp->readers == 0 && pp->writers == 0) { pp->used = 0; pp->head = 0; pp->tail = 0; }
+                } else if (shared->fd_kind[newfd2] == FD_PIPE_WRITE) {
+                    struct fry_pipe *pp = (struct fry_pipe *)shared->fd_ptrs[newfd2];
+                    if (pp->writers > 0) pp->writers--;
+                    if (pp->readers == 0 && pp->writers == 0) { pp->used = 0; pp->head = 0; pp->tail = 0; }
+                }
+                fd_release(cur, newfd2);
+            }
+            fd_install(cur, newfd2, optr2, okind2, shared->fd_flags[oldfd2]);
+            if (okind2 == FD_PIPE_READ) ((struct fry_pipe *)optr2)->readers++;
+            else if (okind2 == FD_PIPE_WRITE) ((struct fry_pipe *)optr2)->writers++;
+            return (uint64_t)newfd2;
+        }
+        case SYS_POLL: {
+            /*
+             * SYS_POLL(a1=user_pollfd_array, a2=nfds, a3=timeout_ms)
+             * Returns number of ready fds, 0 on timeout, -errno on error.
+             * timeout_ms == 0: non-blocking poll
+             * timeout_ms == UINT64_MAX: block indefinitely
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            uint32_t nfds = (uint32_t)a2;
+            if (nfds == 0) return 0;
+            if (nfds > FRY_POLL_MAX) return (uint64_t)-EINVAL;
+            uint64_t pfdsz = nfds * sizeof(struct fry_pollfd);
+            if (!user_buf_writable(cur, a1, pfdsz)) return (uint64_t)-EFAULT;
+            struct fry_pollfd *ufds = (struct fry_pollfd *)(uintptr_t)a1;
+            uint64_t timeout_ms = a3;
+
+            /* First pass: drain NIC then check readiness */
+            net_poll();
+            uint32_t ready = 0;
+            for (uint32_t i = 0; i < nfds; i++) {
+                ufds[i].revents = poll_check_fd(cur, ufds[i].fd, ufds[i].events);
+                if (ufds[i].revents != 0) ready++;
+            }
+            if (ready > 0 || timeout_ms == 0) return (uint64_t)ready;
+
+            /* Block until event or timeout */
+            uint64_t wake_ms = (timeout_ms == UINT64_MAX) ? UINT64_MAX :
+                               (hpet_read_counter() * 1000ULL / hpet_get_freq_hz()) + timeout_ms;
+            sched_block_poll(cur->pid, wake_ms);
+            sched_yield();
+
+            /* Re-check after wake */
+            cur = proc_current();
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            if (!user_buf_writable(cur, a1, pfdsz)) return (uint64_t)-EFAULT;
+            ufds = (struct fry_pollfd *)(uintptr_t)a1;
+            net_poll();
+            ready = 0;
+            for (uint32_t i = 0; i < nfds; i++) {
+                ufds[i].revents = poll_check_fd(cur, ufds[i].fd, ufds[i].events);
+                if (ufds[i].revents != 0) ready++;
+            }
+            return (uint64_t)ready;
+        }
+        case SYS_FCNTL: {
+            /*
+             * SYS_FCNTL(a1=fd, a2=cmd, a3=arg)
+             * F_GETFL: return current flags
+             * F_SETFL: set flags (only O_NONBLOCK is mutable)
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            int ffd = (int)a1;
+            int cmd = (int)a2;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            if (ffd < 3 || ffd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            if (shared->fd_kind[ffd] == FD_NONE || !shared->fd_ptrs[ffd]) return (uint64_t)-EBADF;
+            switch (cmd) {
+                case F_GETFL:
+                    return (uint64_t)shared->fd_flags[ffd];
+                case F_SETFL:
+                    /* Only O_NONBLOCK is user-settable after open */
+                    shared->fd_flags[ffd] = (shared->fd_flags[ffd] & ~(uint32_t)O_NONBLOCK) |
+                                             ((uint32_t)a3 & O_NONBLOCK);
+                    return 0;
+                default:
+                    return (uint64_t)-EINVAL;
+            }
+        }
+        case SYS_SPAWN_ARGS: {
+            /*
+             * SYS_SPAWN_ARGS(a1=path_ptr, a2=argv_ptr, a3=argc, a4=envp_ptr, a5=envc)
+             * Spawn a new process with arguments and environment.
+             * argv_ptr points to an array of user string pointers.
+             * Returns pid on success, -errno on failure.
+             */
+            char spath[FRY_PATH_MAX];
+            uint32_t col = g_spawn_attempt_count;
+            if (copy_user_string(cur, a1, spath, sizeof(spath)) != 0) {
+                g_spawn_attempt_count++;
+                return (uint64_t)-EFAULT;
+            }
+            uint32_t sargc = (uint32_t)a3;
+            uint32_t senvc = (uint32_t)a5;
+            if (sargc > FRY_ARGV_MAX) sargc = FRY_ARGV_MAX;
+            if (senvc > FRY_ENV_MAX) senvc = FRY_ENV_MAX;
+
+            /* Copy argv strings from userspace */
+            const char *kargv[FRY_ARGV_MAX];
+            char kargv_buf[FRY_ARGS_BUFSZ];
+            uint32_t abuf_pos = 0;
+            uint32_t actual_argc = 0;
+
+            if (sargc > 0 && a2 != 0) {
+                if (!user_buf_mapped(cur, a2, sargc * sizeof(uint64_t))) {
+                    g_spawn_attempt_count++;
+                    return (uint64_t)-EFAULT;
+                }
+                uint64_t *uargv = (uint64_t *)(uintptr_t)a2;
+                for (uint32_t i = 0; i < sargc; i++) {
+                    char tmp[256];
+                    if (copy_user_string(cur, uargv[i], tmp, sizeof(tmp)) != 0) break;
+                    uint32_t len = 0;
+                    while (tmp[len]) len++;
+                    if (abuf_pos + len + 1 > FRY_ARGS_BUFSZ) break;
+                    kargv[i] = &kargv_buf[abuf_pos];
+                    for (uint32_t j = 0; j <= len; j++) kargv_buf[abuf_pos++] = tmp[j];
+                    actual_argc++;
+                }
+            }
+
+            /* Copy envp strings from userspace */
+            const char *kenvp[FRY_ENV_MAX];
+            uint32_t actual_envc = 0;
+
+            if (senvc > 0 && a4 != 0) {
+                if (!user_buf_mapped(cur, a4, senvc * sizeof(uint64_t))) {
+                    g_spawn_attempt_count++;
+                    return (uint64_t)-EFAULT;
+                }
+                uint64_t *uenvp = (uint64_t *)(uintptr_t)a4;
+                for (uint32_t i = 0; i < senvc; i++) {
+                    char tmp[256];
+                    if (copy_user_string(cur, uenvp[i], tmp, sizeof(tmp)) != 0) break;
+                    uint32_t len = 0;
+                    while (tmp[len]) len++;
+                    if (abuf_pos + len + 1 > FRY_ARGS_BUFSZ) break;
+                    kenvp[i] = &kargv_buf[abuf_pos];
+                    for (uint32_t j = 0; j <= len; j++) kargv_buf[abuf_pos++] = tmp[j];
+                    actual_envc++;
+                }
+            }
+
+            int rc = process_launch_args(spath, kargv, actual_argc, kenvp, actual_envc);
+            if (rc >= 0) {
+                if (col < 80) boot_diag_color(col, 1, 0x0000FF00u);
+            } else {
+                if (col < 80) boot_diag_color(col, 1, 0x00FF0000u);
+            }
+            g_spawn_attempt_count++;
+            return (uint64_t)rc;
+        }
+        case SYS_GET_ARGC: {
+            /*
+             * SYS_GET_ARGC()
+             * Returns the argument count for the current process.
+             */
+            if (!cur || !proc_shared_state(cur)) return 0;
+            return (uint64_t)proc_shared_state(cur)->argc;
+        }
+        case SYS_GET_ARGV: {
+            /*
+             * SYS_GET_ARGV(a1=index, a2=user_buf, a3=buf_len)
+             * Copies argv[index] into user buffer. Returns string length or -errno.
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            uint32_t idx = (uint32_t)a1;
+            if (idx >= shared->argc) return (uint64_t)-EINVAL;
+            if (!user_buf_writable(cur, a2, a3)) return (uint64_t)-EFAULT;
+            char *ubuf = (char *)(uintptr_t)a2;
+            uint32_t off = shared->argv_offsets[idx];
+            if (off >= FRY_ARGS_BUFSZ) return (uint64_t)-EINVAL;
+            const char *arg = &shared->args_buf[off];
+            uint32_t len = 0;
+            while (arg[len] && off + len < FRY_ARGS_BUFSZ) len++;
+            if (len + 1 > (uint32_t)a3) return (uint64_t)-ERANGE;
+            for (uint32_t i = 0; i <= len; i++) ubuf[i] = arg[i];
+            return (uint64_t)len;
+        }
+        case SYS_GETENV: {
+            /*
+             * SYS_GETENV(a1=name_ptr, a2=value_buf, a3=buf_len)
+             * Looks up NAME=VALUE in the process environment.
+             * Copies VALUE into user buffer. Returns length or -ENOENT.
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            char name[128];
+            if (copy_user_string(cur, a1, name, sizeof(name)) != 0) return (uint64_t)-EFAULT;
+            if (!user_buf_writable(cur, a2, a3)) return (uint64_t)-EFAULT;
+            uint32_t nlen = 0;
+            while (name[nlen]) nlen++;
+
+            for (uint32_t i = 0; i < shared->envc; i++) {
+                uint32_t off = shared->env_offsets[i];
+                if (off >= FRY_ARGS_BUFSZ) continue;
+                const char *env = &shared->args_buf[off];
+                /* Check if env starts with "NAME=" */
+                uint32_t match = 1;
+                for (uint32_t j = 0; j < nlen; j++) {
+                    if (off + j >= FRY_ARGS_BUFSZ || env[j] != name[j]) { match = 0; break; }
+                }
+                if (!match || off + nlen >= FRY_ARGS_BUFSZ || env[nlen] != '=') continue;
+                /* Found it — copy value after '=' */
+                const char *val = &env[nlen + 1];
+                uint32_t vlen = 0;
+                while (val[vlen] && off + nlen + 1 + vlen < FRY_ARGS_BUFSZ) vlen++;
+                if (vlen + 1 > (uint32_t)a3) return (uint64_t)-ERANGE;
+                char *ubuf = (char *)(uintptr_t)a2;
+                for (uint32_t j = 0; j <= vlen; j++) ubuf[j] = val[j];
+                return (uint64_t)vlen;
+            }
+            return (uint64_t)-ENOENT;
+        }
+
+        /* ============================================================
+         * Socket syscalls (Phase 4)
+         * ============================================================ */
+
+        case SYS_SOCKET: {
+            /*
+             * SYS_SOCKET(a1=domain, a2=type, a3=protocol)
+             * Returns: fd on success, -errno on failure.
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            if ((int)a1 != AF_INET) return (uint64_t)-EAFNOSUPPORT;
+            if ((int)a2 != SOCK_STREAM && (int)a2 != SOCK_DGRAM) return (uint64_t)-EPROTOTYPE;
+
+            int si = sock_alloc();
+            if (si < 0) return (uint64_t)-ENFILE;
+
+            int sfd = fd_alloc(cur);
+            if (sfd < 0) {
+                g_sockets[si].used = 0;
+                return (uint64_t)-EMFILE;
+            }
+
+            g_sockets[si].domain = (uint8_t)a1;
+            g_sockets[si].type = (uint8_t)a2;
+            g_sockets[si].state = SOCK_ST_CREATED;
+
+            fd_install(cur, sfd, &g_sockets[si], FD_SOCKET, 0);
+
+            if ((int)a2 == SOCK_DGRAM) sock_ensure_udp_handler();
+
+            return (uint64_t)sfd;
+        }
+
+        case SYS_CONNECT: {
+            /*
+             * SYS_CONNECT(a1=fd, a2=sockaddr_in_ptr, a3=addrlen)
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            int cfd = (int)a1;
+            if (cfd < 3 || cfd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            if (shared->fd_kind[cfd] != FD_SOCKET) return (uint64_t)-ENOTSOCK;
+            struct fry_socket *sk = (struct fry_socket *)shared->fd_ptrs[cfd];
+            if (!sk || !sk->used) return (uint64_t)-EBADF;
+            if (sk->state == SOCK_ST_CONNECTED) return (uint64_t)-EISCONN;
+
+            if (a3 < sizeof(struct fry_sockaddr_in)) return (uint64_t)-EINVAL;
+            if (!user_buf_mapped(cur, a2, sizeof(struct fry_sockaddr_in)))
+                return (uint64_t)-EFAULT;
+
+            struct fry_sockaddr_in addr;
+            if (copyin(cur, a2, &addr, sizeof(addr)) != 0) return (uint64_t)-EFAULT;
+            if (addr.sin_family != AF_INET) return (uint64_t)-EAFNOSUPPORT;
+
+            uint32_t dst_ip = fry_ntohl(addr.sin_addr);
+            uint16_t dst_port = fry_ntohs(addr.sin_port);
+
+            sk->remote_ip = dst_ip;
+            sk->remote_port = dst_port;
+
+            if (sk->type == SOCK_STREAM) {
+                kprint_serial_only("SYS_CONNECT: pid=%u tcp %u.%u.%u.%u:%u\n",
+                    cur->pid,
+                    (dst_ip >> 24) & 0xFF, (dst_ip >> 16) & 0xFF,
+                    (dst_ip >> 8) & 0xFF, dst_ip & 0xFF, dst_port);
+                tcp_conn_t tc = tcp_connect(dst_ip, dst_port);
+                if (tc < 0) {
+                    kprint_serial_only("SYS_CONNECT: FAIL rc=%d\n", tc);
+                    sk->state = SOCK_ST_CREATED;
+                    return (uint64_t)-ECONNREFUSED;
+                }
+                sk->tcp_handle = tc;
+                sk->state = SOCK_ST_CONNECTED;
+                kprint_serial_only("SYS_CONNECT: OK handle=%d\n", tc);
+                return 0;
+            }
+
+            if (sk->type == SOCK_DGRAM) {
+                /* UDP "connect" just sets default destination */
+                if (sk->local_port == 0) sk->local_port = sock_ephemeral_port();
+                sk->state = SOCK_ST_CONNECTED;
+                return 0;
+            }
+
+            return (uint64_t)-EINVAL;
+        }
+
+        case SYS_BIND: {
+            /*
+             * SYS_BIND(a1=fd, a2=sockaddr_in_ptr, a3=addrlen)
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            int bfd = (int)a1;
+            if (bfd < 3 || bfd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            if (shared->fd_kind[bfd] != FD_SOCKET) return (uint64_t)-ENOTSOCK;
+            struct fry_socket *sk = (struct fry_socket *)shared->fd_ptrs[bfd];
+            if (!sk || !sk->used) return (uint64_t)-EBADF;
+            if (sk->state != SOCK_ST_CREATED) return (uint64_t)-EINVAL;
+
+            if (a3 < sizeof(struct fry_sockaddr_in)) return (uint64_t)-EINVAL;
+            if (!user_buf_mapped(cur, a2, sizeof(struct fry_sockaddr_in)))
+                return (uint64_t)-EFAULT;
+
+            struct fry_sockaddr_in addr;
+            if (copyin(cur, a2, &addr, sizeof(addr)) != 0) return (uint64_t)-EFAULT;
+            if (addr.sin_family != AF_INET) return (uint64_t)-EAFNOSUPPORT;
+
+            sk->local_ip = fry_ntohl(addr.sin_addr);
+            sk->local_port = fry_ntohs(addr.sin_port);
+
+            /* Check for port conflict (skip if reuseaddr) */
+            if (!sk->reuseaddr) {
+                for (int i = 0; i < FRY_SOCK_MAX; i++) {
+                    if (g_sockets[i].used && &g_sockets[i] != sk &&
+                        g_sockets[i].type == sk->type &&
+                        g_sockets[i].local_port == sk->local_port) {
+                        return (uint64_t)-EADDRINUSE;
+                    }
+                }
+            }
+
+            sk->state = SOCK_ST_BOUND;
+            return 0;
+        }
+
+        case SYS_LISTEN: {
+            /*
+             * SYS_LISTEN(a1=fd, a2=backlog)
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            int lfd = (int)a1;
+            if (lfd < 3 || lfd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            if (shared->fd_kind[lfd] != FD_SOCKET) return (uint64_t)-ENOTSOCK;
+            struct fry_socket *sk = (struct fry_socket *)shared->fd_ptrs[lfd];
+            if (!sk || !sk->used) return (uint64_t)-EBADF;
+            if (sk->type != SOCK_STREAM) return (uint64_t)-EINVAL;
+            if (sk->state != SOCK_ST_BOUND) return (uint64_t)-EINVAL;
+
+            tcp_conn_t lh = tcp_listen(sk->local_port);
+            if (lh < 0) return (uint64_t)-ENOMEM;
+
+            sk->listen_handle = lh;
+            sk->state = SOCK_ST_LISTENING;
+            return 0;
+        }
+
+        case SYS_ACCEPT: {
+            /*
+             * SYS_ACCEPT(a1=fd, a2=sockaddr_out_ptr (or 0), a3=addrlen_ptr (or 0))
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            int afd = (int)a1;
+            if (afd < 3 || afd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            if (shared->fd_kind[afd] != FD_SOCKET) return (uint64_t)-ENOTSOCK;
+            struct fry_socket *lsk = (struct fry_socket *)shared->fd_ptrs[afd];
+            if (!lsk || !lsk->used || lsk->state != SOCK_ST_LISTENING)
+                return (uint64_t)-EINVAL;
+
+            /* Poll network and try to accept */
+            net_poll();
+            tcp_conn_t nc = tcp_accept(lsk->listen_handle);
+            if (nc < 0) {
+                uint32_t aflags = shared->fd_flags[afd];
+                if (aflags & O_NONBLOCK) return (uint64_t)-EAGAIN;
+                /* Block and retry */
+                sched_block_poll(cur->pid, UINT64_MAX);
+                sched_yield();
+                cur = proc_current();
+                if (!cur) return (uint64_t)-ESRCH;
+                shared = proc_shared_state(cur);
+                if (!shared || !shared->fd_ptrs[afd]) return (uint64_t)-EBADF;
+                lsk = (struct fry_socket *)shared->fd_ptrs[afd];
+                if (!lsk || !lsk->used) return (uint64_t)-EBADF;
+                net_poll();
+                nc = tcp_accept(lsk->listen_handle);
+                if (nc < 0) return (uint64_t)-EAGAIN;
+            }
+
+            /* Allocate new socket for the accepted connection */
+            int nsi = sock_alloc();
+            if (nsi < 0) { tcp_close(nc); return (uint64_t)-ENFILE; }
+
+            int newfd = fd_alloc(cur);
+            if (newfd < 0) {
+                g_sockets[nsi].used = 0;
+                tcp_close(nc);
+                return (uint64_t)-EMFILE;
+            }
+
+            g_sockets[nsi].domain = AF_INET;
+            g_sockets[nsi].type = SOCK_STREAM;
+            g_sockets[nsi].state = SOCK_ST_CONNECTED;
+            g_sockets[nsi].tcp_handle = nc;
+            g_sockets[nsi].local_port = lsk->local_port;
+            /* We don't have easy access to remote IP/port from tcp_conn here,
+               but the connection is fully established in netcore. */
+
+            fd_install(cur, newfd, &g_sockets[nsi], FD_SOCKET, 0);
+
+            /* Fill in peer address if requested */
+            if (a2 && a3) {
+                /* Best effort — we'd need netcore to expose remote addr */
+                struct fry_sockaddr_in peer;
+                uint8_t *p = (uint8_t *)&peer;
+                for (uint32_t j = 0; j < sizeof(peer); j++) p[j] = 0;
+                peer.sin_family = AF_INET;
+                if (user_buf_writable(cur, a2, sizeof(peer)))
+                    copyout(cur, &peer, a2, sizeof(peer));
+            }
+
+            return (uint64_t)newfd;
+        }
+
+        case SYS_SEND: {
+            /*
+             * SYS_SEND(a1=fd, a2=buf, a3=len, a4=flags)
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            int sfd = (int)a1;
+            if (sfd < 3 || sfd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            if (shared->fd_kind[sfd] != FD_SOCKET) return (uint64_t)-ENOTSOCK;
+            struct fry_socket *sk = (struct fry_socket *)shared->fd_ptrs[sfd];
+            if (!sk || !sk->used) return (uint64_t)-EBADF;
+            if (!user_buf_mapped(cur, a2, a3)) return (uint64_t)-EFAULT;
+
+            const uint8_t *buf = (const uint8_t *)(uintptr_t)a2;
+
+            if (sk->type == SOCK_STREAM) {
+                if (sk->state != SOCK_ST_CONNECTED || sk->tcp_handle < 0)
+                    return (uint64_t)-ENOTCONN;
+                int sent = tcp_send(sk->tcp_handle, buf, (uint16_t)a3);
+                kprint_serial_only("SYS_SEND: pid=%u len=%u sent=%d\n",
+                    cur->pid, (uint32_t)a3, sent);
+                if (sent < 0) return (uint64_t)-EIO;
+                return (uint64_t)sent;
+            }
+            if (sk->type == SOCK_DGRAM) {
+                if (sk->remote_ip == 0 && sk->remote_port == 0)
+                    return (uint64_t)-EDESTADDRREQ;
+                if (sk->local_port == 0) sk->local_port = sock_ephemeral_port();
+                int r = udp_send(sk->remote_ip, sk->remote_port,
+                                 sk->local_port, buf, (uint16_t)a3);
+                return r == 0 ? (uint64_t)a3 : (uint64_t)-EIO;
+            }
+            return (uint64_t)-EINVAL;
+        }
+
+        case SYS_RECV: {
+            /*
+             * SYS_RECV(a1=fd, a2=buf, a3=len, a4=flags)
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            int rfd = (int)a1;
+            if (rfd < 3 || rfd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            if (shared->fd_kind[rfd] != FD_SOCKET) return (uint64_t)-ENOTSOCK;
+            struct fry_socket *sk = (struct fry_socket *)shared->fd_ptrs[rfd];
+            if (!sk || !sk->used) return (uint64_t)-EBADF;
+            if (!user_buf_writable(cur, a2, a3)) return (uint64_t)-EFAULT;
+
+            uint8_t *buf = (uint8_t *)(uintptr_t)a2;
+            uint32_t rflags = (uint32_t)a4;
+            uint32_t fdflags = shared->fd_flags[rfd];
+            int nonblock = (fdflags & O_NONBLOCK) || (rflags & MSG_DONTWAIT);
+
+            if (sk->type == SOCK_STREAM) {
+                if (sk->tcp_handle < 0)
+                    return (uint64_t)-ENOTCONN;
+                net_poll();
+                /* Try to read buffered data first — even if the peer has
+                 * closed the connection, there may be data in the TCP
+                 * receive buffer that arrived before the FIN. */
+                int nr = tcp_recv(sk->tcp_handle, buf, (uint32_t)a3);
+                if (nr > 0) {
+                    static int recv_trace_count;
+                    if (recv_trace_count < 200) {
+                        kprint_serial_only("SYS_RECV: pid=%u got %d bytes\n",
+                            cur->pid, nr);
+                        recv_trace_count++;
+                    }
+                    return (uint64_t)nr;
+                }
+                /* No buffered data — check if connection is still alive */
+                if (sk->state != SOCK_ST_CONNECTED ||
+                    !tcp_is_connected(sk->tcp_handle)) return 0; /* EOF */
+                if (nonblock) return (uint64_t)-EAGAIN;
+                /* Block and retry */
+                sched_block_poll(cur->pid, UINT64_MAX);
+                sched_yield();
+                cur = proc_current();
+                if (!cur) return (uint64_t)-ESRCH;
+                shared = proc_shared_state(cur);
+                if (!shared || !shared->fd_ptrs[rfd]) return (uint64_t)-EBADF;
+                sk = (struct fry_socket *)shared->fd_ptrs[rfd];
+                if (!sk || !sk->used || sk->tcp_handle < 0) return (uint64_t)-EBADF;
+                net_poll();
+                nr = tcp_recv(sk->tcp_handle, buf, (uint32_t)a3);
+                if (nr > 0) return (uint64_t)nr;
+                if (!tcp_is_connected(sk->tcp_handle)) return 0;
+                return (uint64_t)-EAGAIN;
+            }
+            if (sk->type == SOCK_DGRAM) {
+                net_poll();
+                if (sk->udp_rx_head != sk->udp_rx_tail) {
+                    struct fry_udp_pkt *pkt = &sk->udp_rxq[sk->udp_rx_tail];
+                    uint16_t copylen = pkt->len;
+                    if (copylen > (uint16_t)a3) copylen = (uint16_t)a3;
+                    for (uint16_t i = 0; i < copylen; i++) buf[i] = pkt->data[i];
+                    sk->udp_rx_tail = (sk->udp_rx_tail + 1) % FRY_SOCK_UDP_RXMAX;
+                    return (uint64_t)copylen;
+                }
+                if (nonblock) return (uint64_t)-EAGAIN;
+                sched_block_poll(cur->pid, UINT64_MAX);
+                sched_yield();
+                cur = proc_current();
+                if (!cur) return (uint64_t)-ESRCH;
+                shared = proc_shared_state(cur);
+                if (!shared || !shared->fd_ptrs[rfd]) return (uint64_t)-EBADF;
+                sk = (struct fry_socket *)shared->fd_ptrs[rfd];
+                if (!sk || !sk->used) return (uint64_t)-EBADF;
+                net_poll();
+                if (sk->udp_rx_head != sk->udp_rx_tail) {
+                    struct fry_udp_pkt *pkt = &sk->udp_rxq[sk->udp_rx_tail];
+                    uint16_t copylen = pkt->len;
+                    if (copylen > (uint16_t)a3) copylen = (uint16_t)a3;
+                    for (uint16_t i = 0; i < copylen; i++) buf[i] = pkt->data[i];
+                    sk->udp_rx_tail = (sk->udp_rx_tail + 1) % FRY_SOCK_UDP_RXMAX;
+                    return (uint64_t)copylen;
+                }
+                return (uint64_t)-EAGAIN;
+            }
+            return (uint64_t)-EINVAL;
+        }
+
+        case SYS_SHUTDOWN_SOCK: {
+            /*
+             * SYS_SHUTDOWN_SOCK(a1=fd, a2=how)
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            int sfd = (int)a1;
+            if (sfd < 3 || sfd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            if (shared->fd_kind[sfd] != FD_SOCKET) return (uint64_t)-ENOTSOCK;
+            struct fry_socket *sk = (struct fry_socket *)shared->fd_ptrs[sfd];
+            if (!sk || !sk->used) return (uint64_t)-EBADF;
+
+            if (sk->type == SOCK_STREAM && sk->tcp_handle >= 0) {
+                tcp_close(sk->tcp_handle);
+                sk->tcp_handle = -1;
+            }
+            sk->state = SOCK_ST_SHUTDOWN;
+            sched_wake_poll_waiters();
+            return 0;
+        }
+
+        case SYS_GETSOCKOPT: {
+            /*
+             * SYS_GETSOCKOPT(a1=fd, a2=level, a3=optname, a4=optval_ptr, a5=optlen_ptr)
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            int sfd = (int)a1;
+            if (sfd < 3 || sfd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            if (shared->fd_kind[sfd] != FD_SOCKET) return (uint64_t)-ENOTSOCK;
+            struct fry_socket *sk = (struct fry_socket *)shared->fd_ptrs[sfd];
+            if (!sk || !sk->used) return (uint64_t)-EBADF;
+            if ((int)a2 != SOL_SOCKET) return (uint64_t)-ENOPROTOOPT;
+
+            uint32_t val = 0;
+            switch ((int)a3) {
+                case SO_REUSEADDR: val = sk->reuseaddr; break;
+                case SO_RCVTIMEO:  val = sk->so_rcvtimeo; break;
+                case SO_SNDTIMEO:  val = sk->so_sndtimeo; break;
+                case SO_ERROR:     val = 0; break;
+                case SO_KEEPALIVE: val = 0; break;
+                default: return (uint64_t)-ENOPROTOOPT;
+            }
+            if (user_buf_writable(cur, a4, 4))
+                copyout(cur, &val, a4, 4);
+            return 0;
+        }
+
+        case SYS_SETSOCKOPT: {
+            /*
+             * SYS_SETSOCKOPT(a1=fd, a2=level, a3=optname, a4=optval_ptr, a5=optlen)
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            int sfd = (int)a1;
+            if (sfd < 3 || sfd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            if (shared->fd_kind[sfd] != FD_SOCKET) return (uint64_t)-ENOTSOCK;
+            struct fry_socket *sk = (struct fry_socket *)shared->fd_ptrs[sfd];
+            if (!sk || !sk->used) return (uint64_t)-EBADF;
+            if ((int)a2 != SOL_SOCKET) return (uint64_t)-ENOPROTOOPT;
+
+            uint32_t val = 0;
+            if (a5 >= 4 && user_buf_mapped(cur, a4, 4))
+                copyin(cur, a4, &val, 4);
+
+            switch ((int)a3) {
+                case SO_REUSEADDR: sk->reuseaddr = val ? 1 : 0; break;
+                case SO_RCVTIMEO:  sk->so_rcvtimeo = val; break;
+                case SO_SNDTIMEO:  sk->so_sndtimeo = val; break;
+                case SO_KEEPALIVE: break; /* accept but ignore */
+                default: return (uint64_t)-ENOPROTOOPT;
+            }
+            return 0;
+        }
+
+        case SYS_SENDTO: {
+            /*
+             * SYS_SENDTO(a1=fd, a2=buf, a3=len, a4=flags, a5=dest_addr_ptr)
+             * Note: addrlen is implicit (sizeof(fry_sockaddr_in))
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            int sfd = (int)a1;
+            if (sfd < 3 || sfd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            if (shared->fd_kind[sfd] != FD_SOCKET) return (uint64_t)-ENOTSOCK;
+            struct fry_socket *sk = (struct fry_socket *)shared->fd_ptrs[sfd];
+            if (!sk || !sk->used) return (uint64_t)-EBADF;
+            if (!user_buf_mapped(cur, a2, a3)) return (uint64_t)-EFAULT;
+
+            const uint8_t *buf = (const uint8_t *)(uintptr_t)a2;
+            uint32_t dst_ip = sk->remote_ip;
+            uint16_t dst_port = sk->remote_port;
+
+            if (a5) {
+                if (!user_buf_mapped(cur, a5, sizeof(struct fry_sockaddr_in)))
+                    return (uint64_t)-EFAULT;
+                struct fry_sockaddr_in daddr;
+                if (copyin(cur, a5, &daddr, sizeof(daddr)) != 0) return (uint64_t)-EFAULT;
+                dst_ip = fry_ntohl(daddr.sin_addr);
+                dst_port = fry_ntohs(daddr.sin_port);
+            }
+
+            if (dst_ip == 0 || dst_port == 0) return (uint64_t)-EDESTADDRREQ;
+
+            if (sk->type == SOCK_DGRAM) {
+                sock_ensure_udp_handler();
+                if (sk->local_port == 0) sk->local_port = sock_ephemeral_port();
+                int r = udp_send(dst_ip, dst_port, sk->local_port, buf, (uint16_t)a3);
+                return r == 0 ? (uint64_t)a3 : (uint64_t)-EIO;
+            }
+            if (sk->type == SOCK_STREAM) {
+                /* TCP sendto ignores dest — same as send */
+                if (sk->state != SOCK_ST_CONNECTED || sk->tcp_handle < 0)
+                    return (uint64_t)-ENOTCONN;
+                int sent = tcp_send(sk->tcp_handle, buf, (uint16_t)a3);
+                return sent < 0 ? (uint64_t)-EIO : (uint64_t)sent;
+            }
+            return (uint64_t)-EINVAL;
+        }
+
+        case SYS_RECVFROM: {
+            /*
+             * SYS_RECVFROM(a1=fd, a2=buf, a3=len, a4=flags, a5=src_addr_ptr)
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            int rfd = (int)a1;
+            if (rfd < 3 || rfd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            if (shared->fd_kind[rfd] != FD_SOCKET) return (uint64_t)-ENOTSOCK;
+            struct fry_socket *sk = (struct fry_socket *)shared->fd_ptrs[rfd];
+            if (!sk || !sk->used) return (uint64_t)-EBADF;
+            if (!user_buf_writable(cur, a2, a3)) return (uint64_t)-EFAULT;
+
+            uint8_t *buf = (uint8_t *)(uintptr_t)a2;
+            uint32_t rflags = (uint32_t)a4;
+            uint32_t fdflags = shared->fd_flags[rfd];
+            int nonblock = (fdflags & O_NONBLOCK) || (rflags & MSG_DONTWAIT);
+
+            if (sk->type == SOCK_DGRAM) {
+                net_poll();
+                if (sk->udp_rx_head == sk->udp_rx_tail) {
+                    if (nonblock) return (uint64_t)-EAGAIN;
+                    sched_block_poll(cur->pid, UINT64_MAX);
+                    sched_yield();
+                    cur = proc_current();
+                    if (!cur) return (uint64_t)-ESRCH;
+                    shared = proc_shared_state(cur);
+                    if (!shared || !shared->fd_ptrs[rfd]) return (uint64_t)-EBADF;
+                    sk = (struct fry_socket *)shared->fd_ptrs[rfd];
+                    if (!sk || !sk->used) return (uint64_t)-EBADF;
+                    net_poll();
+                    if (sk->udp_rx_head == sk->udp_rx_tail)
+                        return (uint64_t)-EAGAIN;
+                }
+                struct fry_udp_pkt *pkt = &sk->udp_rxq[sk->udp_rx_tail];
+                uint16_t copylen = pkt->len;
+                if (copylen > (uint16_t)a3) copylen = (uint16_t)a3;
+                for (uint16_t i = 0; i < copylen; i++) buf[i] = pkt->data[i];
+                /* Fill in source address if requested */
+                if (a5 && user_buf_writable(cur, a5, sizeof(struct fry_sockaddr_in))) {
+                    struct fry_sockaddr_in src;
+                    uint8_t *sp = (uint8_t *)&src;
+                    for (uint32_t j = 0; j < sizeof(src); j++) sp[j] = 0;
+                    src.sin_family = AF_INET;
+                    src.sin_port = fry_htons(pkt->src_port);
+                    src.sin_addr = fry_htonl(pkt->src_ip);
+                    copyout(cur, &src, a5, sizeof(src));
+                }
+                sk->udp_rx_tail = (sk->udp_rx_tail + 1) % FRY_SOCK_UDP_RXMAX;
+                return (uint64_t)copylen;
+            }
+            if (sk->type == SOCK_STREAM) {
+                /* TCP recvfrom ignores src addr — same as recv */
+                if (sk->state != SOCK_ST_CONNECTED || sk->tcp_handle < 0)
+                    return (uint64_t)-ENOTCONN;
+                net_poll();
+                int nr = tcp_recv(sk->tcp_handle, buf, (uint32_t)a3);
+                if (nr > 0) return (uint64_t)nr;
+                if (!tcp_is_connected(sk->tcp_handle)) return 0;
+                if (nonblock) return (uint64_t)-EAGAIN;
+                sched_block_poll(cur->pid, UINT64_MAX);
+                sched_yield();
+                cur = proc_current();
+                if (!cur) return (uint64_t)-ESRCH;
+                shared = proc_shared_state(cur);
+                if (!shared || !shared->fd_ptrs[rfd]) return (uint64_t)-EBADF;
+                sk = (struct fry_socket *)shared->fd_ptrs[rfd];
+                if (!sk || !sk->used || sk->tcp_handle < 0) return (uint64_t)-EBADF;
+                net_poll();
+                nr = tcp_recv(sk->tcp_handle, buf, (uint32_t)a3);
+                if (nr > 0) return (uint64_t)nr;
+                if (!tcp_is_connected(sk->tcp_handle)) return 0;
+                return (uint64_t)-EAGAIN;
+            }
+            return (uint64_t)-EINVAL;
+        }
+
+        case SYS_DNS_RESOLVE: {
+            /*
+             * SYS_DNS_RESOLVE(a1=hostname_ptr, a2=ip_out_ptr)
+             * Returns: 0 on success, -errno on failure.
+             * Writes resolved IP (host byte order) to *ip_out.
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            char hostname[128];
+            if (copy_user_string(cur, a1, hostname, sizeof(hostname)) != 0)
+                return (uint64_t)-EFAULT;
+            if (!user_buf_writable(cur, a2, 4)) return (uint64_t)-EFAULT;
+
+            kprint_serial_only("SYS_DNS: pid=%u host=\"%s\"\n",
+                   cur->pid, hostname);
+            uint32_t ip = dns_resolve(hostname);
+            if (ip == 0) {
+                kprint_serial_only("SYS_DNS: failed for \"%s\"\n", hostname);
+                return (uint64_t)-ENOENT;
+            }
+
+            copyout(cur, &ip, a2, 4);
+            return 0;
+        }
+
+        /* ===== Phase 5: Randomness, Time, and Core Runtime ===== */
+
+        case 85: /* SYS_GETRANDOM(buf, len, flags) */ {
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            uint32_t len = (uint32_t)a2;
+            uint32_t flags = (uint32_t)a3;
+            if (len == 0) return 0;
+            if (len > FRY_RANDOM_MAX) return (uint64_t)-EINVAL;
+            if (!user_buf_writable(cur, a1, len)) return (uint64_t)-EFAULT;
+
+            if (!entropy_ready()) {
+                if (flags & FRY_GRND_NONBLOCK) return (uint64_t)-EAGAIN;
+                /* Entropy should always be ready after boot; if not, fail. */
+                return (uint64_t)-EAGAIN;
+            }
+
+            uint8_t kbuf[FRY_RANDOM_MAX];
+            int rc = entropy_getbytes(kbuf, len);
+            if (rc < 0) return (uint64_t)rc;
+
+            copyout(cur, kbuf, a1, len);
+            return (uint64_t)len;
+        }
+
+        case 86: /* SYS_CLOCK_GETTIME(clock_id, timespec_ptr) */ {
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            uint32_t clock_id = (uint32_t)a1;
+            if (!user_buf_writable(cur, a2, sizeof(struct fry_timespec)))
+                return (uint64_t)-EFAULT;
+
+            struct fry_timespec ts;
+            int64_t sec, nsec;
+
+            switch (clock_id) {
+                case FRY_CLOCK_MONOTONIC:
+                case FRY_CLOCK_BOOTTIME:
+                    hpet_get_ns(&sec, &nsec);
+                    ts.tv_sec = sec;
+                    ts.tv_nsec = nsec;
+                    break;
+                case FRY_CLOCK_REALTIME: {
+                    hpet_get_ns(&sec, &nsec);
+                    int64_t boot_epoch = rtc_boot_epoch_sec();
+                    ts.tv_sec = boot_epoch + sec;
+                    ts.tv_nsec = nsec;
+                    break;
+                }
+                default:
+                    return (uint64_t)-EINVAL;
+            }
+
+            copyout(cur, &ts, a2, sizeof(struct fry_timespec));
+            return 0;
+        }
+
+        case 87: /* SYS_NANOSLEEP(req_ptr, rem_ptr) */ {
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            if (!user_ptr_ok(a1, sizeof(struct fry_timespec)))
+                return (uint64_t)-EFAULT;
+
+            struct fry_timespec req;
+            {
+                const uint8_t *src = (const uint8_t *)(uintptr_t)a1;
+                uint8_t *dst = (uint8_t *)&req;
+                for (uint64_t i = 0; i < sizeof(req); i++) dst[i] = src[i];
+            }
+
+            if (req.tv_sec < 0 || req.tv_nsec < 0 || req.tv_nsec >= 1000000000LL)
+                return (uint64_t)-EINVAL;
+
+            /* Convert to milliseconds (minimum 1ms granularity for scheduler) */
+            uint64_t ms = (uint64_t)req.tv_sec * 1000ULL
+                        + (uint64_t)(req.tv_nsec + 999999LL) / 1000000ULL;
+            if (ms == 0) ms = 1;  /* sub-millisecond sleeps round up to 1ms */
+
+            sched_sleep(cur->pid, ms);
+            sched_yield();
+
+            /* Write zero remainder (we slept the full duration) */
+            if (a2 && user_buf_writable(cur, a2, sizeof(struct fry_timespec))) {
+                struct fry_timespec rem = {0, 0};
+                copyout(cur, &rem, a2, sizeof(struct fry_timespec));
+            }
+            return 0;
+        }
+
+        /* ===== Phase 6: Filesystem and Runtime Expansion ===== */
+
+        case 88: /* SYS_LSEEK(fd, offset, whence) */ {
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            int fd = (int)a1;
+            int64_t offset = (int64_t)a2;
+            int whence = (int)a3;
+            if (fd < 3 || fd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            if (!shared || shared->fd_kind[fd] != FD_FILE || !shared->fd_ptrs[fd])
+                return (uint64_t)-EBADF;
+            if (whence != FRY_SEEK_SET && whence != FRY_SEEK_CUR && whence != FRY_SEEK_END)
+                return (uint64_t)-EINVAL;
+            int64_t result = vfs_seek((struct vfs_file *)shared->fd_ptrs[fd], offset, whence);
+            if (result < 0) return (uint64_t)-EINVAL;
+            return (uint64_t)result;
+        }
+
+        case 89: /* SYS_FTRUNCATE(fd, length) */ {
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            int fd = (int)a1;
+            uint64_t length = (uint64_t)a2;
+            if (fd < 3 || fd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            if (!shared || shared->fd_kind[fd] != FD_FILE || !shared->fd_ptrs[fd])
+                return (uint64_t)-EBADF;
+            int rc = vfs_truncate((struct vfs_file *)shared->fd_ptrs[fd], length);
+            if (rc < 0) return (uint64_t)-EIO;
+            return 0;
+        }
+
+        case 90: /* SYS_RENAME(old_path, new_path) */ {
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            char old_path[FRY_PATH_MAX], new_path[FRY_PATH_MAX];
+            if (copy_user_string(cur, a1, old_path, sizeof(old_path)) != 0)
+                return (uint64_t)-EFAULT;
+            if (copy_user_string(cur, a2, new_path, sizeof(new_path)) != 0)
+                return (uint64_t)-EFAULT;
+            int rc = vfs_rename(old_path, new_path);
+            if (rc < 0) return (uint64_t)-EIO;
+            return 0;
+        }
+
+        case 91: /* SYS_FSTAT(fd, stat_buf) */ {
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            int fd = (int)a1;
+            if (fd < 3 || fd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            if (!shared || shared->fd_kind[fd] != FD_FILE || !shared->fd_ptrs[fd])
+                return (uint64_t)-EBADF;
+            if (!user_buf_writable(cur, a2, sizeof(struct vfs_stat)))
+                return (uint64_t)-EFAULT;
+            struct vfs_file *vf = (struct vfs_file *)shared->fd_ptrs[fd];
+            struct vfs_stat st;
+            st.size = vf->size;
+            /* Extract attr from the underlying fat32_file if available */
+            st.attr = 0;
+            if (sizeof(struct fat32_file) <= sizeof(vf->private)) {
+                struct fat32_file *ff = (struct fat32_file *)vf->private;
+                if (ff->fs) st.attr = (uint32_t)ff->attr;
+            }
+            copyout(cur, &st, a2, sizeof(struct vfs_stat));
+            return 0;
+        }
+
+        /* ---- Phase 7: GUI/Input expansion ---- */
+
+        case SYS_KBD_EVENT: /* SYS_KBD_EVENT(event_buf) */ {
+            /* Returns one rich key event from the keyboard event ring buffer.
+             * a1 = pointer to fry_key_event struct (8 bytes)
+             * Returns: 1 if event was copied, 0 if no events pending */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            if (!user_buf_writable(cur, a1, sizeof(struct fry_key_event)))
+                return (uint64_t)-EFAULT;
+            struct fry_key_event evt;
+            int got = ps2_kbd_read_event(&evt);
+            if (got) {
+                copyout(cur, &evt, a1, sizeof(struct fry_key_event));
+                return 1;
+            }
+            return 0;
+        }
+
+        case SYS_MOUSE_GET_EXT: /* SYS_MOUSE_GET_EXT(buf) */ {
+            /* Extended mouse state including wheel.  Identical to
+             * SYS_MOUSE_GET but explicit about being the 24-byte version.
+             * Kept as a separate syscall for future extensibility. */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            if (!user_buf_writable(cur, a1, 24)) return (uint64_t)-EFAULT;
+            int32_t mx, my, mdx, mdy, mwheel;
+            uint8_t mb;
+            ps2_mouse_get_ext(&mx, &my, &mb, &mdx, &mdy, &mwheel);
+            int32_t *out = (int32_t *)(uintptr_t)a1;
+            out[0] = mx;
+            out[1] = my;
+            out[2] = mdx;
+            out[3] = mdy;
+            *((uint8_t *)(out + 4)) = mb;
+            out[5] = mwheel;
+            return 0;
+        }
+
+        case SYS_CLIPBOARD_GET: /* SYS_CLIPBOARD_GET(buf, maxlen) */ {
+            /* Copy kernel clipboard to user buffer.
+             * a1 = user buf ptr, a2 = max length
+             * Returns: bytes copied (may be 0 if clipboard empty) */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            uint32_t maxlen = (uint32_t)a2;
+            if (maxlen == 0) return 0;
+            if (maxlen > FRY_CLIPBOARD_MAX) maxlen = FRY_CLIPBOARD_MAX;
+            if (!user_buf_writable(cur, a1, maxlen)) return (uint64_t)-EFAULT;
+            uint32_t copy = g_clipboard_len;
+            if (copy > maxlen) copy = maxlen;
+            if (copy > 0) copyout(cur, g_clipboard_buf, a1, copy);
+            return (uint64_t)copy;
+        }
+
+        case SYS_CLIPBOARD_SET: /* SYS_CLIPBOARD_SET(buf, len) */ {
+            /* Set kernel clipboard from user buffer.
+             * a1 = user buf ptr, a2 = length
+             * Returns: 0 on success */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            uint32_t len = (uint32_t)a2;
+            if (len > FRY_CLIPBOARD_MAX) return (uint64_t)-EINVAL;
+            if (len > 0 && !user_buf_mapped(cur, a1, len))
+                return (uint64_t)-EFAULT;
+            if (len > 0) {
+                const uint8_t *src = (const uint8_t *)(uintptr_t)a1;
+                for (uint32_t i = 0; i < len; i++)
+                    g_clipboard_buf[i] = src[i];
+            }
+            g_clipboard_len = len;
+            return 0;
+        }
+
+        /* ---- Audio syscalls (TaterSurf Phase D) ---- */
+
+        case SYS_AUDIO_OPEN: {
+            /* SYS_AUDIO_OPEN(sample_rate, channels, bits)
+             * Opens audio output stream.
+             * Returns: 0 on success, -errno on failure */
+            int hda_is_ready(void);
+            int hda_open_output(uint32_t sr, uint8_t ch, uint8_t b);
+            if (!hda_is_ready()) return (uint64_t)-19; /* ENODEV */
+            return (uint64_t)hda_open_output((uint32_t)a1, (uint8_t)a2, (uint8_t)a3);
+        }
+
+        case SYS_AUDIO_WRITE: {
+            /* SYS_AUDIO_WRITE(buf, len)
+             * Write PCM samples to audio output.
+             * Returns: bytes written or -errno */
+            int hda_write_pcm(const void *data, uint32_t len);
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            if (a2 == 0) return 0;
+            if (!user_buf_mapped(cur, a1, (uint32_t)a2))
+                return (uint64_t)-EFAULT;
+            return (uint64_t)hda_write_pcm((const void *)(uintptr_t)a1, (uint32_t)a2);
+        }
+
+        case SYS_AUDIO_CLOSE: {
+            /* SYS_AUDIO_CLOSE()
+             * Close audio output stream.
+             * Returns: 0 */
+            void hda_close_output(void);
+            hda_close_output();
+            return 0;
+        }
+
+        case SYS_AUDIO_INFO: {
+            /* SYS_AUDIO_INFO(info_buf)
+             * Get audio stream info (8 bytes: rate(4) + channels(1) + bits(1) + active(1) + pad(1)).
+             * Returns: 0 on success */
+            int hda_get_stream_info(void *info);
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            if (!user_buf_mapped(cur, a1, 8))
+                return (uint64_t)-EFAULT;
+            return (uint64_t)hda_get_stream_info((void *)(uintptr_t)a1);
+        }
+
         default:
             return (uint64_t)-ENOSYS;
     }
@@ -2027,84 +3825,102 @@ static inline void wrmsr(uint32_t msr, uint64_t val) {
     __asm__ volatile("wrmsr" : : "c"(msr), "a"(lo), "d"(hi));
 }
 
-void syscall_init(void) {
-    // Enable SYSCALL/SYSRET: set EFER.SCE (bit 0) in MSR 0xC0000080
+uint32_t smp_bsp_index(void);
+
+/*
+ * Set SYSCALL MSRs + SWAPGS per-CPU data for one CPU.
+ * Called once per CPU: syscall_init() for BSP, syscall_init_ap() for APs.
+ */
+static void syscall_setup_cpu(uint32_t cpu) {
+    /* Enable SYSCALL/SYSRET: set EFER.SCE (bit 0) */
     uint32_t efer_lo, efer_hi;
     __asm__ volatile("rdmsr" : "=a"(efer_lo), "=d"(efer_hi) : "c"(0xC0000080u));
     wrmsr(0xC0000080, ((uint64_t)efer_hi << 32 | efer_lo) | 1ULL);
 
-    // IA32_STAR: SYSCALL -> CS=0x08 SS=0x10; SYSRETQ -> CS=0x2B SS=0x23
-    // STAR[47:32]=0x08 (kernel), STAR[63:48]=0x18 (+16|3=0x2B, +8|3=0x23)
+    /* IA32_STAR: SYSCALL -> CS=0x08 SS=0x10; SYSRETQ -> CS=0x2B SS=0x23 */
     uint64_t star = ((uint64_t)0x18 << 48) | ((uint64_t)0x08 << 32);
     wrmsr(0xC0000081, star);
     wrmsr(0xC0000082, (uint64_t)(uintptr_t)&syscall_entry);
-    // IA32_FMASK: clear per-user flags on SYSCALL entry.
-    // IF  (bit 9): enter with IRQs masked until syscall_entry explicitly enables.
-    // TF  (bit 8): prevent user single-step from trapping kernel syscall path.
-    // DF (bit 10): guarantee forward string ops in kernel.
+    /* IA32_FMASK: clear IF(9), TF(8), DF(10) on SYSCALL entry */
     wrmsr(0xC0000084, 0x700);
 
-    // Seed the kernel stack pointer with the current RSP so there's always a
-    // valid value even before the first sched_tick() switch.  sched_tick()
-    // will overwrite this with the actual per-process kernel_stack_top as soon
-    // as the first user process is scheduled.
-    uint64_t cur_rsp;
-    __asm__ volatile("mov %%rsp, %0" : "=r"(cur_rsp));
-    g_syscall_kstack_top = cur_rsp;
+    /* Set up SWAPGS per-CPU state:
+     * GS.BASE    = percpu pointer (kernel GS — active during kernel mode)
+     * KERNEL_GS  = 0 (user GS — swapped in by SWAPGS on syscall/interrupt exit)
+     */
+    uint64_t pcpu = (uint64_t)(uintptr_t)sched_percpu_ptr(cpu);
+    wrmsr(0xC0000101, pcpu);   /* MSR_GS_BASE */
+    wrmsr(0xC0000102, 0);      /* MSR_KERNEL_GS_BASE (user GS = 0) */
 }
 
-// syscall entry
+void syscall_init(void) {
+    uint32_t bsp = smp_bsp_index();
+    syscall_setup_cpu(bsp);
+}
+
+void syscall_init_ap(uint32_t cpu) {
+    syscall_setup_cpu(cpu);
+}
+
+// syscall entry — SMP-safe via SWAPGS + per-CPU data
 //
 // The SYSCALL instruction does NOT switch the stack pointer; RSP remains the
-// user-space RSP.  Any call to sched_yield() / context_switch() while on the
-// user stack would save a user-space RSP into the process's saved_rsp, which
-// then gets loaded back in kernel mode by the next sched_tick() → #PF storm.
+// user-space RSP.  We use SWAPGS to load the per-CPU percpu_data struct into
+// GS.BASE, which gives us a per-CPU kernel stack pointer at %gs:0 and a
+// per-CPU scratch slot at %gs:8 for the user RSP.
 //
-// Fix: switch to the per-process kernel stack (g_syscall_kstack_top, kept in
-// sync by sched_tick) immediately on entry, before touching anything else.
-// The user RSP is spilled to g_syscall_user_rsp (IF=0 during entry, so safe
-// on BSP), then pushed onto the kernel stack so it survives context switches.
-// Re-enable IRQs while syscall_dispatch runs so timer/scheduler keep advancing
-// even if a syscall performs slow storage I/O. IRQs are masked again before
-// restoring the SYSRET frame.
-// (SFMASK clears IF on SYSCALL entry; SYSRET restores user RFLAGS from R11.)
+// GS invariant (maintained by syscall_entry/exit and common_isr):
+//   Kernel mode: GS.BASE = percpu pointer, KERNEL_GS = user GS (0)
+//   User mode:   GS.BASE = user GS (0),    KERNEL_GS = percpu pointer
+// Every user↔kernel transition does SWAPGS to flip between these.
+//
+// SFMASK clears IF on SYSCALL entry; SYSRET restores user RFLAGS from R11.
 __asm__(
     ".global syscall_entry\n"
     "syscall_entry:\n"
     // IF is already 0 (SFMASK clears it at SYSCALL instruction).
-    // RSP is still the user RSP.
+    // RSP is still the user RSP.  GS.BASE = user GS (0).
 
-    // 1. Spill user RSP into scratch global, then switch to kernel stack.
-    "    mov %rsp, g_syscall_user_rsp(%rip)\n"
-    "    mov g_syscall_kstack_top(%rip), %rsp\n"
+    // 1. SWAPGS: load per-CPU kernel data into GS.BASE.
+    "    swapgs\n"
 
-    // 2. Save the values we'll need to restore for sysretq, plus user RSP.
-    //    Push in this order so we can pop symmetrically at the end.
-    "    push g_syscall_user_rsp(%rip)\n"  // [rbp-8]  : user RSP
-    "    push %rcx\n"                       // user RIP (return address)
-    "    push %r11\n"                       // user RFLAGS
-    "    push %rbp\n"
-    "    mov %rsp, %rbp\n"
+    // 2. Save user RSP to per-CPU scratch, switch to kernel stack.
+    "    movq %rsp, %gs:8\n"          // percpu.user_rsp = user RSP
+    "    movq %gs:0, %rsp\n"          // RSP = percpu.kstack_top
 
-    // 3. Shuffle registers into syscall_dispatch ABI (num,a1,a2,a3,a4,a5).
-    "    mov %r8,  %r9\n"   // a5
-    "    mov %r10, %r8\n"   // a4
-    "    mov %rdx, %rcx\n"  // a3
-    "    mov %rsi, %rdx\n"  // a2
-    "    mov %rdi, %rsi\n"  // a1
-    "    mov %rax, %rdi\n"  // num
+    // 3. Push user RSP from percpu scratch onto kernel stack.
+    //    Uses RAX as temporary (syscall number), recovered afterward.
+    "    pushq %rax\n"                 // save syscall number
+    "    movq %gs:8, %rax\n"           // RAX = user RSP
+    "    xchgq %rax, (%rsp)\n"         // stack = user RSP, RAX = syscall number
+
+    // 4. Save sysret frame values.
+    "    pushq %rcx\n"                 // user RIP (return address)
+    "    pushq %r11\n"                 // user RFLAGS
+    "    pushq %rbp\n"
+    "    movq %rsp, %rbp\n"
+
+    // 5. Shuffle registers into syscall_dispatch ABI (num,a1,a2,a3,a4,a5).
+    "    movq %r8,  %r9\n"            // a5
+    "    movq %r10, %r8\n"            // a4
+    "    movq %rdx, %rcx\n"           // a3
+    "    movq %rsi, %rdx\n"           // a2
+    "    movq %rdi, %rsi\n"           // a1
+    "    movq %rax, %rdi\n"           // num
 
     // Allow IRQ-driven timers/scheduler while syscall body runs.
-    // We re-mask IRQs before restoring user return frame.
     "    sti\n"
     "    call syscall_dispatch\n"
     "    cli\n"
 
-    // 4. Restore frame pointer and the three saved values.
-    "    mov %rbp, %rsp\n"
-    "    pop %rbp\n"
-    "    pop %r11\n"         // user RFLAGS
-    "    pop %rcx\n"         // user RIP
-    "    pop %rsp\n"         // user RSP  (back to user stack)
+    // 6. Restore frame and user state.
+    "    movq %rbp, %rsp\n"
+    "    popq %rbp\n"
+    "    popq %r11\n"                  // user RFLAGS
+    "    popq %rcx\n"                  // user RIP
+    "    popq %rsp\n"                  // user RSP  (back to user stack)
+
+    // 7. SWAPGS: restore user GS before returning to user mode.
+    "    swapgs\n"
     "    sysretq\n"
 );

@@ -1,0 +1,62 @@
+fry772 — TaterSurf Phase C6: Web Components (ts_webcomp.h)
+=====================================================================
+Timestamp: 2026-03-27T21:30:00Z
+
+Context:
+  YouTube uses Polymer/Lit which builds its entire UI using custom
+  elements with shadow roots. Without Web Components support,
+  YouTube's JavaScript fails during initialization.
+
+Changes:
+  New file: src/user/apps/ts_webcomp.h (header-only, ~400 LOC)
+
+  Custom Elements Registry (customElements):
+    customElements.define(tagName, constructor) — registers a custom
+    element. Validates hyphen requirement (spec). Extracts lifecycle
+    callbacks from prototype: connectedCallback, disconnectedCallback,
+    attributeChangedCallback, adoptedCallback.
+    customElements.get(tagName) — returns constructor or undefined.
+    customElements.whenDefined(tagName) — returns resolved Promise.
+    Max 128 definitions.
+
+  HTMLElement base class:
+    Provided as a JS class that custom elements extend.
+    Contains stub lifecycle methods, attachShadow, observedAttributes.
+
+  Shadow DOM:
+    Element.attachShadow({mode:'open'|'closed'}) — creates a shadow
+    root (DocumentFragment) attached to the host element. Shadow root
+    is stored in a side table (g_shadows, max 256 entries). Open mode
+    exposes .shadowRoot on the host element.
+    Shadow root gets full Node methods (appendChild, innerHTML, etc.).
+    shadow.host property set to reference host element.
+
+  Template:
+    <template> elements get a .content property that returns a
+    DocumentFragment containing the template's children. Used by
+    Lit for efficient template instantiation.
+
+  Lifecycle dispatch:
+    ts_ce_connected(dom, node_id) — fires connectedCallback on
+    custom elements when they're added to the DOM.
+    ts_ce_disconnected(dom, node_id) — fires disconnectedCallback
+    when removed.
+
+  Element enhancement:
+    ts_webcomp_enhance_element(ctx, elem_obj, tag) — adds
+    attachShadow to any element wrapper, adds .content to
+    <template> elements. Called after createElement or DOM parsing.
+
+  Registration:
+    ts_webcomp_register(dom) — registers customElements object,
+    HTMLElement class, and patches existing body node with
+    attachShadow capability.
+
+Verification:
+  Compile test: init DOM, load HTML with <my-element> and <template>,
+  register globals + Web Components, eval JS that defines a custom
+  element class extending HTMLElement, registers it, and retrieves it.
+  Result: compiles clean, zero errors.
+
+Artifacts:
+  src/user/apps/ts_webcomp.h

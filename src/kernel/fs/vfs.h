@@ -63,6 +63,10 @@ struct fs_ops {
     int (*create)(void *fs_data, const char *path, uint16_t type);
     int (*mkdir)(void *fs_data, const char *path);
     int (*unlink)(void *fs_data, const char *path);
+    /* Phase 6: Filesystem expansion */
+    int64_t (*seek)(struct vfs_file *f, int64_t offset, int whence);
+    int (*truncate)(struct vfs_file *f, uint64_t length);
+    int (*rename)(void *fs_data, const char *old_path, const char *new_path);
 };
 
 struct vfs_mount {
@@ -145,6 +149,9 @@ int vfs_stat(const char *path, struct vfs_stat *out);
 int vfs_create(const char *path, uint16_t type);
 int vfs_mkdir(const char *path);
 int vfs_unlink(const char *path);
+int64_t vfs_seek(struct vfs_file *f, int64_t offset, int whence);
+int vfs_truncate(struct vfs_file *f, uint64_t length);
+int vfs_rename(const char *old_path, const char *new_path);
 int vfs_mount_secondary(struct block_device *bd, const char *mountpoint);
 int vfs_get_storage_info(struct vfs_storage_info *out);
 int vfs_get_path_fs_info(const char *path, struct vfs_path_fs_info *out);

@@ -1,0 +1,59 @@
+fry781 — SYS_POLL missing net_poll: HTTP response never arrived
+=====================================================================
+Timestamp: 2026-03-28T10:00:00Z
+
+BUG: TaterSurf connects to google.com, shows "Loading..." indefinitely,
+byte counter never increments.
+
+Root cause: SYS_POLL (syscall.c, case SYS_POLL) never called net_poll()
+before checking socket readiness via poll_check_fd().
+
+poll_check_fd() for SOCK_STREAM at line 314:
+  if (tcp_rx_available(sk->tcp_handle) > 0)
+      revents |= FRY_POLLIN;
+
+tcp_rx_available() looks at the TCP receive buffer only. With e1000 in
+polled mode (no IRQ), packets only land in the TCP buffer when net_poll()
+is called to drain the e1000 RX descriptor ring.
+
+TaterSurf event loop: fry_poll(pfds, nfds, 33) — 33ms timeout.
+Without net_poll() in SYS_POLL:
+  1. SYS_POLL first pass: tcp_rx_available() = 0 (no poll)
+  2. sched_block_poll(now+33ms) + sched_yield()
+  3. Timer wakes process after 33ms
+  4. SYS_POLL re-check: tcp_rx_available() = 0 again (no poll)
+  5. Returns 0 → pfds[1].revents = 0 → ts_http_poll() never called
+
+The HTTP response from the server sat in the e1000 RX ring forever
+because nobody ever polled for it while TaterSurf was waiting in fry_poll().
+
+Fix: src/kernel/proc/syscall.c — SYS_POLL handler
+  Added net_poll() before the first-pass readiness check:
+    net_poll();  ← NEW
+    for (uint32_t i = 0; i < nfds; i++) {
+        ufds[i].revents = poll_check_fd(...);
+  Added net_poll() before the post-wake re-check:
+    net_poll();  ← NEW
+    for (uint32_t i = 0; i < nfds; i++) {
+        ufds[i].revents = poll_check_fd(...);
+
+With the fix:
+  - First fry_poll() call drains e1000, finds HTTP response data
+  - tcp_rx_available() > 0 → POLLIN set → immediate return (no block)
+  - TaterSurf calls ts_http_poll() → fry_recv() → tcp_recv() → data returned
+  - Byte counter advances, page loads
+
+Files changed:
+  MODIFIED:
+    src/kernel/proc/syscall.c  (net_poll() added to SYS_POLL first-pass and re-check)
+
+Build: clean. ISO exported to C:\Users\jjsako\Documents\tateriso\tatertos64v3.iso
+
+KNOWN ISSUE (found after build):
+  bing.com DNS fails with err-2 (-ENOENT).
+  google.com behavior with this build unconfirmed (user has not reported it).
+  Suspect: DNS response for bing.com contains CNAME records before A record.
+  netcore.c dns_rx() parser iterates answers, skips non-A via pos += rdlen.
+  Need to verify with serial log. If CNAME rdata contains a compressed name
+  pointer, rdlen is correct and skip should work. May be a different issue.
+  Next session: read serial.log, trace DNS query/response for bing.com.

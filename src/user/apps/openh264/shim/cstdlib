@@ -1,0 +1,4 @@
+#ifndef _TATER_CSTDLIB
+#define _TATER_CSTDLIB
+#include <stdlib.h>
+#endif

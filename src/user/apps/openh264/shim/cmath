@@ -1,0 +1,4 @@
+#ifndef _TATER_CMATH
+#define _TATER_CMATH
+#include <math.h>
+#endif

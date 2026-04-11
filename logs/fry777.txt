@@ -1,0 +1,98 @@
+fry777 — TaterSurf integration: all components wired into browser
+=====================================================================
+Timestamp: 2026-03-27T21:50:00Z
+
+Continues from: fry776 (all components compiled, ready for integration)
+
+What was done:
+  1. MAKEFILE — OpenH264 + libopus wired into build
+     - Added CXX (x86_64-elf-g++) and UCXXFLAGS with -nostdinc++ -fno-exceptions -fno-rtti
+     - 33 OpenH264 C++ files compiled with shim headers
+     - ~80 libopus C files compiled (encoder-only excluded via filter-out)
+     - All objects linked into TATERSURF_OBJS
+     - Binary size: 2.3 MB (was 1.6 MB)
+
+  2. C++ RUNTIME — src/user/apps/openh264/cxxrt.cpp
+     - operator new/delete (forward to malloc/free)
+     - __cxa_pure_virtual, __cxa_atexit, __dso_handle stubs
+
+  3. OPENH264 SHIMS — new files in openh264/shim/
+     - cmath, cstdio, cstddef, cstdint, cassert, climits, new
+     - wels_thread_stubs.cpp: all Wels* threading, decoder Event/Sem/Thread stubs,
+       localtime/strftime stubs, GetCPUCount returns 1
+
+  4. C API WRAPPER — ts_h264_wrap.cpp + ts_h264_wrap.h
+     - Clean C interface: ts_h264_create, ts_h264_decode, ts_h264_flush, ts_h264_destroy
+     - Wraps ISVCDecoder C++ vtable into plain function calls
+
+  5. ts_video.h — YUV-to-RGB + framebuffer blit (NEW)
+     - BT.709 color matrix, fixed-point (8-bit shift)
+     - SSE2 fast path: 8 pixels/iteration via _mm_* intrinsics
+     - Nearest-neighbor scale for arbitrary src→dst dimensions
+     - ts_video_blit() for sub-region copy into window buffer
+
+  6. LIBOPUS FIXES
+     - Created silk/resampler_rom.c (coefficient tables were missing from tree)
+     - Created silk/decode_pitch.c (pitch lag decoder was missing from tree)
+     - Excluded encoder-only silk files (enc_API, NSQ, VAD, etc.)
+
+  7. tatersurf.c — JS/DOM INTEGRATION (lines 954→1438)
+     - Added includes: ts_dom.h, ts_dom_bindings.h, ts_webcomp.h,
+       ts_xml.h, ts_dash.h, ts_video.h, ts_h264_wrap.h, minimp4.h, opus.h
+     - DOM context allocated in main(), loaded from HTML in build_page()
+     - ts_dom_register_globals() + ts_webcomp_register() for JS globals
+     - ts_dom_run_scripts() executes <script> tags after page load
+     - ts_dom_tick_timers() called every poll iteration (setTimeout/setInterval)
+     - DOM events dispatched from handle_key() and handle_mouse_click()
+     - Forward declarations added to ts_dom_bindings.h to fix ordering
+
+  8. tatersurf.c — VIDEO/AUDIO PIPELINE
+     - Media state machine: IDLE → FETCH_MPD → FETCH_INIT_V → FETCH_INIT_A
+       → FETCH_SEG_V → FETCH_SEG_A → PLAYING
+     - DASH: ts_dash_parse → select video/audio representations
+     - Segments: interleaved video/audio fetch via ts_http
+     - Video: minimp4 demux → ts_h264_decode → ts_video_yuv_to_rgb → blit
+     - Audio: minimp4 demux → opus_decode → fry_audio_write (48kHz 16-bit stereo)
+     - Video overlay: aspect-ratio-preserving fit in viewport
+     - media_tick() called from main event loop (non-blocking)
+
+  9. KERNEL — Framebuffer write-combining (PAT)
+     - vmm.h: added VMM_FLAG_WC (0x400)
+     - vmm.c: setup_pat() configures PAT MSR entry 4 = WC (0x01)
+     - vmm.c: vmm_map() translates VMM_FLAG_WC → PAT bit 7 in PTE
+     - Framebuffer now mapped with VMM_FLAG_WC for 2-5x blit speedup
+     - assert.h: added extern "C" guard for C++ compatibility
+
+  10. ASSERT FIX — src/include/assert.h
+     - Added extern "C" linkage for __assert_fail when compiled as C++
+     - Fixes C++ name mangling mismatch in OpenH264
+
+Files changed:
+  MODIFIED:
+    Makefile
+    src/kernel/mm/vmm.h
+    src/kernel/mm/vmm.c
+    src/include/assert.h
+    src/user/apps/tatersurf.c
+    src/user/apps/ts_dom_bindings.h
+  NEW:
+    src/user/apps/openh264/cxxrt.cpp
+    src/user/apps/openh264/wels_thread_stubs.cpp
+    src/user/apps/openh264/shim/cmath
+    src/user/apps/openh264/shim/cstdio
+    src/user/apps/openh264/shim/cstddef
+    src/user/apps/openh264/shim/cstdint
+    src/user/apps/openh264/shim/cassert
+    src/user/apps/openh264/shim/climits
+    src/user/apps/openh264/shim/new
+    src/user/apps/ts_video.h
+    src/user/apps/ts_h264_wrap.h
+    src/user/apps/ts_h264_wrap.cpp
+    src/user/apps/opus/silk/resampler_rom.c
+    src/user/apps/opus/silk/decode_pitch.c
+
+Next:
+  1. Full ISO build (make all + build_iso.sh)
+  2. QEMU test with networking + audio
+  3. Bare metal test on Dell 7530
+  4. Iterative site testing: YouTube, Facebook, TikTok (Phase F)

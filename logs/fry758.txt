@@ -1,0 +1,29 @@
+fry758 — Fix kernel exception handling bugs + mmap diagnostics
+Date: 2025-03-15
+
+Context: Three bugs found when running vmtest/thtest from GUI file manager.
+  Bug 1: vmtest mmap pages not accessible (USER FAULT vec=14 cr2=0x100000000000)
+  Bug 2: thtest threads jump to NULL (rip=0x0)
+  Bug 3: Kernel #UD infinite loop from concurrent user faults on SMP
+
+Changes:
+  src/kernel/irq/irqdesc.c:
+    - Bug 3 fix: g_pf_exit_stack (single global) -> g_exc_exit_stacks[64][16384] (per-CPU)
+      Why: Concurrent user faults on different CPUs corrupted each other's stack frames,
+           causing kernel to jump to garbage addresses -> #UD -> infinite loop (17K+ lines of spam).
+    - Bug 3 fix: irq_dispatch now kills user processes on ALL CPU exceptions (vec 0-31),
+      not just vec=14 (#PF). Previously vec 0-13,15-31 from user mode would iretq back
+      to the faulting instruction causing infinite loops.
+    - Added exc_cpu_index() using LAPIC ID to select per-CPU exit stack.
+    - Added dump_pte_chain() diagnostic: dumps PML4E->PDPTE->PDE->PTE for #PF faults.
+      Why: Need concrete runtime data to diagnose Bug 1 (mmap pages not present at fault time).
+
+  src/kernel/proc/syscall.c:
+    - Added VM COMMIT OK / VM COMMIT FAIL serial diagnostics in vm_commit_private_pages().
+      Why: Traces mmap page mapping at syscall time to compare with fault-time PTE state.
+
+  build_iso.sh:
+    - Added abitest and evloop to make targets (were missing, causing cp failures).
+
+Bug 3: FIXED (per-CPU exit stacks + all-exception user kill).
+Bug 1 & 2: Diagnostics added, awaiting QEMU test output for root cause analysis.

@@ -1,0 +1,4 @@
+#ifndef _TATER_CSTRING
+#define _TATER_CSTRING
+#include <string.h>
+#endif

@@ -1,0 +1,100 @@
+fry752 — Phase 6: Filesystem and Process Runtime Expansion
+Date: 2026-03-15
+
+WHAT:
+Implemented full Phase 6 from netbuild1. Four new syscalls (88-91), FAT32
+driver expansion with seek/truncate/create/mkdir/unlink/rename, VFS layer
+expansion, and kernel selftests. Builds with ZERO errors, ZERO new warnings.
+FAT32 is the designated writable profile filesystem for browser port.
+
+SYSCALLS ADDED (88-91):
+  88 SYS_LSEEK       — reposition file read/write offset (SEEK_SET/CUR/END)
+  89 SYS_FTRUNCATE   — truncate open file to specified length
+  90 SYS_RENAME      — rename/move file or directory (same mount only)
+  91 SYS_FSTAT       — get size and attributes of an open file descriptor
+
+FILES CREATED:
+  src/include/fry_seek.h — shared seek/whence constants (FRY_SEEK_SET/CUR/END)
+    Why: kernel + userspace need common lseek whence definitions
+
+FILES MODIFIED:
+  src/kernel/fs/vfs.h — expanded fs_ops with seek/truncate/rename function ptrs
+    Why: VFS needs to dispatch these operations to filesystem drivers
+    Also added vfs_seek(), vfs_truncate(), vfs_rename() declarations
+
+  src/kernel/fs/vfs.c — added VFS wrapper functions + FAT32 VFS adapters
+    Why: plumbing between syscall layer and filesystem drivers
+    Added: vfs_seek, vfs_truncate, vfs_rename
+    Added: fat32_seek_vfs, fat32_truncate_vfs, fat32_create_vfs,
+           fat32_mkdir_vfs, fat32_unlink_vfs, fat32_rename_vfs
+    Hooked up all new ops in both primary (fat32_ops) and secondary
+    (sec_fat32_ops) mount initialization
+
+  src/kernel/fs/fat32.h — added 6 new function declarations
+    Why: public API for Phase 6 FAT32 operations
+
+  src/kernel/fs/fat32.c — added ~350 lines of FAT32 driver code
+    Why: browser profile storage needs full file management
+    Functions added:
+      fat32_seek     — reposition read/write offset (SET/CUR/END)
+      fat32_truncate — shrink file, free excess clusters, update dir entry
+      fat32_create   — create new file or directory with 8.3 name
+      fat32_mkdir    — create new directory (wrapper for create with ATTR_DIR)
+      fat32_unlink   — delete file: free chain + mark dir entry 0xE5
+      fat32_rename   — rename/move: create new entry, delete old, update ".."
+    Helpers added:
+      fat32_free_chain     — walk and free a cluster chain
+      fat32_walk_chain     — walk chain N steps, return cluster
+      build_short_name     — generate valid 8.3 short name from filename
+      find_free_dir_slot   — find free 32-byte slot in dir (or extend dir)
+      write_dir_entry      — write 32-byte entry at cluster+offset
+      split_path           — split "/foo/bar/baz" into parent + name
+      resolve_dir_cluster  — resolve directory path to cluster number
+      mark_dir_entry_deleted — mark entry as 0xE5
+
+  src/kernel/proc/syscall.c — added 4 syscall handlers + includes
+    Why: SYS_LSEEK, SYS_FTRUNCATE, SYS_RENAME, SYS_FSTAT implementations
+    Added includes: fat32.h, fry_seek.h
+    Design:
+      - lseek: validates fd/whence, calls vfs_seek, returns new position
+      - ftruncate: validates fd, calls vfs_truncate
+      - rename: copyin both paths, calls vfs_rename
+      - fstat: reads size from vfs_file, attr from embedded fat32_file,
+        copyout to user buffer
+
+  src/user/libc/libc.c — added syscall enum entries (88-91) + 4 wrappers
+    Why: userspace API surface for Phase 6
+
+  src/user/libc/libc.h — added fry_seek.h include + 4 wrapper declarations
+    Why: public libc header for Phase 6 APIs
+    Note: fry_fstat declared after struct fry_stat to avoid forward-decl issue
+
+  src/kernel/selftest.c — added ~8 Phase 6 checks
+    Why: validates seek constants, fs_ops struct has new fields, vfs_stat size
+
+  netbuild/netbuild1 — marked Phase 6 as COMPLETE 2026-03-15
+
+DESIGN DECISIONS:
+  - FAT32 is the writable profile filesystem for first browser port
+    Reason: FAT32 already had read/write support; extending it is more
+    productive than enabling ToTFS or adding write support to NTFS
+  - 8.3 short names for create/rename (LFN creation not implemented)
+    Reason: LFN entry generation is complex; 8.3 is sufficient for
+    programmatic file management (profiles, caches, temp files)
+  - Truncate only supports shrinking (not extending beyond current size)
+    Reason: write() already extends files; truncate-down covers the common
+    case of file rewrite/recycle
+  - Rename supports cross-directory moves (updates ".." for directories)
+  - vfs_rename enforces same-mount constraint (no cross-FS rename)
+  - SYS_FSTAT extracts attr from embedded fat32_file in vfs_file.private[]
+    This is safe because sizeof(fat32_file) < sizeof(vfs_file.private)
+
+ABI SURFACE:
+  Seek whence: FRY_SEEK_SET(0), FRY_SEEK_CUR(1), FRY_SEEK_END(2)
+  Syscalls: SYS_LSEEK(88), SYS_FTRUNCATE(89), SYS_RENAME(90), SYS_FSTAT(91)
+
+BUILD:
+  make all — ZERO errors, ZERO new warnings
+  build_iso.sh — ISO exported
+
+STATUS: ISO ready for boot test. Phase 6 COMPLETE.

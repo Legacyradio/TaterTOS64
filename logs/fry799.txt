@@ -1,0 +1,88 @@
+fry799 — Proper X.509 certificate validation (remove all TLS hacks)
+=====================================================================
+Timestamp: 2026-04-03
+
+STATUS: BUILD CLEAN, ISO EXPORTED
+
+PROBLEM:
+  fry798 got BearSSL TLS working but with three shortcuts that violate
+  planv3 Rule 1 ("No shortcuts or cut corners") and Rule 2 ("No minimal
+  implementations; do thorough, functional work"):
+
+  1. ts_xnv_time_check() always returned 0 — no actual cert date checking
+  2. ts_xnv_get_pkey() forced err=BR_ERR_X509_NOT_TRUSTED before calling
+     inner get_pkey — bypassed the entire certificate chain validation
+  3. br_ssl_client_init_full() was called with NULL trust anchors and 0
+     count — no root CAs at all, making validation meaningless
+
+  All three are hacks. TaterTOS already has wall-clock time (RTC at boot
+  + HPET offset, syscall 86, time_func() in userspace) and BearSSL has
+  full X.509 validation infrastructure. No excuse.
+
+FIXES:
+
+  1. Embedded 146 Mozilla/NSS root CA trust anchors (compile-time)
+     - New tool: tools/gen_trust_anchors.py
+       Reads PEM CA bundle, extracts DER-encoded subject DN and public
+       key (RSA n+e or EC curve+point) from each root cert, outputs a
+       C header with static br_x509_trust_anchor array.
+     - Generated: src/user/apps/ts_trust_anchors.h (8246 lines, 146 CAs)
+       Source: /etc/ssl/certs/ca-certificates.crt (full Mozilla bundle)
+     - Professional approach: same as how browsers and embedded TLS stacks
+       ship — root CAs compiled into the binary. No disk I/O needed.
+
+  2. Real wall-clock time callback (ts_tls_time_check)
+     - Calls time_func() to get Unix epoch seconds
+     - Converts to BearSSL's day/second format:
+         days = 719528 + (epoch / 86400)   [719528 = days from 0000-01-01 to 1970-01-01]
+         secs = epoch % 86400
+     - Compares against cert notBefore/notAfter, returns -1/0/1 properly
+     - Graceful fallback: if time_func() returns <= 0 (dead RTC), accepts
+       cert (matches existing selftest warning behavior)
+
+  3. Removed entire no-validate wrapper
+     - Deleted: ts_x509_novalidate_context typedef
+     - Deleted: ts_xnv_start_chain, ts_xnv_start_cert, ts_xnv_append,
+                ts_xnv_end_cert, ts_xnv_end_chain, ts_xnv_get_pkey
+     - Deleted: ts_x509_novalidate_vtable
+     - Deleted: ts_xnv_time_check (replaced by ts_tls_time_check)
+     - TLS context now uses br_x509_minimal_context directly (not wrapper)
+     - br_ssl_client_init_full() now receives TS_TRUST_ANCHORS array
+       and TS_TRUST_ANCHORS_NUM — real validation against real CAs
+
+FILES CHANGED:
+  NEW:
+    tools/gen_trust_anchors.py
+      Build tool: PEM CA bundle -> BearSSL trust anchor C header
+    src/user/apps/ts_trust_anchors.h
+      Auto-generated: 146 root CAs as static br_x509_trust_anchor[]
+
+  MODIFIED:
+    src/user/apps/ts_http.h
+      - Removed ts_x509_novalidate_context and all ts_xnv_* functions
+      - Removed ts_x509_novalidate_vtable
+      - Added #include "ts_trust_anchors.h"
+      - Changed struct ts_tls_ctx.xc from ts_x509_novalidate_context
+        to br_x509_minimal_context
+      - Replaced ts_xnv_time_check (always-0) with ts_tls_time_check
+        (real wall-clock comparison)
+      - ts_tls_setup() now passes TS_TRUST_ANCHORS to init_full
+      - ts_tls_setup() time callback points to ts_tls_time_check
+      - Removed all references to the no-validate wrapper vtable
+      - Updated header comment to reflect real validation
+
+Build: clean. ISO exported. tatersurf.elf = 2.2MB.
+
+WHY:
+  planv3 rules demand no shortcuts. Certificate validation is not optional
+  for a browser — it's the entire point of HTTPS. Shipping with "accept
+  all certs" is worse than HTTP because it gives a false sense of security.
+  The infrastructure was already there (RTC, time syscall, BearSSL x509
+  minimal) — just needed to be wired up properly.
+
+NEXT:
+  - QEMU verification of TLS handshake with real validation
+  - If cert validation fails on specific sites, the likely cause is
+    intermediate cert chain issues (server doesn't send full chain) —
+    that's a server problem, not ours
+  - External CSS/JS resource loading from different hosts (fry798 NEXT)

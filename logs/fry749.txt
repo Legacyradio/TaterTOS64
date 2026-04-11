@@ -1,0 +1,99 @@
+fry749 — SMP Scheduling: Full Multi-Core Process Distribution
+Date: 2026-03-15
+
+WHAT:
+Removed the single-CPU scheduling ceiling. All CPU cores now run their own
+scheduler, handle syscalls, and execute user processes. Previously all tasks
+were force-assigned to the BSP (CPU0) and SMP was explicitly disabled.
+
+WHY:
+The scheduler was BSP-centric (sched.c sched_add forced p->cpu = bsp).
+SMP was disabled via TATER_SKIP_SMP=1 in main.c. APs were online with
+calibrated LAPIC timers but parked in hlt loops doing nothing. This was a
+real performance ceiling — 75% of compute wasted on a 4-core system.
+
+FILES MODIFIED:
+
+  src/kernel/proc/sched.h — Added sched_ap_start, sched_percpu_ptr, sched_ap_ready
+    Why: APs need entry points into the scheduler after BSP finishes init
+
+  src/kernel/proc/sched.c — Major rewrite:
+    - Replaced global g_syscall_kstack_top with per-CPU percpu_data struct
+      (kstack_top at offset 0, user_rsp scratch at offset 8)
+      Why: SWAPGS-based syscall entry needs per-CPU kernel stack pointer
+    - init_boot_context now takes stack_top param (APs have different stacks)
+    - sched_init: initializes percpu[bsp], sets g_sched_ready flag
+    - sched_ap_start(stack_top): AP scheduler entry — sets boot context,
+      percpu kstack, enables IRQs, enters idle loop for timer-driven scheduling
+    - sched_add: round-robin load balancing across all CPUs
+      Why: BSP-only assignment was the core ceiling; round-robin distributes
+    - sched_tick: updates percpu[cpu].kstack_top instead of global, all CPUs
+    - Added g_sched_ready volatile flag + sched_ap_ready() for AP synchronization
+
+  src/kernel/proc/syscall.c — SWAPGS-based syscall entry:
+    - Removed g_syscall_kstack_top global and g_syscall_user_rsp global
+    - syscall_entry rewritten: SWAPGS on entry loads per-CPU data via %gs:0/8,
+      SWAPGS on exit restores user GS
+    - syscall_init: now sets GS.BASE = percpu (kernel), KERNEL_GS = 0 (user)
+    - Added syscall_init_ap(cpu): sets EFER.SCE + STAR/LSTAR/FMASK + GS MSRs
+      Why: each CPU needs its own SYSCALL configuration for user processes
+
+  src/kernel/proc/syscall.h — Added syscall_init_ap declaration
+
+  src/kernel/irq/irqdesc.c — SWAPGS in common_isr:
+    - Entry: testb $3 on CS; SWAPGS if from user mode (CPL 3)
+    - Exit: testb $3 on CS; SWAPGS if returning to user mode
+    Why: interrupts must maintain GS invariant (kernel mode = kernel GS,
+         user mode = user GS). Without this, context switches between
+         user/kernel processes corrupt GS state.
+
+  src/drivers/timer/lapic_timer.c — All CPUs call sched_tick:
+    - Removed BSP-only guard. Every LAPIC timer tick drives that CPU's runqueue.
+    Why: APs need timer-driven scheduling to execute their queued processes
+
+  src/drivers/smp/smp.c — AP lifecycle:
+    - ap_entry: after GDT/IDT/LAPIC init, sets cpu_online, then spin-waits
+      for sched_ap_ready() (BSP hasn't finished sched_init yet)
+    - After wait: calls lapic_timer_init, syscall_init_ap, sched_ap_start
+    Why: APs must wait for scheduler init before entering the scheduler.
+         LAPIC timer deferred to prevent ticks before runqueues exist.
+
+  src/kernel/proc/process.c — SWAPGS before iretq in process_start:
+    - User processes do SWAPGS to switch from kernel GS to user GS config
+      before entering user mode via iretq
+    Why: maintains the GS invariant at the kernel→user transition
+
+  src/kernel/main.c — TATER_SKIP_SMP set to 0
+    Why: SMP is now fully integrated with the scheduler
+
+DESIGN:
+  GS Invariant (SWAPGS protocol):
+    Kernel mode: GS.BASE = percpu pointer, KERNEL_GS_BASE = 0 (user GS)
+    User mode:   GS.BASE = 0 (user GS),    KERNEL_GS_BASE = percpu pointer
+  Every user↔kernel boundary does SWAPGS:
+    - syscall_entry (SYSCALL from user → kernel)
+    - syscall_exit (SYSRETQ from kernel → user)
+    - common_isr entry (interrupt from user, CS & 3 == 3)
+    - common_isr exit (iretq to user, CS & 3 == 3)
+    - process_start (iretq to user for new process)
+
+  Load balancing: round-robin via g_sched_next_cpu. Each sched_add()
+  assigns the next CPU in sequence. Woken processes return to their
+  assigned CPU (no migration mid-lifecycle).
+
+  AP synchronization: volatile g_sched_ready flag. BSP sets it after
+  sched_init. APs spin on sched_ap_ready() with PAUSE instruction.
+
+BUILD:
+  make all — ZERO errors, ZERO warnings
+  build_iso.sh — ISO exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+TEST COMMANDS:
+  Boot ISO in QEMU with -smp 4. Verify serial shows:
+    SMP: CPU1/2/3 online
+    K_AP_SCHED cpu=1/2/3
+    selftest: NN passed, 0 failed
+  Confirm GUI launches and responds to input.
+  Check serial for absence of CPU exceptions (!EXC).
+
+STATUS: Awaiting runtime boot confirmation.

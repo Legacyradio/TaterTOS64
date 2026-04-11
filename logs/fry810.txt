@@ -1,0 +1,100 @@
+fry810 — TaterSurf Phase 2: Steps 18-21
+========================================
+Date: 2026-04-04 01:33 UTC
+
+Steps 1-17 were completed in the previous session. This session continues
+with Steps 18-21 of the TaterSurf browser upgrade.
+
+Step 18: innerHTML/textContent/outerHTML getter/setter pairs
+------------------------------------------------------------
+WHY: innerHTML was bound as a simple property (getter function), so
+el.innerHTML = "..." just overwrote the function with a string instead
+of parsing HTML. textContent had the same problem. Most SPAs depend on
+innerHTML setter to build their UI.
+
+Changes:
+- ts_dom.h: Added ts_dom_encode_entities() — HTML entity encoding for < > & "
+- ts_dom.h: Added ts_dom_serialize_node() — serializes DOM node + subtree to HTML
+- ts_dom.h: Added ts_dom_serialize_children() — serializes children (innerHTML getter)
+- ts_dom.h: Added ts_dom_set_text_content() — removes children, creates text node
+- ts_dom_bindings.h: Fixed innerHTML getter to call ts_dom_serialize_children()
+  instead of returning textContent
+- ts_dom_bindings.h: Added outerHTML getter/setter (set replaces element in parent)
+- ts_dom_bindings.h: Added textContent setter, id setter, className setter
+- ts_dom_bindings.h: Changed innerHTML, textContent, outerHTML, id, className
+  from JS_SetPropertyStr to JS_DefinePropertyGetSet — proper getter/setter pairs
+  using JS_NewAtom + JS_DefinePropertyGetSet from QuickJS
+
+Step 19: display:inline-block
+------------------------------------------------------------
+WHY: Navbars, button groups, tag lists depend on inline-block. Without it,
+elements that should sit side-by-side instead stack vertically.
+
+Changes:
+- ts_layout.h: Added display_inline_block and inline_block_positioned fields
+  to struct ts_block_box
+- ts_layout.h: CSS parsing: display:inline-block (checked before flex/grid)
+- ts_layout.h: Parser (block element open): opens box first, checks inline-block,
+  emits zero-height break for inline-block, normal break for block
+- ts_layout.h: Parser (block element close): emits zero-height break for inline-block
+- ts_layout.h: Layout BREAK handler: detects inline-block entry — positions box at
+  current (x,y) inline instead of column start, jumps to content area.
+  Detects inline-block exit — advances x by box total_w, restores y.
+
+Step 20: SVG <path> d="" parser
+------------------------------------------------------------
+WHY: Most SVG icon sets (Material, FontAwesome, Heroicons) use <path d="...">.
+Without path support, icon-heavy sites show empty SVG boxes.
+
+Changes:
+- ts_layout.h: Added file-scope SVG path helpers:
+  * ts_svg_skip() — whitespace/comma skipper
+  * ts_svg_parse_num() — float parser from d-string
+  * ts_svg_add_seg() — line segment collector
+  * ts_svg_cubic() — cubic bezier flattener (16 segments)
+  * ts_svg_quad() — quadratic bezier flattener (12 segments)
+  * ts_svg_parse_path() — full SVG path d-string parser
+    Supports: M/m, L/l, H/h, V/v, C/c, S/s, Q/q, T/t, A/a, Z/z
+    (all absolute and relative forms)
+  * ts_svg_stroke_path() — Bresenham line drawing for all segments
+  * ts_svg_fill_path() — even-odd scanline fill for closed paths
+  * Arc (A) approximated with 12-segment parametric walk
+- ts_layout.h: Added <path> handler in SVG child walker
+- ts_layout.h: Added <polygon> and <polyline> handlers (convert points to d-string)
+
+Step 21: stb_truetype integration
+------------------------------------------------------------
+WHY: The 8x16 bitmap font is the single biggest visual quality gap. Real
+websites use proportional fonts at various sizes. stb_truetype enables
+antialiased glyph rendering at any pixel size.
+
+Changes:
+- Downloaded stb_truetype.h v1.26 (5079 lines, Sean Barrett, public domain)
+- Copied DejaVuSans.ttf (760KB, free license) to project root
+- Created ts_font.h (281 lines):
+  * Pre-defines all STBTT_* macros to avoid <stdlib.h>/<math.h>/<assert.h>
+    (bare-metal libc has the functions but not the standard headers)
+  * Bakes 3 font atlases at startup: 16px, 22px, 30px (512x512 each)
+  * ts_font_init() — loads /fonts/DEJAVU.TTF from filesystem at runtime
+  * ts_font_draw_glyph() — renders single glyph with alpha blending
+  * ts_font_draw_text() — renders string with proportional advance
+  * ts_font_text_width() — measures string width without drawing
+  * Falls back to bitmap font if TTF file not found
+- ts_layout.h: Modified ts_draw_scaled_text() — uses TrueType path when
+  ts_font_is_loaded(), falls back to bitmap otherwise
+- tatersurf.c: Includes ts_font.h before ts_layout.h, calls ts_font_init()
+  at startup (best-effort — graceful fallback if font missing)
+- build_iso.sh: Copies DejaVuSans.ttf to /fonts/DEJAVU.TTF on ISO filesystem
+  (FAT32 image, EFI partition, and ISO staging tree)
+
+Build Results
+------------------------------------------------------------
+Binary: tatersurf.fry — 2,421,160 bytes (was 2,350,000 — +71KB from stb_truetype)
+Source growth:
+  ts_layout.h: 3818 → 4364 lines (+546: SVG path, inline-block)
+  ts_dom_bindings.h: 3058 → 3187 lines (+129: innerHTML/outerHTML/textContent setters)
+  ts_dom.h: 1089 → 1257 lines (+168: HTML serializer, text content setter)
+  ts_font.h: 281 lines (new)
+  stb_truetype.h: 5079 lines (vendor, unmodified)
+
+Zero build errors. ISO exported to C:\Users\jjsako\Documents\tateriso\tatertos64v3.iso

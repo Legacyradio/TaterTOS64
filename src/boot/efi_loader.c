@@ -805,7 +805,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     //   2. If nothing is found there, scan all EFI_SIMPLE_FILE_SYSTEM_PROTOCOL
     //      handles (firmware sometimes maps the EFI partition differently).
     {
-        enum { FRY_FILE_COUNT = 14, FRY_PATH_VARIANTS = 9 };
+        enum { FRY_FILE_COUNT = 29, FRY_PATH_VARIANTS = 9, ICON_FILENAME_MAX = 11 };
         static CHAR16 fry_paths[FRY_FILE_COUNT][FRY_PATH_VARIANTS][64] = {
             {
                 {'\\','s','y','s','t','e','m','\\','I','N','I','T','.','F','R','Y',0},
@@ -912,6 +912,17 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
                 {'\\','E','F','I','\\','B','O','O','T','\\','F','R','Y','\\','V','M','F','A','U','L','T','.','F','R','Y',0},
             },
             {
+                {'\\','a','p','p','s','\\','T','H','T','E','S','T','.','F','R','Y',0},
+                {'\\','T','H','T','E','S','T','.','F','R','Y',0},
+                {'\\','f','r','y','\\','T','H','T','E','S','T','.','F','R','Y',0},
+                {'\\','F','R','Y','\\','T','H','T','E','S','T','.','F','R','Y',0},
+                {'\\','E','F','I','\\','f','r','y','\\','T','H','T','E','S','T','.','F','R','Y',0},
+                {'\\','E','F','I','\\','F','R','Y','\\','T','H','T','E','S','T','.','F','R','Y',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','T','H','T','E','S','T','.','F','R','Y',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','T','H','T','E','S','T','.','F','R','Y',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','F','R','Y','\\','T','H','T','E','S','T','.','F','R','Y',0},
+            },
+            {
                 {'\\','V','M','T','E','S','T','.','T','X','T',0},
                 {'\\','a','p','p','s','\\','V','M','T','E','S','T','.','T','X','T',0},
                 {'\\','f','r','y','\\','V','M','T','E','S','T','.','T','X','T',0},
@@ -955,6 +966,53 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
                 {'\\','E','F','I','\\','B','O','O','T','\\','F','R','Y','\\','f','i','r','m','w','a','r','e','\\','i','w','l','w','i','f','i','-','9','2','6','0','.','u','c','o','d','e',0},
                 {'\\','f','i','r','m','w','a','r','e','\\','i','w','l','w','i','f','i','-','9','2','6','0','-','t','h','-','b','0','-','j','f','-','b','0','-','4','6','.','u','c','o','d','e',0},
             },
+            { /* TATERSURF.FRY */
+                {'\\','a','p','p','s','\\','T','A','T','E','R','S','U','R','F','.','F','R','Y',0},
+                {'\\','T','A','T','E','R','S','U','R','F','.','F','R','Y',0},
+                {'\\','f','r','y','\\','T','A','T','E','R','S','U','R','F','.','F','R','Y',0},
+                {'\\','F','R','Y','\\','T','A','T','E','R','S','U','R','F','.','F','R','Y',0},
+                {'\\','E','F','I','\\','f','r','y','\\','T','A','T','E','R','S','U','R','F','.','F','R','Y',0},
+                {'\\','E','F','I','\\','F','R','Y','\\','T','A','T','E','R','S','U','R','F','.','F','R','Y',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','T','A','T','E','R','S','U','R','F','.','F','R','Y',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','T','A','T','E','R','S','U','R','F','.','F','R','Y',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','F','R','Y','\\','T','A','T','E','R','S','U','R','F','.','F','R','Y',0},
+            },
+            { /* EVLOOP.FRY */
+                {'\\','a','p','p','s','\\','E','V','L','O','O','P','.','F','R','Y',0},
+                {'\\','E','V','L','O','O','P','.','F','R','Y',0},
+                {'\\','f','r','y','\\','E','V','L','O','O','P','.','F','R','Y',0},
+                {'\\','F','R','Y','\\','E','V','L','O','O','P','.','F','R','Y',0},
+                {'\\','E','F','I','\\','f','r','y','\\','E','V','L','O','O','P','.','F','R','Y',0},
+                {'\\','E','F','I','\\','F','R','Y','\\','E','V','L','O','O','P','.','F','R','Y',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','E','V','L','O','O','P','.','F','R','Y',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','E','V','L','O','O','P','.','F','R','Y',0},
+                {'\\','E','F','I','\\','B','O','O','T','\\','F','R','Y','\\','E','V','L','O','O','P','.','F','R','Y',0},
+            },
+#define ICON_PATH_ENTRY(N1,N2,N3,N4,N5,N6,N7,N8,N9,N10,N11) \
+            { \
+                {'\\','i','c','o','n','s','\\',N1,N2,N3,N4,N5,N6,N7,N8,N9,N10,N11,0}, \
+                {'\\',N1,N2,N3,N4,N5,N6,N7,N8,N9,N10,N11,0}, \
+                {'\\','f','r','y','\\','i','c','o','n','s','\\',N1,N2,N3,N4,N5,N6,N7,N8,N9,N10,N11,0}, \
+                {'\\','F','R','Y','\\','i','c','o','n','s','\\',N1,N2,N3,N4,N5,N6,N7,N8,N9,N10,N11,0}, \
+                {'\\','E','F','I','\\','f','r','y','\\','i','c','o','n','s','\\',N1,N2,N3,N4,N5,N6,N7,N8,N9,N10,N11,0}, \
+                {'\\','E','F','I','\\','F','R','Y','\\','i','c','o','n','s','\\',N1,N2,N3,N4,N5,N6,N7,N8,N9,N10,N11,0}, \
+                {'\\','E','F','I','\\','B','O','O','T','\\','i','c','o','n','s','\\',N1,N2,N3,N4,N5,N6,N7,N8,N9,N10,N11,0}, \
+                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','i','c','o','n','s','\\',N1,N2,N3,N4,N5,N6,N7,N8,N9,N10,N11,0}, \
+                {'\\','E','F','I','\\','B','O','O','T','\\','F','R','Y','\\','i','c','o','n','s','\\',N1,N2,N3,N4,N5,N6,N7,N8,N9,N10,N11,0}, \
+            },
+            ICON_PATH_ENTRY('B','R','O','W','S','E','.','I','C','O','N')
+            ICON_PATH_ENTRY('F','I','L','E','S','.','I','C','O','N',0)
+            ICON_PATH_ENTRY('N','E','T','.','I','C','O','N',0,0,0)
+            ICON_PATH_ENTRY('S','Y','S','.','I','C','O','N',0,0,0)
+            ICON_PATH_ENTRY('B','I','N','.','I','C','O','N',0,0,0)
+            ICON_PATH_ENTRY('M','E','D','I','A','.','I','C','O','N',0)
+            ICON_PATH_ENTRY('S','E','T','U','P','.','I','C','O','N',0)
+            ICON_PATH_ENTRY('C','A','L','C','.','I','C','O','N',0,0)
+            ICON_PATH_ENTRY('D','R','A','W','.','I','C','O','N',0,0)
+            ICON_PATH_ENTRY('M','A','I','L','.','I','C','O','N',0,0)
+            ICON_PATH_ENTRY('O','F','F','.','I','C','O','N',0,0,0)
+            ICON_PATH_ENTRY('W','R','I','T','E','.','I','C','O','N',0)
+#undef ICON_PATH_ENTRY
         };
         static const char *fry_names[FRY_FILE_COUNT] = {
             "system/INIT.FRY",
@@ -967,10 +1025,25 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
             "apps/NETMGR.FRY",
             "apps/VMTEST.FRY",
             "apps/VMFAULT.FRY",
+            "apps/THTEST.FRY",
             "VMTEST.TXT",
             "VMTEST.RUN",
             "VMFAULT.RUN",
-            "firmware/iwlwifi-9260.ucode"
+            "firmware/iwlwifi-9260.ucode",
+            "apps/TATERSURF.FRY",
+            "apps/EVLOOP.FRY",
+            "icons/BROWSE.ICON",
+            "icons/FILES.ICON",
+            "icons/NET.ICON",
+            "icons/SYS.ICON",
+            "icons/BIN.ICON",
+            "icons/MEDIA.ICON",
+            "icons/SETUP.ICON",
+            "icons/CALC.ICON",
+            "icons/DRAW.ICON",
+            "icons/MAIL.ICON",
+            "icons/OFF.ICON",
+            "icons/WRITE.ICON"
         };
         void  *fry_bufs[FRY_FILE_COUNT];
         UINTN  fry_sizes[FRY_FILE_COUNT];

@@ -1,0 +1,48 @@
+fry807 — TaterSurf Browser Upgrade: Step 15 (SVG Rendering)
+=============================================================
+Date: 2026-04-03
+Build: clean, zero errors
+Binary: TATERSURF.FRY 2,354,640 bytes
+
+STEP 15: SVG Rendering (ts_layout.h)
+--------------------------------------
+
+15a) Infrastructure:
+  - TS_NODE_SVG added to enum ts_node_type
+  - Reuses canvas_cache[16] for SVG pixel buffers (same format)
+  - SVG layout falls through to same case as TS_NODE_CANVAS
+  - SVG render falls through to same blit code as TS_NODE_CANVAS
+
+15b) SVG parsing in ts_doc__build_dom_recursive:
+  - <svg> element detected, dimensions from width/height attrs or viewBox
+  - viewBox parsed via sscanf for "minX minY width height"
+  - Max capped at 800x600, default 100x100
+  - Pixel buffer allocated via calloc, rendered with gfx_ctx_t
+
+15c) SVG shapes rendered:
+  - <rect> — fill via gfx_fill, stroke via gfx_rect
+    Attributes: x, y, width, height, fill, stroke, stroke-width
+  - <circle> — midpoint circle algorithm with fill (scanline) and stroke (outline)
+    Attributes: cx, cy, r, fill, stroke
+  - <ellipse> — integer approximation using sqrt for span calculation
+    Attributes: cx, cy, rx, ry, fill
+  - <line> — Bresenham line algorithm
+    Attributes: x1, y1, x2, y2, stroke
+  - <text> — 8x16 bitmap font via gfx_draw_text
+    Attributes: x, y, fill; text content from child text nodes
+  - fill="none" respected (no fill), stroke="none" respected
+
+15d) Not yet implemented:
+  - <path> d="" attribute (M/L/C/Z commands — complex parser needed)
+  - <polyline>/<polygon> (need point list parser)
+  - <g> group recursion
+  - <use> references
+  - CSS styling on SVG elements
+  - preserveAspectRatio
+  These would be needed for complex SVG icons but the basic shapes
+  cover simple chart/graph/icon use cases.
+
+Files modified:
+  src/user/apps/ts_layout.h — node type, layout, render, SVG rasterizer
+
+Plan reference: TATERSURF_UPGRADE_PLAN.md Step 15

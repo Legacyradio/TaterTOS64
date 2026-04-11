@@ -1,0 +1,50 @@
+fry763 — TaterSurf Phase A6: URL parser (ts_url.h)
+=====================================================================
+Timestamp: 2026-03-27T14:00:00Z
+
+Context:
+  TaterSurf needs to parse, resolve, and format URLs for every
+  navigation action: typing in the URL bar, clicking links,
+  following redirects, resolving relative URLs in <a href>.
+
+Changes:
+  New file: src/user/apps/ts_url.h (header-only, ~630 LOC)
+
+  struct ts_url:
+    scheme[16], host[256], port (uint16_t), path[1024],
+    query[512], fragment[128]
+
+  Functions:
+    ts_url_parse(raw_string, &url)
+      Parses full URLs, protocol-relative (//host), host-relative
+      (/path), bare hostnames, hostnames with port. Handles
+      leading/trailing whitespace. Lowercases scheme and host.
+      Sets default port (80 for http, 443 for https).
+
+    ts_url_resolve(base, relative, &out)
+      RFC 3986 Section 5 relative URL resolution. Handles absolute,
+      protocol-relative, host-relative, and path-relative URLs.
+      Normalizes . and .. segments in merged paths.
+
+    ts_url_to_string(url, buf, len)
+      Formats ts_url back to string. Omits default port.
+
+    ts_url_is_https(url) → 1 if HTTPS
+    ts_url_effective_port(url) → port to connect to
+    ts_url_host_header(url, buf, len) → "host:port" for HTTP Host header
+    ts_url_request_path(url, buf, len) → "/path?query" for HTTP request line
+    ts_url_percent_decode(str) → decode %XX sequences in-place
+
+  Why header-only: single compilation unit strategy. tatersurf.c
+  includes this header; the compiler inlines what it can and
+  dead-code-eliminates what's unused. Same pattern as stb libraries.
+
+Verification:
+  Compile test with x86_64-elf-gcc -ffreestanding:
+    Test code: parse YouTube URL, format back to string, resolve
+    a relative URL against it.
+  Result: compiles clean, zero errors. Unused-function warnings
+  expected (test doesn't call all functions; real app will).
+
+Artifacts:
+  src/user/apps/ts_url.h

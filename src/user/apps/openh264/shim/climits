@@ -1,0 +1,4 @@
+#ifndef _TATER_CLIMITS
+#define _TATER_CLIMITS
+#include <limits.h>
+#endif

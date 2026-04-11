@@ -1,0 +1,4 @@
+#ifndef _TATER_CSTDINT
+#define _TATER_CSTDINT
+#include <stdint.h>
+#endif

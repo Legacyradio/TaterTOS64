@@ -1,0 +1,18 @@
+fry759 — Fix thread bootstrap context placement (Bug 2 correction)
+Date: 2025-03-15
+
+Context: First Bug 2 fix (RSP=ctx_addr) caused kernel #GP infinite loop.
+  The issue was iretq popping from the wrong stack location.
+
+Correction:
+  src/user/libc/libc.c:
+    - Reverted RSP back to stack_top - 8 (correct for iretq frame)
+    - Moved bootstrap context 256 bytes below stack_top instead:
+        ctx_addr = (stack_top - 256 - sizeof(*ctx)) & ~0xF
+    - Why: The trampoline prologue pushes rbp/rbx/r12 which occupy
+      stack_top-16, -24, -32. Old context at -32 got clobbered.
+      Moving context to -280 gives 248 bytes of padding — prologue
+      can't reach it.
+    - RSP stays at stack_top-8 so iretq works correctly.
+
+Status: Build pending, awaiting QEMU test.

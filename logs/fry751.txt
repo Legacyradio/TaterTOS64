@@ -1,0 +1,93 @@
+fry751 — Phase 5: Randomness, Time, and Core Runtime Services
+Date: 2026-03-15
+
+WHAT:
+Implemented full Phase 5 from netbuild1. Three new syscalls (85-87), entropy
+subsystem with RDRAND/RDSEED, RTC wall-clock driver, nanosecond-resolution
+HPET time, and kernel selftests. Boots to GUI on real hardware.
+
+SYSCALLS ADDED (85-87):
+  85 SYS_GETRANDOM      — fill buffer with crypto-quality random bytes
+  86 SYS_CLOCK_GETTIME   — nanosecond-resolution monotonic + wall-clock time
+  87 SYS_NANOSLEEP       — high-resolution sleep (ns precision, ms granularity)
+
+FILES CREATED:
+  src/include/fry_time.h — shared time types (fry_timespec, clock IDs)
+    Why: kernel + userspace need common time structures for clock_gettime/nanosleep
+
+  src/include/fry_random.h — shared random constants (GRND_* flags, max len)
+    Why: kernel + userspace need common getrandom flag definitions
+
+  src/kernel/entropy/entropy.h — entropy subsystem header
+  src/kernel/entropy/entropy.c — entropy subsystem implementation
+    Why: crypto-grade random bytes for getrandom()
+    Design:
+      - CPUID detection of RDRAND (leaf 1, ECX.30) and RDSEED (leaf 7, EBX.18)
+      - 256-bit internal pool mixed with SipRound-inspired CSPRNG
+      - Primary: RDSEED → RDRAND fallback → RDTSC last resort
+      - Re-seeds from RDRAND + RDTSC on every getbytes() call
+      - Spinlock-protected for SMP safety
+
+  src/drivers/timer/rtc.h — RTC driver header
+  src/drivers/timer/rtc.c — CMOS RTC driver
+    Why: wall-clock time for CLOCK_REALTIME
+    Design:
+      - MC146818-compatible CMOS read via ports 0x70/0x71
+      - Double-read consistency check (no mid-update race)
+      - BCD/binary auto-detect via Status Register B
+      - 12/24-hour mode handling
+      - Century register with fallback to 20xx
+      - Rata Die epoch conversion (UTC)
+      - Boot-time epoch captured once by rtc_init()
+
+FILES MODIFIED:
+  src/drivers/timer/hpet.h — added hpet_get_period_fs(), hpet_get_ns()
+    Why: nanosecond-resolution time for CLOCK_MONOTONIC
+
+  src/drivers/timer/hpet.c — implemented hpet_get_ns()
+    Why: splits counter into sec + nsec using freq and femtosecond period
+    to avoid 128-bit overflow
+
+  src/kernel/proc/syscall.c — added 3 syscall handlers + includes
+    Why: SYS_GETRANDOM, SYS_CLOCK_GETTIME, SYS_NANOSLEEP implementations
+    Design:
+      - getrandom: validates user buffer, calls entropy_getbytes, copyout
+      - clock_gettime: MONOTONIC/BOOTTIME via hpet_get_ns, REALTIME adds
+        rtc_boot_epoch_sec offset
+      - nanosleep: converts timespec to ms, calls sched_sleep + sched_yield,
+        writes zero remainder on return
+
+  src/user/libc/libc.c — added syscall enum entries (85-87) + 3 wrappers
+    Why: userspace API surface for Phase 5
+
+  src/user/libc/libc.h — added wrapper declarations + includes
+    Why: public libc header for Phase 5 APIs
+
+  src/kernel/main.c — added rtc_init() and entropy_init() calls after hpet_init
+    Why: entropy and RTC must be initialized before selftests and user processes
+
+  src/kernel/selftest.c — added ~12 Phase 5 checks
+    Why: validates entropy readiness, output non-zero, uniqueness, clock
+    constants, HPET nanosecond range, RTC epoch sanity (year >= 2024)
+
+  Makefile — added rtc.o and entropy.o to KERNEL_OBJS
+    Why: new source files need to be compiled and linked
+
+DESIGN DECISIONS:
+  - Entropy pool uses SipRound-inspired mixing (rotate-xor-add) for speed
+    and cryptographic strength with RDRAND input
+  - CLOCK_REALTIME = rtc_boot_epoch + HPET monotonic offset (no NTP/drift
+    correction — appropriate for a standalone OS)
+  - CLOCK_BOOTTIME is alias for CLOCK_MONOTONIC (no suspend state)
+  - nanosleep rounds sub-ms sleeps up to 1ms (scheduler tick granularity)
+  - FRY_RANDOM_MAX = 256 bytes per call (prevents kernel stack abuse)
+
+ABI SURFACE:
+  Clock IDs: FRY_CLOCK_MONOTONIC(0), FRY_CLOCK_REALTIME(1), FRY_CLOCK_BOOTTIME(2)
+  Random flags: FRY_GRND_NONBLOCK(1), FRY_GRND_RANDOM(2), FRY_GRND_INSECURE(4)
+
+BUILD:
+  make all — ZERO errors, ZERO new warnings
+  build_iso.sh — ISO exported
+
+STATUS: CONFIRMED — boots to GUI on real hardware. Phase 5 COMPLETE.

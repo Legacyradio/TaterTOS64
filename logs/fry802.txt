@@ -1,0 +1,83 @@
+fry802 — TaterSurf Browser Upgrade: Step 9 (DOM API Completions)
+=================================================================
+Date: 2026-04-03
+Build: clean, zero errors
+
+STEP 9: DOM API Completions (ts_dom_bindings.h + ts_layout.h + tatersurf.c)
+---------------------------------------------------------------------------
+
+9a) classList object
+  - Helper ts_js__class_contains(): checks if space-separated class list contains a class
+  - Helper ts_js__class_remove(): rebuilds class string without a given class
+  - ts_js_classlist_add(): adds one or more classes to element's class attribute
+  - ts_js_classlist_remove(): removes one or more classes
+  - ts_js_classlist_toggle(): toggles class, supports optional force boolean, returns result
+  - ts_js_classlist_contains(): returns boolean for class presence
+  - ts_js_classlist_item(): returns class at given index (0-based)
+  - ts_js__bind_classlist(): creates classList sub-object on every node wrapper
+
+9b) dataset proxy (data-* attributes)
+  - ts_js__data_attr_to_camel(): converts "data-foo-bar" to "fooBar"
+  - ts_js__camel_to_data_attr(): converts "fooBar" to "data-foo-bar"
+  - ts_js_elem_get_dataset(): returns fresh object with all data-* attributes
+    as camelCase properties. Read-only snapshot per call.
+
+9c) element.style CSSStyleDeclaration
+  - ts_js__camel_to_kebab(): converts camelCase to kebab-case
+  - ts_js_style_set_property(): sets property in node's inline_style array, marks dirty
+  - ts_js_style_get_property(): reads property from inline_style array
+  - ts_js_style_remove_property(): removes property, shifts array, returns old value
+  - ts_js_style_get_csstext(): serializes all inline styles to "prop: val; " string
+  - ts_js__bind_style(): creates style sub-object with methods + current property values
+    in both kebab-case and camelCase for read access
+
+9d) closest() and matches()
+  - ts_js_elem_matches(): wraps existing ts_dom_matches_selector for JS access
+  - ts_js_elem_closest(): walks ancestor chain calling matches() on each node,
+    returns first match or null. Binds node methods on returned wrapper.
+
+9e) DOM mutation convenience methods
+  - ts_js_elem_remove(): self-removal from parent (element.remove())
+  - ts_js_elem_replace_with(): inserts args before self, then removes self
+  - ts_js_elem_before(): inserts args as siblings before self
+  - ts_js_elem_after(): inserts args as siblings after self
+  - ts_js_elem_append(): appends args as children
+  - ts_js_elem_prepend(): prepends args as children (before first child)
+
+9f) Deep cloneNode
+  - ts_js__deep_clone(): recursively clones a DOM node and all descendants
+    Copies: tag, attrs, text, inline_style. Appends cloned children.
+  - ts_js_node_clone_node() upgraded: respects boolean deep argument.
+    deep=true calls ts_js__deep_clone, false does shallow copy.
+    Both paths now also copy inline_style and bind node methods on clone.
+
+9g) getBoundingClientRect with real layout values
+  - Added dom_node_id field to struct ts_render_node (ts_layout.h)
+  - Initialized to -1 in ts_doc__emit()
+  - Set during ts_doc__build_dom_recursive():
+    * Text nodes get parent element's DOM node ID
+    * After recursing children, all untagged nodes in the range get element's ID
+    * Child elements override parent (more specific wins)
+  - Added g_doc_ref pointer (ts_dom_bindings.h) set in tatersurf.c
+  - ts_js_elem_get_bounding_rect() now scans render nodes for matching dom_node_id,
+    computes bounding box union. Falls back to box model if available.
+    Returns {x, y, width, height, top, right, bottom, left}.
+
+9h) window.getComputedStyle with real values
+  - ts_js_get_computed_style(): accepts element, returns object with:
+    * All inline style properties (both kebab and camelCase)
+    * Stylesheet rules that match element (simple last-part matching)
+    * getPropertyValue() method for spec compatibility
+  - Replaces old stub that returned empty bounding rect object
+
+Registration:
+  All new methods registered in ts_dom_bind_node_methods():
+    closest, matches, remove, replaceWith, before, after, append, prepend,
+    dataset (getter), classList + style sub-objects
+
+Files modified:
+  src/user/apps/ts_layout.h     — dom_node_id in render nodes + DOM build tagging
+  src/user/apps/ts_dom_bindings.h — all Step 9 bindings (~400 lines added)
+  src/user/apps/tatersurf.c     — set g_doc_ref = g_doc before register_globals
+
+Plan reference: TATERSURF_UPGRADE_PLAN.md Step 9

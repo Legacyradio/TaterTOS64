@@ -1,0 +1,39 @@
+fry750 — SMP Boot Fix: EFER.NXE + SWAPGS Ordering
+Date: 2026-03-15
+
+WHAT:
+Fixed two bugs preventing SMP boot after fry749's multi-core scheduling rewrite.
+System now boots to GUI with all CPUs active.
+
+BUG 1: AP trampoline missing EFER.NXE (trampoline.asm)
+  Symptom: #UD (vec=6) at RIP=0x1002 (AP trampoline), triple fault loop.
+  Cause: trampoline only set EFER.LME (bit 8) when entering long mode.
+    Kernel page tables use the NX bit (bit 63) on stack/data PTEs.
+    Without EFER.NXE (bit 11), CPU treats NX bits as reserved →
+    instant reserved-bit page fault on any memory access.
+  Proof: AP EFER=0x500 (LME+LMA only), BSP EFER=0x0D00 (LME+LMA+NXE).
+  Fix: or eax, (1 << 8) | (1 << 11)  ; LME + NXE
+
+BUG 2: process_start SWAPGS ordering (process.c)
+  Symptom: #PF at syscall_entry, CR2=0x8 (NULL+8), KERNEL_GS_BASE=0.
+  Cause: process_start did `mov %ax, %gs` (selector 0x23) BEFORE swapgs.
+    On Intel/QEMU, mov to %gs in 64-bit mode zeroes MSR_GS_BASE
+    (loads base from descriptor, which is 0 for flat segments).
+    This destroyed the percpu pointer before SWAPGS could save it
+    to KERNEL_GS_BASE. Result: SWAPGS swapped 0 with 0, percpu lost.
+    Next SYSCALL from user → swapgs loads GS.BASE=0 → [gs:8] = addr 8 → #PF.
+  Fix: Move swapgs BEFORE the segment selector loads so percpu is
+    saved to KERNEL_GS_BASE while GS.BASE still holds it.
+
+FILES MODIFIED:
+  src/drivers/smp/trampoline.asm line 82
+    Why: AP needs NXE to use kernel page tables that have NX bits set
+
+  src/kernel/proc/process.c process_start()
+    Why: SWAPGS must run before mov-to-%gs clobbers MSR_GS_BASE
+
+BUILD:
+  make all — ZERO errors, ZERO warnings
+  build_iso.sh — ISO exported
+
+STATUS: CONFIRMED — boots to GUI with SMP, no faults.

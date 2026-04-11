@@ -14,6 +14,9 @@
 void kprint(const char *fmt, ...);
 void lapic_timer_init(void);
 void hpet_sleep_ms(uint64_t ms);
+void syscall_init_ap(uint32_t cpu);
+int sched_ap_ready(void);
+void sched_ap_start(uint64_t stack_top);
 
 extern uint8_t smp_trampoline;
 extern uint8_t smp_trampoline_data;
@@ -67,30 +70,38 @@ static void *alloc_stack(uint32_t size) {
     return (void *)(uintptr_t)vmm_phys_to_virt(phys);
 }
 
-static void ap_entry(uint32_t cpu_index, uint32_t apic_id, uint64_t ready_flag) {
-    if (cpu_index >= SMP_MAX_CPUS) {
+static void ap_entry(uint32_t cpu_idx, uint32_t apic_id, uint64_t ready_flag) {
+    if (cpu_idx >= SMP_MAX_CPUS) {
         for (;;) __asm__ volatile("hlt");
     }
-    struct smp_cpu *c = &cpus[cpu_index];
+    struct smp_cpu *c = &cpus[cpu_idx];
     (void)apic_id;
 
     gdt_load(&c->gdtp);
     gdt_reload_data_segments();
     tss_init_local(&c->tss, c->stack_top, c->ist1_top, c->ist2_top);
     tss_load(0x30);
-    cpu_tss[cpu_index] = &c->tss;
+    cpu_tss[cpu_idx] = &c->tss;
 
     idt_init();
     lapic_init();
-    lapic_timer_init();
+    /* Don't start LAPIC timer yet — scheduler isn't ready */
 
-    cpu_online[cpu_index] = 1;
+    /* Signal BSP that this AP is alive */
+    cpu_online[cpu_idx] = 1;
     if (ready_flag) {
         *(volatile uint32_t *)(uintptr_t)ready_flag = 1;
     }
-    for (;;) {
-        __asm__ volatile("hlt");
+
+    /* Wait for BSP to finish sched_init */
+    while (!sched_ap_ready()) {
+        __asm__ volatile("pause");
     }
+
+    /* Now safe: init LAPIC timer, SYSCALL MSRs, enter scheduler */
+    lapic_timer_init();
+    syscall_init_ap(cpu_idx);
+    sched_ap_start(c->stack_top);  /* never returns */
 }
 
 uint32_t smp_cpu_count(void) {

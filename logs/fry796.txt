@@ -1,0 +1,85 @@
+fry796 — Plan: replace mbedTLS with BearSSL
+=====================================================================
+Timestamp: 2026-04-02
+
+STATUS: PLANNED (not started)
+
+WHY:
+  mbedTLS crashes on the second TLS read operation on any connection,
+  regardless of TLS version (1.2/1.3) or crypto backend (PSA/legacy).
+  The crash is RIP=0x0 deep inside the record layer during ssl_fetch_input.
+  After 10+ trace iterations across fry793-795, every mbedTLS-internal
+  theory has been ruled out:
+    - Not PSA crypto (disabled, still crashes)
+    - Not TLS 1.3 (disabled, still crashes)
+    - Not stack overflow (fixed 4MB→8MB)
+    - Not stale pointers (verified clean init)
+    - Not kernel sysret corruption (guard didn't fire)
+    - Not calloc zeroing (verified)
+
+  The pattern: mbedTLS works for exactly ONE request-response cycle.
+  The second read phase (whether new connection or keep-alive reuse)
+  always crashes at the same point in the record layer.
+
+  This points to a fundamental incompatibility between mbedTLS 3.x
+  and TaterTOS's bare-metal environment — likely something in how
+  mbedTLS manages internal buffers, record state, or crypto context
+  lifetime that assumes behaviors TaterTOS doesn't provide.
+
+  Continued debugging is diminishing returns. Replacing the TLS library
+  is the correct engineering decision.
+
+HOW — BearSSL integration plan:
+
+  1. Download BearSSL source (https://bearssl.org/)
+     - Single-directory C source, ~30 files
+     - No external dependencies
+     - No dynamic allocation (caller provides all buffers)
+     - No global state (all state in caller-owned structs)
+     - Designed for embedded/bare-metal
+
+  2. Create src/user/apps/bearssl/ directory
+     - Copy BearSSL source files
+     - Create TaterTOS shim (bearssl_tatertos.c) for:
+       * RNG: hook fry_getrandom() as entropy source
+       * Time: hook fry_clock_gettime() or return 0 (no cert validation)
+
+  3. Rewrite TLS layer in ts_http.h
+     - Replace struct ts_tls_ctx internals:
+       * mbedtls_ssl_context → br_ssl_client_context
+       * mbedtls_ssl_config → br_x509_minimal_context (or no-verify)
+       * in_buf/out_buf → caller-allocated (static or heap)
+     - Rewrite ts_tls_setup():
+       * br_ssl_client_init_full() or minimal init
+       * Set I/O callbacks (br_sslio_init)
+       * Set trust anchor (none — accept all certs)
+     - Rewrite ts_tls_handshake():
+       * br_sslio_flush() + check br_ssl_engine_current_rec_rstate()
+     - Rewrite ts_tls_teardown():
+       * br_ssl_engine_close()
+     - Rewrite ts_http__send / ts_http__recv:
+       * br_sslio_write / br_sslio_read
+
+  4. Update Makefile
+     - Add BearSSL .o files to TATERSURF_OBJS
+     - Remove mbedTLS .o files from link (keep PSA for RNG if needed,
+       or replace with direct fry_getrandom)
+
+  5. Test
+     - Main page load (google.com over TLS 1.2)
+     - Keep-alive reuse (same-host resources)
+     - Multiple sequential connections (different hosts)
+
+  Estimated scope: ~200 lines of integration code in ts_http.h,
+  plus BearSSL source drop. No changes to HTML/CSS/DOM/layout/JS.
+
+RISKS:
+  - BearSSL doesn't support TLS 1.3 (only 1.2) — acceptable for now,
+    Google and most sites still accept TLS 1.2
+  - BearSSL's no-allocation model requires sizing buffers correctly
+    (BR_SSL_BUFSIZE_BIDI = ~33KB for bidirectional I/O)
+  - Certificate validation is skipped (same as current mbedTLS config)
+
+ALTERNATIVE if BearSSL also crashes:
+  The bug would then be in TaterTOS's TCP/socket layer, not TLS.
+  Would need to instrument tcp_recv / netcore for corruption.

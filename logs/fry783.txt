@@ -1,0 +1,71 @@
+fry783 — Three bugs fixed: NIC selection, PCI struct mismatch, DNS parser
+=====================================================================
+Timestamp: 2026-03-31
+
+GOAL: Fix DNS failure in QEMU. TaterSurf couldn't resolve any hostnames.
+
+ROOT CAUSE CHAIN (three bugs, all required fixing):
+
+BUG 1: I219 driver class-based fallback stealing e1000
+  i219.c had a fallback probe at line 788 that matched ANY Intel Ethernet
+  controller (vendor 0x8086, class 02:00). QEMU's e1000 (8086:100E) hit
+  this fallback, so the I219 driver claimed the e1000 device. All TX/RX
+  went through I219 register offsets on e1000 hardware — nothing worked.
+
+  FIX: Removed the class-based fallback entirely. I219 now only matches
+  its specific device ID table. If a real I219 isn't in the table, add
+  its ID — don't use a wildcard that grabs unrelated NICs.
+
+BUG 2: e1000.c had a stale local pci_device_info struct
+  e1000.c defined its own struct pci_device_info with fields in a DIFFERENT
+  ORDER than the real pci.h definition. Critical difference:
+    Real pci.h: bus(u8), slot(u8), func(u8), vendor_id(u16), device_id(u16)...
+    e1000.c:    vendor_id(u16), device_id(u16), bus(u8), dev(u8), func(u8)...
+
+  When the e1000 driver read devs[i].vendor_id, it was actually reading the
+  bus+slot bytes (e.g., 0x0002 for bus=0 slot=2), never matching 0x8086.
+
+  Also: local function prototypes had wrong signatures:
+    - pci_get_devices() took int* instead of uint32_t*
+    - pci_ecam_read32/write32 had 4 params instead of 5 (missing segment)
+
+  FIX: Replaced all local declarations with #include "../../drivers/pci/pci.h".
+  Fixed field names (dev -> slot), added segment=0 to ECAM calls.
+
+BUG 3: DNS answer name parser didn't handle mixed label+pointer names
+  (From fry782 TODO, also fixed in this fry.)
+  netcore.c dns_rx() answer section name parser had:
+    while (pos < len && data[pos] != 0) pos += 1 + data[pos];
+  This treats compression pointers (0xC0+offset) as label lengths, jumping
+  193 bytes past the packet. The question section parser handled this
+  correctly with a goto, but the answer parser didn't.
+
+  FIX: Added compression pointer check inside the while loop:
+    if ((data[pos] & 0xC0) == 0xC0) { pos += 2; goto ans_name_done; }
+
+ADDITIONAL CHANGES:
+  - dns_resolve() gate check now prints configured/dns_server state
+  - SYS_DNS_RESOLVE and SYS_CONNECT now log to serial via kprint_serial_only
+  - All DNS diagnostic prints changed from kprint() to kprint_serial_only()
+    (kprint_should_emit filter was suppressing DNS output)
+  - main.c Phase 12: early_serial_puts for DHCP success/fail markers
+  - TaterSurf auto-navigate target changed to google.com for testing
+  - kprint_serial_only declaration added to netcore.c
+
+QEMU TEST RESULTS (headless, 50 second run):
+  - e1000: found PCI 00:02.0 (device 100e)
+  - DHCP: success via e1000 (dns=10.0.2.3)
+  - DNS: google.com -> 142.250.189.142 (ancount=1, rtype=1, rdlen=4)
+  - TCP: connect 142.250.189.142:80 OK (handle=0)
+  - TaterSurf is connected and transferring data
+
+Files changed:
+  MODIFIED:
+    src/drivers/net/i219.c       (removed class 02:00 fallback probe)
+    src/drivers/net/e1000.c      (replaced stale local PCI struct with pci.h include)
+    src/drivers/net/netcore.c    (DNS parser fix + kprint_serial_only for diagnostics)
+    src/kernel/proc/syscall.c    (SYS_DNS_RESOLVE + SYS_CONNECT serial traces)
+    src/kernel/main.c            (early_serial_puts for DHCP markers)
+    src/user/apps/tatersurf.c    (auto-navigate google.com instead of bing.com)
+
+Build: clean. ISO exported. QEMU verified: DNS+TCP working.

@@ -1,0 +1,48 @@
+fry780 — e1000 DHCP fix: network restored in QEMU
+=====================================================================
+Timestamp: 2026-03-28T03:00:00Z
+
+BUG: TaterSurf (and all network apps) had no network in QEMU after fry779 abort fix.
+
+Root cause: src/kernel/main.c Phase 12 auto-DHCP block only triggered for i219:
+  if (i219_is_ready() && i219_is_link_up()) {
+      dhcp_discover();
+  } else if (i219_is_ready()) { /* no link */ }
+  /* e1000: MAC attached via netcore_attach_e1000(), but DHCP never called */
+
+With no DHCP: g_net.configured = 0, g_net.dns_server = 0.
+dns_resolve() (netcore.c:1090) hard-gates on both:
+  if (!g_net.configured || !g_net.dns_server) return 0;
+This returns 0 → SYS_DNS_RESOLVE returns -ENOENT → ts_http_get() fails immediately.
+TaterSurf never opens a socket.
+
+History: MAC was visible at boot (NET: MAC address set to 52:54:00:...)
+so network appeared to be "up." But IP was always 0 — DHCP was just
+never called for the e1000 path. This went unnoticed because TaterSurf
+was aborting in ts_dom_init() before ever reaching network code. After
+the fry779 abort fix, TaterSurf ran far enough to hit the DNS gate for
+the first time.
+
+Fix: src/kernel/main.c
+  1. Added forward declaration: int e1000_is_ready(void);
+     (alongside existing e1000_init() declaration at line ~65)
+  2. Added else-if branch after i219 block:
+     } else if (e1000_is_ready()) {
+         kprint("init: e1000 ready, running DHCP...\n");
+         int dhcp_rc = dhcp_discover();
+         if (dhcp_rc == 0)
+             kprint("init: DHCP success\n");
+         else
+             kprint("init: DHCP failed rc=%d\n", dhcp_rc);
+     }
+
+In QEMU (-nic user,model=e1000): i219_is_ready() = 0, e1000_is_ready() = 1.
+DHCP discover now runs against QEMU's internal slirp DHCP server (10.0.2.2).
+g_net.configured = 1, g_net.dns_server set → DNS gate passes → TaterSurf
+can resolve hostnames and open TCP connections.
+
+Files changed:
+  MODIFIED:
+    src/kernel/main.c  (e1000_is_ready decl + e1000 DHCP branch)
+
+Build: clean. ISO exported to C:\Users\jjsako\Documents\tateriso\tatertos64v3.iso

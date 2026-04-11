@@ -1,0 +1,45 @@
+fry808 — TaterSurf Browser Upgrade: Step 16 (Web Fonts)
+========================================================
+Date: 2026-04-03
+Build: clean, zero errors
+Binary: TATERSURF.FRY 2,354,640 bytes
+
+STEP 16: Web Fonts (ts_layout.h)
+---------------------------------
+
+16a) Improved font-size CSS parsing:
+  - Named sizes: xx-small through xxx-large mapped to pixel values
+  - Same 3-level scale mapping (1=normal, 2=large, 3=h1) but with
+    better thresholds matching CSS spec named sizes
+
+16b) font shorthand parsing:
+  - Parses "font: [style] [weight] size/line-height family"
+  - Extracts pixel size from shorthand, skipping style/weight keywords
+  - Detects bold (700-900, "bold") and italic in shorthand
+
+16c) font-family parsing:
+  - Parsed and acknowledged for getComputedStyle
+  - Always falls back to 8x16 bitmap font (only font available)
+
+16d) Additional CSS properties acknowledged:
+  - letter-spacing, word-spacing, line-height — parsed but no effect
+    (bitmap font is fixed 8x16)
+
+16e) @font-face handling:
+  - CSS parser already skips @font-face blocks (via @ rule skipper)
+  - No TTF/WOFF2 loading yet — requires stb_truetype.h integration
+    (4000-line single-header library, future session)
+
+NOTE: True web font support needs:
+  - stb_truetype.h for TTF rasterization
+  - WOFF2 decompression (Brotli)
+  - Font file download via ts_http
+  - Variable-width glyph rendering pipeline
+  - Kerning tables
+  This is a multi-session project. Current implementation maximizes
+  what's possible with the existing 8x16 bitmap font.
+
+Files modified:
+  src/user/apps/ts_layout.h — CSS font property parsing improvements
+
+Plan reference: TATERSURF_UPGRADE_PLAN.md Step 16

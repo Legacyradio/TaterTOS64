@@ -33,7 +33,31 @@
 #define ENAMETOOLONG 36 /* File name too long */
 #define ENOSYS  38   /* Function not implemented */
 #define ENOTEMPTY 39 /* Directory not empty */
+#define ETIMEDOUT 110 /* Connection timed out / wait timed out */
 #define EAGAIN  11   /* Resource temporarily unavailable */
 #define EBUSY   16   /* Device or resource busy */
+#define EPIPE   32   /* Broken pipe */
+#define ESPIPE  29   /* Illegal seek (on pipe/socket) */
+#define E2BIG    7   /* Argument list too long */
+#define ECHILD  10   /* No child processes */
+#define EWOULDBLOCK EAGAIN  /* Operation would block */
+
+/* Network / socket errors */
+#define ENOTSOCK      88  /* Socket operation on non-socket */
+#define EDESTADDRREQ  89  /* Destination address required */
+#define EPROTOTYPE    91  /* Protocol wrong type for socket */
+#define ENOPROTOOPT   92  /* Protocol not available */
+#define EAFNOSUPPORT  97  /* Address family not supported */
+#define EADDRINUSE    98  /* Address already in use */
+#define EADDRNOTAVAIL 99  /* Cannot assign requested address */
+#define ENETUNREACH  101  /* Network is unreachable */
+#define ECONNABORTED 103  /* Connection aborted */
+#define ECONNRESET   104  /* Connection reset by peer */
+#define EISCONN      106  /* Transport endpoint is already connected */
+#define ENOTCONN     107  /* Transport endpoint is not connected */
+#define ECONNREFUSED 111  /* Connection refused */
+#define EHOSTUNREACH 113  /* No route to host */
+#define EALREADY     114  /* Operation already in progress */
+#define EINPROGRESS  115  /* Operation now in progress */
 
 #endif /* _TATERTOS_ERRNO_H */

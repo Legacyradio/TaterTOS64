@@ -1,0 +1,69 @@
+fry769 — TaterSurf Phase C1: QuickJS integration + libc additions
+=====================================================================
+Timestamp: 2026-03-27T19:35:00Z
+
+Context:
+  TaterSurf needs JavaScript to render YouTube/Facebook/TikTok.
+  QuickJS (Bellard, MIT license, ES2023) selected as the engine.
+  Compiles as portable C with no Linux dependencies in core.
+
+Changes:
+
+  New directory: src/user/apps/quickjs/ (5 .c files, 10 .h files)
+    quickjs.c (55,546 lines) — core JS engine
+    cutils.c — utility functions
+    libregexp.c — ES2023 regex engine
+    libunicode.c — full Unicode support + tables
+    libbf.c — BigInt/BigFloat library
+    Headers: quickjs.h, quickjs-atom.h, quickjs-opcode.h,
+      cutils.h, libregexp.h, libregexp-opcode.h, libunicode.h,
+      libunicode-table.h, libbf.h, list.h
+    Skipped: quickjs-libc.c (OS-specific CLI, not needed),
+      qjs.c/qjsc.c (CLI tools)
+    Source: bellard.org/quickjs release 2024-01-13, MIT license
+
+  New shim headers for QuickJS:
+    shim/sys/time.h — struct timeval, gettimeofday
+    shim/fenv.h — FE_TONEAREST, fesetround, etc.
+    shim/math.h — full math function declarations + special value macros
+    shim/pthread.h — minimal stubs (QuickJS atomics disabled)
+
+  Libc additions (src/user/libc/math.c):
+    acosh(x) — inverse hyperbolic cosine
+    asinh(x) — inverse hyperbolic sine
+    atanh(x) — inverse hyperbolic tangent
+    lrint(x) — round to long
+    llrint(x) — round to long long
+    nextafter(x, y) — next representable double toward y
+    Why: QuickJS Math object references these.
+
+  Libc additions (src/user/libc/libc.c):
+    sprintf(buf, fmt, ...) — unbounded format to buffer
+    Why: QuickJS uses sprintf for number formatting.
+
+  Compile flags for QuickJS:
+    -DCONFIG_VERSION="2024-01-13"
+    -Wno-sign-compare -Wno-unused-parameter -Wno-implicit-fallthrough
+    -Wno-implicit-function-declaration
+    Standard: -ffreestanding -fno-stack-protector -O2 -std=gnu11
+
+Verification:
+  All 5 .c files compile clean, zero errors:
+    quickjs.o:    931 KB
+    libunicode.o:  68 KB
+    libbf.o:       86 KB
+    libregexp.o:   39 KB
+    cutils.o:      10 KB
+    Total:       ~1.1 MB of object code
+
+  This is the entire ES2023 JavaScript engine including BigInt,
+  full Unicode, regex, Proxy, async/await, generators, modules.
+
+Artifacts:
+  src/user/apps/quickjs/ (15 files)
+  src/user/apps/mbedtls/shim/sys/time.h (new)
+  src/user/apps/mbedtls/shim/fenv.h (new)
+  src/user/apps/mbedtls/shim/math.h (new)
+  src/user/apps/mbedtls/shim/pthread.h (new)
+  src/user/libc/math.c (acosh, asinh, atanh, lrint, llrint, nextafter)
+  src/user/libc/libc.c (sprintf)

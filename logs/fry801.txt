@@ -1,0 +1,91 @@
+fry801 — TaterSurf Browser Upgrade: Steps 1-3 (Phase A+B)
+==========================================================
+Date: 2026-04-03
+Build: clean, zero errors
+
+STEP 1: Unknown Tag Passthrough (ts_layout.h)
+---------------------------------------------
+- Added default fallback handler at end of open-tag if/else chain
+  in ts_doc_build(). Unknown tags now treated as generic containers:
+  - Block-level unknowns (from ts_html_is_block list) emit BREAK + push style
+  - Custom elements (tag contains hyphen, e.g. yt-app, my-component)
+    default to block-level
+  - Inline unknowns just push style
+  - All unknown tags apply CSS normally via ts_doc__apply_element_css
+  - Children of unknown tags now render instead of being silently dropped
+
+- Added matching default handler in close-tag chain:
+  - Pops style, emits BREAK if block-level, decrements display_none_depth
+
+- Stopped skipping <noscript> content:
+  - Removed "noscript" from the script-skip path in both open and close handlers
+  - <noscript> children now tokenize and render as normal HTML
+  - noscript was already in ts_html_is_block() list, so gets block treatment
+
+WHY: Every site with custom elements, web components, or unhandled HTML5
+tags was rendering as blank (0 nodes). This was the #1 site-breaking bug.
+
+STEP 2: DOM→Render Tree Sync (ts_layout.h + tatersurf.c)
+---------------------------------------------------------
+- Added ts_doc__dom_node_to_fake_token() — constructs a minimal tag
+  string from a DOM node for CSS matching reuse
+
+- Added ts_doc__build_dom_recursive() — recursively walks DOM tree
+  and emits render nodes using same style logic as ts_doc_build():
+  - Handles: h1-h6, b/strong, i/em, u, a, pre, code, p/div/section/
+    article/header/footer/main/nav/aside, br, hr, ul/ol/li, img
+  - Default handler for unknown elements (same hyphen=block logic)
+  - Properly pushes/pops style stack per element
+
+- Added ts_doc_build_from_dom() — entry point that initializes style
+  state and calls the recursive walker from document root
+
+- Wired up in tatersurf.c at both dirty-flag locations:
+  1. After ts_dom_run_scripts() — initial page load JS execution
+  2. In main event loop timer tick — ongoing JS modifications
+  Both preserve stylesheet + image cache across rebuild
+
+- Fixed include order: ts_dom.h now included before ts_layout.h
+  (ts_layout.h now includes ts_dom.h directly for type access)
+
+WHY: JavaScript modifications to the DOM were invisible because g_doc
+(render tree) and g_dom (JS DOM) were never synchronized. Now when
+g_dom->dirty is set, the render tree is rebuilt from the live DOM.
+
+STEP 3: CSS Selector Engine Fix (ts_layout.h)
+----------------------------------------------
+- Added struct ts_css_ancestor_chain — tracks parent elements with
+  tag/class/id during document building (max 64 deep)
+
+- Added ts_css_ancestor_push/pop — maintain chain as elements open/close
+
+- Added ts_doc__push_ancestor_from_tok() — extracts tag/class/id from
+  a token and pushes onto ancestor chain
+
+- Added ts_css_match_full() — proper compound selector matching:
+  - Matches last selector part against current element (existing behavior)
+  - Walks remaining parts right-to-left against ancestor chain
+  - Descendant combinator (' '): searches up chain for any match
+  - Child combinator ('>'): checks immediate parent only
+  - Returns 0 if any part fails to match
+
+- Updated ts_doc__match_apply_css() to accept ancestor chain parameter
+  and use ts_css_match_full() instead of single-part matching
+
+- Updated ts_doc__apply_element_css() to accept optional ancestor chain
+  (NULL = empty chain for backward compat with DOM builder)
+
+- Integrated ancestor tracking into ts_doc_build():
+  - Push ancestor at every ts_style_push call
+  - Pop ancestor at every ts_style_pop call
+  - All ts_doc__apply_element_css calls now pass &ancestors
+
+WHY: CSS rules like "div .content > p { color: red }" were matching
+ANY <p> because only the last selector part was checked. Now the full
+ancestor chain is verified per the CSS cascade spec.
+
+Files modified:
+  src/user/apps/ts_layout.h — all three steps
+  src/user/apps/tatersurf.c — step 2 (include reorder + dirty handlers)
+
+Plan reference: TATERSURF_UPGRADE_PLAN.md

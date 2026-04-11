@@ -1,0 +1,158 @@
+fry753 — Phase 7: GUI and Input ABI Build-Out
+Date: 2026-03-15
+
+WHAT:
+Implemented full Phase 7 from netbuild1. Rich keyboard events (scancode +
+modifiers + press/release), Intellimouse wheel support, expanded TaterWin
+protocol with 10 new message types, focus/enter/leave tracking, close request
+protocol, clipboard syscalls, cursor shapes, damage-driven repaint, and
+high-frequency mouse motion events. New syscalls 92-95. Builds with ZERO
+errors, ZERO new warnings.
+
+SYSCALLS ADDED (92-95):
+  92 SYS_KBD_EVENT     — read one rich key event from keyboard ring buffer
+  93 SYS_MOUSE_GET_EXT — extended mouse state (explicit 24-byte version)
+  94 SYS_CLIPBOARD_GET — read kernel clipboard text to user buffer
+  95 SYS_CLIPBOARD_SET — write user buffer to kernel clipboard
+
+FILES CREATED:
+  src/include/fry_input.h — shared input event definitions (kernel + userspace)
+    Why: keyboard/mouse need common event structures, modifier flags, virtual
+    key codes, cursor shape constants, and clipboard size limits shared between
+    kernel drivers, syscall layer, and userspace apps
+
+FILES MODIFIED:
+  src/drivers/input/ps2_kbd.c — REWRITTEN for Phase 7
+    Why: original driver was ASCII-only, no key release events, no modifiers,
+    extended keys (0xE0) were discarded entirely
+    Changes:
+      - Full modifier tracking (left/right shift, ctrl, alt, caps lock, num lock)
+      - Rich key event ring buffer (64 entries of fry_key_event structs)
+      - Extended key support (arrows, Home, End, PgUp/Dn, Insert, Delete, F-keys)
+      - Scancode-to-virtual-key mapping tables
+      - Key press AND release events with scancode, VK, modifiers, ASCII
+      - Caps lock ASCII inversion
+      - Legacy ASCII ring buffer preserved for fry_read(0) backward compat
+      - New APIs: ps2_kbd_read_event(), ps2_kbd_get_mods()
+
+  src/drivers/input/ps2_mouse.c — Intellimouse wheel support
+    Why: browser needs scroll wheel events
+    Changes:
+      - Intellimouse magic sequence (set-rate 200,100,80 then read ID=3)
+      - 4-byte packet mode when wheel detected (byte 3 = signed wheel delta)
+      - Wheel delta accumulator cleared on read
+      - New APIs: ps2_mouse_get_ext(), ps2_mouse_has_wheel()
+      - Falls back to 3-byte mode if Intellimouse not detected
+
+  src/user/libc/taterwin.h — 10 new TaterWin message types
+    Why: browser needs rich input, focus, clipboard, cursor control, damage tracking
+    New message types:
+      TW_MSG_WHEEL_EVENT(8)    — scroll wheel delta + cursor pos + mods
+      TW_MSG_FOCUS_EVENT(9)    — window gained/lost focus
+      TW_MSG_ENTER_LEAVE(10)   — cursor entered/left window client area
+      TW_MSG_CLOSE_REQUEST(11) — compositor asks app to close
+      TW_MSG_CLIPBOARD_COPY(12)— app requests clipboard content
+      TW_MSG_CLIPBOARD_DATA(13)— compositor sends clipboard to app
+      TW_MSG_CLIPBOARD_SET(14) — app sets clipboard content
+      TW_MSG_CURSOR_SHAPE(15)  — app requests cursor shape change
+      TW_MSG_DAMAGE_RECT(16)   — app declares dirty region
+      TW_MSG_MOUSE_MOVE(17)    — high-freq cursor motion (no click required)
+    Changed structs:
+      tw_msg_key_t: now has scancode, vk, mods, flags, ascii (was: key, flags)
+      tw_msg_mouse_t: now has mods field (was: no modifiers)
+
+  src/kernel/proc/syscall.c — 4 new syscall handlers + expanded SYS_MOUSE_GET
+    Why: rich keyboard events, extended mouse, clipboard syscalls
+    Changes:
+      - Added fry_input.h include + forward declarations for new PS/2 APIs
+      - Added SYS_KBD_EVENT(92), SYS_MOUSE_GET_EXT(93), SYS_CLIPBOARD_GET(94),
+        SYS_CLIPBOARD_SET(95) to enum
+      - Expanded SYS_MOUSE_GET to use ps2_mouse_get_ext (24 bytes with wheel)
+      - Added kernel clipboard buffer (4096 bytes)
+      - Added 4 new case handlers before default
+
+  src/user/libc/libc.h — Phase 7 declarations + expanded fry_mouse_state
+    Why: userspace API surface for Phase 7
+    Changes:
+      - Added #include <fry_input.h>
+      - Added wheel field to struct fry_mouse_state (int32_t wheel)
+      - Added fry_kbd_event, fry_mouse_get_ext, fry_clipboard_get,
+        fry_clipboard_set declarations
+
+  src/user/libc/libc.c — 4 new syscall wrappers + enum entries
+    Why: userspace libc wrappers for Phase 7 syscalls
+
+  src/user/gui/gui.c — Major compositor expansion
+    Why: compositor is the hub for all input/output event routing
+    Changes:
+      - Rich keyboard events: reads fry_kbd_event() in a loop, forwards
+        scancode/vk/mods/flags/ascii to focused window via TW_MSG_KEY_EVENT
+      - Wheel events: reads wheel from fry_mouse_get(), forwards as
+        TW_MSG_WHEEL_EVENT to focused window
+      - Focus tracking: update_focus() sends TW_MSG_FOCUS_EVENT (gained/lost)
+        on window switch, minimize, close, launch
+      - Enter/leave: tracks which window client area cursor is over, sends
+        TW_MSG_ENTER_LEAVE on transitions
+      - Close request: sends TW_MSG_CLOSE_REQUEST before killing process
+      - Clipboard: handles TW_MSG_CLIPBOARD_COPY (fetches from kernel,
+        responds with TW_MSG_CLIPBOARD_DATA) and TW_MSG_CLIPBOARD_SET
+        (writes to kernel clipboard)
+      - Cursor shapes: 6 cursor bitmaps (arrow, ibeam, hand, resize_h,
+        resize_v, crosshair), apps set via TW_MSG_CURSOR_SHAPE
+      - Damage tracking: accumulates TW_MSG_DAMAGE_RECT from apps, union
+        of dirty rects triggers redraw
+      - High-frequency mouse motion: TW_MSG_MOUSE_MOVE sent on every cursor
+        move over focused window (not just on click)
+      - Conditional VRAM copy: only memcpy backbuffer->VRAM when something
+        changed (mouse moved, button changed, or g_needs_full_redraw set)
+
+  src/user/shell/shell.c — Updated for new tw_msg_key_t layout
+    Why: field renamed from .key to .ascii for rich key event support
+
+  src/user/apps/netmgr.c — Updated for new tw_msg_key_t layout
+    Why: same reason as shell.c
+
+  src/user/apps/fileman.c — Updated for new tw_msg_key_t layout
+    Why: same reason as shell.c
+
+  src/kernel/selftest.c — ~12 Phase 7 checks
+    Why: validates input event constants, struct sizes, clipboard max
+    Checks: modifier flags, key press/release flags, VK escape/up,
+    clipboard max, fry_key_event struct size (8 bytes)
+
+  netbuild/netbuild1 — marked Phase 7 as COMPLETE 2026-03-15
+
+DESIGN DECISIONS:
+  - Rich key events are delivered via SYS_KBD_EVENT syscall (not fry_read(0))
+    Reason: fry_read(0) remains ASCII-only for backward compatibility; new
+    rich path provides scancode, VK, modifiers, and press/release state
+  - Intellimouse wheel detection via magic sequence (200/100/80 sample rates)
+    Reason: standard PS/2 extension protocol; QEMU, VMware, and real hardware
+    all respond correctly to this sequence
+  - Clipboard stored in kernel (4096 byte buffer)
+    Reason: simplest architecture — apps access via syscall, compositor
+    proxies via TaterWin messages; kernel buffer persists across app restarts
+  - Cursor shapes are 8x16 1-bit bitmaps (6 shapes)
+    Reason: simple, no alpha compositing needed; sufficient for browser
+    (arrow, ibeam for text, hand for links, resize, crosshair, wait)
+  - Damage tracking is coarse (union of dirty rects per window per frame)
+    Reason: full dirty-rect compositing is complex; this is the first step.
+    VRAM copy is already conditional on changes.
+  - Close request is sent before kill on close button click
+    Reason: apps that handle TW_MSG_CLOSE_REQUEST can save state before exit
+
+ABI SURFACE:
+  Modifier flags: FRY_MOD_LSHIFT(0x01)..FRY_MOD_NUMLOCK(0x80)
+  Key flags: FRY_KEY_PRESSED(0), FRY_KEY_RELEASED(1)
+  Virtual keys: FRY_VK_ESCAPE(0x100)..FRY_VK_KP_SLASH(0x14F)
+  Cursor shapes: FRY_CURSOR_ARROW(0)..FRY_CURSOR_CROSSHAIR(6)
+  Clipboard max: FRY_CLIPBOARD_MAX(4096)
+  Syscalls: SYS_KBD_EVENT(92), SYS_MOUSE_GET_EXT(93),
+            SYS_CLIPBOARD_GET(94), SYS_CLIPBOARD_SET(95)
+  TaterWin messages: TW_MSG_WHEEL_EVENT(8)..TW_MSG_MOUSE_MOVE(17)
+
+BUILD:
+  make all — ZERO errors, ZERO new warnings
+  build_iso.sh — ISO exported
+
+STATUS: ISO ready for boot test. Phase 7 COMPLETE.

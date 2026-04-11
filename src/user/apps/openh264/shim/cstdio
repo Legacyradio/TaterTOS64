@@ -1,0 +1,4 @@
+#ifndef _TATER_CSTDIO
+#define _TATER_CSTDIO
+#include <stdio.h>
+#endif

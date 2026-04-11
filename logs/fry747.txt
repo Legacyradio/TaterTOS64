@@ -1,0 +1,28 @@
+fry747 — Phase 3 (Netbuild1) RUNTIME CONFIRMED
+Date: 2026-03-14
+
+WHAT: Phase 3 (IPC / Descriptor Model / Waiting) boots and runs successfully.
+All kernel subsystems confirmed working at runtime:
+  - Pipes (SYS_PIPE=55) with ring buffer pool
+  - dup/dup2 (SYS_DUP=56, SYS_DUP2=57) with refcount management
+  - poll (SYS_POLL=58) with event-driven wake (no busy-loop)
+  - fcntl (SYS_FCNTL=59) with O_NONBLOCK support
+  - Process spawn with args/env (SYS_SPAWN_ARGS=60)
+  - Argument retrieval (SYS_GET_ARGC=61, SYS_GET_ARGV=62)
+  - Environment variables (SYS_GETENV=63)
+  - Expanded fd_kind dispatch in SYS_OPEN/CLOSE/READ/WRITE
+  - Pipe cleanup on process exit
+  - Scheduler poll support (sched_block_poll/sched_wake_poll_waiters)
+  - 14 selftest checks pass at boot
+
+Also removed ipctest.c test app and all build references per user preference.
+
+WHY: Phase 3 done criteria from netbuild1 all met:
+  1. Userspace can launch child processes with arguments ✓
+  2. Parent/child can exchange data over kernel IPC (pipes) ✓
+  3. Process can wait on multiple descriptors without spinning (poll) ✓
+
+BUILD: PASS (zero warnings, zero errors)
+BOOT: PASS (confirmed by user on QEMU)
+
+NEXT: Phase 4 — Sockets and DNS (netbuild1)

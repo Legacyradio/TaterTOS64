@@ -1,0 +1,85 @@
+fry762 — TaterSurf Phase A5: mbedTLS integration (TLS 1.2 + 1.3)
+=====================================================================
+Timestamp: 2026-03-27T13:00:00Z
+
+Context:
+  TaterSurf needs HTTPS to access YouTube, Facebook, TikTok.
+  BearSSL was rejected (no TLS 1.3, project stalled since 2018).
+  mbedTLS v3.6.3 selected: Apache 2.0 license, TLS 1.2+1.3,
+  actively maintained, portable C, no Linux code.
+
+Changes:
+
+  New directory: src/user/apps/mbedtls/
+    include/mbedtls/   — 74 public headers
+    include/psa/       — 23 PSA crypto headers
+    library/           — 76 .c source files + 61 internal .h headers
+    shim/              — 6 C standard header shims for freestanding build
+    tatertos_config.h  — custom config (replaces default mbedtls_config.h)
+    tatertos_platform.c — RNG + time shim for TaterTOS
+
+  Source selection (76 of 108 library .c files):
+    Included: AES, AES-NI, GCM, ChaCha20, Poly1305, SHA-256, SHA-384,
+      SHA-512, HKDF, ECDH, ECDSA, ECP, RSA, PK, X.509, ASN.1, PEM,
+      Base64, OID, bignum, PSA crypto core, TLS 1.2 client, TLS 1.3
+      client, SSL record layer, ciphersuite definitions, debug, error.
+    Excluded (32 files): net_sockets.c (Linux sockets), timing.c
+      (OS timing), entropy_poll.c (OS entropy), threading.c (pthreads),
+      ssl_tls12_server.c, ssl_tls13_server.c (server mode), des.c,
+      aria.c, camellia.c (obsolete ciphers), md5.c, sha1.c, sha3.c
+      (unused hashes), dhm.c (finite field DH), ecjpake.c, lms.c,
+      lmots.c (post-quantum), pkcs5.c, pkcs7.c, pkcs12.c, pkwrite.c,
+      x509_create.c, x509write*.c, x509_csr.c (cert creation/CSR).
+
+  Configuration (tatertos_config.h):
+    Why: stripped to exact features needed for TLS 1.2+1.3 HTTPS client.
+    Enabled: MBEDTLS_SSL_CLI_C, MBEDTLS_SSL_PROTO_TLS1_2,
+      MBEDTLS_SSL_PROTO_TLS1_3, MBEDTLS_AES_C, MBEDTLS_GCM_C,
+      MBEDTLS_AESNI_C, MBEDTLS_CHACHA20_C, MBEDTLS_CHACHAPOLY_C,
+      MBEDTLS_SHA256_C, MBEDTLS_SHA512_C, MBEDTLS_HKDF_C,
+      MBEDTLS_ECP_C, MBEDTLS_ECDH_C, MBEDTLS_ECDSA_C,
+      MBEDTLS_RSA_C, MBEDTLS_X509_CRT_PARSE_C, MBEDTLS_PSA_CRYPTO_C,
+      MBEDTLS_SSL_SERVER_NAME_INDICATION, MBEDTLS_SSL_KEEP_PEER_CERTIFICATE,
+      MBEDTLS_PSA_CRYPTO_EXTERNAL_RNG, MBEDTLS_NO_PLATFORM_ENTROPY.
+    Disabled: NET_C, FS_IO, TIMING_C, THREADING_C, SSL_SRV_C,
+      PSA_CRYPTO_STORAGE_C, PSA_ITS_FILE_C, PSA_CRYPTO_SE_C.
+    Curves: secp256r1, secp384r1, curve25519.
+
+  Shim headers (src/user/apps/mbedtls/shim/):
+    string.h   — maps to TaterTOS libc string functions
+    stdlib.h   — maps to TaterTOS malloc/free/calloc/qsort/etc.
+    stdio.h    — maps to TaterTOS printf/snprintf/fprintf stubs
+    limits.h   — x86_64 integer limits
+    time.h     — minimal time_t and struct tm definitions
+    signal.h   — stub signal types
+    inttypes.h — PRIx64/PRIu32/etc. format macros
+    Why: mbedTLS #includes standard C headers. Our cross-compiler is
+    freestanding (-ffreestanding) so these don't exist. Shim headers
+    map standard names to our existing libc functions.
+
+  Platform shim (tatertos_platform.c):
+    mbedtls_psa_external_get_random() → fry_getrandom() syscall
+    Why: PSA crypto core needs entropy. We provide it from the kernel's
+    RDRAND/RDSEED + timing jitter source.
+    mbedtls_time() → returns 0 (epoch)
+    Why: we don't validate cert expiry. Status bar will show
+    "TLS (unverified)" for HTTPS connections.
+
+Verification:
+  Compiled all 76 library .c files + 1 platform shim individually:
+    tools/host/bin/x86_64-elf-gcc -ffreestanding -fno-stack-protector \
+      -O2 -std=gnu11 -Wall \
+      -Isrc/user/apps/mbedtls/shim \
+      -Isrc/include \
+      -Isrc/user/apps/mbedtls/include \
+      -Isrc/user/apps/mbedtls/library \
+      -c <file.c> -o <file.o>
+  Result: 77/77 files compile clean. Zero errors. Zero warnings.
+
+Notes:
+  - mbedTLS is NOT yet integrated into the Makefile or linked into
+    any binary. That happens when TaterSurf's main app is built.
+  - Certificate validation is intentionally skipped (no CA bundle).
+    All server certs are accepted. This is documented and shown in UI.
+  - AES-NI hardware acceleration will automatically activate on the
+    i5-8300H (Coffee Lake supports AES-NI).

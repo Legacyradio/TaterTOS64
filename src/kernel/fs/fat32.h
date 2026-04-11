@@ -42,4 +42,12 @@ int fat32_stat(struct fat32_fs *fs, const char *path, uint32_t *size_out, uint8_
 int fat32_probe_bpb(struct block_device *bd, uint64_t part_lba);
 int fat32_init(struct block_device *bd);
 
+/* Phase 6: Filesystem expansion */
+int64_t fat32_seek(struct fat32_file *f, int64_t offset, int whence);
+int fat32_truncate(struct fat32_file *f, uint32_t new_size);
+int fat32_create(struct fat32_fs *fs, const char *path, uint8_t attr);
+int fat32_mkdir(struct fat32_fs *fs, const char *path);
+int fat32_unlink(struct fat32_fs *fs, const char *path);
+int fat32_rename(struct fat32_fs *fs, const char *old_path, const char *new_path);
+
 #endif

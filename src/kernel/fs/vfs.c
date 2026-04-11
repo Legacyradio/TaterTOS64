@@ -458,6 +458,32 @@ static int fat32_stat_vfs(void *fs_data, const char *path, struct vfs_stat *out)
     }
     return 0;
 }
+/* Phase 6: FAT32 seek/truncate/create/mkdir/unlink/rename VFS adapters */
+static int64_t fat32_seek_vfs(struct vfs_file *f, int64_t offset, int whence) {
+    return fat32_seek((struct fat32_file *)f->private, offset, whence);
+}
+static int fat32_truncate_vfs(struct vfs_file *f, uint64_t length) {
+    if (length > 0xFFFFFFFFULL) return -1;
+    int rc = fat32_truncate((struct fat32_file *)f->private, (uint32_t)length);
+    if (rc == 0) f->size = length;
+    return rc;
+}
+static int fat32_create_vfs(void *fs_data, const char *path, uint16_t type) {
+    struct fat32_fs *fs = (struct fat32_fs *)fs_data;
+    return fat32_create(fs, path, (type == 0) ? FAT32_ATTR_DIR : 0);
+}
+static int fat32_mkdir_vfs(void *fs_data, const char *path) {
+    struct fat32_fs *fs = (struct fat32_fs *)fs_data;
+    return fat32_mkdir(fs, path);
+}
+static int fat32_unlink_vfs(void *fs_data, const char *path) {
+    struct fat32_fs *fs = (struct fat32_fs *)fs_data;
+    return fat32_unlink(fs, path);
+}
+static int fat32_rename_vfs(void *fs_data, const char *old_path, const char *new_path) {
+    struct fat32_fs *fs = (struct fat32_fs *)fs_data;
+    return fat32_rename(fs, old_path, new_path);
+}
 static int fat32_any_path_exists(struct fat32_fs *fs, const char *const *paths, uint32_t count) {
     if (!fs || !paths) return 0;
     for (uint32_t i = 0; i < count; i++) {
@@ -896,6 +922,12 @@ int vfs_init(struct block_device *bd) {
     fat32_ops.close = fat32_close_vfs;
     fat32_ops.readdir = fat32_readdir_vfs;
     fat32_ops.stat = fat32_stat_vfs;
+    fat32_ops.create = fat32_create_vfs;
+    fat32_ops.mkdir = fat32_mkdir_vfs;
+    fat32_ops.unlink = fat32_unlink_vfs;
+    fat32_ops.seek = fat32_seek_vfs;
+    fat32_ops.truncate = fat32_truncate_vfs;
+    fat32_ops.rename = fat32_rename_vfs;
     vfs_mount("/", &fat32_ops, &g_fat32);
     kprint("ERROR: DBG_VFS picked source=%s lba=%llu userspace_score=%u\n", source, part_lba, score);
     kprint("VFS: FAT32 mounted at LBA %llu\n", part_lba);
@@ -1008,6 +1040,42 @@ int vfs_unlink(const char *path) {
     struct vfs_mount *m = find_mount_ref(path, &rel);
     if (!m || !m->ops || !m->ops->unlink) return -1;
     int rc = m->ops->unlink(m->fs_data, rel);
+    vfs_mount_put(m);
+    return rc;
+}
+int64_t vfs_seek(struct vfs_file *f, int64_t offset, int whence) {
+    if (!f || !f->mount || !f->mount->ops || !f->mount->ops->seek) return -1;
+    return f->mount->ops->seek(f, offset, whence);
+}
+int vfs_truncate(struct vfs_file *f, uint64_t length) {
+    if (!f || !f->mount || !f->mount->ops || !f->mount->ops->truncate) return -1;
+    return f->mount->ops->truncate(f, length);
+}
+int vfs_rename(const char *old_path, const char *new_path) {
+    if (!old_path || !new_path) return -1;
+    /* Both paths must be on the same mount */
+    const char *old_rel = 0;
+    struct vfs_mount *m = find_mount_ref(old_path, &old_rel);
+    if (!m || !m->ops || !m->ops->rename) return -1;
+    const char *new_rel = 0;
+    uint32_t dummy_len = 0;
+    struct vfs_mount *m2 = 0;
+    spin_lock(&g_vfs_lock);
+    m2 = find_mount_locked(new_path, &dummy_len);
+    spin_unlock(&g_vfs_lock);
+    if (m2 != m) {
+        /* Cross-mount rename not supported */
+        vfs_mount_put(m);
+        return -1;
+    }
+    /* compute new_rel: skip mountpoint prefix */
+    {
+        uint32_t mp_len = 0;
+        while (m->mountpoint[mp_len]) mp_len++;
+        new_rel = new_path + mp_len;
+        while (*new_rel == '/') new_rel++;
+    }
+    int rc = m->ops->rename(m->fs_data, old_rel, new_rel);
     vfs_mount_put(m);
     return rc;
 }
@@ -1386,15 +1454,18 @@ static void sec_ops_init(void) {
     sec_totfs_ops.mkdir   = totfs_mkdir_vfs;
     sec_totfs_ops.unlink  = totfs_unlink_vfs;
 #endif
-    sec_fat32_ops.open    = fat32_open_vfs;
-    sec_fat32_ops.read    = fat32_read_vfs;
-    sec_fat32_ops.write   = fat32_write_vfs;
-    sec_fat32_ops.close   = fat32_close_vfs;
-    sec_fat32_ops.readdir = fat32_readdir_vfs;
-    sec_fat32_ops.stat    = fat32_stat_vfs;
-    sec_fat32_ops.create  = 0;
-    sec_fat32_ops.mkdir   = 0;
-    sec_fat32_ops.unlink  = 0;
+    sec_fat32_ops.open     = fat32_open_vfs;
+    sec_fat32_ops.read     = fat32_read_vfs;
+    sec_fat32_ops.write    = fat32_write_vfs;
+    sec_fat32_ops.close    = fat32_close_vfs;
+    sec_fat32_ops.readdir  = fat32_readdir_vfs;
+    sec_fat32_ops.stat     = fat32_stat_vfs;
+    sec_fat32_ops.create   = fat32_create_vfs;
+    sec_fat32_ops.mkdir    = fat32_mkdir_vfs;
+    sec_fat32_ops.unlink   = fat32_unlink_vfs;
+    sec_fat32_ops.seek     = fat32_seek_vfs;
+    sec_fat32_ops.truncate = fat32_truncate_vfs;
+    sec_fat32_ops.rename   = fat32_rename_vfs;
     sec_ntfs_ops.open    = ntfs_open_vfs;
     sec_ntfs_ops.read    = ntfs_read_vfs;
     sec_ntfs_ops.write   = ntfs_write_stub;

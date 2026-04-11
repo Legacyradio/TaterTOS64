@@ -1,0 +1,138 @@
+fry812 — TaterSurf rule_count corruption investigation + CSS bounds guards
+Date: 2026-04-04
+
+== Summary ==
+Investigated memory corruption where stylesheet.rule_count gets written to
+128656 (0x1F690) during ts_doc_build(), even though CSS parser never runs.
+Added bounds guards to all CSS rule iteration loops to prevent out-of-bounds
+reads when rule_count is corrupted. Removed 5MB stack copy that caused the
+original crash.
+
+== Root Cause: Original Page Fault Crash ==
+Page fault (vec=14, err=0x4) in ts_css_match_part() reading part->tag[0]
+from an unmapped address. Root cause: 3 places in tatersurf.c copied
+struct ts_stylesheet (~5 MB) to the stack:
+  struct ts_stylesheet saved_ss = g_doc->stylesheet;
+This overflowed the stack and corrupted memory.
+
+Fix (from previous session, confirmed working):
+- Added ts_doc_reinit() that resets render tree fields without touching
+  the stylesheet or img_cache (ts_layout.h ~line 462)
+- Replaced all 3 save/restore blocks in tatersurf.c with ts_doc_reinit()
+- No more 5 MB stack allocations
+
+== Memory Corruption: rule_count = 128656 ==
+After fixing the crash, the browser renders but with wrong styling.
+Investigation found stylesheet.rule_count is corrupted from 0 to 128656
+during ts_doc_build().
+
+Diagnostic trail:
+1. DOC_INIT diagnostic: sizeof=6726856 rc_off=6642980 rc=0 bytes=00000000
+   → ts_doc_init() correctly zeros entire struct, rule_count starts at 0
+2. CSS_PARSE diagnostic: never fires
+   → No <style> blocks parsed, no CSS rules added (Google uses inline styles)
+3. PRE_BG diagnostic (inside html/body handler): rc=128656 nodes=4 boxes=0
+   → By node 4, rule_count is already corrupted to 128656
+4. BUILD_STACK: sp~0x7fffffff3e30 doc=0x100000000020
+   → Stack at 0x7fffffff..., doc at 0x100000000..., no overlap
+5. RC_HIT watchpoint (top of main loop): NEVER fires
+   → rule_count is 0 at top of each loop iteration
+   → Corruption occurs BETWEEN the loop-top check and the PRE_BG fprintf
+   → Only pure read-only tag_name_eq comparisons happen between these points
+   → No doc writes occur in that span
+
+Struct layout (verified by diagnostic):
+  doc base:          0x100000000020
+  stylesheet.rules:  offset 1,477,924 (512 rules × 10,088 bytes each)
+  stylesheet.rule_count: offset 6,642,980
+  doc end:           offset 6,726,856 (0x10000066a4e8)
+
+Key observations:
+- Value 128656 = 0x1F690, grows to 128829 between PRE_BG calls
+- User stack = 16 MB (4096 pages) — no stack overflow
+- Heap allocation = 1643 pages (6,729,728 bytes) — fits the 6,726,856 struct
+- No array overflow from nodes/text/links/forms/boxes can reach offset 6,642,980
+- The corruption may be a compiler code-generation artifact or a subtle
+  interaction with the bare-metal runtime; root cause NOT yet identified
+
+== Fix: CSS Bounds Guards ==
+Since root cause is unidentified, added defensive bounds guards to ALL loops
+that iterate over stylesheet rules. This prevents the cascade of damage:
+corrupted rule_count → read 128K garbage "rules" → apply random CSS → broken page.
+
+Changed files:
+
+ts_layout.h — ts_doc__match_apply_css() (~line 1284):
+  - Was: for (i = 0; i < doc->stylesheet.rule_count; i++)
+  - Now: cap rule_count to [0, TS_CSS_MAX_RULES], cap selector_count to
+    [0, TS_CSS_MAX_SELECTORS], validate part_count <= TS_CSS_MAX_SELECTOR_PARTS
+
+ts_layout.h — ts_doc__open_box() CSS matching (~line 1025):
+  - Same bounds guards applied to rule iteration loop
+
+ts_dom_bindings.h — getComputedStyle() rule matching (~line 1268):
+  - Same bounds guards applied
+
+Why: Even with corrupted rule_count=128656, the capped loops iterate over
+at most 512 rules (all zero-initialized since CSS_PARSE never ran), so
+no garbage CSS gets applied. This neutralizes the corruption's visible effect.
+
+== Diagnostics Still Present ==
+- DOC_INIT: prints sizeof, rc_offset, rc value, raw bytes (tatersurf.c ~674)
+- PRE_BG/PAGE_BG: prints tag, tnl, rc, nodes, boxes (ts_layout.h ~1487)
+- CSS_PARSE: entry/exit traces (ts_css.h ~445, ~592)
+- Safety belt: g_doc->stylesheet.rule_count = 0 after ts_doc_init (tatersurf.c ~683)
+
+These should be removed once the root cause is found.
+
+== Serial Log Output (this build) ==
+FONT: init=0 loaded=0
+DOC_INIT: sizeof=6726856 rc_off=6642980 rc=0 bytes=00000000
+PRE_BG: tag=s tnl=4 rc=128656 nodes=4 boxes=0
+PAGE_BG: matched <s> bg=0x000004 rules=128656
+PRE_BG: tag=s tnl=4 rc=128829 nodes=4 boxes=0
+PAGE_BG: matched <s> bg=0x000004 rules=128829
+PAGE: nodes=81 links=7 css=0 js=0 img=1
+DOM_SYNC: rebuilt render tree from DOM, nodes=41 links=7
+IMG_DECODE: len=1897 magic=474946383961
+IMG_DECODE: OK 150x53
+
+Note: PRE_BG shows "tag=s tnl=4" which should NOT match "body" or "html"
+(ts_html__tag_name_eq returns 0 for 's' vs 'body'/'html'). Yet the diagnostic
+fires. Possible serial output garbling or deeper tag-name pointer issue.
+
+== Still Open ==
+1. Root cause of rule_count corruption (offset 6,642,980 written between
+   loop-top check and html-handler — no doc writes in that span)
+2. PRE_BG tag display anomaly ("s" with tnl=4 matching body/html handler)
+3. Node count drop: 81 (tokenizer) → 41 (DOM_SYNC rebuild)
+4. Font loading: FONT init=0 loaded=0 (fopen fails, bitmap fallback works)
+5. PAGE_BG: bg=0x000004 being set — possibly from inline style="" on html/body
+   reading corrupted cur_style data, OR from the ts_doc__apply_element_css call
+   picking up something from the inline style parser
+6. Google logo: GIF decoded OK (150x53, 1897 bytes) but display not confirmed visually
+
+== QEMU Launch Command ==
+powershell.exe -Command "Start-Process -FilePath 'C:\Program Files\qemu\qemu-system-x86_64w.exe' -ArgumentList '-m 2048 -machine q35 -smp 2 -drive if=pflash,format=raw,readonly=on,file=C:\Users\jjsako\Documents\tateriso\edk2-x86_64-code.fd -drive if=pflash,format=raw,file=C:\Users\jjsako\Documents\tateriso\OVMF_VARS.fd -cdrom C:\Users\jjsako\Documents\tateriso\tatertos64v3.iso -drive file=C:\Users\jjsako\Documents\tateriso\tater_nvme.img,if=none,id=nvme0,format=raw -device nvme,drive=nvme0,serial=tater0 -nic user,model=e1000 -vga std -serial file:C:\Users\jjsako\Documents\tateriso\serial.log -boot d'"
+
+== Additional Observation ==
+YouTube also loads (HTTP succeeds, page claims to render) but shows the same
+display issues as Google — dark/garbled page. Confirms this is a universal
+rendering bug, not site-specific. Fix Google → fix YouTube.
+
+== Handoff Notes for Next Session ==
+The bounds guards should prevent the crash and garbage CSS. But the browser
+still likely shows a near-black page (bg=0x000004) because the html/body
+handler's ts_doc__apply_element_css is setting cur_style.bg_color from an
+inline style="" attribute on the <html> or <body> tag. The bg=0x000004 value
+looks like a near-zero garbage parse result from ts_css_color().
+
+Priorities for next session:
+1. Check what inline style="" Google puts on <html>/<body> — it may have
+   "background:#fff" that ts_css_color parses wrong, or the style attr
+   extraction (ts_tok_attr_get) is returning garbage
+2. The node count drop (81→41) happens in DOM_SYNC — compare tokenizer path
+   vs ts_doc_build_from_dom() to find what the DOM path is missing
+3. Font loading: check why fopen("/fonts/DEJAVU.TTF") fails — the file may
+   need to be added to the ISO build, or the path is wrong for ToTFS
+4. Once rendering looks right, remove all diagnostic fprintf statements

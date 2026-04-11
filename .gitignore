@@ -31,3 +31,30 @@ logs/**/qemu.stdout
 
 # Ignore Windows export failures
 /mnt/
+
+# Large vendor source trees (build your own cross-compiler)
+gcc-15.2.0/
+build-gcc-tatertos/
+binutils-with-gold-2.44.tar.bz2
+sysroot-musl/
+third_party/
+
+# Firmware / binary blobs
+firmware/
+*.fd
+LICK-*.exe
+
+# Reference / research (not part of the OS)
+linux_ref/
+eventually/
+current/
+
+# Intel specs
+Intel_UPE_SpecificationsChart*.csv
+
+# WiFi trace dumps
+iwl_*.txt
+
+# Debug scratch
+debug.log
+vmtest_fixture.txt

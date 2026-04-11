@@ -1,0 +1,224 @@
+fry813 — TaterSurf: Full JS environment, DOM expansion, Web API expansion (crash recovery log)
+Date: 2026-04-04
+
+== Summary ==
+Massive expansion of TaterSurf's JavaScript environment, DOM API surface, and
+Web API coverage. Session crashed before logging. This log reconstructed from
+source file diffs (files modified 09:09–11:47, after fry812 at 01:57).
+
+Changed files (with mod times):
+  ts_layout.h        — Apr 4 09:09 (195,260 bytes)
+  ts_image.h         — Apr 4 09:47 (34,174 bytes)
+  ts_http.h          — Apr 4 11:03 (47,796 bytes)
+  ts_dom_bindings.h  — Apr 4 11:47 (217,502 bytes, 4717 lines)
+  ts_dom.h           — Apr 4 11:47 (44,705 bytes, 1278 lines)
+
+== New DOM APIs (ts_dom_bindings.h) ==
+
+Element dimension/position properties:
+  - offsetWidth, offsetHeight, offsetLeft, offsetTop (~line 1271-1298)
+  - clientWidth, clientHeight (~line 1300-1314)
+  - scrollWidth, scrollHeight (~line 1315-1329)
+  - scrollTop, scrollLeft (returns 0) (~line 1330)
+  - offsetParent (returns parentNode) (~line 1337-1349)
+  - scrollIntoView (no-op) (~line 1350-1356)
+
+Additional Element methods:
+  - getAttributeNames() — returns array of attr names (~line 1362-1376)
+  - toggleAttribute(name, force) — add/remove boolean attr (~line 1377-1420)
+
+Additional Node methods:
+  - compareDocumentPosition(other) — returns position bitmask (~line 1421-1444)
+  - isSameNode(other) / isEqualNode(other) (~line 1445-1453)
+  - getRootNode() — walks to tree root (~line 1453-1467)
+
+Additional Document methods:
+  - getElementsByClassName(name) — real scan of DOM pool (~line 1467-1511)
+  - createEvent(type) — returns Event/CustomEvent/MouseEvent/KeyboardEvent (~line 1511-1536)
+  - createRange() — stub with full Range interface (~line 4160-4174)
+  - createNodeIterator(root) — stub (~line 4175-4177)
+  - createTreeWalker(root) — stub with navigation methods (~line 4178-4183)
+  - hasFocus() — returns true (~line 4184)
+  - adoptNode(n) / importNode(n, deep) (~line 4412-4416)
+  - exitFullscreen() — returns resolved Promise (~line 4188)
+
+Document properties added:
+  - readyState ("complete"), visibilityState ("visible"), hidden (false)
+  - compatMode ("CSS1Compat"), characterSet/charset ("UTF-8")
+  - contentType ("text/html"), doctype (null), domain, referrer, title, dir
+  - defaultView (global), activeElement (body)
+  - fullscreenElement (null), fullscreenEnabled (false), designMode ("off")
+  - implementation { hasFeature, createHTMLDocument }
+  - cookie (empty string), fonts (FontFaceSet stub), styleSheets (empty array)
+  - scrollingElement (html node), getSelection
+
+== New Web API Implementations (ts_dom_bindings.h) ==
+
+Real C-backed implementations:
+  - XMLHttpRequest — full sync implementation using __xhr_sync_fetch C backend
+    open/send/setRequestHeader/getResponseHeader/getAllResponseHeaders/abort
+    readyState tracking, event firing (readystatechange/load/error/loadend)
+    (~line 3718-3755 JS constructor, ~line 2344-2431 C sync fetch)
+  - crypto.getRandomValues — real kernel RNG via C function (~line 1536-1566, 4039-4043)
+  - crypto.randomUUID — uses getRandomValues for v4 UUID (~line 4044-4054)
+
+Full JS implementations:
+  - Headers — get/set/has/append/delete/entries/keys/values/forEach/Symbol.iterator (~line 3878-3899)
+  - Request — url/method/headers/body/mode/credentials/cache/redirect/signal/clone (~line 3901-3922)
+  - Response — status/statusText/ok/headers/text()/json()/blob()/arrayBuffer()/clone()
+    + static Response.json(), Response.error(), Response.redirect() (~line 3924-3948)
+  - URLSearchParams — full impl: append/delete/get/getAll/has/set/sort/entries/keys/values/
+    forEach/toString/Symbol.iterator (~line 3950-3976)
+  - Blob — type/size/slice/text()/arrayBuffer()/stream() with ReadableStream (~line 3978-4001)
+  - File — extends Blob with name/lastModified (~line 4003-4012)
+  - FileReader — readAsText/readAsDataURL/readAsArrayBuffer/abort, event system (~line 4014-4037)
+  - FormData — full iteration: append/get/getAll/set/has/delete/entries/keys/values/
+    forEach/Symbol.iterator (~line 3858-3876)
+  - Image constructor — src/width/height/complete/onload/onerror/decode() (~line 3757-3770)
+  - Audio constructor — src/currentTime/duration/paused/volume/play()/pause()/load() (~line 4570-4586)
+
+== New Event System (ts_dom_bindings.h) ==
+
+Event constructor — type/bubbles/cancelable/composed/defaultPrevented/isTrusted/
+  timeStamp/preventDefault()/stopPropagation()/stopImmediatePropagation()/composedPath()
+  (~line 3772-3790)
+
+CustomEvent — extends Event with detail/initCustomEvent (~line 3792-3810)
+
+17 event subtypes registered on globalThis (~line 3812-3832):
+  ErrorEvent, MessageEvent, ProgressEvent, PopStateEvent, HashChangeEvent,
+  FocusEvent, KeyboardEvent, MouseEvent, PointerEvent (=MouseEvent),
+  TouchEvent, WheelEvent, InputEvent, AnimationEvent, TransitionEvent,
+  ClipboardEvent, DragEvent, UIEvent
+
+== New Window/Global APIs (ts_dom_bindings.h) ==
+
+screen object: width/height/availWidth/availHeight/colorDepth/pixelDepth/orientation (~line 3444-3457)
+window.getSelection — returns Selection stub with full API (~line 3428-3437)
+matchMedia(query) — returns { matches: false, addEventListener: noop } (~line 3602-3612)
+queueMicrotask(fn) — Promise.resolve().then(fn) (~line 3653-3659)
+history { pushState, replaceState } (~line 3701-3710)
+window.open/close/focus/blur/stop — stubs (~line 3416-3427)
+alert (noop), confirm (returns true), prompt (returns null) (~line 3407-3413)
+visualViewport — width/height/offset/scale/addEventListener (~line 4524-4539)
+isSecureContext (true) (~line 4542)
+window.origin — parsed from current URL (~line 4544-4553)
+postMessage — noop (~line 4556-4557)
+URL.createObjectURL / URL.revokeObjectURL (~line 4559-4568)
+requestIdleCallback / cancelIdleCallback (~line 4362-4372)
+structuredClone — JSON round-trip (~line 4076-4082)
+
+== New Navigator APIs (ts_dom_bindings.h ~line 3497-3557) ==
+
+navigator.mediaDevices.enumerateDevices — returns Promise.resolve([])
+navigator.serviceWorker { register, ready }
+navigator.clipboard { writeText, readText }
+navigator.permissions.query — returns { state: 'granted' }
+navigator.sendBeacon — returns true
+navigator.hardwareConcurrency (1), maxTouchPoints (0), doNotTrack ("1")
+navigator.vendor ("TaterTOS"), product ("Gecko"), productSub ("20030107")
+
+== New Observer/Channel APIs (ts_dom_bindings.h) ==
+
+Stubs (observe/disconnect/takeRecords pattern):
+  - MutationObserver (~line 3614-3625)
+  - IntersectionObserver — fires immediately with isIntersecting:true (~line 3627-3638)
+  - ResizeObserver (~line 3640-3651)
+  - PerformanceObserver + supportedEntryTypes (~line 4389-4399)
+  - ReportingObserver (~line 4401-4410)
+
+Entry types:
+  - IntersectionObserverEntry (~line 4345-4360)
+  - ResizeObserverEntry (~line 4374-4387)
+  - MutationRecord (~line 4614-4625)
+
+== New Constructor Stubs (ts_dom_bindings.h) ==
+
+Communication:
+  - WebSocket — connects, fires error+close async (~line 4271-4287)
+  - Worker — postMessage/terminate stubs (~line 4257-4269)
+  - MessageChannel/MessagePort/BroadcastChannel (~line 4242-4255)
+  - EventTarget base class (~line 4228-4240)
+  - Notification — requestPermission returns 'denied' (~line 4334-4343)
+
+Streams:
+  - ReadableStream/WritableStream/TransformStream stubs (~line 4289-4312)
+
+CSS:
+  - CSS.supports (returns true) / CSS.escape (~line 4084-4097)
+  - CSSStyleSheet — cssRules/insertRule/deleteRule/replace/replaceSync (~line 4418-4436)
+  - CSSStyleDeclaration (~line 4432)
+  - document.styleSheets (empty array) (~line 4438-4442)
+
+Media:
+  - HTMLMediaElement constants (HAVE_NOTHING → HAVE_ENOUGH_DATA, NETWORK_*) (~line 4588-4600)
+  - FontFace constructor (~line 4602-4612)
+  - document.fonts (FontFaceSet stub with ready/check/load) (~line 4205-4217)
+
+Crypto:
+  - crypto.subtle — digest/encrypt/decrypt/sign/verify/generateKey/importKey/exportKey/
+    deriveBits/deriveKey (all return resolved Promise) (~line 4055-4072)
+  - AbortController (~line 3689-3699)
+  - AbortSignal with .abort()/.timeout()/.any() (~line 4668-4682)
+  - DOMException with 15 error code constants (~line 4684-4703)
+
+== New DOM Type Constructors (ts_dom_bindings.h ~line 4444-4512) ==
+
+30+ HTML element types registered on globalThis:
+  HTMLElement, HTMLDivElement, HTMLSpanElement, HTMLInputElement, HTMLButtonElement,
+  HTMLAnchorElement, HTMLImageElement, HTMLCanvasElement, HTMLVideoElement,
+  HTMLAudioElement, HTMLFormElement, HTMLSelectElement, HTMLTextAreaElement,
+  HTMLTemplateElement, HTMLScriptElement, HTMLStyleElement, HTMLLinkElement,
+  HTMLMetaElement, HTMLHeadElement, HTMLBodyElement, HTMLHtmlElement,
+  HTMLIFrameElement, HTMLTableElement, HTMLTableRowElement, HTMLTableCellElement,
+  HTMLParagraphElement, HTMLPreElement, HTMLUListElement, HTMLOListElement,
+  HTMLLIElement, HTMLHeadingElement, SVGElement, SVGSVGElement
+
+Core DOM types:
+  DocumentFragment, Document, Node, CharacterData, Text, Comment, Element,
+  DOMTokenList, DOMStringMap
+
+Geometry types:
+  DOMRect/DOMRectReadOnly, DOMPoint/DOMPointReadOnly, DOMMatrix/DOMMatrixReadOnly
+
+Node constants:
+  ELEMENT_NODE(1), TEXT_NODE(3), COMMENT_NODE(8), DOCUMENT_NODE(9),
+  DOCUMENT_FRAGMENT_NODE(11), DOCUMENT_POSITION_* flags
+
+== New Intl Stubs (~line 4314-4332) ==
+
+Intl.DateTimeFormat, Intl.NumberFormat, Intl.Collator, Intl.PluralRules,
+Intl.RelativeTimeFormat, Intl.ListFormat, Intl.Segmenter
+
+== New ES2023+ Polyfills (~line 4627-4665) ==
+
+Promise.withResolvers, Array.fromAsync, Object.hasOwn, Object.groupBy,
+Array.prototype.at/findLast/findLastIndex/toReversed/toSorted/toSpliced/with/flat/flatMap,
+String.prototype.at/replaceAll
+
+== Build Status ==
+tatersurf.o: 618,776 bytes (compiled Apr 4 11:53)
+All files compile without errors.
+
+== Still Open (carried from fry812) ==
+1. Root cause of rule_count corruption (offset 6,642,980)
+2. Node count drop: 81 (tokenizer) → 41 (DOM_SYNC rebuild)
+3. Font loading: fopen("/fonts/DEJAVU.TTF") fails, bitmap fallback works
+4. page_bg=0x000004 near-black background from inline style parsing
+5. Google logo display unconfirmed visually
+6. Diagnostic fprintf statements still present (remove when rendering is correct)
+7. setTimeout/setInterval timers registered but not driven by real event loop
+
+== Handoff Notes ==
+The JS environment is now comprehensive enough that most modern websites' boot
+scripts should run without crashing on missing globals. The main gaps remaining:
+  - Real async: setTimeout/setInterval need event loop integration (timers exist
+    in ts_dom.h but aren't pumped in tatersurf.c main loop)
+  - WebSocket: stub that immediately errors — no real TCP connection
+  - Worker: stub — no thread/process support
+  - Proper prototype chains: HTML*Element constructors are standalone functions,
+    not wired into Element → Node → EventTarget inheritance chain
+  - Rendering bugs from fry812 still apply (corruption, bg color, node drop)
+
+Next priorities remain the rendering fixes from fry812 — the JS environment
+expansion doesn't help if the page shows black.

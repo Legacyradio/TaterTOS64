@@ -1,0 +1,68 @@
+fry776 — TaterSurf session checkpoint: all components compiled
+=====================================================================
+Timestamp: 2026-03-27T23:30:00Z
+
+Session summary:
+  15 fry logs this session (761-775). TaterSurf went from zero to
+  all major components compiled and ready for integration.
+
+What exists (all compiling, verified):
+  LIBC ADDITIONS:
+    qsort, bsearch, setjmp/longjmp, assert, %f/%g/%e vsnprintf,
+    abort, sprintf, acosh/asinh/atanh, lrint/llrint, nextafter,
+    gettimeofday/clock_gettime standard-name wrappers
+
+  PHASE A — NETWORKING:
+    mbedTLS v3.6.3 (76 .c files + platform shim + stubs) — TLS 1.2+1.3
+    ts_url.h — URL parser with resolve + format
+    ts_http.h — HTTP/1.1 + HTTPS client with chunked/redirects/cookies
+
+  PHASE B — VIEWER:
+    ts_html.h — zero-copy HTML tokenizer
+    ts_css.h — CSS parser (selectors, properties, colors, units)
+    ts_layout.h — layout engine + renderer (box model, text, links)
+    tatersurf.c — main TaterWin app (toolbar, viewport, status bar)
+    Binary size with mbedTLS: 704 KB
+
+  PHASE C — JAVASCRIPT:
+    QuickJS 2024-01-13 (5 .c files, 69K LOC) — ES2023 engine
+    ts_dom.h — DOM bridge (4096 nodes, tree ops, events, timers)
+    ts_dom_bindings.h — JS bindings (document, window, console, all
+      Node/Element methods, Observer stubs, Web API stubs)
+    ts_webcomp.h — Web Components (customElements, Shadow DOM, template)
+    Binary size with QuickJS: 1.6 MB
+
+  PHASE D — AUDIO:
+    src/drivers/audio/hda.c — Intel HDA kernel driver (PCI, CORB/RIRB,
+      codec discovery, output path, DMA stream, PCM playback)
+    Syscalls 96-99: AUDIO_OPEN, AUDIO_WRITE, AUDIO_CLOSE, AUDIO_INFO
+    libopus v1.5.2 (144 .c files) — Opus audio decoder
+
+  PHASE E — VIDEO:
+    ts_xml.h — XML parser for DASH manifests
+    ts_dash.h — DASH MPD parser with quality selection
+    minimp4.h — fMP4 demuxer (MIT, single header)
+    OpenH264 v2.4.1 (33 .cpp files) — H.264 decoder (BSD)
+    x86_64-elf-g++ — C++ cross-compiler symlinked into toolchain
+
+  BUILD SYSTEM:
+    Makefile: tatersurf target with mbedTLS + QuickJS linked
+    build_iso.sh: TATERSURF.FRY added to all copy locations + ToTFS
+    TATERSURF_PLAN.md: full plan document in repo root
+    Plan exported to C:\Users\jjsako\Documents\tateriso\TATERSURF_PLAN.txt
+
+What remains (next session):
+  1. Integration: wire OpenH264 + libopus into Makefile + tatersurf
+  2. ts_video.h: YUV→RGB + framebuffer blit (SSE2)
+  3. Video/audio playback pipeline in tatersurf.c
+  4. A/V sync (audio clock master)
+  5. Kernel: framebuffer write-combining (PAT/MTRR)
+  6. Full rebuild → bootable ISO
+  7. Bare metal testing on Dell Precision 7530
+  8. Iterative testing: YouTube, Facebook, TikTok
+
+Key files for next session to read first:
+  /home/jjsako/TaterTOS64v3/TATERSURF_PLAN.md
+  /home/jjsako/TaterTOS64v3/logs/fry776.txt (this file)
+  /home/jjsako/TaterTOS64v3/src/user/apps/tatersurf.c
+  /home/jjsako/TaterTOS64v3/Makefile

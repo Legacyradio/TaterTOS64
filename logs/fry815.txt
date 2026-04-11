@@ -1,0 +1,109 @@
+fry815 — TaterSurf: POST support, cookie persistence, crash fix, iframe, data URLs
+================================================================================
+Date: 2026-04-04
+Build: clean, zero errors
+
+== Summary ==
+Major feature batch: HTTPS POST, cookie persistence, stack overflow crash fix,
+iframe parsing, data URL inline decode, shadow DOM rendering, Bing JS compat,
+script timeout, diagnostic cleanup.
+
+== Stack Overflow Crash Fix (ts_layout.h) ==
+ROOT CAUSE: ts_doc__build_dom_recursive() had 10KB+ of stack-allocated buffers
+per recursion frame:
+  - char decoded[4096] — text node decode buffer
+  - char collapsed[4096] — whitespace collapse buffer
+  - char fake_buf[2048] — CSS matching token buffer
+With YouTube's 603 DOM nodes in deep nesting, total stack usage exceeded the
+16MB user stack. After build_page returned, the corrupted return address (0x0)
+caused rip=0x0 page fault.
+
+FIX: Changed all three buffers to static. DOM walk is single-threaded so this
+is safe. Saves ~10KB per recursion frame. A 200-deep nesting now uses ~1KB per
+frame instead of ~11KB.
+
+== HTTPS POST Support (ts_http.h) ==
+- Added ts_http_post(req, url, body, body_len) — full POST with:
+  - Content-Type: application/x-www-form-urlencoded
+  - Content-Length header
+  - POST body sent after headers via ts_http__send
+  - Works over both HTTP and HTTPS (TLS)
+- Modified ts_http__send_request to check req->method — sends POST or GET headers
+- POST body is malloc'd copy (caller can free after ts_http_post returns)
+
+== Cookie Persistence (ts_http.h) ==
+- ts_cookie_jar_save() — writes all cookies to /data/cookies.txt
+  Format: domain\tpath\tsecure\tname\tvalue (one per line)
+- ts_cookie_jar_load() — reads cookies back on startup
+- Auto-save: ts_cookie_parse() calls ts_cookie_jar_save() after every Set-Cookie
+- Load wired into tatersurf.c main() before first navigation
+
+== Form POST Submission (tatersurf.c) ==
+- Added navigate_post(url, body, body_len) — like navigate() but uses ts_http_post
+- Form submit handler (Enter key on focused input) now checks fi->method:
+  - method=POST → navigate_post with URL-encoded form body
+  - method=GET → navigate with query string (existing behavior)
+- Action URL resolution: relative action URLs resolved against current page URL
+
+== Data URL Inline Decode (tatersurf.c) ==
+- b64_decode() — standalone base64 decoder (not tied to QuickJS)
+- try_decode_data_url_image() — detects data:image/...;base64,..., decodes,
+  stores directly in img_cache. Returns 1 if handled, 0 if not a data URL.
+- Image enqueue loop checks data URLs first, only HTTP-fetches non-data URLs
+- Fixes Bing which uses data: URLs for many UI images
+
+== Shadow DOM Rendering (ts_layout.h) ==
+- ts_doc__build_dom_recursive at recurse_children: checks ts_shadow_get_root()
+  for each element. If shadow root exists, walks shadow tree children first.
+- Then walks light DOM children (for slotting and fallback)
+- Forward declaration for ts_shadow_get_root added (include order fix)
+
+== Bing JS Compat Stubs (ts_dom_bindings.h) ==
+Added Bing's core helper library globals:
+- sj_evt — custom event bus with bind/unbind/fire
+- _w (window), _d (document), _ge (getElementById), sj_ce (createElement)
+- sj_be (addEventListener), sj_ue (removeEventListener)
+- sb_st (setTimeout), sb_ct (clearTimeout), sb_si (setInterval), sb_ci (clearInterval)
+- sj_gx (XMLHttpRequest), sj_cook (cookie helper), sj_sp, sj_pd
+- BM.trigger(), Log.Log/LogFilterFlare/LogPerf/DirectLog
+Fixes cascading ReferenceError on Bing (sj_evt was undefined in script[2])
+
+== Script Execution Timeout (ts_dom.h) ==
+- JS_SetInterruptHandler registered on QuickJS runtime
+- ts_dom_js_deadline set to fry_gettime() + 10000 before each JS_Eval
+- Cleared after JS_Eval returns
+- If deadline exceeded, interrupt handler returns 1 → QuickJS aborts script
+- Prevents permanent browser freeze from GC hangs or infinite loops
+
+== Iframe URL Collection (ts_layout.h) ==
+- Added iframe_src[8][512], iframe_x/y/w/h[8], iframe_count to ts_document
+- DOM builder handles <iframe> tag: collects src, width, height attributes
+- Emits placeholder break node
+- Full iframe sub-document loading is next step (needs sub-ts_http + sub-ts_document)
+
+== Diagnostic Cleanup (tatersurf.c) ==
+Removed all debug fprintf from hot paths:
+- BUILD[1]-[5], BUILD[4a]-[4e]
+- PBD[1]-[7] post-build diagnostics
+- TICK[0]-[2] timer diagnostics
+- LOOP: return diagnostic
+- g_post_build_diag variable
+Retained: NAV[], JS_EXEC, JS_OK/ERR, FONT, PAGE, DOM_SYNC (non-hot-path)
+
+== Files Changed ==
+- tatersurf.c — navigate_post, b64_decode, try_decode_data_url_image, cookie load,
+  form POST routing, diagnostic cleanup
+- ts_http.h — ts_http_post, ts_http__send_request POST support,
+  ts_cookie_jar_save/load, forward declarations
+- ts_layout.h — static buffers in DOM walker, iframe parsing, shadow DOM walk,
+  forward declaration for ts_shadow_get_root
+- ts_dom.h — script timeout (interrupt handler + deadline)
+- ts_dom_bindings.h — Bing JS compat stubs
+
+== What's Still Needed ==
+1. Iframe sub-document loading (fetch src, create sub-document, render inline)
+2. <video> playback for TikTok (HLS/DASH stream detection + decode)
+3. CSS cascade completeness (specificity, !important, inherited properties)
+4. Proper font rendering (TTF file loading still failing, bitmap fallback active)
+5. The rip=0x0 crash fix needs QEMU verification
+6. Google login flow testing (POST + cookies + possible iframe)

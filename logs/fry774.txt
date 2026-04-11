@@ -1,0 +1,50 @@
+fry774 — TaterSurf Phase D3: libopus integration (Opus audio decoder)
+=====================================================================
+Timestamp: 2026-03-27T22:30:00Z
+
+Context:
+  TaterSurf needs to decode Opus audio from YouTube/TikTok streams.
+  libopus (Xiph.org, BSD license) is the reference Opus decoder.
+
+Changes:
+  New directory: src/user/apps/opus/
+    include/    — public headers (opus.h, opus_defines.h, etc.)
+    src/        — core opus API (opus.c, opus_decoder.c, etc.)
+    celt/       — CELT layer (wideband codec, 18 .c files)
+    silk/       — SILK layer (narrowband codec, ~70 .c files)
+    silk/float/ — SILK floating-point variant
+    config.h    — TaterTOS64v3 configuration
+
+  Source: libopus v1.5.2, BSD 3-Clause license
+  Build: floating-point mode (not FIXED_POINT), no SIMD (plain C),
+         no custom modes, VAR_ARRAYS enabled (C99 VLA)
+
+  Configuration (config.h):
+    OPUS_BUILD, HAVE_CONFIG_H, PACKAGE_VERSION "1.5.2"
+    VAR_ARRAYS (C99 variable-length arrays)
+    HAVE_STDINT_H, HAVE_STDLIB_H, HAVE_STRING_H
+    No RTCD (runtime CPU detection), no SSE/AVX (can add later)
+    No FIXED_POINT (using float — our libc has full math library)
+
+  Compile flags:
+    -std=gnu99 (opus uses C99 features)
+    -DHAVE_CONFIG_H -DOPUS_BUILD
+    -Isrc/user/apps/opus (for config.h)
+    -Isrc/user/apps/opus/include -Isrc/user/apps/opus/celt
+    -Isrc/user/apps/opus/silk -Isrc/user/apps/opus/silk/float
+    -Wno-sign-compare -Wno-unused-parameter -Wno-parentheses
+    -Wno-implicit-function-declaration
+
+  Removed: silk/fixed/ directory (fixed-point SILK variant, not used
+  in float build, had include path issues)
+
+Verification:
+  Compiled all 144 .c files individually.
+  Result: 144/144 success, 0 failures.
+
+  Note: libopus is not yet linked into tatersurf.elf — that happens
+  when the Makefile integration is done. The files compile and produce
+  valid .o objects ready for linking.
+
+Artifacts:
+  src/user/apps/opus/ (144 .c files, 69 .h files, config.h)

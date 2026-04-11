@@ -11,6 +11,7 @@
 #define VMM_FLAG_CACHE_DISABLE 0x010ULL
 #define VMM_FLAG_LARGE        0x080ULL
 #define VMM_FLAG_NOFREE       0x200ULL
+#define VMM_FLAG_WC           0x400ULL  /* Request write-combining (sets PAT bit in PTE) */
 #define VMM_FLAG_NO_EXECUTE   (1ULL << 63)
 #define VMM_PTE_FLAG_MASK     (0xFFFULL | VMM_FLAG_NO_EXECUTE)
 

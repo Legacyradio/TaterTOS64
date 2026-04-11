@@ -1,0 +1,78 @@
+[2026-03-14 22:35:52 CDT] Step: Start phase 2 with real user-thread groundwork and one packaged smoke test.
+
+Why:
+- Phase 0 and phase 1 were stable enough to move forward, but the kernel still
+  treated each `fry_process` as both a process and a thread.
+- Phase 2 needs a clean split between thread-owned state and process-owned
+  state before adding user-thread syscalls.
+
+Code changes:
+- `src/kernel/proc/process.c`
+  - Tightened wait/join error returns to use real errno values.
+  - Made thread exit detach from the runqueue before becoming joinable so a
+    dead thread cannot remain schedulable.
+- `src/kernel/proc/syscall.c`
+  - Split shared process resources behind `p->shared` across VM, fd, heap, and
+    stdio-ring-buffer paths.
+  - Changed `SYS_GETPID` to return the thread-group id and added
+    `SYS_GETTID`.
+  - Added `SYS_THREAD_CREATE`, `SYS_THREAD_EXIT`, and `SYS_THREAD_JOIN`.
+  - Moved `SYS_EXIT` to process-group exit semantics on the safe exit stack.
+  - Made `SYS_KILL` and fatal user-fault teardown target the whole process
+    group instead of a single thread slot.
+  - Bound SHM ownership to the process-group id so threads share ownership
+    correctly.
+- `src/kernel/irq/irqdesc.c`
+  - Switched page-fault VM-region lookup to the shared VM-region table.
+  - Changed fatal user page faults to terminate the full user process group.
+- `src/user/libc/libc.h`
+  - Added the public phase-2 thread API surface:
+    `fry_gettid`, `fry_thread_create`, `fry_thread_join`, `fry_thread_exit`,
+    and `struct fry_thread`.
+- `src/user/libc/libc.c`
+  - Added thread syscall numbers and wrappers.
+  - Added a userspace thread trampoline and stack bootstrap path.
+  - Implemented join-side stack unmap cleanup.
+- `src/user/apps/thtest.c`
+  - Added a first phase-2 smoke test proving:
+    shared address space, same process id across threads, distinct tids, and
+    joinable exit codes.
+- `Makefile`
+  - Added `thtest` build objects, target, `all`, and `clean` integration.
+- `build_iso.sh`
+  - Added `thtest` to the build, ToTFS copy, EFI image copy, ISO staging copy,
+    and packaged fallback verification.
+- `src/boot/efi_loader.c`
+  - Added `apps/THTEST.FRY` to the UEFI runtime payload list so it is present
+    in the live environment.
+- `src/user/gui/gui.c`
+  - Seeded `THTEST.FRY` into the deterministic app list.
+
+[2026-03-14 22:35:52 CDT] Verification update:
+
+Commands run:
+- `make clean all`
+- `./build_iso.sh`
+
+Result:
+- Full clean rebuild succeeded.
+- ISO packaging succeeded.
+- `THTEST.FRY` was copied into ToTFS, EFI, and ISO fallback locations.
+- Packaged fallback verification completed successfully.
+- ISO export succeeded to
+  `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`.
+
+Warnings seen:
+- Pre-existing warnings only:
+  - `src/kernel/acpi/aml_exec.c`: unused parameter `ctx`
+  - `src/kernel/acpi/extended.c`: unused `str_eq`, `obj_to_str`,
+    `pci_cf8_write32`
+  - `src/user/shell/shell.c`: unused parameter `argv`
+  - `src/boot/efi_loader.c`: unused `gop_mask_size`, `gop_mask_pos`
+  - `xorriso`: EFI boot image load-size warning during ISO packaging
+
+Closeout:
+- This phase-2 slice is complete: kernel/user thread create, exit, join, and a
+  packaged smoke test are in place.
+- Remaining later phase-2 work is higher-level thread runtime support like TLS,
+  futex-style blocking, and broader stress coverage.

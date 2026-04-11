@@ -1,0 +1,99 @@
+fry770 — TaterSurf Phase C2-C3: DOM bridge core (ts_dom.h)
+=====================================================================
+Timestamp: 2026-03-27T20:00:00Z
+
+Context:
+  JavaScript can now execute (QuickJS, fry769) but has no DOM to
+  interact with. The DOM bridge provides document/window/Element
+  objects that JS can query and modify.
+
+Changes:
+  New file: src/user/apps/ts_dom.h (header-only, ~750 LOC)
+
+  Node pool:
+    4096 nodes max, allocated from fixed array.
+    Types: ELEMENT_NODE(1), TEXT_NODE(3), COMMENT_NODE(8),
+           DOCUMENT_NODE(9), FRAGMENT_NODE(11)
+    Each node: tree links (parent/child/sibling), tag name,
+    up to 16 attributes, text content (4KB), event listeners (32),
+    inline style properties, JSValue wrapper.
+
+  Tree operations:
+    ts_dom_append_child — add child to parent, handles reparenting
+    ts_dom_remove_child — detach child from parent
+    ts_dom_insert_before — insert before reference node
+
+  Attribute access:
+    ts_dom_get_attr, ts_dom_set_attr, ts_dom_remove_attr
+    Case-sensitive attribute matching, 64-byte names, 256-byte values.
+
+  Queries:
+    ts_dom_get_element_by_id — linear scan for id attribute match
+    ts_dom_get_elements_by_tag — collect all matching tag names
+    ts_dom_query_selector — first match: tag, #id, .class, tag.class
+    ts_dom_query_selector_all — all matches
+    ts_dom_matches_selector — test single node against selector
+
+  DOM from HTML:
+    ts_dom_build_from_html — tokenizes HTML via ts_html.h, creates
+    DOM nodes, handles tag nesting with parent stack, extracts
+    common attributes (id, class, style, href, src, etc.), parses
+    inline styles, tracks html/head/body nodes.
+
+  Events:
+    ts_dom_dispatch_event — full capture + bubble phase dispatch.
+    Builds path from target to document root. Calls registered
+    listeners in correct phase order. Creates JS Event objects
+    with type, bubbles, clientX/Y, key, keyCode properties.
+    Supports stopPropagation and preventDefault.
+
+  Timers:
+    ts_dom_set_timer — setTimeout (interval_ms=0) or setInterval
+    ts_dom_clear_timer — cancel timer by ID
+    ts_dom_tick_timers — fire expired timers, reschedule intervals,
+    execute pending Promise jobs (JS_ExecutePendingJob)
+
+  Console:
+    ts_dom_console_append — ring buffer for log/warn/error output.
+    4KB buffer, auto-shifts when full. For F12 debug panel.
+
+  QuickJS initialization:
+    ts_dom_init — creates JSRuntime (8MB limit), JSContext, adds
+    all ES2023 intrinsics (Date, RegExp, JSON, Proxy, Map/Set,
+    TypedArrays, Promise, BigInt, eval), creates #document node.
+
+  Page loading:
+    ts_dom_load_html — clears DOM tree, parses new HTML into nodes
+    ts_dom_run_scripts — finds all <script> elements, executes
+    their text content via JS_Eval, captures exceptions to console
+
+  Cleanup:
+    ts_dom_destroy — frees all timers, nodes, listeners, JS objects,
+    QuickJS context and runtime.
+
+  Libc/shim fixes:
+    libc.h: added _TATER_LIBC_FILE_DEFINED guard
+    shim/stdio.h: skip FILE definition if real libc already loaded
+    Why: ts_dom.h includes both QuickJS (which uses shim headers)
+    and libc.h (which has the real FILE type). Guard prevents conflict.
+
+  Additional libc functions added in this session:
+    math.c: acosh, asinh, atanh, lrint, llrint, nextafter
+    libc.c: abort()
+    time_ext.c: gettimeofday(), clock_gettime() standard-name wrappers
+    shim/: sys/time.h, fenv.h, math.h, pthread.h headers
+
+Verification:
+  Compile test: init DOM, load HTML, getElementById, querySelector,
+  getElementsByTagName, textContent, attribute access, run scripts
+  (QuickJS eval "var x = 1 + 2"), set timer, tick timers, destroy.
+  Result: compiles clean, zero errors.
+
+Note:
+  The QuickJS C function bindings (registering document.createElement,
+  element.addEventListener, etc. as JS-callable functions) will be
+  in ts_dom_bindings.h (Phase C step continues). This file provides
+  the C-side data structures and operations that those bindings call.
+
+Artifacts:
+  src/user/apps/ts_dom.h

@@ -86,6 +86,7 @@ int main(void) {
                                    &path);
         if (pid >= 0) {
             printf("init: launched gui path=%s pid=%ld\n", path ? path : "(null)", pid);
+
             fry_wait((uint32_t)pid);
             printf("init: gui exited pid=%ld\n", pid);
             gui_failures++;

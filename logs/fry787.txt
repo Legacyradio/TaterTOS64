@@ -1,0 +1,46 @@
+fry787 — Fix duplicate TaterSurf launch + disable JS to prevent crash
+=====================================================================
+Timestamp: 2026-03-31
+
+GOAL: Fix two issues found after fry786 TCP buffer fix:
+  1) Two TaterSurf instances launching (init + GUI both spawn it)
+  2) pid=9 crashing with NULL function pointer (rip=0x0) during JS exec
+
+FINDINGS:
+  After fry786, TCP buffer fix worked — TaterSurf received 4×8192=32KB+
+  from google.com (vs 4KB before). Partial page renders ("basic shit").
+  But pid=9 crashes during build_page() → ts_dom_run_scripts() when
+  Google's inline JavaScript hits unimplemented browser APIs (fetch,
+  XHR, etc.). QuickJS calls through a NULL C function pointer → page
+  fault at rip=0x0, cr2=0x0, killing the process.
+
+  Two TaterSurf instances because:
+  - init.c:90 auto-launched TaterSurf after GUI (pid=9, parent=3)
+  - GUI compositor launched it on desktop icon click or auto (pid=10, parent=7)
+  User only saw pid=10's window because pid=9 crashed.
+
+CHANGES:
+
+1) Removed TaterSurf auto-launch from init.c
+   File: src/user/init/init.c:90-101
+   Why: GUI already handles launching TaterSurf. Duplicate launch wastes
+   resources and confuses the user with two windows.
+
+2) Disabled ts_dom_run_scripts() in build_page()
+   File: src/user/apps/tatersurf.c:700-701
+   Why: Google/YouTube JS requires browser APIs (fetch, XHR, DOM mutation
+   observers, etc.) that TaterSurf doesn't implement yet. Running these
+   scripts crashes the process via NULL function pointer. The static HTML
+   renderer (ts_doc_build + ts_doc_layout) handles all visible content.
+   JS will be re-enabled once the required APIs are implemented.
+
+   NOTE: This means no dynamic JS content for now. YouTube video playback
+   (which needs JS for DASH manifest URLs) will need a different approach
+   until JS is stable.
+
+Files changed:
+  MODIFIED:
+    src/user/init/init.c         (removed TaterSurf auto-launch block)
+    src/user/apps/tatersurf.c    (disabled ts_dom_run_scripts call)
+
+Build: clean. ISO 89758 sectors. Exported.

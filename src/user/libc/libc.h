@@ -8,6 +8,11 @@
 #include <fry_types.h>
 #include <fry_limits.h>
 #include <fry_fcntl.h>
+#include <fry_socket.h>
+#include <fry_time.h>
+#include <fry_random.h>
+#include <fry_seek.h>
+#include <fry_input.h>
 #include "../../shared/wifi_abi.h"
 
 size_t strlen(const char *s);
@@ -28,15 +33,94 @@ void *malloc(size_t size);
 void free(void *ptr);
 void *calloc(size_t nmemb, size_t size);
 void *realloc(void *ptr, size_t size);
+void *aligned_alloc(size_t alignment, size_t size);
+int posix_memalign(void **memptr, size_t alignment, size_t size);
+void *memalign(size_t alignment, size_t size);
+void *valloc(size_t size);
+void *pvalloc(size_t size);
+size_t malloc_usable_size(void *ptr);
+
+/* Sorting and searching (A1 — TaterSurf libc gap fill) */
+void qsort(void *base, size_t nmemb, size_t size,
+           int (*compar)(const void *, const void *));
+void *bsearch(const void *key, const void *base, size_t nmemb, size_t size,
+              int (*compar)(const void *, const void *));
 
 // Syscall wrappers
 long fry_write(int fd, const void *buf, size_t len);
 long fry_read(int fd, void *buf, size_t len);
 long fry_spawn(const char *path);
 long fry_exit(int code);
+long fry_gettid(void);
 long fry_sleep(uint64_t ms);
 long fry_open(const char *path, int flags);
 long fry_close(int fd);
+
+/* Phase 3: IPC / descriptor model */
+long fry_pipe(int fds[2]);
+long fry_dup(int oldfd);
+long fry_dup2(int oldfd, int newfd);
+
+struct fry_pollfd {
+    int32_t  fd;
+    uint16_t events;
+    uint16_t revents;
+};
+
+#define FRY_POLLIN   0x0001u
+#define FRY_POLLOUT  0x0002u
+#define FRY_POLLERR  0x0008u
+#define FRY_POLLHUP  0x0010u
+#define FRY_POLLNVAL 0x0020u
+
+long fry_poll(struct fry_pollfd *fds, uint32_t nfds, uint64_t timeout_ms);
+long fry_fcntl(int fd, int cmd, long arg);
+long fry_spawn_args(const char *path, const char **argv, uint32_t argc,
+                    const char **envp, uint32_t envc);
+long fry_get_argc(void);
+long fry_get_argv(uint32_t index, char *buf, size_t len);
+long fry_getenv(const char *name, char *buf, size_t len);
+
+/* Phase 4: Socket ABI */
+long fry_socket(int domain, int type, int protocol);
+long fry_connect(int fd, const struct fry_sockaddr_in *addr, uint32_t addrlen);
+long fry_bind(int fd, const struct fry_sockaddr_in *addr, uint32_t addrlen);
+long fry_listen(int fd, int backlog);
+long fry_accept(int fd, struct fry_sockaddr_in *addr, uint32_t *addrlen);
+long fry_send(int fd, const void *buf, size_t len, int flags);
+long fry_recv(int fd, void *buf, size_t len, int flags);
+long fry_shutdown_sock(int fd, int how);
+long fry_getsockopt(int fd, int level, int optname, void *optval, uint32_t *optlen);
+long fry_setsockopt(int fd, int level, int optname, const void *optval, uint32_t optlen);
+long fry_sendto(int fd, const void *buf, size_t len, int flags,
+                const struct fry_sockaddr_in *dest_addr);
+long fry_recvfrom(int fd, void *buf, size_t len, int flags,
+                  struct fry_sockaddr_in *src_addr);
+long fry_dns_resolve(const char *hostname, uint32_t *ip_out);
+
+/* Phase 5: Randomness, Time, Core Runtime */
+long fry_getrandom(void *buf, unsigned long len, unsigned int flags);
+long fry_clock_gettime(int clock_id, struct fry_timespec *ts);
+long fry_nanosleep(const struct fry_timespec *req, struct fry_timespec *rem);
+
+/* Phase 6: Filesystem and Runtime Expansion */
+long fry_lseek(int fd, int64_t offset, int whence);
+long fry_ftruncate(int fd, uint64_t length);
+long fry_rename(const char *old_path, const char *new_path);
+/* fry_fstat declared after struct fry_stat below */
+
+/* Phase 7: GUI/Input expansion */
+long fry_kbd_event(struct fry_key_event *out);
+/* fry_mouse_get_ext declared after struct fry_mouse_state below */
+long fry_clipboard_get(char *buf, size_t maxlen);
+long fry_clipboard_set(const char *buf, size_t len);
+
+/* Audio (TaterSurf Phase D) */
+long fry_audio_open(uint32_t sample_rate, uint8_t channels, uint8_t bits);
+long fry_audio_write(const void *pcm_data, size_t len);
+long fry_audio_close(void);
+long fry_audio_info(void *info_buf);
+
 long fry_getpid(void);
 long fry_gettime(void);
 long fry_sbrk(intptr_t increment);
@@ -60,10 +144,57 @@ long fry_shutdown(void);
 long fry_wait(uint32_t pid);
 long fry_proc_count(void);
 
+typedef void (*fry_thread_start_t)(void *arg);
+
+struct fry_thread {
+    uint32_t tid;
+    void *stack_base;
+    size_t stack_len;
+    void *tls_base;
+};
+
+long fry_thread_create(struct fry_thread *thr, fry_thread_start_t start, void *arg);
+long fry_thread_join(struct fry_thread *thr, int *exit_code);
+int fry_thread_current(struct fry_thread *thr);
+__attribute__((noreturn)) void fry_thread_exit(int code);
+
+long fry_futex_wait(volatile uint32_t *addr, uint32_t expected, uint64_t timeout_ms);
+long fry_futex_wake(volatile uint32_t *addr, uint32_t count);
+long fry_tls_set_base(void *base);
+void *fry_tls_get_base(void);
+
+typedef uint32_t fry_tls_key_t;
+
+int fry_tls_key_create(fry_tls_key_t *out_key);
+void *fry_tls_get(fry_tls_key_t key);
+int fry_tls_set(fry_tls_key_t key, void *value);
+
+typedef struct { volatile uint32_t state; } fry_mutex_t;
+typedef struct { volatile uint32_t seq; } fry_cond_t;
+typedef struct { volatile uint32_t count; } fry_sem_t;
+typedef struct { volatile uint32_t state; } fry_once_t;
+
+#define FRY_MUTEX_INIT {0u}
+#define FRY_COND_INIT  {0u}
+#define FRY_ONCE_INIT  {0u}
+
+int fry_mutex_lock(fry_mutex_t *mutex);
+int fry_mutex_trylock(fry_mutex_t *mutex);
+int fry_mutex_unlock(fry_mutex_t *mutex);
+int fry_cond_wait(fry_cond_t *cond, fry_mutex_t *mutex);
+int fry_cond_signal(fry_cond_t *cond);
+int fry_cond_broadcast(fry_cond_t *cond);
+int fry_sem_init(fry_sem_t *sem, uint32_t value);
+int fry_sem_wait(fry_sem_t *sem);
+int fry_sem_post(fry_sem_t *sem);
+int fry_once(fry_once_t *once, void (*init_fn)(void));
+
 struct fry_stat {
     uint64_t size;
     uint32_t attr;
 };
+
+long fry_fstat(int fd, struct fry_stat *st);
 
 struct fry_dirent {
     uint16_t rec_len;
@@ -111,8 +242,10 @@ struct fry_mouse_state {
     int32_t dy;      /* delta since last fry_mouse_get() call */
     uint8_t btns;
     uint8_t _pad[3];
+    int32_t wheel;   /* scroll wheel delta since last call (Phase 7) */
 };
 long fry_mouse_get(struct fry_mouse_state *ms);
+long fry_mouse_get_ext(struct fry_mouse_state *ms);
 /* Read from a process's stdout ring buffer.
    Returns: >0 bytes read, 0 alive/no data, -2 process dead+empty, -1 error */
 long fry_proc_output(uint32_t pid, void *buf, size_t len);
@@ -325,5 +458,611 @@ long fry_mounts_dbg(struct fry_mounts_dbg *out);
 
 // Non-blocking getchar: returns -1 if no key is ready.
 int getchar_nb(void);
+
+/* =====================================================================
+ * Phase 8: Userspace Porting Layer
+ * ===================================================================== */
+
+/* -----------------------------------------------------------------------
+ * stdio.c — FILE streams
+ * ----------------------------------------------------------------------- */
+
+#define _TATER_LIBC_FILE_DEFINED
+typedef struct _FILE FILE;
+
+extern FILE *stdin;
+extern FILE *stdout;
+extern FILE *stderr;
+
+FILE *fopen(const char *path, const char *mode);
+FILE *fdopen(int fd, const char *mode);
+int fclose(FILE *stream);
+int fflush(FILE *stream);
+size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream);
+size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream);
+int fgetc(FILE *stream);
+int fputc(int c, FILE *stream);
+int ungetc(int c, FILE *stream);
+char *fgets(char *s, int n, FILE *stream);
+int fputs(const char *s, FILE *stream);
+int fprintf(FILE *stream, const char *fmt, ...);
+int vfprintf(FILE *stream, const char *fmt, va_list ap);
+int sprintf(char *buf, const char *fmt, ...);
+int sscanf(const char *str, const char *fmt, ...);
+int vsscanf(const char *str, const char *fmt, va_list ap);
+int fscanf(FILE *stream, const char *fmt, ...);
+int fseek(FILE *stream, long offset, int whence);
+long ftell(FILE *stream);
+void rewind(FILE *stream);
+int feof(FILE *stream);
+int ferror(FILE *stream);
+void clearerr(FILE *stream);
+int fileno(FILE *stream);
+int setvbuf(FILE *stream, char *buf, int mode, size_t size);
+void setbuf(FILE *stream, char *buf);
+int remove_file(const char *path);
+int rename_file(const char *oldpath, const char *newpath);
+
+/* stdio buffering modes */
+#define _IOFBF 0
+#define _IOLBF 1
+#define _IONBF 2
+
+/* SEEK constants (aliases for fry_seek.h values) */
+#define SEEK_SET FRY_SEEK_SET
+#define SEEK_CUR FRY_SEEK_CUR
+#define SEEK_END FRY_SEEK_END
+
+/* EOF */
+#ifndef EOF
+#define EOF (-1)
+#endif
+
+/* -----------------------------------------------------------------------
+ * string_ext.c — Extended string functions
+ * ----------------------------------------------------------------------- */
+
+char *strchr(const char *s, int c);
+char *strrchr(const char *s, int c);
+char *strstr(const char *haystack, const char *needle);
+char *strpbrk(const char *s, const char *accept);
+size_t strspn(const char *s, const char *accept);
+size_t strcspn(const char *s, const char *reject);
+char *strtok(char *str, const char *delim);
+char *strtok_r(char *str, const char *delim, char **saveptr);
+char *strdup(const char *s);
+char *strndup(const char *s, size_t n);
+void *memchr(const void *s, int c, size_t n);
+long strtol(const char *nptr, char **endptr, int base);
+unsigned long strtoul(const char *nptr, char **endptr, int base);
+long long strtoll(const char *nptr, char **endptr, int base);
+unsigned long long strtoull(const char *nptr, char **endptr, int base);
+double strtod(const char *nptr, char **endptr);
+float strtof(const char *nptr, char **endptr);
+char *strerror(int errnum);
+void perror(const char *s);
+
+/* ctype functions */
+int isalpha(int c);
+int isdigit(int c);
+int isalnum(int c);
+int isspace(int c);
+int isupper(int c);
+int islower(int c);
+int isprint(int c);
+int isgraph(int c);
+int iscntrl(int c);
+int ispunct(int c);
+int isxdigit(int c);
+int toupper(int c);
+int tolower(int c);
+
+/* abs/labs/llabs */
+int abs(int x);
+long labs(long x);
+long long llabs(long long x);
+
+/* -----------------------------------------------------------------------
+ * fenv.c — Floating-point environment
+ * ----------------------------------------------------------------------- */
+
+typedef unsigned int fexcept_t;
+
+typedef struct {
+    int __round;
+    unsigned int __excepts;
+} fenv_t;
+
+#define FE_INVALID    0x01
+#define FE_DIVBYZERO  0x04
+#define FE_OVERFLOW   0x08
+#define FE_UNDERFLOW  0x10
+#define FE_INEXACT    0x20
+#define FE_ALL_EXCEPT (FE_INVALID | FE_DIVBYZERO | FE_OVERFLOW | FE_UNDERFLOW | FE_INEXACT)
+
+#define FE_TONEAREST  0
+#define FE_DOWNWARD   1
+#define FE_UPWARD     2
+#define FE_TOWARDZERO 3
+
+extern const fenv_t __fenv_dfl_env;
+
+int feclearexcept(int excepts);
+int fegetexceptflag(fexcept_t *flagp, int excepts);
+int feraiseexcept(int excepts);
+int fesetexceptflag(const fexcept_t *flagp, int excepts);
+int fetestexcept(int excepts);
+int fegetround(void);
+int fesetround(int round);
+int fegetenv(fenv_t *envp);
+int feholdexcept(fenv_t *envp);
+int fesetenv(const fenv_t *envp);
+int feupdateenv(const fenv_t *envp);
+
+/* -----------------------------------------------------------------------
+ * math.c — Math library
+ * ----------------------------------------------------------------------- */
+
+double fabs(double x);
+float  fabsf(float x);
+double fmin(double x, double y);
+double fmax(double x, double y);
+float  fminf(float x, float y);
+float  fmaxf(float x, float y);
+double copysign(double mag, double sgn);
+double floor(double x);
+float  floorf(float x);
+double ceil(double x);
+float  ceilf(float x);
+double round(double x);
+float  roundf(float x);
+long lround(double x);
+long long llround(double x);
+double trunc(double x);
+float  truncf(float x);
+double fmod(double x, double y);
+float  fmodf(float x, float y);
+double remainder(double x, double y);
+double sqrt(double x);
+float  sqrtf(float x);
+double cbrt(double x);
+double hypot(double x, double y);
+double exp(double x);
+float  expf(float x);
+double exp2(double x);
+double log(double x);
+float  logf(float x);
+double log2(double x);
+double log10(double x);
+float  log10f(float x);
+float  log2f(float x);
+double log1p(double x);
+double expm1(double x);
+double pow(double base, double exponent);
+float  powf(float base, float exp_);
+double sin(double x);
+float  sinf(float x);
+double cos(double x);
+float  cosf(float x);
+double tan(double x);
+float  tanf(float x);
+double atan(double x);
+float  atanf(float x);
+double atan2(double y, double x);
+float  atan2f(float y, float x);
+double asin(double x);
+float  asinf(float x);
+double acos(double x);
+float  acosf(float x);
+double sinh(double x);
+double cosh(double x);
+double tanh(double x);
+double ldexp(double x, int exp_);
+double frexp(double x, int *exp_);
+double modf(double x, double *iptr);
+double scalbn(double x, int n);
+int isinf_d(double x);
+int isnan_d(double x);
+int isfinite_d(double x);
+
+#define HUGE_VAL  1e308
+#define INFINITY  __builtin_inf()
+#define NAN       __builtin_nan("")
+
+/* -----------------------------------------------------------------------
+ * posix.c — POSIX compatibility shims
+ * ----------------------------------------------------------------------- */
+
+/* errno */
+int *__errno_location(void);
+#define errno (*__errno_location())
+
+/* Signals (stubs) */
+typedef void (*sighandler_t)(int);
+sighandler_t signal(int sig, sighandler_t handler);
+int raise_compat(int sig);
+
+/* Directory streams */
+typedef struct _DIR DIR;
+
+struct dirent_compat {
+    uint32_t d_ino;
+    uint8_t  d_type;
+    char     d_name[256];
+};
+
+#define DT_UNKNOWN 0
+#define DT_REG     8
+#define DT_DIR     4
+
+DIR *opendir(const char *path);
+struct dirent_compat *readdir_compat(DIR *dirp);
+int closedir(DIR *dirp);
+
+/* File system helpers */
+char *getcwd(char *buf, size_t size);
+int chdir(const char *path);
+int access(const char *path, int mode);
+int unlink(const char *path);
+int rmdir(const char *path);
+int mkdir_compat(const char *path, uint32_t mode);
+int stat_compat(const char *path, struct fry_stat *st);
+int fstat_compat(int fd, struct fry_stat *st);
+int lstat_compat(const char *path, struct fry_stat *st);
+
+/* access() mode flags */
+#define F_OK 0
+#define R_OK 4
+#define W_OK 2
+#define X_OK 1
+
+/* Process control */
+int getpid_compat(void);
+int getppid_compat(void);
+int getuid_compat(void);
+int geteuid_compat(void);
+int getgid_compat(void);
+int getegid_compat(void);
+pid_t fork(void);
+int execve(const char *path, char *const argv[], char *const envp[]);
+int execv(const char *path, char *const argv[]);
+int execvp(const char *file, char *const argv[]);
+pid_t waitpid(pid_t pid, int *status, int options);
+pid_t wait(int *status);
+__attribute__((noreturn)) void _exit_compat(int status);
+__attribute__((noreturn)) void abort_compat(void);
+int atexit_compat(void (*func)(void));
+void exit_compat(int status);
+
+/* Environment */
+char *getenv_compat(const char *name);
+int setenv_compat(const char *name, const char *value, int overwrite);
+int unsetenv_compat(const char *name);
+
+/* Misc POSIX */
+unsigned int sleep_compat(unsigned int seconds);
+int usleep_compat(unsigned int usec);
+long sysconf_compat(int name);
+int getpagesize_compat(void);
+int pipe_compat(int pipefd[2]);
+int dup_compat(int oldfd);
+int dup2_compat(int oldfd, int newfd);
+int close_compat(int fd);
+long read_compat(int fd, void *buf, size_t count);
+long write_compat(int fd, const void *buf, size_t count);
+long lseek_compat(int fd, long offset, int whence);
+int open_compat(const char *path, int flags);
+int fcntl_compat(int fd, int cmd, long arg);
+struct rlimit;
+struct rusage;
+void *mmap_compat(void *addr, size_t length, int prot, int flags, int fd, long offset);
+int munmap_compat(void *addr, size_t length);
+int mprotect_compat(void *addr, size_t length, int prot);
+int msync(void *addr, size_t length, int flags);
+int madvise(void *addr, size_t length, int advice);
+int posix_madvise(void *addr, size_t length, int advice);
+int getrlimit(int resource, struct rlimit *rlim);
+int setrlimit(int resource, const struct rlimit *rlim);
+int getrusage(int who, struct rusage *usage);
+int poll_compat(struct fry_pollfd *fds, uint32_t nfds, int timeout);
+int gethostname_compat(char *name, size_t len);
+
+/* -----------------------------------------------------------------------
+ * pthread.c — POSIX threads
+ * ----------------------------------------------------------------------- */
+
+typedef struct {
+    struct fry_thread _thr;
+    void *_ctx;
+} pthread_t;
+
+/*
+ * Keep the public pthread wrappers pointer-sized so upstream libraries that
+ * embed them in pointer arrays can treat the storage as opaque.
+ */
+typedef union {
+    fry_mutex_t _m;
+    void       *_align;
+} pthread_mutex_t;
+
+typedef union {
+    fry_cond_t _c;
+    void      *_align;
+} pthread_cond_t;
+
+typedef struct {
+    fry_mutex_t _m;
+    fry_cond_t  _cond;
+    int         _readers;
+    int         _writer;
+} pthread_rwlock_t;
+
+typedef union {
+    fry_once_t _o;
+    void      *_align;
+} pthread_once_t;
+
+typedef uint32_t pthread_key_t;
+
+typedef struct {
+    int _detachstate;
+    size_t _stacksize;
+    void *_stackaddr;
+    int _scope;
+    int _inheritsched;
+    int _schedpolicy;
+    struct sched_param { int sched_priority; } _schedparam;
+} pthread_attr_t;
+
+typedef struct {
+    int _type;
+} pthread_mutexattr_t;
+
+typedef struct {
+    int _clock;
+} pthread_condattr_t;
+
+typedef struct {
+    int _pshared;
+} pthread_rwlockattr_t;
+
+#define PTHREAD_MUTEX_INITIALIZER  { {0u} }
+#define PTHREAD_COND_INITIALIZER   { {0u} }
+#define PTHREAD_RWLOCK_INITIALIZER { {0u}, {0u}, 0, 0 }
+#define PTHREAD_ONCE_INIT          { {0u} }
+
+#define PTHREAD_CREATE_JOINABLE 0
+#define PTHREAD_CREATE_DETACHED 1
+
+#define PTHREAD_SCOPE_SYSTEM  0
+#define PTHREAD_SCOPE_PROCESS 1
+
+#define PTHREAD_INHERIT_SCHED  0
+#define PTHREAD_EXPLICIT_SCHED 1
+
+#define PTHREAD_MUTEX_NORMAL      0
+#define PTHREAD_MUTEX_RECURSIVE   1
+#define PTHREAD_MUTEX_ERRORCHECK  2
+#define PTHREAD_MUTEX_DEFAULT     PTHREAD_MUTEX_NORMAL
+#define PTHREAD_MUTEX_ADAPTIVE_NP 3
+#define PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP PTHREAD_MUTEX_INITIALIZER
+#define PTHREAD_ERRORCHECK_MUTEX_INITIALIZER_NP PTHREAD_MUTEX_INITIALIZER
+#define PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP PTHREAD_MUTEX_INITIALIZER
+
+#define SCHED_OTHER 0
+#define SCHED_FIFO  1
+#define SCHED_RR    2
+
+int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
+                   void *(*start_routine)(void *), void *arg);
+int pthread_join(pthread_t thread, void **retval);
+int pthread_detach(pthread_t thread);
+pthread_t pthread_self(void);
+int pthread_equal(pthread_t t1, pthread_t t2);
+int pthread_kill(pthread_t thread, int sig);
+int pthread_setname_np(pthread_t thread, const char *name);
+int pthread_getname_np(pthread_t thread, char *name, size_t len);
+int pthread_getattr_np(pthread_t thread, pthread_attr_t *attr);
+void pthread_yield(void);
+
+int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr);
+int pthread_mutex_destroy(pthread_mutex_t *mutex);
+int pthread_mutex_lock(pthread_mutex_t *mutex);
+int pthread_mutex_trylock(pthread_mutex_t *mutex);
+int pthread_mutex_unlock(pthread_mutex_t *mutex);
+
+int pthread_mutexattr_init(pthread_mutexattr_t *attr);
+int pthread_mutexattr_destroy(pthread_mutexattr_t *attr);
+int pthread_mutexattr_settype(pthread_mutexattr_t *attr, int type);
+
+int pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr);
+int pthread_cond_destroy(pthread_cond_t *cond);
+int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex);
+int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
+                           const struct fry_timespec *abstime);
+int pthread_cond_signal(pthread_cond_t *cond);
+int pthread_cond_broadcast(pthread_cond_t *cond);
+
+int pthread_condattr_init(pthread_condattr_t *attr);
+int pthread_condattr_destroy(pthread_condattr_t *attr);
+
+int pthread_rwlock_init(pthread_rwlock_t *rwl, const pthread_rwlockattr_t *attr);
+int pthread_rwlock_destroy(pthread_rwlock_t *rwl);
+int pthread_rwlock_rdlock(pthread_rwlock_t *rwl);
+int pthread_rwlock_wrlock(pthread_rwlock_t *rwl);
+int pthread_rwlock_unlock(pthread_rwlock_t *rwl);
+
+int pthread_once(pthread_once_t *once_control, void (*init_routine)(void));
+
+int pthread_key_create(pthread_key_t *key, void (*destructor)(void *));
+int pthread_key_delete(pthread_key_t key);
+int pthread_setspecific(pthread_key_t key, const void *value);
+void *pthread_getspecific(pthread_key_t key);
+
+int pthread_attr_init(pthread_attr_t *attr);
+int pthread_attr_destroy(pthread_attr_t *attr);
+int pthread_attr_setdetachstate(pthread_attr_t *attr, int state);
+int pthread_attr_setstacksize(pthread_attr_t *attr, size_t size);
+int pthread_attr_getstacksize(const pthread_attr_t *attr, size_t *size);
+int pthread_attr_getstack(const pthread_attr_t *attr, void **stackaddr,
+                          size_t *stacksize);
+int pthread_attr_setscope(pthread_attr_t *attr, int scope);
+int pthread_attr_setinheritsched(pthread_attr_t *attr, int inheritsched);
+int pthread_attr_setschedpolicy(pthread_attr_t *attr, int policy);
+int pthread_attr_setschedparam(pthread_attr_t *attr,
+                               const struct sched_param *param);
+int pthread_attr_getschedparam(const pthread_attr_t *attr,
+                               struct sched_param *param);
+int pthread_attr_getschedpolicy(const pthread_attr_t *attr, int *policy);
+int pthread_setschedparam(pthread_t thread, int policy,
+                          const struct sched_param *param);
+int pthread_getschedparam(pthread_t thread, int *policy,
+                          struct sched_param *param);
+int sched_get_priority_min(int policy);
+int sched_get_priority_max(int policy);
+int sched_yield(void);
+
+#ifdef __cplusplus
+static inline bool operator==(const pthread_t &lhs, const pthread_t &rhs) {
+    return lhs._thr.tid == rhs._thr.tid;
+}
+
+static inline bool operator!=(const pthread_t &lhs, const pthread_t &rhs) {
+    return !(lhs == rhs);
+}
+#endif
+
+/* -----------------------------------------------------------------------
+ * netdb.c — Network resolver
+ * ----------------------------------------------------------------------- */
+
+struct addrinfo {
+    int              ai_flags;
+    int              ai_family;
+    int              ai_socktype;
+    int              ai_protocol;
+    uint32_t         ai_addrlen;
+    struct fry_sockaddr *ai_addr;
+    char            *ai_canonname;
+    struct addrinfo *ai_next;
+};
+
+int getaddrinfo(const char *node, const char *service,
+                const struct addrinfo *hints, struct addrinfo **res);
+void freeaddrinfo(struct addrinfo *res);
+const char *gai_strerror(int errcode);
+int getnameinfo(const struct fry_sockaddr *sa, uint32_t salen,
+                char *host, uint32_t hostlen,
+                char *serv, uint32_t servlen, int flags);
+int inet_pton(int af, const char *src, void *dst);
+const char *inet_ntop(int af, const void *src, char *dst, uint32_t size);
+uint32_t inet_addr(const char *cp);
+
+/* getaddrinfo flags */
+#define AI_PASSIVE     0x01
+#define AI_CANONNAME   0x02
+#define AI_NUMERICHOST 0x04
+#define AI_NUMERICSERV 0x08
+
+/* getaddrinfo error codes */
+#define EAI_NONAME   (-2)
+#define EAI_AGAIN    (-3)
+#define EAI_FAIL     (-4)
+#define EAI_FAMILY   (-6)
+#define EAI_SOCKTYPE (-7)
+#define EAI_SERVICE  (-8)
+#define EAI_MEMORY   (-10)
+#define EAI_SYSTEM   (-11)
+
+/* -----------------------------------------------------------------------
+ * time_ext.c — Extended time functions
+ * ----------------------------------------------------------------------- */
+
+typedef int64_t time_t;
+
+struct tm {
+    int tm_sec;
+    int tm_min;
+    int tm_hour;
+    int tm_mday;
+    int tm_mon;
+    int tm_year;
+    int tm_wday;
+    int tm_yday;
+    int tm_isdst;
+    long tm_gmtoff;
+    const char *tm_zone;
+};
+
+struct timeval_compat {
+    int64_t tv_sec;
+    int64_t tv_usec;
+};
+
+time_t time_func(time_t *tloc);
+struct tm *gmtime_r(const time_t *timep, struct tm *result);
+struct tm *gmtime_func(const time_t *timep);
+struct tm *localtime_r(const time_t *timep, struct tm *result);
+struct tm *localtime_func(const time_t *timep);
+extern long timezone;
+extern int daylight;
+extern char *tzname[2];
+void tzset(void);
+time_t mktime_func(struct tm *tm);
+double difftime_func(time_t time1, time_t time0);
+int gettimeofday_func(struct timeval_compat *tv, void *tz);
+int clock_gettime_compat(int clock_id, struct fry_timespec *ts);
+int nanosleep_compat(const struct fry_timespec *req, struct fry_timespec *rem);
+size_t strftime_func(char *buf, size_t maxsize, const char *fmt, const struct tm *tm);
+char *asctime_func(const struct tm *tm);
+char *ctime_func(const time_t *timep);
+long clock_func(void);
+
+#define CLOCKS_PER_SEC 1000000
+
+/* -----------------------------------------------------------------------
+ * dlfcn.c — Dynamic loading stubs
+ * ----------------------------------------------------------------------- */
+
+void *dlopen(const char *filename, int flags);
+void *dlsym(void *handle, const char *symbol);
+int dlclose(void *handle);
+char *dlerror(void);
+
+#define RTLD_LAZY   0x00001
+#define RTLD_NOW    0x00002
+#define RTLD_GLOBAL 0x00100
+#define RTLD_LOCAL  0x00000
+
+/* -----------------------------------------------------------------------
+ * Convenience: NULL, SIZE_MAX, BUFSIZ, PATH_MAX
+ * ----------------------------------------------------------------------- */
+
+#ifndef NULL
+#define NULL ((void *)0)
+#endif
+
+#ifndef SIZE_MAX
+#define SIZE_MAX ((size_t)-1)
+#endif
+
+#ifndef BUFSIZ
+#define BUFSIZ 4096
+#endif
+
+#ifndef PATH_MAX
+#define PATH_MAX 256
+#endif
+
+#ifndef SSIZE_MAX
+#define SSIZE_MAX ((long)0x7FFFFFFFFFFFFFFF)
+#endif
+
+typedef long ssize_t;
+typedef int64_t off_t;
+typedef uint32_t mode_t;
+typedef uint32_t uid_t;
+typedef uint32_t gid_t;
+typedef int32_t pid_t;
 
 #endif

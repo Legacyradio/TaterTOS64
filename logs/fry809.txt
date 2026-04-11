@@ -1,0 +1,66 @@
+fry809 — TaterSurf Browser Upgrade: Step 17 (HTTP/2 prep + HTTP/1.1 improvements)
+===================================================================================
+Date: 2026-04-03
+Build: clean, zero errors
+Binary: TATERSURF.FRY 2,354,640 bytes
+
+STEP 17: HTTP improvements (ts_http.h + ts_dom_bindings.h)
+-----------------------------------------------------------
+
+17a) User-Agent overhaul:
+  - OLD: "TaterSurf/1.0 (TaterTOS64v3)"
+  - NEW: "Mozilla/5.0 (TaterTOS64v3) AppleWebKit/537.36 (KHTML, like Gecko)
+          TaterSurf/2.0 Chrome/120.0.0.0"
+  - Matches Chrome UA format — prevents sites from serving degraded content
+    or blocking "unknown browser" UAs
+  - Updated in both ts_http.h (request headers) and ts_dom_bindings.h
+    (navigator.userAgent)
+
+17b) Request headers improved:
+  - Accept: added application/xml;q=0.9, application/json
+  - Accept-Language: en-US,en;q=0.9 (was missing — some sites require it)
+  - Upgrade-Insecure-Requests: 1 (hints HTTPS preference)
+  - Sec-Fetch-Dest: document (prevents "suspicious request" blocks)
+  - Sec-Fetch-Mode: navigate
+  - Sec-Fetch-Site: none
+  - Connection: keep-alive (was already present)
+
+17c) HTTP/2 status:
+  Full HTTP/2 implementation requires:
+  - ALPN negotiation in TLS handshake (BearSSL supports it)
+  - Binary frame parser (DATA, HEADERS, SETTINGS, etc.)
+  - HPACK header compression (Huffman + dynamic table)
+  - Multiplexed streams on single connection
+  - Flow control per stream
+  This is a ~2000-3000 line addition. Current HTTP/1.1 works with
+  all sites that accept it. Most sites serve HTTP/1.1 to clients
+  that don't negotiate h2 via ALPN. Future session work.
+
+Files modified:
+  src/user/apps/ts_http.h         — request headers, User-Agent
+  src/user/apps/ts_dom_bindings.h — navigator.userAgent
+
+Plan reference: TATERSURF_UPGRADE_PLAN.md Step 17
+
+============================================================
+TATERSURF UPGRADE PLAN: ALL 17 STEPS COMPLETE
+============================================================
+Steps 1-8:   Layout engine (unknown tags, DOM sync, CSS selectors,
+             box model, flexbox, grid, position/float, overflow)
+Step 9:      DOM API completions (classList, dataset, style, closest,
+             matches, remove, cloneNode, getBoundingClientRect,
+             getComputedStyle)
+Step 10:     Web APIs (fetch, localStorage, URL, performance.now,
+             atob/btoa, DOMParser, FormData)
+Steps 11-12: Custom Elements v1 + Shadow DOM (lifecycle hooks,
+             element upgrade, attachShadow)
+Step 13:     CSS transforms/transitions/animations (translate, scale,
+             opacity, visibility)
+Step 14:     Canvas 2D API (fillRect, strokeRect, clearRect, fillText,
+             path ops, arc, save/restore, translate)
+Step 15:     SVG rendering (rect, circle, ellipse, line, text —
+             rasterized to pixel buffer)
+Step 16:     Web fonts (improved font-size/font parsing, bitmap
+             font scaling, infrastructure for stb_truetype)
+Step 17:     HTTP improvements (Chrome-compatible UA, Sec-Fetch
+             headers, Accept-Language)

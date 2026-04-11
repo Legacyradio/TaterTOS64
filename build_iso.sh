@@ -96,7 +96,7 @@ prepare_autotest_markers
 
 # Build kernel and user apps
 make -C "$ROOT_DIR" clean
-make -C "$ROOT_DIR" kernel init shell gui sysinfo uptime ps fileman netmgr vmtest vmfault
+make -C "$ROOT_DIR" kernel init shell gui sysinfo uptime ps fileman netmgr vmtest vmfault abitest thtest evloop tatersurf
 
 # Create FAT32 image for userspace files
 rm -f "$FS_IMG"
@@ -130,6 +130,18 @@ if command -v mcopy >/dev/null 2>&1; then
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/netmgr.fry" ::/apps/NETMGR.FRY || true
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/vmtest.fry" ::/apps/VMTEST.FRY || true
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/vmfault.fry" ::/apps/VMFAULT.FRY || true
+  mcopy -o -i "$FS_IMG" "$ROOT_DIR/thtest.fry" ::/apps/THTEST.FRY || true
+  mcopy -o -i "$FS_IMG" "$ROOT_DIR/evloop.fry" ::/apps/EVLOOP.FRY || true
+  mcopy -o -i "$FS_IMG" "$ROOT_DIR/tatersurf.fry" ::/apps/TATERSURF.FRY || true
+  mmd -i "$FS_IMG" ::/fonts 2>/dev/null || true
+  mcopy -o -i "$FS_IMG" "$ROOT_DIR/DejaVuSans.ttf" ::/fonts/DEJAVU.TTF 2>/dev/null || true
+
+  # Desktop icons
+  mmd -i "$FS_IMG" ::/icons 2>/dev/null || true
+  for icon in "$ROOT_DIR"/out/icons/*.ICON; do
+    [ -f "$icon" ] && mcopy -o -i "$FS_IMG" "$icon" ::/icons/ || true
+  done
+
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/vmtest_fixture.txt" ::/apps/VMTEST.TXT || true
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/shell.tot" ::/SHELL.TOT || true
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/gui.fry" ::/GUI.FRY || true
@@ -140,6 +152,11 @@ if command -v mcopy >/dev/null 2>&1; then
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/netmgr.fry" ::/NETMGR.FRY || true
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/vmtest.fry" ::/VMTEST.FRY || true
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/vmfault.fry" ::/VMFAULT.FRY || true
+  mcopy -o -i "$FS_IMG" "$ROOT_DIR/thtest.fry" ::/THTEST.FRY || true
+  mcopy -o -i "$FS_IMG" "$ROOT_DIR/evloop.fry" ::/EVLOOP.FRY || true
+  mcopy -o -i "$FS_IMG" "$ROOT_DIR/tatersurf.fry" ::/TATERSURF.FRY || true
+  mcopy -o -i "$FS_IMG" "$ROOT_DIR/DejaVuSans.ttf" ::/DEJAVU.TTF 2>/dev/null || true
+
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/vmtest_fixture.txt" ::/VMTEST.TXT || true
   copy_wifi_fw_mtools "$FS_IMG"
   copy_autotest_markers_mtools "$FS_IMG"
@@ -188,7 +205,7 @@ if [ -f "$ROOT_DIR/init.fry" ]; then
   "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
     "$ROOT_DIR/init.fry" "/INIT.FRY"
 fi
-for fry in gui sysinfo uptime ps fileman netmgr vmtest vmfault; do
+for fry in gui sysinfo uptime ps fileman netmgr vmtest vmfault thtest tatersurf; do
   FRY_UPPER=$(echo "$fry" | tr 'a-z' 'A-Z')
   if [ -f "$ROOT_DIR/${fry}.fry" ]; then
     "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
@@ -263,6 +280,18 @@ if command -v mmd >/dev/null 2>&1 && command -v mcopy >/dev/null 2>&1; then
   mcopy -o -i "$EFI_IMG" "$ROOT_DIR/netmgr.fry"  ::/apps/NETMGR.FRY   || true
   mcopy -o -i "$EFI_IMG" "$ROOT_DIR/vmtest.fry"  ::/apps/VMTEST.FRY   || true
   mcopy -o -i "$EFI_IMG" "$ROOT_DIR/vmfault.fry" ::/apps/VMFAULT.FRY  || true
+  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/thtest.fry"  ::/apps/THTEST.FRY   || true
+  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/evloop.fry"  ::/apps/EVLOOP.FRY   || true
+  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/tatersurf.fry" ::/apps/TATERSURF.FRY || true
+  mmd -i "$EFI_IMG" ::/fonts 2>/dev/null || true
+  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/DejaVuSans.ttf" ::/fonts/DEJAVU.TTF 2>/dev/null || true
+
+  # Desktop icons
+  mmd -i "$EFI_IMG" ::/icons 2>/dev/null || true
+  for icon in "$ROOT_DIR"/out/icons/*.ICON; do
+    [ -f "$icon" ] && mcopy -o -i "$EFI_IMG" "$icon" ::/icons/ || true
+  done
+
   mcopy -o -i "$EFI_IMG" "$ROOT_DIR/vmtest_fixture.txt" ::/apps/VMTEST.TXT || true
   mcopy -o -i "$EFI_IMG" "$ROOT_DIR/vmtest_fixture.txt" ::/VMTEST.TXT || true
   # FAT is case-insensitive, so only populate one canonical spelling per
@@ -288,6 +317,10 @@ if command -v mmd >/dev/null 2>&1 && command -v mcopy >/dev/null 2>&1; then
     mcopy -o -i "$EFI_IMG" "$ROOT_DIR/netmgr.fry"  "$mcopy_dir/NETMGR.FRY"  || true
     mcopy -o -i "$EFI_IMG" "$ROOT_DIR/vmtest.fry"  "$mcopy_dir/VMTEST.FRY"  || true
     mcopy -o -i "$EFI_IMG" "$ROOT_DIR/vmfault.fry" "$mcopy_dir/VMFAULT.FRY" || true
+    mcopy -o -i "$EFI_IMG" "$ROOT_DIR/thtest.fry"  "$mcopy_dir/THTEST.FRY"  || true
+    mcopy -o -i "$EFI_IMG" "$ROOT_DIR/evloop.fry"  "$mcopy_dir/EVLOOP.FRY"  || true
+    mcopy -o -i "$EFI_IMG" "$ROOT_DIR/tatersurf.fry" "$mcopy_dir/TATERSURF.FRY" || true
+
   done
   copy_wifi_fw_mtools "$EFI_IMG"
   copy_autotest_markers_mtools "$EFI_IMG"
@@ -317,6 +350,18 @@ cp "$ROOT_DIR/fileman.fry" "$ISO_DIR/apps/FILEMAN.FRY"
 cp "$ROOT_DIR/netmgr.fry"  "$ISO_DIR/apps/NETMGR.FRY"
 cp "$ROOT_DIR/vmtest.fry"  "$ISO_DIR/apps/VMTEST.FRY"
 cp "$ROOT_DIR/vmfault.fry" "$ISO_DIR/apps/VMFAULT.FRY"
+cp "$ROOT_DIR/thtest.fry"  "$ISO_DIR/apps/THTEST.FRY"
+cp "$ROOT_DIR/evloop.fry"  "$ISO_DIR/apps/EVLOOP.FRY"
+cp "$ROOT_DIR/tatersurf.fry" "$ISO_DIR/apps/TATERSURF.FRY"
+
+# Fonts
+mkdir -p "$ISO_DIR/fonts"
+cp "$ROOT_DIR/DejaVuSans.ttf" "$ISO_DIR/fonts/DEJAVU.TTF" 2>/dev/null || true
+
+# Desktop icons
+mkdir -p "$ISO_DIR/icons"
+cp "$ROOT_DIR"/out/icons/*.ICON "$ISO_DIR/icons/" 2>/dev/null || true
+
 cp "$ROOT_DIR/vmtest_fixture.txt" "$ISO_DIR/apps/VMTEST.TXT"
 cp "$ROOT_DIR/vmtest_fixture.txt" "$ISO_DIR/VMTEST.TXT"
 copy_wifi_fw_dir "$ISO_DIR"
@@ -343,6 +388,10 @@ for dir in "${iso_app_dirs[@]}"; do
   cp "$ROOT_DIR/netmgr.fry"  "$target_dir/NETMGR.FRY"
   cp "$ROOT_DIR/vmtest.fry"  "$target_dir/VMTEST.FRY"
   cp "$ROOT_DIR/vmfault.fry" "$target_dir/VMFAULT.FRY"
+  cp "$ROOT_DIR/thtest.fry"  "$target_dir/THTEST.FRY"
+  cp "$ROOT_DIR/evloop.fry"  "$target_dir/EVLOOP.FRY"
+  cp "$ROOT_DIR/tatersurf.fry" "$target_dir/TATERSURF.FRY"
+
   copy_wifi_fw_dir "$target_dir"
 done
 echo "ISO staging tree ready: $ISO_DIR"
@@ -374,15 +423,24 @@ for path in \
   "::/system/GUI.FRY" \
   "::/apps/SHELL.TOT" \
   "::/apps/NETMGR.FRY" \
+  "::/apps/THTEST.FRY" \
   "::/SHELL.TOT" \
   "::/NETMGR.FRY" \
+  "::/THTEST.FRY" \
   "::/fry/NETMGR.FRY" \
+  "::/fry/THTEST.FRY" \
   "::/FRY/NETMGR.FRY" \
+  "::/FRY/THTEST.FRY" \
   "::/EFI/fry/NETMGR.FRY" \
+  "::/EFI/fry/THTEST.FRY" \
   "::/EFI/FRY/NETMGR.FRY" \
+  "::/EFI/FRY/THTEST.FRY" \
   "::/EFI/BOOT/NETMGR.FRY" \
+  "::/EFI/BOOT/THTEST.FRY" \
   "::/EFI/BOOT/fry/NETMGR.FRY" \
+  "::/EFI/BOOT/fry/THTEST.FRY" \
   "::/EFI/BOOT/FRY/NETMGR.FRY" \
+  "::/EFI/BOOT/FRY/THTEST.FRY" \
   "::/fry/SHELL.TOT" \
   "::/FRY/SHELL.TOT" \
   "::/EFI/fry/SHELL.TOT" \
@@ -400,15 +458,24 @@ for path in \
   /system/GUI.FRY \
   /apps/SHELL.TOT \
   /apps/NETMGR.FRY \
+  /apps/THTEST.FRY \
   /SHELL.TOT \
   /NETMGR.FRY \
+  /THTEST.FRY \
   /fry/NETMGR.FRY \
+  /fry/THTEST.FRY \
   /FRY/NETMGR.FRY \
+  /FRY/THTEST.FRY \
   /EFI/fry/NETMGR.FRY \
+  /EFI/fry/THTEST.FRY \
   /EFI/FRY/NETMGR.FRY \
+  /EFI/FRY/THTEST.FRY \
   /EFI/BOOT/NETMGR.FRY \
+  /EFI/BOOT/THTEST.FRY \
   /EFI/BOOT/fry/NETMGR.FRY \
+  /EFI/BOOT/fry/THTEST.FRY \
   /EFI/BOOT/FRY/NETMGR.FRY \
+  /EFI/BOOT/FRY/THTEST.FRY \
   /fry/SHELL.TOT \
   /FRY/SHELL.TOT \
   /EFI/fry/SHELL.TOT \

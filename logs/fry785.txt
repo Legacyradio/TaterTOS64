@@ -1,0 +1,55 @@
+fry785 — TCP RX buffer too small (4KB), blank page root cause
+=====================================================================
+Timestamp: 2026-03-31
+
+GOAL: Diagnose why TaterSurf shows blank viewport despite successfully
+connecting to google.com and receiving HTTP data.
+
+FINDINGS:
+
+After fry784 stack fix, TaterSurf no longer crashes. QEMU serial log
+confirms full network path works:
+  - DNS: google.com -> 142.251.214.206 (cache hit on second load)
+  - TCP: connect to 142.251.214.206:80 OK
+  - HTTP: 988 bytes received (301 redirect to www.google.com)
+  - Follow redirect: www.google.com -> 142.251.151.119
+  - TCP: connect to 142.251.151.119:80 OK
+  - HTTP: received 4095 bytes (SYS_RECV log shows exactly 4095)
+
+STATUS BAR says "Done" — TaterSurf thinks the page loaded. But the
+viewport is blank (no visible rendered content).
+
+ROOT CAUSE: TCP_RX_BUF_SIZE = 4096 (netcore.h:76)
+
+The TCP receive ring buffer per connection is only 4096 bytes. When
+google.com sends its ~100KB+ homepage, the ring fills instantly:
+
+  netcore.c:1014-1018:
+    for (i = 0; i < payload_len; i++) {
+        uint16_t next = (c->rx_head + 1) % TCP_RX_BUF_SIZE;
+        if (next == c->rx_tail) break;  // <-- silently drops bytes
+        ...
+    }
+
+CRITICAL BUG: line 1020-1021 ACKs the FULL segment length regardless:
+    c->ack_num = seq + payload_len;
+    tcp_send_segment(c, TCP_ACK, 0, 0);
+
+So the sender thinks all data was received. The dropped bytes are gone
+forever — no retransmit will happen. TaterSurf gets a truncated HTML
+document (first ~4KB of a 100KB page). The HTML parser probably can't
+produce any visible nodes from a partial document, hence blank viewport.
+
+TCP_TX_BUF_SIZE is also 4096, which will limit outgoing requests
+(especially POST bodies or large headers), but RX is the immediate
+blocker.
+
+YouTube pages are 500KB-2MB+ of HTML/JS. This needs to be much larger.
+
+FIX PLAN (next fry):
+  - Bump TCP_RX_BUF_SIZE to 262144 (256KB) — enough for most pages
+  - Bump TCP_TX_BUF_SIZE to 65536 (64KB) — enough for large POST/headers
+  - Fix the silent-drop ACK bug: only ACK bytes actually buffered,
+    not the full payload_len. Otherwise sender has no backpressure signal.
+
+Files changed: none (diagnostic fry only)

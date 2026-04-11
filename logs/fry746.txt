@@ -1,0 +1,92 @@
+fry746 — Phase 3 (Netbuild1): IPC / Descriptor Model / Waiting
+Date: 2026-03-14
+Build: PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /usr/bin/make all && ./build_iso.sh
+
+WHAT: Implemented all Phase 3 kernel tasks from netbuild1:
+  1. Pipes (SYS_PIPE=55) — kernel pipe ring buffer pool (FRY_PIPE_MAX=128,
+     FRY_PIPE_BUFSZ=4096). Read/write ends tracked separately with reader/writer
+     refcounts. Blocking semantics: reader blocks when empty, writer blocks when
+     full. EOF: last writer close → reader gets 0. EPIPE: last reader close →
+     writer gets -EPIPE.
+
+  2. dup/dup2 (SYS_DUP=56, SYS_DUP2=57) — duplicate file descriptors with
+     proper refcount management for pipes. dup2 closes target fd if open.
+
+  3. poll (SYS_POLL=58) — unified wait on multiple descriptors. Supports
+     POLLIN/POLLOUT/POLLERR/POLLHUP/POLLNVAL. No busy-loop: blocks via
+     sched_block_poll() and wakes on any pipe activity via
+     sched_wake_poll_waiters(). Timeout support (0=non-blocking, UINT64_MAX=infinite).
+
+  4. fcntl (SYS_FCNTL=59) — F_GETFL/F_SETFL for O_NONBLOCK flag. Per-fd flags
+     stored in fd_flags[] array in process shared state.
+
+  5. Process spawn with args/env (SYS_SPAWN_ARGS=60) — spawn child with
+     argv/envp arrays. Copies strings from user space through kernel into new
+     process's shared state args_buf (FRY_ARGS_BUFSZ=2048).
+
+  6. Argument retrieval (SYS_GET_ARGC=61, SYS_GET_ARGV=62) — child process
+     queries its argument count and individual argument strings.
+
+  7. Environment variables (SYS_GETENV=63) — child process looks up NAME=VALUE
+     pairs from envp. Enables SHM handle transfer via env vars.
+
+  8. Expanded FD model — fd_kind[] (FD_NONE/FD_FILE/FD_PIPE_READ/FD_PIPE_WRITE)
+     and fd_flags[] added to fry_process_shared. SYS_OPEN/CLOSE/READ/WRITE
+     updated to dispatch based on fd_kind.
+
+  9. Nonblocking mode — O_NONBLOCK flag in fry_fcntl.h. Pipe read returns
+     -EAGAIN when empty+nonblock. Pipe write returns -EAGAIN when full+nonblock.
+
+  10. Reliable wait status — process_wait_status() added to return exit code.
+
+  11. Pipe cleanup on process exit — shared_release() decrements pipe refcounts,
+      frees pipe objects when both ends closed, wakes poll waiters.
+
+  12. Scheduler poll support — sched_block_poll()/sched_wake_poll_waiters()
+      added. wait_poll flag in fry_process cleared on any wake.
+
+WHY: Phase 3 of netbuild1 requires a proper IPC and waitable-object model for
+multi-process browser support. Pipes, poll, and process args are prerequisites
+for Phase 4 (sockets) and ultimately for Firefox userspace port.
+
+FILES MODIFIED:
+  src/include/errno.h — EPIPE, ESPIPE, E2BIG, ECHILD, EWOULDBLOCK
+  src/include/fry_fcntl.h — O_NONBLOCK, F_GETFD/F_SETFD/F_GETFL/F_SETFL
+  src/include/fry_limits.h — FRY_PIPE_MAX, FRY_PIPE_BUFSZ, FRY_ARGV_MAX,
+    FRY_ENV_MAX, FRY_ARGS_BUFSZ, FRY_POLL_MAX
+  src/kernel/proc/process.h — fry_fd_kind enum, fry_pipe struct, fd_kind[],
+    fd_flags[], args fields in shared, wait_poll in process, new function decls
+  src/kernel/proc/process.c — shared_init expanded, pipe cleanup in
+    shared_release, process_launch_args, process_wait_status, setup_process_args
+  src/kernel/proc/sched.h — sched_block_poll, sched_wake_poll_waiters
+  src/kernel/proc/sched.c — poll wake implementation, wait_poll cleared in
+    wake_runnable_locked
+  src/kernel/proc/syscall.c — 9 new syscalls (55-63), pipe helpers, poll_check_fd,
+    updated SYS_OPEN/CLOSE/READ/WRITE for fd_kind dispatch
+  src/kernel/selftest.c — 14 new tests for Phase 3 constants/types
+  src/user/libc/libc.h — fry_pollfd, poll constants, new wrapper declarations
+  src/user/libc/libc.c — new syscall enum entries, 10 new wrapper functions
+  Makefile — ipctest target added
+
+FILES CREATED:
+  src/user/apps/ipctest.c — comprehensive Phase 3 IPC test suite (pipe basic,
+    broken pipe, dup, dup2, poll, fcntl, poll invalid, args/env, pipe large,
+    multi pipe)
+
+SYSCALL NUMBERS ALLOCATED:
+  55: SYS_PIPE        — create pipe, returns [read_fd, write_fd]
+  56: SYS_DUP         — duplicate fd
+  57: SYS_DUP2        — force newfd to reference same object as oldfd
+  58: SYS_POLL        — wait on multiple fds
+  59: SYS_FCNTL       — get/set fd flags
+  60: SYS_SPAWN_ARGS  — spawn with argv/envp
+  61: SYS_GET_ARGC    — query argument count
+  62: SYS_GET_ARGV    — query argument string by index
+  63: SYS_GETENV      — lookup environment variable
+
+TEST COMMANDS:
+  # Build
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /usr/bin/make all && ./build_iso.sh
+  # Launch IPCTEST.FRY from GUI app launcher after booting in QEMU
+
+BUILD: PASS (zero warnings, zero errors)

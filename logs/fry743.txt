@@ -1,0 +1,79 @@
+[2026-03-14 22:54:43 CDT] Step: Advance phase 2 with futex-style blocking, per-thread TLS base, and libc synchronization primitives.
+
+Why:
+- The first phase-2 thread groundwork was already in place, but user threads
+  still lacked a real blocking primitive, per-thread TLS identity, and a usable
+  libc sync layer.
+- Phase 2 needs those kernel and libc contracts in place before broader
+  pthread-style work or higher-contention thread tests make sense.
+
+Code changes:
+- `src/include/errno.h`
+  - Added `ETIMEDOUT` so timeout-based wait paths return a stable errno value.
+- `src/kernel/proc/process.h`
+  - Added per-thread TLS and futex wait bookkeeping:
+    `user_arg`, `user_fs_base`, `wait_futex_key`, and `wait_result`.
+- `src/kernel/proc/process.c`
+  - Programmed `IA32_FS_BASE` before entering user mode so each thread can
+    carry a distinct TLS base.
+  - Passed the user thread start argument through `%rdi` on first entry.
+  - Cleared futex wait bookkeeping in process wait/join/free paths so thread
+    wait state does not leak across blocking modes.
+- `src/kernel/proc/sched.c`
+  - Restored each task's `user_fs_base` on context switch.
+  - Marked timed-out futex waiters with `-ETIMEDOUT` before waking them.
+  - Cleared futex/TLS wait bookkeeping in sleep/block wake transitions.
+- `src/kernel/proc/syscall.c`
+  - Added `SYS_FUTEX_WAIT`, `SYS_FUTEX_WAKE`, `SYS_SET_TLS_BASE`, and
+    `SYS_GET_TLS_BASE`.
+  - Keyed futex waits by translated user physical address so shared mappings
+    can synchronize correctly.
+  - Added kernel timeout handling and wakeup result propagation for futex waits.
+  - Moved VM/path constants to `fry_limits.h`-backed definitions where
+    applicable.
+- `src/user/libc/libc.h`
+  - Added raw futex/TLS APIs.
+  - Added TLS key/value APIs.
+  - Added `fry_mutex_t`, `fry_cond_t`, `fry_sem_t`, `fry_once_t`, and their
+    public function surface.
+- `src/user/libc/libc.c`
+  - Added userspace wrappers for futex and TLS syscalls.
+  - Added per-thread TLS block bootstrap in the thread trampoline.
+  - Added TLS key storage and access helpers.
+  - Implemented mutex, condition variable, semaphore, and once primitives on
+    top of futex wait/wake plus atomic builtins.
+- `src/user/apps/thtest.c`
+  - Expanded the phase-2 smoke test into a real synchronization test covering
+    shared PID / distinct TID behavior, TLS isolation, once-init, condvar
+    gating, mutex-protected increments, semaphore completion, and joinable exit
+    codes.
+
+[2026-03-14 22:54:43 CDT] Verification update:
+
+Commands run:
+- `PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh`
+
+Result:
+- Full clean rebuild succeeded.
+- ISO packaging succeeded.
+- `THTEST.FRY` built and was packaged into the live image set.
+- Packaged live-app fallback verification completed successfully.
+- ISO export succeeded to
+  `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`.
+
+Warnings seen:
+- Pre-existing warnings only:
+  - `src/kernel/acpi/aml_exec.c`: unused parameter `ctx`
+  - `src/kernel/acpi/extended.c`: unused `str_eq`, `obj_to_str`,
+    `pci_cf8_write32`
+  - `src/user/shell/shell.c`: unused parameter `argv`
+  - `src/boot/efi_loader.c`: unused `gop_mask_size`, `gop_mask_pos`
+  - `xorriso`: EFI boot image load-size warning during ISO packaging
+
+Closeout:
+- This phase-2 synchronization slice is complete at the code/build/package
+  level.
+- I did not run QEMU in this step, per the current rule to avoid runtime boot
+  tests unless explicitly requested.
+- The next phase-2 work should focus on higher-stress runtime validation and
+  any remaining thread-library surface built on top of this futex/TLS base.

@@ -1,0 +1,49 @@
+fry786 — TCP RX buffer 4KB -> 256KB, fix silent-drop ACK bug
+=====================================================================
+Timestamp: 2026-03-31
+
+GOAL: Fix blank page caused by TCP receive buffer truncating HTTP
+responses to 4KB. Google homepage is ~100KB+, YouTube is 500KB-2MB+.
+
+ROOT CAUSE (from fry785 diagnosis):
+  TCP_RX_BUF_SIZE was 4096. Ring buffer filled instantly on any real
+  webpage. Bytes past 4KB were silently dropped AND incorrectly ACKed
+  (sender never retransmitted). TaterSurf got truncated HTML that
+  couldn't produce visible render nodes.
+
+CHANGES:
+
+1) TCP_RX_BUF_SIZE: 4096 -> 262144 (256KB)
+   TCP_TX_BUF_SIZE: 4096 -> 65536 (64KB, future-proofing)
+   File: src/drivers/net/netcore.h:76-77
+
+2) rx_head/rx_tail: uint16_t -> uint32_t
+   File: src/drivers/net/netcore.c:674-675
+   Why: uint16_t max is 65535, would overflow with 256KB buffer.
+
+3) Fixed silent-drop ACK bug in TCP data receive path:
+   File: src/drivers/net/netcore.c:1013-1023
+   Before: ACKed seq + payload_len regardless of how many bytes fit
+   After:  Tracks 'buffered' count, ACKs seq + buffered only
+   Why: Without backpressure, sender thinks all data delivered when
+   buffer is full. Now sender will retransmit unACKed bytes.
+
+4) tcp_recv() signature: uint16_t max_len -> uint32_t max_len
+   File: src/drivers/net/netcore.c:800, src/drivers/net/netcore.h:103
+   Internal variables (available, to_read) also uint16_t -> uint32_t.
+
+5) tcp_rx_available() return: int -> uint32_t
+   File: src/drivers/net/netcore.c:847, src/drivers/net/netcore.h:115
+
+6) All SYS_RECV and SYS_RECVFROM callers: (uint16_t)a3 -> (uint32_t)a3
+   File: src/kernel/proc/syscall.c (lines 1941, 1957, 3266, 3288, 3502, 3515)
+   Why: uint16_t cast capped recv to 65535 bytes per call.
+
+Files changed:
+  MODIFIED:
+    src/drivers/net/netcore.h    (buffer sizes, function signatures)
+    src/drivers/net/netcore.c    (ring buffer types, ACK fix, recv types)
+    src/kernel/proc/syscall.c    (uint16_t -> uint32_t casts in recv paths)
+
+Build: clean. ISO 89758 sectors. Exported to C:\Users\jjsako\Documents\tateriso\.
+No errors. Pre-existing warnings only (gop_mask_size/gop_mask_pos unused).

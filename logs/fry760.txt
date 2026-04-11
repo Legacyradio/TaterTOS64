@@ -1,0 +1,89 @@
+fry760 — Fix short-lived GUI app launch output + thread join race
+=================================================================
+Timestamp: 2026-03-16T04:31:40Z
+
+Context:
+  User reported that several test .fry apps opened a GUI window but stayed on
+  "Starting app..." even after thtest stopped hard-locking the machine.
+  After fixing the launch/render path, thtest then exposed a second kernel-side
+  failure: "contention thread join failed".
+
+Result:
+  SUCCESS — shared kernel fixes applied, verified in QEMU, final ISO rebuilt
+  and exported. The issue was not thtest-specific.
+
+Changes:
+  src/kernel/proc/process.c
+    - Kept exited userspace group-leader shared state long enough for GUI to
+      drain buffered stdout after app exit.
+      Why: short-lived GUI apps could exit before the compositor's next poll,
+      leaving the placeholder window stuck on "Starting app...".
+    - Added proc_is_user_group_leader() helper used by proc_free().
+    - Changed process_thread_exit() to remove the thread from the runqueue as
+      PROC_ZOMBIE instead of letting sched_remove() transiently mark it DEAD.
+      Why: joiners could briefly observe ESRCH during thread exit and fail
+      intermittently under contention.
+
+  src/kernel/proc/syscall.c
+    - Added proc_find_task_any() and proc_find_group_leader_any().
+    - Updated SYS_PROC_OUTPUT to read buffered stdout from dead tasks until the
+      ring buffer is drained.
+      Why: GUI must still be able to fetch output from short-lived apps after
+      they have exited.
+
+  src/kernel/proc/sched.c
+  src/kernel/proc/sched.h
+    - Added sched_remove_with_state(pid, state).
+    - Left sched_remove(pid) as the PROC_DEAD wrapper for normal teardown.
+      Why: thread exit needs an atomic runqueue removal to PROC_ZOMBIE so join
+      never races against a transient PROC_DEAD state.
+
+  src/user/gui/gui.c
+    - Added a temporary THTEST auto-launch probe for verification.
+    - Removed the probe before the final rebuild.
+      Why: this reproduced the exact GUI launch path without relying on manual
+      interaction, then restored the normal desktop behavior for the shipped ISO.
+
+Verification:
+  Build / rebuild command:
+    make clean
+    PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+  QEMU verification command used during debugging:
+    qemu-system-x86_64 -m 4G -machine q35,accel=tcg -cpu max -smp 4 \
+      -monitor stdio -display none \
+      -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+      -drive if=pflash,format=raw,file=/home/jjsako/TaterTOS64v3/logs/runtime_probe_thtest_join/OVMF_VARS_4M.fd \
+      -cdrom /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso \
+      -serial file:/home/jjsako/TaterTOS64v3/logs/runtime_probe_thtest_join/serial.log \
+      -debugcon file:/home/jjsako/TaterTOS64v3/logs/runtime_probe_thtest_join/debugcon.log
+
+  QEMU monitor capture command:
+    screendump /home/jjsako/TaterTOS64v3/logs/runtime_probe_thtest_join/shot.ppm
+
+  Screenshot conversion command:
+    ffmpeg -y -i /home/jjsako/TaterTOS64v3/logs/runtime_probe_thtest_join/shot.ppm \
+      -frames:v 1 -update 1 /home/jjsako/TaterTOS64v3/logs/runtime_probe_thtest_join/shot.png
+
+Verification outcome:
+  The probe screenshot showed:
+    thtest: smoke
+    thtest: futex
+    thtest: mutex contention
+    thtest: condvar rounds
+    thtest: thread churn
+    thtest: phase-two closeout ok
+
+  Screenshot artifact:
+    /home/jjsako/TaterTOS64v3/logs/runtime_probe_thtest_join/shot.png
+
+Final artifacts:
+  Local ISO:
+    /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+
+  Exported ISO:
+    /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+SHA-256:
+  e96ab55c15015a4b898a0b76f1c8f95cfa5429171b44a9732075edd0e08c9436  /home/jjsako/TaterTOS64v3/out/tatertos64v3.iso
+  e96ab55c15015a4b898a0b76f1c8f95cfa5429171b44a9732075edd0e08c9436  /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso

@@ -93,6 +93,27 @@ static inline void write_msr(uint32_t msr, uint64_t v) {
     __asm__ volatile("wrmsr" : : "c"(msr), "a"(lo), "d"(hi));
 }
 
+static void setup_pat(void) {
+    /*
+     * Configure PAT (Page Attribute Table) for write-combining support.
+     *
+     * Default PAT MSR (0x277):
+     *   Entry 0: WB (0x06)   PWT=0 PCD=0 PAT=0
+     *   Entry 1: WT (0x04)   PWT=1 PCD=0 PAT=0
+     *   Entry 2: UC-(0x07)   PWT=0 PCD=1 PAT=0
+     *   Entry 3: UC (0x00)   PWT=1 PCD=1 PAT=0
+     *   Entry 4: WB (0x06)   PWT=0 PCD=0 PAT=1
+     *   Entry 5: WT (0x04)   PWT=1 PCD=0 PAT=1
+     *   Entry 6: UC-(0x07)   PWT=0 PCD=1 PAT=1
+     *   Entry 7: UC (0x00)   PWT=1 PCD=1 PAT=1
+     *
+     * We change entry 4 from WB to WC (0x01).  Entry 4 is selected by
+     * setting PAT=1, PCD=0, PWT=0 in the PTE (bit 7 set for 4K pages).
+     * No existing mappings use this combination, so it's safe.
+     */
+    write_msr(0x277, 0x0007040100070406ULL);
+}
+
 static void enable_cpu_page_protections(void) {
     uint64_t efer = read_msr(0xC0000080u);
     efer |= (1ULL << 11); /* EFER.NXE */
@@ -101,6 +122,8 @@ static void enable_cpu_page_protections(void) {
     uint64_t cr0 = read_cr0();
     cr0 |= (1ULL << 16); /* CR0.WP */
     write_cr0(cr0);
+
+    setup_pat();
 }
 
 static void map_kernel_region(uint64_t virt, uint64_t phys, uint64_t size, uint64_t flags) {
@@ -228,7 +251,17 @@ void vmm_map(uint64_t virt, uint64_t phys, uint64_t flags) {
     uint64_t *pt = get_or_alloc_table(pd, pd_i, flags);
     if (!pt) return;
 
-    pt[pt_i] = (phys & 0x000FFFFFFFFFF000ULL) | (flags & VMM_PTE_FLAG_MASK) | VMM_FLAG_PRESENT;
+    {
+        uint64_t pte_flags = (flags & VMM_PTE_FLAG_MASK) | VMM_FLAG_PRESENT;
+        /* Translate VMM_FLAG_WC into PAT bit 7 (selects PAT entry 4 = WC) */
+        if (flags & VMM_FLAG_WC) {
+            pte_flags &= ~VMM_FLAG_WC;              /* clear our software flag */
+            pte_flags |= 0x080ULL;                    /* set PAT bit (bit 7 for 4K PTE) */
+            pte_flags &= ~VMM_FLAG_WRITE_THROUGH;    /* PWT=0 */
+            pte_flags &= ~VMM_FLAG_CACHE_DISABLE;    /* PCD=0 */
+        }
+        pt[pt_i] = (phys & 0x000FFFFFFFFFF000ULL) | pte_flags;
+    }
 }
 
 void vmm_map_range(uint64_t virt, uint64_t phys, uint64_t pages, uint64_t flags) {
@@ -536,12 +569,12 @@ void vmm_init(struct fry_handoff *handoff) {
     }
 
 
-    // Map framebuffer at known virtual address
+    // Map framebuffer at known virtual address with write-combining
     if (handoff && handoff->fb_base && handoff->fb_width && handoff->fb_height) {
         uint64_t fb_size = handoff->fb_stride * handoff->fb_height * 4ULL;
         vmm_map_range(VMM_FB_BASE, handoff->fb_base,
                       (fb_size + PAGE_SIZE - 1) / PAGE_SIZE,
-                      VMM_FLAG_WRITE | VMM_FLAG_NO_EXECUTE);
+                      VMM_FLAG_WRITE | VMM_FLAG_NO_EXECUTE | VMM_FLAG_WC);
     }
     vmm_stage("VMM_06_FB", '6');
 

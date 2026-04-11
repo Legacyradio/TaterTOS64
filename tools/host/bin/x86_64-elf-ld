@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+tool_root=$(cd "$(dirname "$0")/.." && pwd)
+exec "$tool_root/libexec/resolve-cross-tool.sh" x86_64-elf-ld "$@"

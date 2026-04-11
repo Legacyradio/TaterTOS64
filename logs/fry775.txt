@@ -1,0 +1,83 @@
+fry775 — TaterSurf Phase E1-E4: XML parser, DASH, minimp4, OpenH264
+=====================================================================
+Timestamp: 2026-03-27T23:00:00Z
+
+Context:
+  TaterSurf needs to stream and decode video from YouTube.
+  This requires: DASH manifest parsing, fMP4 demuxing, H.264 decode.
+
+Changes:
+
+  E1. XML parser — src/user/apps/ts_xml.h (header-only, ~350 LOC)
+    Minimal XML parser for DASH MPD manifests.
+    Element tree with attributes, text content, child queries.
+    Fixed 512-node pool. Handles comments, CDATA, PI, DOCTYPE.
+
+  E2. DASH parser — src/user/apps/ts_dash.h (header-only, ~350 LOC)
+    Parses MPD manifests: Period → AdaptationSet → Representation.
+    Extracts: bandwidth, resolution, codecs, mimeType.
+    SegmentTemplate: init URL, media URL template ($Number$,
+    $RepresentationID$, $Bandwidth$).
+    Quality selection: pick best video/audio for given bandwidth.
+    ISO 8601 duration parsing (PT5M30S).
+
+  E3. fMP4 demuxer — src/user/apps/minimp4.h (3502 lines)
+    MIT-licensed single-header library from lieff/minimp4.
+    Extracts H.264 NAL units from fragmented MP4 segments.
+    Parses moov/moof/mdat box structure.
+
+  E4. OpenH264 decoder — src/user/apps/openh264/ (33 .cpp, 67 .h)
+    Cisco OpenH264 v2.4.1, BSD 2-Clause license.
+    Decoder-only (no encoder). Supports Baseline through High Profile.
+    C++ source compiled with x86_64-elf-g++ (GCC 15.2.0).
+
+    C++ compiler was already built (configure had --enable-languages=c,c++)
+    but wasn't symlinked into tools/host/bin. Fixed by:
+      ln -sf cross-tatertos/bin/x86_64-tatertos-g++ tools/host/bin/x86_64-elf-g++
+
+    Compile flags:
+      -nostdlib -nostdinc++ -fno-stack-protector -fno-exceptions -fno-rtti
+      -O2 -std=c++11
+    Why -nostdinc++: skip C++ standard library headers (need hosted env).
+    Why -fno-exceptions -fno-rtti: no C++ runtime features.
+    Why -nostdlib: don't link C++ standard library.
+
+    Threading files removed (single-threaded decode):
+      WelsThreadLib.cpp, WelsThread.cpp, WelsTaskThread.cpp,
+      WelsThreadPool.cpp, wels_decoder_thread.cpp
+    Why: these require pthreads/semaphore.h which need a full POSIX env.
+    Single-threaded H.264 decode is sufficient for 720p/1080p on i5-8300H.
+
+    Shim headers created (src/user/apps/openh264/shim/):
+      pthread.h — stub types and no-op functions
+      semaphore.h — stub sem_t and no-op operations
+      sched.h — SCHED_FIFO/RR defines, sched_yield stub
+      sys/sysctl.h — sysctlbyname stub
+      sys/stat.h — struct stat stub
+      sys/param.h — MIN/MAX macros
+      unistd.h — sleep/usleep stubs
+      fcntl.h — O_RDONLY etc.
+      cerrno, cstdlib, cstring — C++ wrappers for C headers
+      errno.h — errno macro via __errno_location
+
+    Updated shared shims (src/user/apps/mbedtls/shim/):
+      stdio.h — added fopen, fclose, fread, fwrite, fseek, ftell,
+                feof, ferror, fflush, fgetc, fputc, fgets, fputs,
+                fileno, SEEK_SET/CUR/END
+      time.h — added localtime, localtime_r, mktime, strftime
+
+  Verification:
+    All 33 OpenH264 .cpp files compile clean. Zero errors.
+    ts_xml.h, ts_dash.h compile clean (tested via ts_layout.h test).
+    minimp4.h: header-only, no separate compilation needed.
+
+  Note: OpenH264 is not yet linked into tatersurf.elf. The linker
+  needs to handle C++ objects (extern "C" wrappers needed for the
+  decoder API). Makefile integration in next step.
+
+Artifacts:
+  src/user/apps/ts_xml.h
+  src/user/apps/ts_dash.h
+  src/user/apps/minimp4.h
+  src/user/apps/openh264/ (33 .cpp + 67 .h + shim headers)
+  tools/host/bin/x86_64-elf-g++ (symlink to cross-compiler)

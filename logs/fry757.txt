@@ -1,0 +1,48 @@
+fry757 — Phase 9 Step 3: Minimal Event-Loop Application (evloop.fry)
+=====================================================================
+Timestamp: 2026-03-15T23:47:00Z
+
+RESULT: SUCCESS — evloop.fry compiled clean (98KB), integrated into build + ISO
+
+Summary:
+  Created src/user/apps/evloop.c — a TaterWin GUI application that
+  demonstrates poll-based event loop multiplexing over:
+    1. TaterWin SHM window (FD 0) — keyboard, mouse, wheel, focus events
+    2. TCP socket — DNS resolve, connect, HTTP GET, receive
+    3. fry_poll() unified event dispatch with 33ms timeout (~30fps)
+
+  This is the first TaterTOS app that uses fry_poll() to multiplex
+  window events and network I/O in a single event loop, proving the
+  full runtime stack works together.
+
+Features:
+  - Window creation via TaterWin SHM protocol (640x400)
+  - Handles all Phase 7 message types: key, mouse, move, wheel,
+    focus, enter/leave, close request, resize
+  - Event counter display (keys, mouse, wheel, focus)
+  - TCP connection to example.com:80 (DNS + connect + HTTP GET)
+  - Non-blocking socket receive via MSG_DONTWAIT
+  - HTTP response body display with wheel-scroll navigation
+  - Status bar with connection state machine
+  - Press 'q' to quit, 'r' to retry network
+  - Ring-buffer event log showing last 12 events
+
+Build integration:
+  - Added to Makefile: EVLOOP_OBJS, build rule, clean rule
+  - Added to build_iso.sh: all 6 copy locations (FS_IMG apps/,
+    FS_IMG root, EFI_IMG apps/, EFI_IMG mcopy_dir, ISO_DIR apps/,
+    target_dir)
+  - Compiles with existing LIBC_OBJ, no new dependencies
+
+Architecture:
+  - Uses fry_poll() to wait on {FD 0, sock_fd} with 33ms timeout
+  - Input stream parser handles TaterWin binary message framing
+  - Double-buffer rendering: render_buf -> pixels (SHM) on dirty
+  - Network state machine: IDLE -> RESOLVING -> CONNECTING ->
+    SENDING -> RECEIVING -> DONE/ERROR
+
+Phase 9 progress:
+  Step 1: NSPR 4.38.2  — COMPLETE (fry755)
+  Step 2: NSS 3.121    — COMPLETE (fry756)
+  Step 3: Event-loop app — COMPLETE (this fry)
+  Step 4: Minimal Gecko startup with software rendering — NEXT

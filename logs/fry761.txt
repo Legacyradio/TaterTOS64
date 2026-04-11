@@ -1,0 +1,58 @@
+fry761 — TaterSurf Phase A1-A4: libc gap fills for mbedTLS + QuickJS
+=====================================================================
+Timestamp: 2026-03-27T12:00:00Z
+
+Context:
+  TaterSurf (native web browser) requires mbedTLS (TLS 1.2/1.3) and
+  QuickJS (ES2023 JS engine). Both external libraries need libc functions
+  that TaterTOS64v3 was missing: qsort, setjmp/longjmp, assert, and
+  float formatting in vsnprintf (%f/%g/%e).
+
+Changes:
+
+  A1. qsort + bsearch
+      File: src/user/libc/libc.c
+      File: src/user/libc/libc.h
+      Why: mbedTLS and QuickJS both call qsort(). Our libc had none.
+      Algorithm: heapsort — in-place, no malloc, O(n log n) worst case.
+      Also added bsearch() for binary search on sorted arrays.
+
+  A2. setjmp / longjmp
+      File: src/user/libc/setjmp.S (new — x86_64 GAS assembly)
+      File: src/include/setjmp.h (new)
+      File: Makefile (added setjmp.o to LIBC_OBJ, added .S build rule)
+      Why: QuickJS dtoa.c uses setjmp/longjmp for float parsing error
+      recovery. jmp_buf stores 8 callee-saved registers (RBX, RBP,
+      R12-R15, RSP, RIP). POSIX sigsetjmp/siglongjmp aliased to the
+      non-signal variants (TaterTOS has no signal mask to save).
+
+  A3. assert macro
+      File: src/include/assert.h (new)
+      File: src/user/libc/libc.c (__assert_fail implementation)
+      Why: QuickJS and mbedTLS debug builds use assert(). Our libc
+      had no assert.h. __assert_fail prints the expression, file,
+      line, and function, then calls fry_exit(127).
+
+  A4. vsnprintf float formatting (%f, %e, %g, %o)
+      File: src/user/libc/libc.c (extended vsnprintf)
+      Why: QuickJS needs %f/%g for number-to-string conversion.
+      Added:
+        - Precision specifier (.N) parsing
+        - Length modifiers: L (long double), h/hh, z/j/t
+        - %f: fixed-point with rounding propagation
+        - %e: scientific notation with exponent
+        - %g: auto-select %f or %e based on magnitude
+        - %o: octal output
+        - %a/%A: hex float (stubbed, returns 0x0p+0)
+        - Special value handling: nan, inf, -inf
+        - Trailing zero stripping for %g
+      No fenv dependency — uses integer decomposition only.
+
+Verification:
+  Compile test (no full rebuild — libc objects only):
+    make src/user/libc/libc.o src/user/libc/setjmp.o
+  Result: clean compile, zero warnings, both objects produced.
+
+Artifacts:
+  src/user/libc/libc.o    — updated with qsort, bsearch, assert, float fmt
+  src/user/libc/setjmp.o  — new, x86_64 setjmp/longjmp

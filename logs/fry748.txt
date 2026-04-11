@@ -1,0 +1,83 @@
+fry748 — Phase 4: Networking ABI (Sockets & DNS) — Implementation Complete
+Date: 2026-03-15
+
+WHAT:
+Implemented the full Phase 4 (Networking ABI / Sockets and DNS) from netbuild1.
+13 new syscalls (72-84), BSD socket model, TCP listen/accept, UDP socket receive,
+DNS resolver syscall, nonblocking socket support, poll integration.
+
+FILES CREATED:
+  src/include/fry_socket.h — BSD socket constants, types, byte-order helpers
+    Why: shared header for kernel + userspace socket ABI (AF_INET, SOCK_STREAM,
+         sockaddr_in, htons/ntohs/htonl/ntohl)
+
+FILES MODIFIED:
+  src/include/errno.h — 16 new network error codes (ENOTSOCK..EINPROGRESS)
+    Why: socket syscalls need standard POSIX-compatible network errnos
+
+  src/include/fry_limits.h — FRY_SOCK_MAX(16), FRY_SOCK_UDP_RXMAX(4), FRY_SOCK_UDP_PKTSZ(512)
+    Why: socket pool sizing constants shared between kernel and userspace
+
+  src/drivers/net/netcore.h — TCP_ESTABLISHED exposed, tcp_listen/accept/get_state/rx_available,
+    udp_unbind, udp_set_socket_handler, TCP_MAX_CONNECTIONS→16
+    Why: socket layer needs to drive TCP server and UDP receive through netcore
+
+  src/drivers/net/netcore.c — tcp_listen(), tcp_accept(), tcp_get_state(), tcp_rx_available(),
+    udp_unbind(), udp_set_socket_handler(), SYN-on-listen-port handling, TCP_SYN_RECV state
+    Why: server-side TCP (listen/accept) requires new connection states and accept scanning;
+         UDP socket receive needs fallback handler for unbound ports
+
+  src/kernel/proc/process.h — FD_SOCKET enum, fry_sock_state enum, fry_udp_pkt struct,
+    fry_socket struct with TCP/UDP state, g_sockets[] extern
+    Why: socket objects live in global pool (like pipes), referenced via FD_SOCKET fds
+
+  src/kernel/proc/process.c — g_sockets[FRY_SOCK_MAX] pool, FD_SOCKET cleanup in shared_release()
+    Why: socket lifecycle tied to process FD table; cleanup closes TCP handles
+
+  src/kernel/proc/syscall.c — 13 new syscall handlers (SYS_SOCKET through SYS_DNS_RESOLVE),
+    FD_SOCKET dispatch in SYS_READ/WRITE/CLOSE, poll_check_fd FD_SOCKET events,
+    sock_alloc/sock_ephemeral_port/sock_udp_rx helpers
+    Why: core socket ABI — all userspace socket operations route through syscall dispatch
+
+  src/user/libc/libc.h — 14 socket function declarations
+    Why: userspace API surface for sockets
+
+  src/user/libc/libc.c — 14 socket wrapper implementations (syscall2/3/4/5)
+    Why: libc wrappers translate C calls to syscall ABI
+
+  src/kernel/selftest.c — Phase 4 ABI checks (errno values, limits, FD_SOCKET, g_sockets)
+    Why: boot-time validation that socket constants match expected ABI values
+
+SYSCALLS ADDED (72-84):
+  72 SYS_SOCKET       — create socket (AF_INET, SOCK_STREAM/DGRAM)
+  73 SYS_CONNECT      — TCP connect or set UDP default dest
+  74 SYS_BIND         — bind local port (TCP listen prep or UDP receive)
+  75 SYS_LISTEN       — put TCP socket into LISTEN state
+  76 SYS_ACCEPT       — accept incoming TCP connection
+  77 SYS_SEND         — send data on connected socket (TCP or UDP)
+  78 SYS_RECV         — receive data from socket
+  79 SYS_SHUTDOWN_SOCK — shutdown socket (SHUT_RD/WR/RDWR)
+  80 SYS_GETSOCKOPT   — get socket option (SO_ERROR, SO_RCVTIMEO, etc.)
+  81 SYS_SETSOCKOPT   — set socket option
+  82 SYS_SENDTO       — send UDP to specific addr without connect
+  83 SYS_RECVFROM     — receive UDP with source addr
+  84 SYS_DNS_RESOLVE  — resolve hostname to IPv4 via DNS
+
+DESIGN DECISIONS:
+  - Socket pool (g_sockets[16]) mirrors pipe pool pattern — global, indexed by fd_ptrs[]
+  - TCP wraps existing netcore tcp_connect/send/recv; listen/accept add server-side
+  - UDP uses fallback handler (udp_set_socket_handler) for packets not matching bindings
+  - Nonblocking: O_NONBLOCK fd_flag + MSG_DONTWAIT flag both checked
+  - Poll: FD_SOCKET returns POLLIN/POLLOUT/POLLHUP based on TCP state and buffer status
+  - DNS: thin wrapper over netcore dns_resolve(), copies result to user buffer
+
+BUILD:
+  make all — ZERO errors, ZERO warnings
+  build_iso.sh — ISO exported to /mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso
+
+TEST COMMANDS:
+  Boot ISO in QEMU, verify serial shows:
+    selftest: NN passed, 0 failed  (NN increased by ~10 for Phase 4 checks)
+  Confirm no CPU faults during boot.
+
+STATUS: CONFIRMED — boots to GUI, no faults. Phase 4 COMPLETE.

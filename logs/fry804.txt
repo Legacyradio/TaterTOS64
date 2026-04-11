@@ -1,0 +1,55 @@
+fry804 — TaterSurf Browser Upgrade: Step 11 (Custom Elements v1) + Step 12 (Shadow DOM)
+=========================================================================================
+Date: 2026-04-03
+Build: clean, zero errors
+
+NOTE: ts_webcomp.h already had scaffolding for Steps 11+12 from a prior session.
+This step wired the missing pieces to make it all functional.
+
+STEP 11: Custom Elements v1 — Completing the Implementation
+------------------------------------------------------------
+
+11a) Element upgrade on define()
+  - When customElements.define(tag, class) is called, existing DOM nodes
+    with matching tag name are now upgraded:
+    * Constructor called with element as `this`
+    * connectedCallback fired if element is in the document tree
+    * Serial trace: CE_UPGRADE: tag err=... for constructor errors
+    * Sets g_dom->dirty after upgrade pass
+
+11b) Automatic lifecycle callbacks via DOM hooks
+  - Added function pointer hooks to struct ts_dom_ctx:
+    * on_connected(dom, node_id) — called from ts_dom_append_child
+    * on_disconnected(dom, node_id) — called from ts_dom_remove_child
+    * on_element_created(ctx, elem_obj, tag) — called from createElement
+  - All hooks initialized to NULL in ts_dom_init()
+  - ts_webcomp_register() wires them:
+    * on_connected → ts_ce_connected (fires connectedCallback)
+    * on_disconnected → ts_ce_disconnected (fires disconnectedCallback)
+    * on_element_created → ts_webcomp_enhance_element (adds attachShadow)
+
+11c) attachShadow on all new elements
+  - ts_webcomp_enhance_element() now called automatically via
+    on_element_created hook whenever document.createElement() runs
+  - Previously only patched on body element; now ALL elements get it
+  - <template> elements also get .content getter automatically
+
+11d) Bug fix: whenDefined Promise
+  - Fixed JS_NewPromiseCapability call: was passing &resolve_fn (1 slot)
+    instead of resolve_funcs[2] (2 slots). Was writing past stack variable.
+
+STEP 12: Shadow DOM (already present in ts_webcomp.h)
+-----------------------------------------------------
+Already implemented in prior session:
+  - element.attachShadow({mode: 'open'|'closed'})
+  - Shadow root as fragment node with side table tracking
+  - shadowRoot property on host (open mode)
+  - host property on shadow root
+  - g_shadows[256] side table
+
+Files modified:
+  src/user/apps/ts_dom.h       — lifecycle hook function pointers on ts_dom_ctx
+  src/user/apps/ts_dom_bindings.h — on_element_created hook call in createElement
+  src/user/apps/ts_webcomp.h   — element upgrade, hook wiring, forward decl, Promise fix
+
+Plan reference: TATERSURF_UPGRADE_PLAN.md Steps 11-12

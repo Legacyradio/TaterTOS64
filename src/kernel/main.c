@@ -63,7 +63,9 @@ int i219_is_ready(void);
 int i219_is_link_up(void);
 int dhcp_discover(void);
 void e1000_init(void);
+int e1000_is_ready(void);
 void rtl8169_init(void);
+void hda_init(void);
 void wifi_9260_init(void);
 int wifi_9260_boot_smoke_test(void);
 int part_init(void);
@@ -81,6 +83,8 @@ void kernel_selftest(void);
 void aml_extended_init(void);
 void hpet_init(void);
 void hpet_sleep_ms(uint64_t ms);
+void entropy_init(void);
+void rtc_init(void);
 void lapic_timer_init(void);
 void gop_fb_init(void);
 int process_launch(const char *path);
@@ -97,7 +101,7 @@ uint8_t kernel_stack[262144];
 #define TATER_BUILD_TAG __DATE__ " " __TIME__
 #define TATER_BUILD_ID  "2026-03-04-fry531-rollback"
 #define TATER_SELFTEST 1
-#define TATER_SKIP_SMP 1
+#define TATER_SKIP_SMP 0
 
 static void aml_extended_init_thread(void *arg) {
     (void)arg;
@@ -301,6 +305,8 @@ static void after_vmm(struct fry_handoff *handoff) {
     // Phase 9: Timers must be initialized before SMP so APs can use HPET
     // for LAPIC timer calibration in ap_entry().
     hpet_init();
+    rtc_init();
+    entropy_init();
     if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("B:SMP\n");
 
     // Phase 8: SMP
@@ -359,23 +365,42 @@ static void after_vmm(struct fry_handoff *handoff) {
     early_fb_stage(handoff, 27);
 
     // Phase 12: Network
-    if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("B:NET\n");
+    early_serial_puts("B:NET\n");
     kprint("init: net\n");
     netcore_init();
     i219_init();
     e1000_init();
     rtl8169_init();
+    hda_init();
 
     /* Auto-DHCP if wired NIC is up */
     if (i219_is_ready() && i219_is_link_up()) {
+        early_serial_puts("DHCP:I219\n");
         kprint("init: I219 link up, running DHCP...\n");
         int dhcp_rc = dhcp_discover();
-        if (dhcp_rc == 0)
+        if (dhcp_rc == 0) {
+            early_serial_puts("DHCP:OK\n");
             kprint("init: DHCP success\n");
-        else
+        } else {
+            early_serial_puts("DHCP:FAIL\n");
             kprint("init: DHCP failed rc=%d (can retry with netmgr)\n", dhcp_rc);
+        }
     } else if (i219_is_ready()) {
+        early_serial_puts("I219:NOLINK\n");
         kprint("init: I219 ready but no link (cable plugged in?)\n");
+    } else if (e1000_is_ready()) {
+        early_serial_puts("DHCP:E1000\n");
+        kprint("init: e1000 ready, running DHCP...\n");
+        int dhcp_rc = dhcp_discover();
+        if (dhcp_rc == 0) {
+            early_serial_puts("DHCP:OK\n");
+            kprint("init: DHCP success\n");
+        } else {
+            early_serial_puts("DHCP:FAIL\n");
+            kprint("init: DHCP failed rc=%d\n", dhcp_rc);
+        }
+    } else {
+        early_serial_puts("NET:NONIC\n");
     }
 
     // Phase 13: VFS + filesystem

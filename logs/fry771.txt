@@ -1,0 +1,80 @@
+fry771 — TaterSurf Phase C2-C5: DOM bindings + Web API stubs (ts_dom_bindings.h)
+=====================================================================
+Timestamp: 2026-03-27T21:00:00Z
+
+Context:
+  The DOM data structures (ts_dom.h, fry770) need JavaScript-callable
+  bindings so that QuickJS scripts can interact with the page.
+  This is the layer that React, Lit, and Next.js call to render.
+
+Changes:
+  New file: src/user/apps/ts_dom_bindings.h (header-only, ~700 LOC)
+
+  Node methods (registered on every Element/Node JS wrapper):
+    parentNode, parentElement, firstChild, lastChild, nextSibling,
+    previousSibling, children (element-only array), childNodes (all),
+    textContent, appendChild, removeChild, insertBefore, replaceChild,
+    contains, cloneNode
+
+  Element methods:
+    getAttribute, setAttribute, removeAttribute, hasAttribute,
+    addEventListener, removeEventListener, querySelector,
+    querySelectorAll, getBoundingClientRect (stub — returns zeros),
+    id (getter), className (getter), innerHTML (get/set — set triggers
+    re-parse of children), tagName, nodeName, nodeType
+
+  Document methods:
+    createElement, createTextNode, createComment,
+    createDocumentFragment, getElementById, getElementsByTagName,
+    querySelector, querySelectorAll, body, head, documentElement
+
+  Window (registered on global object):
+    setTimeout, setInterval, clearTimeout, clearInterval,
+    requestAnimationFrame, cancelAnimationFrame,
+    innerWidth, innerHeight, window, self, globalThis,
+    location (href, hostname, pathname, search, hash, origin, protocol),
+    navigator (userAgent, platform, language)
+
+  Console:
+    console.log, console.warn, console.error, console.info, console.debug
+    All output to DOM context console buffer for F12 debug panel.
+
+  Web API stubs (prevent "X is not defined" crashes):
+    performance.now — stub
+    localStorage / sessionStorage — empty objects
+    getComputedStyle — returns empty rect
+    matchMedia — returns {matches: false}
+    MutationObserver — observe/disconnect/takeRecords stubs
+    IntersectionObserver — immediately fires callback with isIntersecting:true
+    ResizeObserver — observe/disconnect stubs
+    queueMicrotask — via Promise.resolve().then()
+    TextEncoder / TextDecoder — basic ASCII encode/decode
+    URL constructor — stores href, stubs all properties
+    AbortController — signal.aborted + abort()
+    history.pushState / replaceState — no-ops
+
+  Why stubs matter: React and modern frameworks check for these APIs
+  during initialization. If they throw ReferenceError, the framework
+  refuses to mount. Stubs return safe defaults that let initialization
+  proceed. Real implementations replace stubs as needed in Phase C5+.
+
+  Node wrapping:
+    ts_js_wrap_node — creates JS object for a DOM node, sets __node_id,
+    nodeType, nodeName/tagName, caches wrapper to prevent duplicates.
+    ts_js_get_node_id — reads __node_id from JS "this" object.
+    ts_dom_bind_node_methods — attaches all Node/Element methods to a
+    JS wrapper object.
+
+  Global registration:
+    ts_dom_register_globals(dom) — creates document, window, console,
+    navigator, location, history, and all stubs on the global object.
+    Must be called after ts_dom_load_html and before ts_dom_run_scripts.
+
+Verification:
+  Compile test: init DOM, load HTML, register globals, run scripts
+  (including document.getElementById + document.createElement +
+  console.log from JS), tick timers, destroy.
+  Result: compiles clean, zero errors.
+
+Artifacts:
+  src/user/apps/ts_dom_bindings.h

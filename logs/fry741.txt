@@ -1,0 +1,63 @@
+[2026-03-14 22:07:19 CDT] Step: Tighten phase-0/phase-1 ABI limit consistency before phase 2.
+
+Why:
+- The public ABI limit surface in `src/include/fry_limits.h` existed, but the
+  core process/syscall layer still duplicated several of those limits with
+  hardcoded literals.
+- Starting phase 2 with duplicated ceilings would make thread work easier to
+  drift out of sync across the kernel/user boundary.
+
+Code changes:
+- `src/kernel/proc/process.h`
+  - Included `fry_limits.h`.
+  - Bound `PROC_MAX` to `FRY_PROC_MAX` and `PROC_VMREG_MAX` to
+    `FRY_VMREG_MAX`.
+  - Replaced fixed-size fd tables with `FRY_FD_MAX`.
+  - Updated ABI-discipline comments to reference the public limit names.
+- `src/kernel/proc/process.c`
+  - Replaced remaining fd-table initialization/cleanup loops using literal
+    `64` with `FRY_FD_MAX`.
+- `src/kernel/proc/syscall.c`
+  - Included `fry_limits.h`.
+  - Bound VM user-base/user-limit helpers to the public VM constants.
+  - Replaced local `SHM_MAX` / `VM_SHARED_MAX` duplicates with
+    `FRY_SHM_MAX` / `FRY_VM_SHARED_MAX`.
+  - Replaced fd-range checks and fd-allocation loops using literal `64` with
+    `FRY_FD_MAX`.
+  - Replaced kernel path buffers sized as literal `128` with `FRY_PATH_MAX`.
+- `src/kernel/selftest.c`
+  - Added boot-time checks for the public limit constants and for the kernel
+    aliases that must stay aligned with them.
+
+Notes:
+- This is a bounded pre-phase-2 hardening pass, not a reopen of phase 1.
+- No threading/futex/TLS code was started in this step.
+
+Next:
+- Run the default clean rebuild + ISO packaging path.
+- If that passes, fold the verification result back into this same fry log and
+  treat the cleanup pass as closed.
+
+[2026-03-14 22:09:13 CDT] Verification update:
+
+Commands run:
+- `make clean all`
+- `./build_iso.sh`
+
+Result:
+- Full clean rebuild succeeded.
+- ISO packaging succeeded.
+- ISO export succeeded to
+  `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`.
+
+Warnings seen:
+- Pre-existing warnings only:
+  - `src/kernel/acpi/aml_exec.c`: unused parameter `ctx`
+  - `src/kernel/acpi/extended.c`: unused `str_eq`, `obj_to_str`,
+    `pci_cf8_write32`
+  - `src/user/shell/shell.c`: unused parameter `argv`
+  - `src/boot/efi_loader.c`: unused `gop_mask_size`, `gop_mask_pos`
+
+Closeout:
+- This bounded hardening pass is complete.
+- The tree remains ready to move on to phase 2.

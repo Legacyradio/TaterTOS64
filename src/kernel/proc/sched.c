@@ -1,6 +1,7 @@
 // Round-robin scheduler
 
 #include <stdint.h>
+#include <errno.h>
 #include "sched.h"
 #include "process.h"
 #include "../mm/vmm.h"
@@ -16,12 +17,22 @@
 void kprint(const char *fmt, ...);
 extern struct fry_handoff *g_handoff;
 
-// Tracks the kernel stack top of the currently running process on the BSP.
-// syscall_entry reads this to switch off the user stack before any kernel work.
-// Updated by sched_tick() every time a new process is scheduled on the BSP.
-uint64_t g_syscall_kstack_top = 0;
+/*
+ * Per-CPU data for SWAPGS-based syscall entry.
+ * syscall_entry uses SWAPGS to load GS.BASE → percpu, then accesses
+ * kstack_top at offset 0 and user_rsp scratch at offset 8.
+ */
+struct percpu_data {
+    uint64_t kstack_top;    /* offset 0: kernel stack for current process */
+    uint64_t user_rsp;      /* offset 8: scratch for user RSP in syscall_entry */
+} __attribute__((aligned(16)));
 
 #define MAX_CPUS 64
+#define MSR_FS_BASE 0xC0000100u
+
+static struct percpu_data percpu[MAX_CPUS];
+static volatile uint32_t g_sched_ready;
+static uint32_t g_sched_next_cpu;
 
 struct runqueue {
     struct fry_process *head;
@@ -42,6 +53,8 @@ static uint8_t g_first_context_switch_seen;
 static uint8_t g_first_user_switch_seen;
 
 extern char __kernel_stack_top;
+
+static void rq_push(struct runqueue *q, struct fry_process *p);
 
 static void boot_diag_stage(uint64_t stage) {
     struct fry_handoff *handoff = g_handoff;
@@ -100,6 +113,23 @@ static uint64_t now_ms(void) {
     if (freq == 0) return 0;
     uint64_t cnt = hpet_read_counter();
     return (cnt * 1000ULL) / freq;
+}
+
+static void write_user_fs_base(uint64_t base) {
+    uint32_t lo = (uint32_t)(base & 0xFFFFFFFFu);
+    uint32_t hi = (uint32_t)(base >> 32);
+    __asm__ volatile("wrmsr" : : "c"(MSR_FS_BASE), "a"(lo), "d"(hi));
+}
+
+static void wake_runnable_locked(struct fry_process *p, uint32_t count,
+                                 uint32_t bsp, int32_t result) {
+    if (!p) return;
+    p->state = PROC_RUNNING;
+    p->wake_time_ms = 0;
+    p->wait_poll = 0;
+    p->wait_result = result;
+    if (p->cpu >= count) p->cpu = (uint8_t)bsp;
+    rq_push(&rq[p->cpu], p);
 }
 
 static void rq_push(struct runqueue *q, struct fry_process *p) {
@@ -220,7 +250,7 @@ static void idle_loop(void *arg) {
     }
 }
 
-static void init_boot_context(uint32_t cpu) {
+static void init_boot_context(uint32_t cpu, uint64_t stack_top) {
     struct fry_process *boot = &boot_contexts[cpu];
     for (uint32_t i = 0; i < sizeof(*boot); i++) {
         ((uint8_t *)boot)[i] = 0;
@@ -229,7 +259,7 @@ static void init_boot_context(uint32_t cpu) {
     boot->cpu = (uint8_t)cpu;
     boot->is_kernel = 1;
     boot->cr3 = vmm_get_kernel_pml4_phys();
-    boot->kernel_stack_top = (uint64_t)(uintptr_t)&__kernel_stack_top;
+    boot->kernel_stack_top = stack_top;
     boot->name[0] = 'b';
     boot->name[1] = 'o';
     boot->name[2] = 'o';
@@ -268,11 +298,21 @@ int sched_init(void) {
     {
         uint64_t irqf = irq_save_disable();
         spin_lock(&g_sched_lock);
-        init_boot_context(bsp);
+        init_boot_context(bsp, (uint64_t)(uintptr_t)&__kernel_stack_top);
         current[bsp] = &boot_contexts[bsp];
+        /* Seed BSP percpu kstack with current RSP as safe default */
+        {
+            uint64_t cur_rsp;
+            __asm__ volatile("mov %%rsp, %0" : "=r"(cur_rsp));
+            percpu[bsp].kstack_top = cur_rsp;
+        }
+        g_sched_next_cpu = 0;
         spin_unlock(&g_sched_lock);
         irq_restore(irqf);
     }
+    /* Signal APs that the scheduler is initialized */
+    __asm__ volatile("" ::: "memory");
+    g_sched_ready = 1;
     return 0;
 }
 
@@ -286,6 +326,37 @@ void sched_set_current(struct fry_process *p) {
     current[cpu_index()] = p;
     spin_unlock(&g_sched_lock);
     irq_restore(irqf);
+}
+
+void *sched_percpu_ptr(uint32_t cpu) {
+    if (cpu >= MAX_CPUS) return &percpu[0];
+    return &percpu[cpu];
+}
+
+int sched_ap_ready(void) {
+    return g_sched_ready != 0;
+}
+
+void sched_ap_start(uint64_t stack_top) {
+    uint32_t cpu = cpu_index();
+    uint64_t irqf = irq_save_disable();
+    spin_lock(&g_sched_lock);
+    init_boot_context(cpu, stack_top);
+    current[cpu] = &boot_contexts[cpu];
+    percpu[cpu].kstack_top = stack_top;
+    spin_unlock(&g_sched_lock);
+    irq_restore(irqf);
+    early_serial_puts("K_AP_SCHED cpu=");
+    {
+        char c = '0' + (char)cpu;
+        early_serial_putc(c);
+    }
+    early_serial_puts("\n");
+    /* Enable interrupts — LAPIC timer drives sched_tick */
+    __asm__ volatile("sti");
+    for (;;) {
+        __asm__ volatile("hlt");
+    }
 }
 
 void sched_add(uint32_t pid) {
@@ -309,20 +380,34 @@ void sched_add(uint32_t pid) {
     if (count == 0) count = 1;
     if (bsp >= count) bsp = 0;
 
-    /* BSP-only scheduling: lapic_timer currently advances runqueues only on the BSP.
-       Keeping runnable tasks on AP queues causes app launches to stall forever. */
-    p->cpu = (uint8_t)bsp;
-    rq_push(&rq[bsp], p);
+    /* Keep userspace on the creator CPU until user-mode SMP paths are proven. */
+    {
+        uint32_t target;
+        if (!p->is_kernel && p->cpu < count) {
+            target = p->cpu;
+        } else {
+            target = g_sched_next_cpu;
+            if (target >= count) target = 0;
+            g_sched_next_cpu = target + 1;
+            if (g_sched_next_cpu >= count) g_sched_next_cpu = 0;
+        }
+        p->cpu = (uint8_t)target;
+        rq_push(&rq[target], p);
+    }
     spin_unlock(&g_sched_lock);
     irq_restore(irqf);
 }
 
 void sched_remove(uint32_t pid) {
+    sched_remove_with_state(pid, PROC_DEAD);
+}
+
+void sched_remove_with_state(uint32_t pid, enum proc_state state) {
     uint64_t irqf = irq_save_disable();
     spin_lock(&g_sched_lock);
     struct fry_process *p = remove_from_runqueue(pid);
     if (p) {
-        p->state = PROC_DEAD;
+        p->state = state;
     }
     spin_unlock(&g_sched_lock);
     irq_restore(irqf);
@@ -345,6 +430,9 @@ void sched_sleep(uint32_t pid, uint64_t ms) {
     p->state = PROC_WAITING;
     p->wake_time_ms = wake;
     p->wait_pid = 0;
+    p->wait_tid = 0;
+    p->wait_futex_key = 0;
+    p->wait_result = 0;
     spin_unlock(&g_sched_lock);
     irq_restore(irqf);
 }
@@ -360,8 +448,35 @@ void sched_block(uint32_t pid) {
     }
     p->state = PROC_WAITING;
     p->wake_time_ms = UINT64_MAX;
+    p->wait_result = 0;
     spin_unlock(&g_sched_lock);
     irq_restore(irqf);
+}
+
+int sched_block_futex(uint32_t pid, volatile const uint32_t *word,
+                      uint32_t expected, uint64_t key,
+                      uint64_t wake_time_ms) {
+    uint64_t irqf = irq_save_disable();
+    int rc = 0;
+    spin_lock(&g_sched_lock);
+    if (!word || *word != expected) {
+        rc = -EAGAIN;
+    } else {
+        struct fry_process *p = remove_from_runqueue(pid);
+        if (!p) {
+            rc = -ESRCH;
+        } else {
+            p->state = PROC_WAITING;
+            p->wait_pid = 0;
+            p->wait_tid = 0;
+            p->wait_futex_key = key;
+            p->wait_result = 0;
+            p->wake_time_ms = wake_time_ms;
+        }
+    }
+    spin_unlock(&g_sched_lock);
+    irq_restore(irqf);
+    return rc;
 }
 
 void sched_wake(uint32_t pid) {
@@ -381,14 +496,81 @@ void sched_wake(uint32_t pid) {
     }
     p->state = PROC_RUNNING;
     p->wake_time_ms = 0;
+    p->wait_result = 0;
     uint32_t count = smp_cpu_count();
     uint32_t bsp = smp_bsp_index();
     if (count == 0) count = 1;
     if (bsp >= count) bsp = 0;
-    if (p->cpu >= count) p->cpu = (uint8_t)bsp;
-    rq_push(&rq[p->cpu], p);
+    wake_runnable_locked(p, count, bsp, 0);
     spin_unlock(&g_sched_lock);
     irq_restore(irqf);
+}
+
+void sched_block_poll(uint32_t pid, uint64_t wake_time_ms) {
+    uint64_t irqf = irq_save_disable();
+    spin_lock(&g_sched_lock);
+    struct fry_process *p = remove_from_runqueue(pid);
+    if (!p) {
+        spin_unlock(&g_sched_lock);
+        irq_restore(irqf);
+        return;
+    }
+    p->state = PROC_WAITING;
+    p->wait_pid = 0;
+    p->wait_tid = 0;
+    p->wait_futex_key = 0;
+    p->wait_poll = 1;
+    p->wait_result = 0;
+    p->wake_time_ms = wake_time_ms;
+    spin_unlock(&g_sched_lock);
+    irq_restore(irqf);
+}
+
+uint32_t sched_wake_poll_waiters(void) {
+    uint64_t irqf = irq_save_disable();
+    uint32_t woke = 0;
+    uint32_t count, bsp;
+    spin_lock(&g_sched_lock);
+    count = smp_cpu_count();
+    bsp = smp_bsp_index();
+    if (count == 0) count = 1;
+    if (bsp >= count) bsp = 0;
+    for (uint32_t i = 0; i < PROC_MAX; i++) {
+        if (procs[i].state != PROC_WAITING) continue;
+        if (!procs[i].wait_poll) continue;
+        procs[i].wait_poll = 0;
+        wake_runnable_locked(&procs[i], count, bsp, 0);
+        woke++;
+    }
+    spin_unlock(&g_sched_lock);
+    irq_restore(irqf);
+    return woke;
+}
+
+uint32_t sched_wake_futex(uint64_t key, uint32_t max_wake, int32_t result) {
+    uint64_t irqf = irq_save_disable();
+    uint32_t woke = 0;
+    uint32_t count;
+    uint32_t bsp;
+    if (max_wake == 0 || key == 0) {
+        irq_restore(irqf);
+        return 0;
+    }
+    spin_lock(&g_sched_lock);
+    count = smp_cpu_count();
+    bsp = smp_bsp_index();
+    if (count == 0) count = 1;
+    if (bsp >= count) bsp = 0;
+    for (uint32_t i = 0; i < PROC_MAX && woke < max_wake; i++) {
+        if (procs[i].state != PROC_WAITING) continue;
+        if (procs[i].wait_futex_key != key) continue;
+        procs[i].wait_futex_key = 0;
+        wake_runnable_locked(&procs[i], count, bsp, result);
+        woke++;
+    }
+    spin_unlock(&g_sched_lock);
+    irq_restore(irqf);
+    return woke;
 }
 
 void sched_tick(void) {
@@ -414,11 +596,12 @@ void sched_tick(void) {
         if (procs[i].state == PROC_WAITING &&
             procs[i].wait_pid == 0 &&
             procs[i].wake_time_ms <= now) {
-            procs[i].state = PROC_RUNNING;
-            if (procs[i].cpu >= count) {
-                procs[i].cpu = (uint8_t)bsp;
+            if (procs[i].wait_futex_key != 0) {
+                procs[i].wait_futex_key = 0;
+                wake_runnable_locked(&procs[i], count, bsp, -ETIMEDOUT);
+                continue;
             }
-            rq_push(&rq[procs[i].cpu], &procs[i]);
+            wake_runnable_locked(&procs[i], count, bsp, 0);
         }
     }
 
@@ -443,11 +626,10 @@ void sched_tick(void) {
     if (tss) {
         tss_set_rsp0_local(tss, next->kernel_stack_top);
     }
-    // Keep g_syscall_kstack_top in sync so syscall_entry can find the kernel
-    // stack for the newly scheduled process.  Only the BSP handles syscalls.
-    if (cpu == bsp) {
-        g_syscall_kstack_top = next->kernel_stack_top;
-    }
+    /* Update per-CPU syscall kernel stack pointer for the newly scheduled
+     * process.  syscall_entry reads this via SWAPGS + %gs:0 on all CPUs. */
+    percpu[cpu].kstack_top = next->kernel_stack_top;
+    write_user_fs_base(next->user_fs_base);
     if (cpu == bsp && !g_first_context_switch_seen) {
         g_first_context_switch_seen = 1;
         mark_context_switch = 1;

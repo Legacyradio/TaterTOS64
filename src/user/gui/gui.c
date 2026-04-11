@@ -1,4 +1,9 @@
-// TaterTOS64v3 GUI — Puppy/Garuda layout, dark teal-purple palette
+// TaterTOS64v3 GUI — Phase 7: Rich input, focus, clipboard, damage, cursor
+//
+// Puppy/Garuda layout, dark teal-purple palette.
+// Phase 7: Full TaterWin protocol with rich key events (scancode + modifiers
+// + press/release), wheel events, focus events, enter/leave, close request,
+// clipboard, cursor shapes, damage-driven repaint, high-frequency mouse motion.
 
 #include "../libc/libc.h"
 #include "../libc/gfx.h"
@@ -56,6 +61,13 @@ typedef struct {
     uint64_t launch_deadline_ms;
     uint8_t launch_watchdog_fired;
     uint8_t launch_progress_seen;
+    /* Phase 7 additions */
+    uint8_t has_focus;         /* 1 if this window currently has focus */
+    uint8_t cursor_inside;     /* 1 if cursor is currently inside window client area */
+    uint32_t cursor_shape;     /* FRY_CURSOR_* requested by app */
+    /* Damage tracking: dirty region accumulated from app messages */
+    int dirty;                 /* 1 if any damage pending */
+    int dirty_x, dirty_y, dirty_w, dirty_h;
 } window_t;
 
 static window_t windows[MAX_WINDOWS];
@@ -83,11 +95,137 @@ static char app_paths[MAX_MENU_APPS][96];
 static int app_count = 0;
 
 // ---------------------------------------------------------------------------
+// Desktop icons
+// ---------------------------------------------------------------------------
+#define ICON_SIZE      48
+#define ICON_LABEL_H   14
+#define ICON_PAD_X     24
+#define ICON_PAD_Y     16
+#define ICON_CELL_W    (ICON_SIZE + ICON_PAD_X)
+#define ICON_CELL_H    (ICON_SIZE + ICON_LABEL_H + ICON_PAD_Y)
+#define MAX_DESKTOP_ICONS 16
+
+struct desktop_icon {
+    char name[32];         /* display label (e.g., "TaterSurf") */
+    char app_path[96];     /* launch path (e.g., "/apps/TATERSURF.FRY") */
+    uint32_t pixels[ICON_SIZE * ICON_SIZE];
+    int loaded;
+    int x, y;              /* screen position (computed in layout) */
+};
+
+static struct desktop_icon g_icons[MAX_DESKTOP_ICONS];
+static int g_icon_count = 0;
+
+/* Map from icon filename to app .FRY and display name */
+static const struct { const char *icon; const char *app; const char *label; } icon_map[] = {
+    { "/icons/BROWSE.ICON", "/apps/TATERSURF.FRY", "TaterSurf" },
+    { "/icons/FILES.ICON",  "/apps/FILEMAN.FRY",   "Files" },
+    { "/icons/NET.ICON",    "/apps/NETMGR.FRY",    "Network" },
+    { "/icons/SYS.ICON",    "/apps/SYSINFO.FRY",   "SysInfo" },
+    { "/icons/BIN.ICON",    "/apps/SHELL.TOT",      "Shell" },
+    { "/icons/MEDIA.ICON",  "/apps/EVLOOP.FRY",    "Media" },
+    { "/icons/SETUP.ICON",  "/apps/PS.FRY",        "Processes" },
+    { NULL, NULL, NULL }
+};
+
+static void load_desktop_icons(void) {
+    g_icon_count = 0;
+    for (int i = 0; icon_map[i].icon && g_icon_count < MAX_DESKTOP_ICONS; i++) {
+        struct desktop_icon *ic = &g_icons[g_icon_count];
+        ic->loaded = 0;
+
+        /* Read .ICON file: 4-byte width + 4-byte height + pixel data */
+        long fd = fry_open(icon_map[i].icon, 0);
+        if (fd < 0) continue;
+
+        uint32_t hdr[2];
+        long n = fry_read((int)fd, hdr, 8);
+        if (n != 8 || hdr[0] != ICON_SIZE || hdr[1] != ICON_SIZE) {
+            fry_close((int)fd);
+            continue;
+        }
+        /* Read pixel data in chunks (syscall may return partial reads) */
+        size_t total = ICON_SIZE * ICON_SIZE * 4;
+        size_t got = 0;
+        uint8_t *dst = (uint8_t *)ic->pixels;
+        while (got < total) {
+            n = fry_read((int)fd, dst + got, total - got);
+            if (n <= 0) break;
+            got += (size_t)n;
+        }
+        fry_close((int)fd);
+        if (got != total) continue;
+
+        strncpy(ic->name, icon_map[i].label, sizeof(ic->name) - 1);
+        strncpy(ic->app_path, icon_map[i].app, sizeof(ic->app_path) - 1);
+        ic->loaded = 1;
+        g_icon_count++;
+    }
+}
+
+static void layout_desktop_icons(int sw, int sh) {
+    int cols = 1; /* single column on right side */
+    int start_x = sw - ICON_CELL_W - 8;
+    int start_y = 12;
+    (void)cols;
+
+    for (int i = 0; i < g_icon_count; i++) {
+        g_icons[i].x = start_x;
+        g_icons[i].y = start_y + i * ICON_CELL_H;
+        /* wrap to next column if off screen */
+        if (g_icons[i].y + ICON_CELL_H > sh - TASKBAR_H) {
+            start_x -= ICON_CELL_W;
+            start_y = 12;
+            g_icons[i].x = start_x;
+            g_icons[i].y = start_y;
+        }
+    }
+}
+
+static void draw_desktop_icons(gfx_ctx_t *ctx) {
+    for (int i = 0; i < g_icon_count; i++) {
+        if (!g_icons[i].loaded) continue;
+        /* Blit icon pixels */
+        for (int iy = 0; iy < ICON_SIZE; iy++) {
+            for (int ix = 0; ix < ICON_SIZE; ix++) {
+                uint32_t px = g_icons[i].pixels[iy * ICON_SIZE + ix];
+                gfx_putpixel(ctx, (uint32_t)(g_icons[i].x + ix),
+                              (uint32_t)(g_icons[i].y + iy), px);
+            }
+        }
+        /* Label centered below icon */
+        int label_len = 0;
+        while (g_icons[i].name[label_len]) label_len++;
+        int label_x = g_icons[i].x + (ICON_SIZE - label_len * 8) / 2;
+        int label_y = g_icons[i].y + ICON_SIZE + 2;
+        gfx_draw_text(ctx, (uint32_t)label_x, (uint32_t)label_y,
+                       g_icons[i].name, 0xE0E0E0, COL_DESKTOP);
+    }
+}
+
+static int desktop_icon_hit(int mx, int my) {
+    for (int i = 0; i < g_icon_count; i++) {
+        if (!g_icons[i].loaded) continue;
+        if (mx >= g_icons[i].x && mx < g_icons[i].x + ICON_SIZE &&
+            my >= g_icons[i].y && my < g_icons[i].y + ICON_SIZE + ICON_LABEL_H) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// ---------------------------------------------------------------------------
 // UI state
 // ---------------------------------------------------------------------------
 static int start_menu_open = 0;
 static int dragging_slot   = -1;
 static int drag_ox = 0, drag_oy = 0;
+
+/* Phase 7: global dirty flag — force full redraw when true */
+static int g_needs_full_redraw = 1;
+
+/* Phase 7: current active cursor shape for drawing */
+static uint32_t g_active_cursor = FRY_CURSOR_ARROW;
 
 static int window_has_process(const window_t *w) {
     return w && w->pid >= 0;
@@ -164,12 +302,6 @@ static int path_is_nvme_prefix(const char *path) {
 }
 
 static int gui_path_is_primary_app_source(const char *path) {
-    /*
-     * Keep the desktop app model deterministic: the live/root app set comes
-     * only from the primary root view. Secondary mounts stay available for
-     * explicit browsing and install workflows, but the launcher never consults
-     * them as implicit app sources.
-     */
     if (!path || !*path) return 0;
     return !path_is_nvme_prefix(path);
 }
@@ -193,18 +325,22 @@ static void add_app_entry(const char *dir, const char *entry) {
     if (!entry || !dir) return;
     if (!gui_path_is_primary_app_source(dir)) return;
     if (has_fry_suffix(entry)) {
-        len = strlen(entry) - 4; /* trim ".FRY" */
+        len = strlen(entry) - 4;
     } else if (has_tot_suffix(entry) && str_eq_ci(entry, "SHELL.TOT")) {
-        len = strlen(entry) - 4; /* trim ".TOT" */
+        len = strlen(entry) - 4;
     } else {
         return;
     }
     if (len == 0 || len >= sizeof(base)) return;
     for (size_t i = 0; i < len; i++) base[i] = ascii_upper(entry[i]);
     base[len] = 0;
-    /* GUI is the compositor itself — never list it as a launchable app */
     if (str_eq(base, "GUI")) return;
-    if (str_eq(base, "INIT") && path_is_system_dir(dir)) return;
+    if (str_eq(base, "INIT")) return;
+    if (str_eq(base, "VMTEST")) return;
+    if (str_eq(base, "VMFAULT")) return;
+    if (str_eq(base, "ABITEST")) return;
+    if (str_eq(base, "THTEST")) return;
+    if (str_eq(base, "EVLOOP")) return;
     if (app_already_added(base)) return;
     if (app_count >= MAX_MENU_APPS) return;
 
@@ -267,20 +403,8 @@ static void discover_primary_apps(void) {
 }
 
 static void discover_apps(void) {
-    /*
-     * Keep boot UX deterministic: seed a minimal launch set first, then enrich
-     * from directory scans. This guarantees a usable menu even when storage is
-     * slow or unavailable.
-     */
     app_count = 0;
-    add_app_entry("/apps", "SHELL.TOT");
-    add_app_entry("/apps", "SYSINFO.FRY");
-    add_app_entry("/apps", "UPTIME.FRY");
-    add_app_entry("/apps", "PS.FRY");
-    add_app_entry("/apps", "FILEMAN.FRY");
-    add_app_entry("/apps", "NETMGR.FRY");
-    add_app_entry("/", "SHELL.TOT");
-
+    /* Dynamically discover all .FRY/.TOT apps from known directories */
     discover_primary_apps();
 }
 
@@ -318,6 +442,64 @@ static void clamp_window_pos(window_t *w) {
     if (w->y < 0) w->y = 0;
 }
 
+// ---------------------------------------------------------------------------
+// Phase 7: Focus management
+// ---------------------------------------------------------------------------
+static void send_focus_event(window_t *w, uint8_t focused) {
+    if (!w || !window_has_process(w)) return;
+    tw_msg_focus_t msg;
+    msg.hdr.type = TW_MSG_FOCUS_EVENT;
+    msg.hdr.magic = TW_MAGIC;
+    msg.focused = focused;
+    msg._pad[0] = msg._pad[1] = msg._pad[2] = 0;
+    fry_proc_input((uint32_t)w->pid, &msg, sizeof(msg));
+}
+
+static void update_focus(int new_top_slot) {
+    /* Remove focus from all windows */
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        if (windows[i].used && windows[i].has_focus && i != new_top_slot) {
+            windows[i].has_focus = 0;
+            send_focus_event(&windows[i], 0);
+        }
+    }
+    /* Grant focus to new top window */
+    if (new_top_slot >= 0 && new_top_slot < MAX_WINDOWS &&
+        windows[new_top_slot].used && !windows[new_top_slot].minimized) {
+        if (!windows[new_top_slot].has_focus) {
+            windows[new_top_slot].has_focus = 1;
+            send_focus_event(&windows[new_top_slot], 1);
+        }
+    }
+    g_needs_full_redraw = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7: Enter/leave tracking
+// ---------------------------------------------------------------------------
+static void send_enter_leave(window_t *w, uint8_t entered, int x, int y) {
+    if (!w || !window_has_process(w)) return;
+    tw_msg_enter_leave_t msg;
+    msg.hdr.type = TW_MSG_ENTER_LEAVE;
+    msg.hdr.magic = TW_MAGIC;
+    msg.entered = entered;
+    msg._pad[0] = msg._pad[1] = msg._pad[2] = 0;
+    msg.x = x;
+    msg.y = y;
+    fry_proc_input((uint32_t)w->pid, &msg, sizeof(msg));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7: Close request
+// ---------------------------------------------------------------------------
+static void send_close_request(window_t *w) {
+    if (!w || !window_has_process(w)) return;
+    tw_msg_close_request_t msg;
+    msg.hdr.type = TW_MSG_CLOSE_REQUEST;
+    msg.hdr.magic = TW_MAGIC;
+    fry_proc_input((uint32_t)w->pid, &msg, sizeof(msg));
+}
+
 static int resize_client_surface(window_t *w, int req_w, int req_h) {
     int nw = req_w;
     int nh = req_h;
@@ -348,11 +530,12 @@ static int resize_client_surface(window_t *w, int req_w, int req_h) {
     rresp.new_h     = nh;
     fry_proc_input((uint32_t)w->pid, &rresp, sizeof(rresp));
 
+    g_needs_full_redraw = 1;
     return 1;
 }
 
 // ---------------------------------------------------------------------------
-// TaterWin / text output helpers (unchanged logic from prior gui.c)
+// TaterWin / text output helpers
 // ---------------------------------------------------------------------------
 static void process_window_output(window_t *w) {
     while (w->msglen >= (int)sizeof(tw_msg_header_t)) {
@@ -393,27 +576,12 @@ static void process_window_output(window_t *w) {
                         resp.shm_id    = (int)sid;
                         resp.shm_ptr   = (uint64_t)(uintptr_t)ptr;
                         fry_proc_input((uint32_t)w->pid, &resp, sizeof(resp));
+                        g_needs_full_redraw = 1;
                     } else {
-                        const char *err = "GUI: SHM map failed\n";
-                        int avail = (int)sizeof(w->textbuf) - 1 - w->textlen;
-                        int n = (int)strlen(err);
-                        if (n > avail) n = avail;
-                        if (n > 0) {
-                            memcpy(w->textbuf + w->textlen, err, (size_t)n);
-                            w->textlen += n;
-                            w->textbuf[w->textlen] = '\0';
-                        }
+                        append_window_text(w, "GUI: SHM map failed\n");
                     }
                 } else {
-                    const char *err = "GUI: SHM alloc failed\n";
-                    int avail = (int)sizeof(w->textbuf) - 1 - w->textlen;
-                    int n = (int)strlen(err);
-                    if (n > avail) n = avail;
-                    if (n > 0) {
-                        memcpy(w->textbuf + w->textlen, err, (size_t)n);
-                        w->textlen += n;
-                        w->textbuf[w->textlen] = '\0';
-                    }
+                    append_window_text(w, "GUI: SHM alloc failed\n");
                 }
                 int c = (int)sizeof(tw_msg_create_win_t);
                 memmove(w->msgbuf, w->msgbuf + c, (size_t)(w->msglen - c));
@@ -424,7 +592,6 @@ static void process_window_output(window_t *w) {
                 int req_w = rmsg->new_w;
                 int req_h = rmsg->new_h;
                 if (w->maximized) {
-                    /* Maximized windows keep full-desktop geometry for consistency. */
                     req_w = g_sw - 2;
                     req_h = g_desktop_h - TITLE_H - 1;
                 }
@@ -441,6 +608,74 @@ static void process_window_output(window_t *w) {
                     }
                 }
                 int c = (int)sizeof(tw_msg_resize_t);
+                memmove(w->msgbuf, w->msgbuf + c, (size_t)(w->msglen - c));
+                w->msglen -= c;
+            } else if (hdr->type == TW_MSG_DAMAGE_RECT) {
+                /* Phase 7: app declares dirty region — accumulate */
+                if (w->msglen < (int)sizeof(tw_msg_damage_rect_t)) break;
+                tw_msg_damage_rect_t *dmsg = (tw_msg_damage_rect_t *)(void *)w->msgbuf;
+                if (!w->dirty) {
+                    w->dirty = 1;
+                    w->dirty_x = dmsg->x;
+                    w->dirty_y = dmsg->y;
+                    w->dirty_w = dmsg->w;
+                    w->dirty_h = dmsg->h;
+                } else {
+                    /* Union the two rects */
+                    int x1 = w->dirty_x;
+                    int y1 = w->dirty_y;
+                    int x2 = x1 + w->dirty_w;
+                    int y2 = y1 + w->dirty_h;
+                    int nx1 = dmsg->x;
+                    int ny1 = dmsg->y;
+                    int nx2 = nx1 + dmsg->w;
+                    int ny2 = ny1 + dmsg->h;
+                    if (nx1 < x1) x1 = nx1;
+                    if (ny1 < y1) y1 = ny1;
+                    if (nx2 > x2) x2 = nx2;
+                    if (ny2 > y2) y2 = ny2;
+                    w->dirty_x = x1;
+                    w->dirty_y = y1;
+                    w->dirty_w = x2 - x1;
+                    w->dirty_h = y2 - y1;
+                }
+                int c = (int)sizeof(tw_msg_damage_rect_t);
+                memmove(w->msgbuf, w->msgbuf + c, (size_t)(w->msglen - c));
+                w->msglen -= c;
+            } else if (hdr->type == TW_MSG_CURSOR_SHAPE) {
+                /* Phase 7: app requests cursor shape change */
+                if (w->msglen < (int)sizeof(tw_msg_cursor_shape_t)) break;
+                tw_msg_cursor_shape_t *cmsg = (tw_msg_cursor_shape_t *)(void *)w->msgbuf;
+                w->cursor_shape = cmsg->shape;
+                int c = (int)sizeof(tw_msg_cursor_shape_t);
+                memmove(w->msgbuf, w->msgbuf + c, (size_t)(w->msglen - c));
+                w->msglen -= c;
+            } else if (hdr->type == TW_MSG_CLIPBOARD_SET) {
+                /* Phase 7: app sets clipboard content */
+                if (w->msglen < (int)sizeof(tw_msg_clipboard_set_t)) break;
+                tw_msg_clipboard_set_t *cmsg = (tw_msg_clipboard_set_t *)(void *)w->msgbuf;
+                uint16_t len = cmsg->len;
+                if (len > 256) len = 256;
+                fry_clipboard_set(cmsg->data, len);
+                int c = (int)sizeof(tw_msg_clipboard_set_t);
+                memmove(w->msgbuf, w->msgbuf + c, (size_t)(w->msglen - c));
+                w->msglen -= c;
+            } else if (hdr->type == TW_MSG_CLIPBOARD_COPY) {
+                /* Phase 7: app requests clipboard content */
+                if (w->msglen < (int)sizeof(tw_msg_clipboard_copy_t)) break;
+                char cbuf[256];
+                long clen = fry_clipboard_get(cbuf, sizeof(cbuf));
+                if (clen < 0) clen = 0;
+                tw_msg_clipboard_data_t dresp;
+                dresp.hdr.type = TW_MSG_CLIPBOARD_DATA;
+                dresp.hdr.magic = TW_MAGIC;
+                dresp.len = (uint16_t)clen;
+                dresp._pad[0] = dresp._pad[1] = 0;
+                if (clen > 0) memcpy(dresp.data, cbuf, (size_t)clen);
+                if (clen < (long)sizeof(dresp.data))
+                    memset(dresp.data + clen, 0, sizeof(dresp.data) - (size_t)clen);
+                fry_proc_input((uint32_t)w->pid, &dresp, sizeof(dresp));
+                int c = (int)sizeof(tw_msg_clipboard_copy_t);
                 memmove(w->msgbuf, w->msgbuf + c, (size_t)(w->msglen - c));
                 w->msglen -= c;
             } else {
@@ -536,6 +771,8 @@ static void remove_window(int slot) {
     z_count = nc;
     windows[slot].used = 0;
     if (dragging_slot == slot) dragging_slot = -1;
+    g_needs_full_redraw = 1;
+    update_focus(top_slot());
 }
 
 static void launch_watchdog_expire(window_t *w) {
@@ -605,12 +842,11 @@ static long spawn_app_with_variants(const char *name, const char *ext,
 }
 
 static void launch_app_index(int idx) {
-    /* find free slot */
     int slot = -1;
     for (int i = 0; i < MAX_WINDOWS; i++) {
         if (!windows[i].used) { slot = i; break; }
     }
-    if (slot < 0) return; /* all slots full */
+    if (slot < 0) return;
 
     if (idx < 0 || idx >= app_count) return;
     const char *name = app_names[idx];
@@ -657,6 +893,8 @@ static void launch_app_index(int idx) {
         z_order[z_count++] = slot;
         bring_to_front(slot);
         start_menu_open = 0;
+        g_needs_full_redraw = 1;
+        update_focus(slot);
         return;
     }
 
@@ -675,6 +913,7 @@ static void launch_app_index(int idx) {
     w->textlen = (int)strlen(w->textbuf);
     w->launch_watchdog_fired = 0;
     w->launch_progress_seen = 0;
+    w->cursor_shape = FRY_CURSOR_ARROW;
     {
         long now_ms = fry_gettime();
         w->launch_deadline_ms = (now_ms > 0) ? ((uint64_t)now_ms + LAUNCH_WATCHDOG_MS) : 0;
@@ -683,6 +922,8 @@ static void launch_app_index(int idx) {
     z_order[z_count++] = slot;
     bring_to_front(slot);
     start_menu_open = 0;
+    g_needs_full_redraw = 1;
+    update_focus(slot);
 }
 
 // ---------------------------------------------------------------------------
@@ -711,7 +952,7 @@ static void draw_window(int slot) {
     if (active)
         gfx_fill(&backbuffer, wx+1, wy+1, 2, TITLE_H-1, COL_ACCENT);
 
-    /* title text — truncate to avoid button area */
+    /* title text */
     char trunc[40];
     strncpy(trunc, w->title, 39);
     trunc[39] = '\0';
@@ -722,7 +963,7 @@ static void draw_window(int slot) {
     uint32_t title_col = active ? COL_TEXT : COL_TEXT_DIM;
     gfx_draw_text(&backbuffer, wx + 10, wy + 6, trunc, title_col, COL_TRANSPARENT);
 
-    /* title bar buttons: [−][□][×] right side */
+    /* title bar buttons: [-][o][x] right side */
     int bx_close = wx + ww - 18;
     int bx_max   = wx + ww - 18 - BTN_GAP;
     int bx_min   = wx + ww - 18 - BTN_GAP*2;
@@ -770,6 +1011,7 @@ static void draw_taskbar(int screen_w, int screen_h, int mx, int my,
     if ((btns & 1) && !(prev_btns & 1) && hover_start) {
         start_menu_open = !start_menu_open;
         if (start_menu_open) discover_apps();
+        g_needs_full_redraw = 1;
     }
 
     /* --- Window task buttons --- */
@@ -786,7 +1028,6 @@ static void draw_taskbar(int screen_w, int screen_h, int mx, int my,
         gfx_fill(&backbuffer, btn_x, ty+4, bw, TASKBAR_H-8, bg);
         if (s == ts && !w->minimized)
             gfx_fill(&backbuffer, btn_x, ty+4, 2, TASKBAR_H-8, COL_ACCENT);
-        /* truncated title */
         char tt[13]; strncpy(tt, w->title, 12); tt[12] = '\0';
         uint32_t tc = w->done ? COL_TEXT_DIM : COL_TEXT;
         gfx_draw_text(&backbuffer, btn_x+5, ty+10, tt, tc, COL_TRANSPARENT);
@@ -796,6 +1037,8 @@ static void draw_taskbar(int screen_w, int screen_h, int mx, int my,
             if (w->minimized) { w->minimized = 0; bring_to_front(s); }
             else               bring_to_front(s);
             start_menu_open = 0;
+            g_needs_full_redraw = 1;
+            update_focus(s);
         }
         btn_x += bw + 4;
     }
@@ -863,17 +1106,80 @@ static void draw_start_menu(int screen_h, int mx, int my,
 }
 
 // ---------------------------------------------------------------------------
-// Cursor
+// Cursor shapes (Phase 7)
 // ---------------------------------------------------------------------------
 static const uint8_t cursor_arrow[16] = {
     0x80, 0xC0, 0xE0, 0xF0, 0xF8, 0xFC, 0xFE, 0xFF,
     0xFF, 0xF8, 0xD8, 0x8C, 0x0C, 0x06, 0x06, 0x00
 };
+
+static const uint8_t cursor_ibeam[16] = {
+    0xE0, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
+    0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0xE0
+};
+
+static const uint8_t cursor_hand[16] = {
+    0x00, 0x30, 0x48, 0x48, 0x48, 0x48, 0x4E, 0x4A,
+    0x7A, 0x0A, 0x0E, 0x06, 0x06, 0x06, 0x04, 0x00
+};
+
+static const uint8_t cursor_resize_h[16] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x24, 0x66, 0xFF,
+    0xFF, 0x66, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00
+};
+
+static const uint8_t cursor_resize_v[16] = {
+    0x10, 0x38, 0x7C, 0x10, 0x10, 0x10, 0x10, 0x10,
+    0x10, 0x10, 0x10, 0x10, 0x7C, 0x38, 0x10, 0x00
+};
+
+static const uint8_t cursor_crosshair[16] = {
+    0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0xFE, 0x00,
+    0xFE, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x00
+};
+
 static void draw_cursor(int x, int y) {
+    const uint8_t *shape = cursor_arrow;
+    int w = 8;
+    switch (g_active_cursor) {
+        case FRY_CURSOR_IBEAM:    shape = cursor_ibeam; break;
+        case FRY_CURSOR_HAND:     shape = cursor_hand; break;
+        case FRY_CURSOR_RESIZE_H: shape = cursor_resize_h; break;
+        case FRY_CURSOR_RESIZE_V: shape = cursor_resize_v; break;
+        case FRY_CURSOR_CROSSHAIR:shape = cursor_crosshair; break;
+        default: break;
+    }
+    /* Black outline: draw shape offset by 1px in each direction */
     for (int i = 0; i < 16; i++)
-        for (int j = 0; j < 8; j++)
-            if (cursor_arrow[i] & (1 << (7 - j)))
+        for (int j = 0; j < w; j++)
+            if (shape[i] & (1 << (7 - j))) {
+                gfx_putpixel(&backbuffer, x+j+1, y+i,   0x000000);
+                gfx_putpixel(&backbuffer, x+j,   y+i+1, 0x000000);
+                gfx_putpixel(&backbuffer, x+j+1, y+i+1, 0x000000);
+            }
+    /* White fill on top */
+    for (int i = 0; i < 16; i++)
+        for (int j = 0; j < w; j++)
+            if (shape[i] & (1 << (7 - j)))
                 gfx_putpixel(&backbuffer, x+j, y+i, 0xFFFFFF);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7: determine which window (client area) the cursor is over
+// ---------------------------------------------------------------------------
+static int window_under_cursor(int mx, int my) {
+    for (int zi = z_count - 1; zi >= 0; zi--) {
+        int s = z_order[zi];
+        window_t *w = &windows[s];
+        if (!w->used || w->minimized) continue;
+        int cx = w->x + 1;
+        int cy = w->y + TITLE_H;
+        if (mx >= cx && mx < cx + w->shm_w &&
+            my >= cy && my < cy + w->shm_h) {
+            return s;
+        }
+    }
+    return -1;
 }
 
 // ---------------------------------------------------------------------------
@@ -894,14 +1200,18 @@ int main(void) {
     g_sw = sw;
     g_desktop_h = desktop_h;
     discover_apps();
+    load_desktop_icons();
+    layout_desktop_icons(sw, sh);
 
     int mx = sw / 2, my = sh / 2;
     uint8_t prev_btns = 0;
+    int prev_hover_slot = -1;   /* for enter/leave tracking */
 
     for (;;) {
         /* --- input --- */
         struct fry_mouse_state ms;
         fry_mouse_get(&ms);
+        int old_mx = mx, old_my = my;
         mx += ms.dx * 4;
         my += ms.dy * 4;
         if (mx < 0) mx = 0;
@@ -910,21 +1220,90 @@ int main(void) {
         if (my >= sh) my = sh - 1;
 
         uint8_t cur_btns = ms.btns;
+        int mouse_moved = (mx != old_mx || my != old_my);
 
-        /* keyboard -> focused window */
+        /* Phase 7: Rich keyboard events -> focused window */
         int ts = top_slot();
-        if (ts >= 0 && windows[ts].used && !windows[ts].minimized) {
-            char keybuf[16];
-            long kn = fry_read(0, keybuf, sizeof(keybuf));
-            if (kn > 0 && window_has_process(&windows[ts])) {
-                for (long i = 0; i < kn; i++) {
+        {
+            struct fry_key_event kevt;
+            while (fry_kbd_event(&kevt) > 0) {
+                if (ts >= 0 && windows[ts].used && !windows[ts].minimized &&
+                    window_has_process(&windows[ts])) {
                     tw_msg_key_t kmsg;
                     kmsg.hdr.type  = TW_MSG_KEY_EVENT;
                     kmsg.hdr.magic = TW_MAGIC;
-                    kmsg.key = (uint32_t)(uint8_t)keybuf[i];
-                    kmsg.flags = 0;
+                    kmsg.scancode  = kevt.scancode;
+                    kmsg.vk        = kevt.vk;
+                    kmsg.mods      = kevt.mods;
+                    kmsg.flags     = kevt.flags;
+                    kmsg.ascii     = kevt.ascii;
+                    kmsg._pad      = 0;
                     fry_proc_input((uint32_t)windows[ts].pid, &kmsg, sizeof(kmsg));
                 }
+            }
+        }
+
+        /* Phase 7: Enter/leave tracking */
+        int cur_hover_slot = window_under_cursor(mx, my);
+        if (cur_hover_slot != prev_hover_slot) {
+            if (prev_hover_slot >= 0 && prev_hover_slot < MAX_WINDOWS &&
+                windows[prev_hover_slot].used) {
+                windows[prev_hover_slot].cursor_inside = 0;
+                send_enter_leave(&windows[prev_hover_slot], 0, mx, my);
+            }
+            if (cur_hover_slot >= 0 && cur_hover_slot < MAX_WINDOWS &&
+                windows[cur_hover_slot].used) {
+                windows[cur_hover_slot].cursor_inside = 1;
+                int local_x = mx - (windows[cur_hover_slot].x + 1);
+                int local_y = my - (windows[cur_hover_slot].y + TITLE_H);
+                send_enter_leave(&windows[cur_hover_slot], 1, local_x, local_y);
+            }
+            prev_hover_slot = cur_hover_slot;
+        }
+
+        /* Phase 7: Update cursor shape from hovered window */
+        if (cur_hover_slot >= 0 && windows[cur_hover_slot].used) {
+            g_active_cursor = windows[cur_hover_slot].cursor_shape;
+        } else {
+            g_active_cursor = FRY_CURSOR_ARROW;
+        }
+
+        /* Phase 7: Mouse wheel -> focused window */
+        if (ms.wheel != 0 && ts >= 0 && windows[ts].used &&
+            !windows[ts].minimized && window_has_process(&windows[ts])) {
+            window_t *fw = &windows[ts];
+            int local_x = mx - (fw->x + 1);
+            int local_y = my - (fw->y + TITLE_H);
+            tw_msg_wheel_t wmsg;
+            wmsg.hdr.type  = TW_MSG_WHEEL_EVENT;
+            wmsg.hdr.magic = TW_MAGIC;
+            wmsg.x     = local_x;
+            wmsg.y     = local_y;
+            wmsg.delta = ms.wheel;
+            wmsg.mods  = 0;  /* TODO: get current kbd mods */
+            wmsg._pad[0] = wmsg._pad[1] = wmsg._pad[2] = 0;
+            fry_proc_input((uint32_t)fw->pid, &wmsg, sizeof(wmsg));
+        }
+
+        /* Phase 7: High-frequency mouse motion -> hovered focused window */
+        if (mouse_moved && cur_hover_slot >= 0 && cur_hover_slot == ts &&
+            windows[cur_hover_slot].used && !windows[cur_hover_slot].minimized &&
+            window_has_process(&windows[cur_hover_slot]) &&
+            windows[cur_hover_slot].shm_ptr) {
+            window_t *hw = &windows[cur_hover_slot];
+            int local_x = mx - (hw->x + 1);
+            int local_y = my - (hw->y + TITLE_H);
+            if (local_x >= 0 && local_x < hw->shm_w &&
+                local_y >= 0 && local_y < hw->shm_h) {
+                tw_msg_mouse_move_t mmove;
+                mmove.hdr.type  = TW_MSG_MOUSE_MOVE;
+                mmove.hdr.magic = TW_MAGIC;
+                mmove.x    = local_x;
+                mmove.y    = local_y;
+                mmove.btns = cur_btns;
+                mmove.mods = 0;
+                mmove._pad[0] = mmove._pad[1] = 0;
+                fry_proc_input((uint32_t)hw->pid, &mmove, sizeof(mmove));
             }
         }
 
@@ -939,8 +1318,9 @@ int main(void) {
                 int mx0 = 2, my0 = sh - TASKBAR_H - menu_h;
                 if (mx < mx0 || mx >= mx0 + MENU_W || my < my0 || my >= sh - TASKBAR_H) {
                     start_menu_open = 0;
+                    g_needs_full_redraw = 1;
                 }
-                handled = 1; /* menu draw function handles button clicks */
+                handled = 1;
             }
 
             if (!handled) {
@@ -960,6 +1340,10 @@ int main(void) {
 
                     if (mx >= bx_close && mx < bx_close+BTN_SZ &&
                         my >= by_btn && my < by_btn+BTN_SZ) {
+                        /* Phase 7: send close request if app is alive; kill if dead */
+                        if (!w->done && window_has_process(w)) {
+                            send_close_request(w);
+                        }
                         remove_window(s);
                         handled = 1; break;
                     }
@@ -987,12 +1371,16 @@ int main(void) {
                             }
                         }
                         bring_to_front(s);
+                        g_needs_full_redraw = 1;
+                        update_focus(s);
                         handled = 1; break;
                     }
                     if (mx >= bx_min && mx < bx_min+BTN_SZ &&
                         my >= by_btn && my < by_btn+BTN_SZ) {
                         w->minimized = 1;
                         if (dragging_slot == s) dragging_slot = -1;
+                        g_needs_full_redraw = 1;
+                        update_focus(top_slot());
                         handled = 1; break;
                     }
 
@@ -1001,7 +1389,25 @@ int main(void) {
                     dragging_slot = s;
                     drag_ox = mx - w->x;
                     drag_oy = my - w->y;
+                    g_needs_full_redraw = 1;
+                    update_focus(s);
                     handled = 1; break;
+                }
+            }
+
+            /* Desktop icon double-click (single click for now) */
+            if (!handled && my < sh - TASKBAR_H) {
+                int icon_idx = desktop_icon_hit(mx, my);
+                if (icon_idx >= 0) {
+                    /* Find matching app in discovered list and launch */
+                    for (int ai = 0; ai < app_count; ai++) {
+                        if (str_eq(app_paths[ai], g_icons[icon_idx].app_path)) {
+                            launch_app_index(ai);
+                            break;
+                        }
+                    }
+                    handled = 1;
+                    g_needs_full_redraw = 1;
                 }
             }
 
@@ -1014,6 +1420,8 @@ int main(void) {
                     if (mx >= w->x && mx < w->x+w->w &&
                         my >= w->y && my < w->y+w->h) {
                         bring_to_front(s);
+                        g_needs_full_redraw = 1;
+                        update_focus(s);
                         if (w->shm_ptr && window_has_process(w)) {
                             int local_x = mx - (w->x + 1);
                             int local_y = my - (w->y + TITLE_H);
@@ -1025,6 +1433,8 @@ int main(void) {
                                 mm.x = local_x;
                                 mm.y = local_y;
                                 mm.btns = (uint8_t)cur_btns;
+                                mm.mods = 0;
+                                mm._pad[0] = mm._pad[1] = 0;
                                 fry_proc_input((uint32_t)w->pid, &mm, sizeof(mm));
                             }
                         }
@@ -1039,6 +1449,7 @@ int main(void) {
         if (dragging_slot >= 0 && windows[dragging_slot].used) {
             windows[dragging_slot].x = mx - drag_ox;
             windows[dragging_slot].y = my - drag_oy;
+            g_needs_full_redraw = 1;
         }
 
         /* --- poll process output --- */
@@ -1058,10 +1469,12 @@ int main(void) {
                 memcpy(w->msgbuf + w->msglen, rawbuf, (size_t)copy);
                 w->msglen += copy;
                 process_window_output(w);
+                g_needs_full_redraw = 1;
             } else if (rn < 0 && rn != -EAGAIN && !w->done) {
                 w->done = 1;
                 int tlen = (int)strlen(w->title);
                 if (tlen < 40) strcat(w->title, " [done]");
+                g_needs_full_redraw = 1;
             }
             if (w->shm_ptr) {
                 w->launch_progress_seen = 1;
@@ -1074,11 +1487,26 @@ int main(void) {
                 now_ms > 0 &&
                 (uint64_t)now_ms >= w->launch_deadline_ms) {
                 launch_watchdog_expire(w);
+                g_needs_full_redraw = 1;
+            }
+            /* Phase 7: check damage rects for dirty windows */
+            if (w->dirty) {
+                g_needs_full_redraw = 1;
+                w->dirty = 0;
             }
         }
 
         /* --- draw --- */
+        /* Phase 7: always redraw (damage-based optimization applies to
+         * the VRAM copy step — we still composite to backbuffer each frame
+         * for correctness, but could skip if nothing changed).
+         * For now, we redraw the full backbuffer each frame but only copy
+         * to VRAM when something changed. This avoids tearing without
+         * the overhead of redundant VRAM writes. */
         gfx_gradient_v(&backbuffer, 0, 0, sw, desktop_h, COL_DESKTOP, COL_DESKTOP_LO);
+
+        /* Desktop icons */
+        draw_desktop_icons(&backbuffer);
 
         /* windows back to front */
         for (int zi = 0; zi < z_count; zi++)
@@ -1091,7 +1519,14 @@ int main(void) {
 
         draw_cursor(mx, my);
 
-        memcpy(vram, back_buf, g_info.stride * g_info.height * 4);
+        /* Phase 7: Only copy backbuffer to VRAM when something changed or
+         * mouse moved (cursor position always changes).  This is the first
+         * step toward damage-driven repaint — future work can restrict the
+         * copy to only the dirty region. */
+        if (g_needs_full_redraw || mouse_moved || (cur_btns != prev_btns)) {
+            memcpy(vram, back_buf, g_info.stride * g_info.height * 4);
+            g_needs_full_redraw = 0;
+        }
 
         prev_btns = cur_btns;
         fry_sleep(16);

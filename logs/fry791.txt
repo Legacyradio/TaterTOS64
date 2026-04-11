@@ -1,0 +1,154 @@
+fry791 — Professional browser upgrade: CSS cascade, resource loader, images, forms
+=====================================================================
+Timestamp: 2026-04-01
+
+GOAL: Transform TaterSurf from a basic HTML viewer into a professional
+web browser with CSS styling, external resource loading, image decoding,
+and form input support.
+
+CHANGES:
+
+A) CSS Cascade Engine (ts_layout.h)
+   <style> blocks were recognized by the tokenizer but their content was
+   never parsed. CSS rules were never matched against elements. Pages
+   rendered with only hardcoded UA-style defaults (headings bold, links blue).
+
+   FIX:
+   - Added in_style flag to ts_doc_build(). <style> open sets it,
+     text handler checks it and calls ts_css_parse() to parse CSS into
+     doc->stylesheet. </style> close clears it.
+   - Added ts_doc__apply_css_props(): maps CSS properties to ts_text_style
+     fields (color, background-color, font-weight, font-style,
+     text-decoration, text-align, font-size).
+   - Added ts_doc__match_apply_css(): walks all stylesheet rules, matches
+     element against selector parts (tag, .class, #id), applies properties.
+   - Added ts_doc__apply_element_css(): extracts tag/class/id from token,
+     calls match+apply, also handles inline style="" attribute.
+   - Called ts_doc__apply_element_css() in every open tag handler after
+     UA defaults are set (headings, links, inline elements, block elements).
+   - Added display:none / visibility:hidden support via display_none_depth
+     counter. Text inside hidden elements is skipped.
+   - Added <span> tag handler (was completely missing).
+   - Block-level elements (div, p, section, article, header, footer, main,
+     nav, aside) now push/pop the style stack so CSS can scope to them.
+   - Bumped TS_STYLE_STACK_MAX from 64 to 256 (Google's HTML has deeply
+     nested divs that overflow the old stack).
+
+B) External Resource Loader (ts_resource.h — NEW FILE, 452 lines)
+   No mechanism existed to fetch <link rel="stylesheet">, <script src="">,
+   or <img src=""> resources after the main page loaded.
+
+   CREATED ts_resource.h:
+   - struct ts_resource_mgr: manages concurrent HTTP fetches + cache
+   - 4 simultaneous active fetch slots (TS_RES_MAX_ACTIVE)
+   - 96-entry completed resource cache (TS_RES_MAX_CACHE)
+   - 64-entry pending queue for overflow (TS_RES_MAX_QUEUE)
+   - URL deduplication (won't re-fetch same URL)
+   - ts_resource_enqueue(): resolve relative URL, start fetch or queue
+   - ts_resource_get_pollfds(): returns FDs for poll() with POLLOUT
+     during TLS handshake
+   - ts_resource_tick(): polls active fetches, handles redirects,
+     transfers completed data to cache, starts queued fetches
+   - ts_resource_next_complete(): consumer reads completions
+   - Completion types: CSS → re-parse page, JS → execute, IMAGE → decode
+
+C) Image Decoder (ts_image.h — NEW FILE, 669 lines)
+   No image decoding existed. <img> tags showed [IMG] placeholder.
+
+   CREATED ts_image.h:
+   - Minimal RFC 1951 inflate (deflate decompressor):
+     - Huffman tree building and decoding
+     - Fixed and dynamic Huffman trees
+     - Stored (uncompressed) blocks
+     - Length/distance back-references
+   - PNG decoder (ts_png_decode):
+     - 8-bit: RGB, RGBA, grayscale, gray+alpha, palette, tRNS transparency
+     - IHDR/PLTE/tRNS/IDAT/IEND chunk parsing
+     - Zlib header skip + inflate
+     - PNG filter de-filtering (None, Sub, Up, Average, Paeth)
+     - Output: malloc'd ARGB pixel buffer
+   - BMP decoder (ts_bmp_decode):
+     - 24-bit and 32-bit uncompressed
+     - Bottom-up and top-down row order
+   - ts_image_decode(): auto-detect format by magic bytes
+
+D) Image Rendering (ts_layout.h)
+   - ts_doc_render IMAGE case: checks img_cache for decoded pixels,
+     blits with nearest-neighbor scaling to fit render node dimensions.
+     Falls back to [IMG] placeholder if not yet decoded.
+   - ts_doc_layout IMAGE case: uses actual decoded image dimensions
+     when available (from img_cache). Scales down to viewport width
+     preserving aspect ratio.
+   - Added img_cache[64] to struct ts_document: URL + pixel pointer +
+     dimensions per cached image.
+
+E) Form Elements (ts_layout.h + tatersurf.c)
+   No form rendering or input handling existed.
+
+   Layout:
+   - Added TS_NODE_INPUT and TS_NODE_BUTTON node types
+   - Added struct ts_form_input to ts_document (name, value, type,
+     placeholder, cursor, focused, action, method)
+   - <input> handler: renders text/password/search/email/url fields,
+     tracks hidden inputs, renders submit as button
+   - <button> handler: pushes style stack for content
+   - <textarea> handler: renders as input field
+   - <select> handler: renders as [select] placeholder
+   - <form> handler: recognized (action URL storage)
+   - Layout: INPUT = 200x24px, BUTTON = text width + 16px padding
+   - Rendering: dark field background, border, placeholder text in dim
+     color, cursor line when focused, blue highlight border on focus
+
+   Input handling (tatersurf.c):
+   - Click-to-focus on input fields via ts_doc_hit_test_input()
+   - Keyboard: typing, backspace, left/right arrow cursor, escape unfocus
+   - Tab: cycles between form inputs and URL bar
+   - Enter: submits form — builds URL-encoded query string from all
+     named inputs, navigates to action URL (or current page) with query
+
+F) Resource URL Collection (ts_layout.h)
+   - <link rel="stylesheet" href="..."> → doc->external_css[]
+   - <script src="..."> → doc->external_js[]
+   - <img src="..."> → doc->external_img[] + links to img_cache slot
+   - Arrays stored in struct ts_document for resource loader to process
+
+G) Resource Integration (tatersurf.c)
+   - Global g_resources (ts_resource_mgr) initialized on startup
+   - build_page() enqueues all external CSS/JS/image URLs after parse
+   - Main loop polls up to 8 FDs (expanded from 3): stdin + main HTTP +
+     4 resource slots + media
+   - process_resource_completions(): CSS → merge into stylesheet +
+     re-parse HTML + re-layout. JS → execute via JS_Eval. Images →
+     decode via ts_image_decode + store in img_cache.
+   - Status bar shows "Loading resources..." during fetch
+
+H) TLS Bug Fix (ts_http.h)
+   ts_tls_recv returned MBEDTLS_ERR_SSL_WANT_READ when fry_recv returned
+   0 (EOF). This caused infinite spin during TLS handshake — mbedTLS kept
+   asking to read but the callback never indicated completion or error.
+   FIX: rc==0 now returns 0 (let mbedTLS handle clean close).
+
+   Also: main loop now polls socket for FRY_POLLOUT during TLS handshake
+   (was POLLIN only). Same fix applied to resource loader pollfds.
+
+Files changed:
+  NEW:
+    src/user/apps/ts_resource.h   (452 lines — resource loader)
+    src/user/apps/ts_image.h      (669 lines — PNG/BMP decoder)
+  MODIFIED:
+    src/user/apps/ts_layout.h     (1073→1604 lines — CSS, forms, images)
+    src/user/apps/ts_http.h       (TLS recv EOF fix)
+    src/user/apps/tatersurf.c     (1445→1709 lines — integration)
+
+Build: clean (0 errors). ISO exported.
+
+TEST RESULTS (QEMU, Google HTTPS):
+  - DNS resolves, TCP connects, TLS handshake completes
+  - Google HTML page received and parsed
+  - <style> blocks parsed into stylesheet (CSS cascade active)
+  - 9 inline JavaScript scripts executed via QuickJS
+  - JS errors expected (Google's JS uses APIs we don't implement yet):
+    TypeError, ReferenceError on Google-specific globals
+  - Resource loader initiated DNS + TLS for external subresources
+  - Resource loader stalled on first build (POLLOUT not set during
+    TLS handshake for subresource fetches) — fixed in same fry

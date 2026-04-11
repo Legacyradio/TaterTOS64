@@ -23,7 +23,7 @@ struct fry_handoff {
 // Ramdisk format: ramdisk_header at ramdisk_base, followed by packed file data.
 // File data begins at byte offset sizeof(ramdisk_header) from ramdisk_base.
 #define RAMDISK_MAGIC    0x4B534452UL  /* 'RDSK' little-endian */
-#define RAMDISK_MAXFILES 16
+#define RAMDISK_MAXFILES 48
 
 struct ramdisk_entry {
     char     name[32];   /* case-insensitive relative path, e.g. "system/INIT.FRY" */

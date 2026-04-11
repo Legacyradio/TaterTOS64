@@ -1,0 +1,85 @@
+fry792 — Browser fixes: infinite reload, script truncation, page background, head resource collection
+=====================================================================
+Timestamp: 2026-04-01
+
+CHANGES:
+
+A) Fixed infinite page reload loop (tatersurf.c:1644)
+   ROOT CAUSE: After main page loaded (g_req.state == DONE), the HTTP
+   poll condition checked pfds[1].revents — but pfds[1] was now a
+   RESOURCE socket FD, not g_req's FD. When the resource socket had
+   activity, the code called ts_http_poll(&g_req) on the already-DONE
+   request, which returned 1 → build_page() fired again → infinite loop.
+
+   FIX: Changed condition from checking pfds[1] to checking g_req.state
+   range directly: g_req.state >= TLS_HANDSHAKE && <= RECV_CHUNKED.
+
+B) Fixed script text truncation (ts_dom.h)
+   ROOT CAUSE: TS_DOM_TEXT_MAX was 4096 bytes per DOM text node.
+   Google's inline scripts are 37KB+. Scripts were chopped at 4095
+   bytes, causing SyntaxError cascades.
+
+   FIX: Increased TS_DOM_TEXT_MAX to 65536. Reduced TS_DOM_MAX_NODES
+   from 4096 to 1024 and TS_DOM_MAX_LISTENERS from 32 to 16 to
+   compensate memory. Script buffer in ts_dom_run_scripts changed
+   from fixed stack array to heap-allocated (malloc'd to exact size
+   based on child text node lengths).
+
+C) Page background from CSS (ts_layout.h)
+   Added <body> and <html> tag handlers that run CSS cascade and
+   capture background-color into new doc->page_bg field. Renderer
+   uses page_bg instead of hardcoded TS_COL_BG for viewport clear.
+   Default white for <body> if no CSS sets background.
+
+D) CSS color sentinel fix (ts_css.h)
+   ts_css_color() returned 0 for both "invalid" and "black".
+   Changed invalid return to 0xFF000000 (transparent sentinel).
+   Fixed background-color check from (c != 0) to (c != 0xFF000000).
+
+E) Status bar clearing (tatersurf.c)
+   Added else branch to clear "Loading resources..." when all
+   resources finish or fail.
+
+F) TLS WANT_WRITE retry (ts_http.h)
+   ts_http__send now retries up to 100 times on WANT_WRITE/WANT_READ
+   from mbedtls_ssl_write, instead of treating as fatal error.
+
+G) Head resource collection (ts_layout.h)
+   <link rel="stylesheet"> and <script src=""> in <head> were being
+   skipped by the in_head filter. Added inline collection of CSS hrefs
+   and JS src URLs inside the in_head block, without triggering
+   in_script mode (which would eat the rest of the page).
+
+H) QEMU launch: must use -machine q35 for PCIe/ECAM/MCFG.
+   Default i440fx has no MCFG → PCI scan finds 0 devices → no NIC.
+   Must use -device e1000 (not virtio-net-pci, no driver for that).
+
+CONFIRMED WORKING:
+  - Google page loads once (no infinite reload)
+  - Scripts execute with full content (len=37701)
+  - White page background renders
+  - Search box, links, buttons visible
+  - Status bar shows "Done" then "Loading resources..."
+
+REMAINING BLOCKER:
+  Resource TLS handshake crashes with NULL function pointer
+  (rip=0x0, cr2=0x0) during first subresource fetch. This kills
+  the entire TaterSurf process. Main page TLS works fine — only
+  the SECOND TLS connection (for resources) crashes. Need to trace
+  exactly which mbedTLS callback is NULL and why the resource slot's
+  TLS context differs from the main request's.
+
+  This crash prevents ALL external resources (CSS, JS, images) from
+  loading, which prevents styling, Google logo, and full page render.
+  It also kills click handling since the process is dead.
+
+Files changed:
+  MODIFIED:
+    src/user/apps/tatersurf.c    (reload fix, status bar, click trace)
+    src/user/apps/ts_layout.h    (page_bg, body/html handler, head collection)
+    src/user/apps/ts_css.h       (color sentinel fix)
+    src/user/apps/ts_http.h      (WANT_WRITE retry)
+    src/user/apps/ts_dom.h       (text max, node limits, heap script buf)
+    src/user/apps/ts_resource.h  (fetch trace)
+
+Build: clean. ISO exported. QEMU verified with -machine q35 -device e1000.

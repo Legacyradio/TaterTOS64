@@ -1,0 +1,50 @@
+fry798 — BearSSL TLS handshake WORKING — x509 fixes
+=====================================================================
+Timestamp: 2026-04-03
+
+STATUS: VERIFIED WORKING in QEMU
+
+FIXES (on top of fry797 BearSSL swap):
+
+  1. X.509 time callback — return 0 not 1
+     Problem: br_x509_time_check callback must return 0 for "within
+     validity range". Returning 1 means "after notAfter" (EXPIRED).
+     Without a working time callback, x509_minimal gets TIME_UNKNOWN (53)
+     or EXPIRED (54) and aborts key extraction early — pkey.key_type=0.
+     Fix: ts_xnv_time_check() always returns 0.
+
+  2. get_pkey error bypass
+     Problem: xm_get_pkey() only returns the key if err is OK (32) or
+     NOT_TRUSTED (62). With 0 trust anchors, end_chain sets err to
+     NOT_TRUSTED, but other errors (TIME_UNKNOWN, EXPIRED) can also
+     occur and prevent key return.
+     Fix: ts_xnv_get_pkey() forces inner.err = BR_ERR_X509_NOT_TRUSTED
+     before calling inner get_pkey, ensuring the key is always returned.
+
+RESULT:
+  - TLS handshake completes (google.com, TLS 1.2, ECDHE)
+  - Main page HTML loads and renders
+  - 9 inline JavaScript blocks execute via QuickJS
+  - Keep-alive TLS reuse WORKS — Google logo (5482 bytes) fetched
+  - NO CRASH — the mbedTLS RIP=0x0 bug is eliminated
+  - Debug traces cleaned for release build
+
+FILES CHANGED:
+  MODIFIED:
+    src/user/apps/ts_http.h
+      - Added ts_xnv_time_check(): always-valid time callback (returns 0)
+      - ts_xnv_get_pkey(): force err=NOT_TRUSTED before inner get_pkey
+      - ts_tls_setup(): call br_x509_minimal_set_time_callback()
+      - Removed all debug fprintf traces
+    src/user/apps/bearssl/src/ssl/ssl_engine.c
+      - Removed debug fprintf traces
+
+Build: clean. ISO exported. QEMU verified.
+
+NEXT:
+  - The TLS blocker (fry793-795) is resolved
+  - External resource loading works for same-host keep-alive
+  - Google renders as white bg + links (expected: JS-driven resources
+    need full fetch, CSS external sheets need more work)
+  - Can now focus on: more resource types, CSS external loading,
+    multi-host connections, or move to other targets

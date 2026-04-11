@@ -66,3 +66,32 @@ void hpet_init(void) {
 
     kprint("HPET: enabled freq=%llu Hz\n", hpet_freq_hz);
 }
+
+uint64_t hpet_get_period_fs(void) {
+    return hpet_period_fs;
+}
+
+void hpet_get_ns(int64_t *sec_out, int64_t *nsec_out) {
+    uint64_t cnt = read_counter();
+    uint64_t period = hpet_period_fs;
+    if (!period) {
+        *sec_out = 0;
+        *nsec_out = 0;
+        return;
+    }
+    /*
+     * total_ns = cnt * period_fs / 1,000,000
+     *
+     * To avoid 128-bit overflow for large counter values, split into
+     * seconds and sub-second remainder using the frequency.
+     */
+    uint64_t freq = hpet_freq_hz;
+    if (!freq) freq = 1;
+    uint64_t sec = cnt / freq;
+    uint64_t rem_ticks = cnt % freq;
+    /* rem_ticks * period_fs fits in 64 bits for typical HPET periods (~100ns)
+     * and remainder < freq (~15MHz).  100ns * 15M = 1.5e15 < 2^64. */
+    uint64_t rem_ns = (rem_ticks * period) / 1000000ULL;  /* fs → ns */
+    *sec_out = (int64_t)sec;
+    *nsec_out = (int64_t)rem_ns;
+}

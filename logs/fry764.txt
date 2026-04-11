@@ -1,0 +1,76 @@
+fry764 — TaterSurf Phase A7: HTTP/1.1 client (ts_http.h)
+=====================================================================
+Timestamp: 2026-03-27T15:00:00Z
+
+Context:
+  TaterSurf needs an HTTP client that handles both HTTP and HTTPS,
+  chunked transfers, redirects, and cookies. This ties the URL parser
+  (ts_url.h) to the TaterTOS socket API and mbedTLS.
+
+Changes:
+  New file: src/user/apps/ts_http.h (header-only, ~1150 LOC)
+
+  Core data structures:
+    struct ts_http_response — status code/text, headers[], body (malloc'd),
+      content_type, location, content_length, chunked flag
+    struct ts_http — URL, method, socket fd, TLS context, response,
+      recv buffer, chunk state machine, redirect counter, cookie jar
+    struct ts_cookie_jar — in-memory per-session cookie storage (64 max)
+    struct ts_tls_ctx — mbedTLS SSL context/config/cert wrapper
+
+  Functions:
+    ts_http_init(req) — zero-initialize request struct
+    ts_http_free(req) — close socket, teardown TLS, free body
+    ts_http_get(req, url_string) — full HTTP(S) GET:
+      1. Parse URL via ts_url_parse
+      2. DNS resolve via fry_dns_resolve
+      3. TCP socket + connect via fry_socket/fry_connect
+      4. TLS handshake if HTTPS (mbedTLS, blocking in v1)
+      5. Build and send HTTP/1.1 request with Host, User-Agent,
+         Accept, Connection: close, Cookie headers
+      Returns 0 on success (request sent), -1 on error
+    ts_http_poll(req) — receive and process response data:
+      - Parses HTTP status line and headers
+      - Handles Content-Length body collection
+      - Handles chunked transfer-encoding (state machine:
+        CHUNK_SIZE → CHUNK_DATA → CHUNK_CRLF → repeat/DONE)
+      - Handles Connection: close (read until EOF)
+      - Grows body buffer with realloc (4MB max)
+      Returns 0=still receiving, 1=done, -1=error
+    ts_http_is_redirect(req) — check for 301/302/303/307/308
+    ts_http_follow_redirect(req) — close current, resolve new URL,
+      start new request (preserves cookies, max 5 hops)
+    ts_http_get_header(req, name) — lookup response header by name
+
+  Cookie handling:
+    ts_cookie_jar_init(jar) — zero-initialize
+    ts_cookie_parse(jar, set_cookie_value, host) — parse Set-Cookie
+      header, extract name=value, domain, path, secure flag
+    ts_cookie_build(jar, url, buf, max) — build Cookie header value
+      from jar entries matching the request URL (domain/path/secure)
+
+  TLS integration:
+    ts_tls_setup(req) — init mbedTLS SSL context, set VERIFY_NONE
+      (accept all certs), set hostname for SNI, set I/O callbacks
+    ts_tls_handshake(req) — perform TLS handshake (blocking with
+      10-second timeout)
+    ts_tls_teardown(ctx) — close_notify, free contexts
+    ts_tls_send/ts_tls_recv — callbacks wrapping fry_send/fry_recv
+    ts_http__send/ts_http__recv — auto-dispatch to plain or TLS
+
+  Zero Linux code:
+    All networking: fry_socket, fry_connect, fry_send, fry_recv,
+      fry_dns_resolve, fry_close, fry_setsockopt, fry_sleep
+    All TLS: mbedTLS (portable C, Apache 2.0, no Linux headers)
+    All memory: malloc, realloc, free (TaterTOS libc)
+
+Verification:
+  Compile test with x86_64-elf-gcc -ffreestanding:
+    Test code: init request, init cookie jar, free request.
+    Include paths: mbedtls/shim, mbedtls/include, mbedtls/library,
+      src/include, src/user/apps
+  Result: compiles clean, zero errors. Unused-function warnings
+  expected (test doesn't call all functions).
+
+Artifacts:
+  src/user/apps/ts_http.h

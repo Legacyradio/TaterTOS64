@@ -51,9 +51,18 @@ typedef void (*udp_rx_cb_t)(uint32_t src_ip, uint16_t src_port,
 /* Bind a UDP port to a receive callback. Returns 0 on success. */
 int udp_bind(uint16_t port, udp_rx_cb_t cb);
 
+/* Unbind a UDP port. */
+void udp_unbind(uint16_t port);
+
 /* Send a UDP datagram. Returns 0 on success. */
 int udp_send(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port,
              const uint8_t *data, uint16_t len);
+
+/* Socket-layer UDP fallback: called for datagrams with no callback binding */
+typedef void (*udp_socket_rx_t)(uint16_t dst_port, uint32_t src_ip,
+                                 uint16_t src_port,
+                                 const uint8_t *data, uint16_t len);
+void udp_set_socket_handler(udp_socket_rx_t handler);
 
 /* ---- DHCP ---- */
 
@@ -63,9 +72,15 @@ int dhcp_discover(void);
 
 /* ---- TCP ---- */
 
-#define TCP_MAX_CONNECTIONS 4
-#define TCP_RX_BUF_SIZE     4096
-#define TCP_TX_BUF_SIZE     4096
+#define TCP_MAX_CONNECTIONS 16
+#define TCP_RX_BUF_SIZE     1048576   /* 1 MB — large enough for full TLS pages */
+#define TCP_TX_BUF_SIZE     65536
+
+/* TCP connection states exposed for socket layer */
+#define TCP_CLOSED      0
+#define TCP_ESTABLISHED 2
+#define TCP_LISTEN      8
+#define TCP_SYN_RECV    9
 
 /* TCP connection handle */
 typedef int tcp_conn_t;
@@ -73,18 +88,31 @@ typedef int tcp_conn_t;
 /* Connect to a remote host. Returns connection handle or -1. */
 tcp_conn_t tcp_connect(uint32_t dst_ip, uint16_t dst_port);
 
+/* Start listening on a local port. Returns listen handle or -1. */
+tcp_conn_t tcp_listen(uint16_t port);
+
+/* Accept a pending connection on a listen handle.
+ * Returns new connection handle or -1 if none pending. */
+tcp_conn_t tcp_accept(tcp_conn_t listen_handle);
+
 /* Send data on a TCP connection. Returns bytes sent or -1. */
 int tcp_send(tcp_conn_t conn, const uint8_t *data, uint16_t len);
 
 /* Receive data from a TCP connection. Returns bytes received or -1.
  * Non-blocking: returns 0 if no data available. */
-int tcp_recv(tcp_conn_t conn, uint8_t *buf, uint16_t max_len);
+int tcp_recv(tcp_conn_t conn, uint8_t *buf, uint32_t max_len);
 
 /* Close a TCP connection. */
 void tcp_close(tcp_conn_t conn);
 
 /* Check if a TCP connection is established. */
 int tcp_is_connected(tcp_conn_t conn);
+
+/* Get TCP connection state. */
+int tcp_get_state(tcp_conn_t conn);
+
+/* Get rx data available (bytes). */
+uint32_t tcp_rx_available(tcp_conn_t conn);
 
 /* ---- DNS ---- */
 

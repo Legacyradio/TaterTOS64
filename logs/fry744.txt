@@ -1,0 +1,73 @@
+[2026-03-14 23:12:41 CDT] Step: Close out phase 2 with futex race hardening, thread contention coverage, and stable packaging rebuilds.
+
+Why:
+- Phase 2 had most of the feature surface in place, but it still needed a real
+  closeout pass on two fronts:
+  - the futex wait path still had a lost-wake window between checking the user
+    word and registering the waiter
+  - the phase-2 test surface was not yet strong enough to call the threading
+    work complete at a professional bar
+- The `build_iso.sh` rebuild path also needed to stay deterministic while
+  rebuilding shared userspace objects across multiple app targets.
+
+Code changes:
+- `src/kernel/proc/sched.h`
+  - Added scheduler helpers for atomic futex block/wake behavior:
+    `sched_block_futex(...)` and `sched_wake_futex(...)`.
+- `src/kernel/proc/sched.c`
+  - Added `wake_runnable_locked(...)` so normal wake, futex wake, and timeout
+    wake all use one locked runnable transition path.
+  - Added `sched_block_futex(...)` to re-check the futex word and register the
+    waiting thread while holding the scheduler lock.
+  - Added `sched_wake_futex(...)` to wake matching futex waiters under the same
+    scheduler lock.
+  - Routed futex timeout wakeups through the same locked runnable helper so
+    timeout results propagate cleanly as `-ETIMEDOUT`.
+- `src/kernel/proc/syscall.c`
+  - Changed futex wait to use the new locked scheduler registration path rather
+    than a separate `sched_block()` plus post-hoc wait-field mutation.
+  - Added timeout overflow clamping for relative futex waits.
+  - Changed futex wake to use the scheduler's locked futex wake helper instead
+    of scanning waiters without serialization.
+- `src/user/apps/thtest.c`
+  - Added a real phase-2 closeout suite instead of a single smoke path.
+  - Current coverage now includes:
+    - smoke: threads, join, TLS, once, mutex, condvar, semaphore
+    - raw futex mismatch / timeout / wake-one behavior
+    - mutex contention under load
+    - repeated condvar barrier rounds
+    - thread create/join churn across many rounds
+- `Makefile`
+  - Marked aggregate build targets as `.PHONY`.
+  - Marked the build as `.SECONDARY` so the `build_iso.sh` multi-goal rebuild
+    cannot lose freshly built objects between kernel or userspace targets.
+
+[2026-03-14 23:12:41 CDT] Verification update:
+
+Commands run:
+- `PATH="/opt/cross/bin:$PATH" make clean all && ./build_iso.sh`
+
+Result:
+- Full clean rebuild succeeded.
+- `build_iso.sh` clean rebuild and packaging path succeeded after the Makefile
+  hardening.
+- `THTEST.FRY` rebuilt and packaged into the live image set.
+- Packaged live-app fallback verification completed successfully.
+- ISO export succeeded to
+  `/mnt/c/Users/jjsako/Documents/tateriso/tatertos64v3.iso`.
+
+Warnings seen:
+- Pre-existing warnings only:
+  - `src/kernel/acpi/aml_exec.c`: unused parameter `ctx`
+  - `src/kernel/acpi/extended.c`: unused `str_eq`, `obj_to_str`,
+    `pci_cf8_write32`
+  - `src/user/shell/shell.c`: unused parameter `argv`
+  - `src/boot/efi_loader.c`: unused `gop_mask_size`, `gop_mask_pos`
+  - `xorriso`: EFI boot image load-size warning during ISO packaging
+
+Closeout:
+- Phase 2 is now closed at the code/build/package level.
+- I did not run QEMU in this step, per the standing rule to avoid runtime boot
+  tests unless explicitly requested.
+- The remaining signoff step is guest execution of `THTEST.FRY` to prove the
+  new phase-2 closeout suite passes in the live environment.

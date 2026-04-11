@@ -1,0 +1,53 @@
+fry806 — TaterSurf Browser Upgrade: Step 14 (Canvas 2D API)
+=============================================================
+Date: 2026-04-03
+Build: clean, zero errors
+Binary: TATERSURF.FRY 2,350,544 bytes
+
+STEP 14: Canvas 2D API (ts_dom_bindings.h + ts_layout.h)
+---------------------------------------------------------
+
+14a) Canvas infrastructure:
+  - TS_NODE_CANVAS added to enum ts_node_type
+  - canvas_cache[16] added to struct ts_document (parallel to img_cache)
+  - ts_canvases[16] static array of canvas contexts with pixel buffers
+  - struct ts_canvas_ctx: pixels, w/h, state (fill/stroke color, line width,
+    translate, font_size), save/restore stack (16 deep), path state
+
+14b) Canvas layout:
+  - TS_NODE_CANVAS case in layout pass: uses img_requested_w/h
+    (defaults 300x150 per spec), starts on new line
+  - <canvas> tag handler in ts_doc__build_dom_recursive: emits TS_NODE_CANVAS
+    node with width/height from DOM attributes
+
+14c) Canvas rendering:
+  - TS_NODE_CANVAS case in render pass: blits pixel buffer into viewport
+    using direct framebuffer writes (same approach as image rendering)
+  - Empty canvas shows gray outline placeholder
+
+14d) Canvas 2D context JS API (ts_dom_bindings.h):
+  - getContext('2d') on canvas elements — allocates pixel buffer, creates JS object
+  - fillRect(x,y,w,h) — solid rectangle fill
+  - strokeRect(x,y,w,h) — rectangle outline with line_width
+  - clearRect(x,y,w,h) — clear to transparent
+  - fillText(text,x,y) / strokeText — draw text using 8x16 bitmap font
+  - measureText(text) — returns {width: len*8}
+  - beginPath / moveTo / lineTo / closePath — simple path state
+  - arc(cx,cy,r,...) — midpoint circle algorithm
+  - stroke / fill — path rendering (lines drawn by lineTo, fill is no-op)
+  - save / restore — state stack push/pop
+  - translate(x,y) — coordinate offset
+  - __setFillStyle / __setStrokeStyle / __setLineWidth — style C methods
+  - Default properties: fillStyle, strokeStyle, lineWidth, font, textAlign
+  - Bresenham line algorithm for lineTo path drawing
+
+14e) Wiring:
+  - getContext bound on <canvas> elements in ts_dom_bind_node_methods
+  - Forward declaration for ts_js_canvas_get_context
+  - Canvas pixel buffer registered in doc->canvas_cache for render access
+
+Files modified:
+  src/user/apps/ts_layout.h       — node type, cache, layout, render
+  src/user/apps/ts_dom_bindings.h — full Canvas 2D context implementation
+
+Plan reference: TATERSURF_UPGRADE_PLAN.md Step 14

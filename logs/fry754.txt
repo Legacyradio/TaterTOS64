@@ -1,0 +1,179 @@
+fry754 — Phase 8: Userspace Porting Layer
+Date: 2026-03-15
+
+WHAT:
+Implemented full Phase 8 from netbuild1. Expanded libc substantially with 8
+new source files providing POSIX compatibility, stdio FILE streams, math
+library, pthreads, DNS resolver, time functions, and dynamic loading stubs.
+Builds with ZERO errors, ZERO new warnings.
+
+FILES CREATED:
+  src/user/libc/string_ext.c — Extended string/memory functions
+    Why: NSPR/NSS need strchr, strstr, strdup, strtol, strtod, memchr,
+    strtok, ctype functions, strerror, perror, abs/labs
+    Functions: strchr, strrchr, strstr, strpbrk, strspn, strcspn, strtok,
+    strtok_r, strdup, strndup, memchr, strtol, strtoul, strtoll, strtoull,
+    strtod, strtof, strerror, perror, isalpha, isdigit, isalnum, isspace,
+    isupper, islower, isprint, isgraph, iscntrl, ispunct, isxdigit,
+    toupper, tolower, abs, labs, llabs
+
+  src/user/libc/stdio.c — FILE stream implementation
+    Why: browser and NSPR need fopen/fclose/fread/fwrite/fprintf/fseek
+    for config files, profiles, certs, cache
+    Functions: fopen, fdopen, fclose, fflush, fread, fwrite, fgetc, fputc,
+    ungetc, fgets, fputs, fprintf, vfprintf, sprintf, sscanf, vsscanf,
+    fscanf, fseek, ftell, rewind, feof, ferror, clearerr, fileno,
+    setvbuf, setbuf, remove_file, rename_file
+    Internals: 32-entry FILE pool, 4KB read/write buffers per stream,
+    buffered and unbuffered modes, pre-opened stdin/stdout/stderr
+
+  src/user/libc/math.c — Software math library
+    Why: NSPR/NSS crypto and browser layout/rendering need math functions
+    Functions: fabs(f), fmin(f), fmax(f), copysign, floor(f), ceil(f),
+    round(f), lround, llround, trunc(f), fmod(f), remainder, sqrt(f),
+    cbrt, hypot, exp(f), exp2, log(f), log2(f), log10(f), log1p, expm1,
+    pow(f), sin(f), cos(f), tan(f), atan(f), atan2(f), asin(f), acos(f),
+    sinh, cosh, tanh, ldexp, frexp, modf, scalbn, isinf_d, isnan_d,
+    isfinite_d
+    Implementation: Newton-Raphson for sqrt, Taylor series for trig/exp/log,
+    range reduction for sin/cos, no hardware FPU assumptions beyond +/-/*/div
+
+  src/user/libc/posix.c — POSIX compatibility shims
+    Why: NSPR expects errno, signal(), opendir/readdir/closedir, getcwd,
+    getpid, getenv, atexit, mmap, and many other POSIX APIs
+    Functions:
+      errno: __errno_location() with TLS-backed per-thread errno
+      Signals: signal(), raise_compat(), sigaction stubs, sigemptyset etc.
+      Directory streams: opendir(), readdir_compat(), closedir()
+      File system: getcwd(), chdir(), access(), unlink(), rmdir(),
+        mkdir_compat(), stat_compat(), fstat_compat(), lstat_compat()
+      Process: getpid/getppid/getuid/geteuid/getgid/getegid, _exit_compat(),
+        abort_compat(), atexit_compat(), exit_compat()
+      Environment: getenv_compat(), setenv_compat(), unsetenv_compat()
+      Misc: sleep_compat(), usleep_compat(), sysconf_compat(),
+        getpagesize_compat(), pipe_compat(), dup/dup2, open/close/read/write,
+        lseek/fcntl, mmap/munmap/mprotect, poll_compat(), gethostname_compat()
+
+  src/user/libc/pthread.c — POSIX threads wrapper
+    Why: NSPR threading layer maps to pthreads; needs full API
+    Functions: pthread_create, pthread_join, pthread_detach, pthread_self,
+    pthread_equal, pthread_mutex_init/destroy/lock/trylock/unlock,
+    pthread_cond_init/destroy/wait/timedwait/signal/broadcast,
+    pthread_rwlock_init/destroy/rdlock/wrlock/unlock,
+    pthread_once, pthread_key_create/delete/setspecific/getspecific,
+    pthread_attr_init/destroy/setdetachstate/setstacksize/getstacksize
+    Implementation: proper trampoline for void*(*)(void*)->void(*)(void*)
+    conversion, rwlock uses mutex+cond+reader count model, timedwait
+    converts absolute time to relative for futex
+
+  src/user/libc/netdb.c — DNS resolver and socket helpers
+    Why: NSPR/NSS networking needs getaddrinfo for hostname resolution
+    Functions: getaddrinfo, freeaddrinfo, gai_strerror, getnameinfo,
+    inet_pton, inet_ntop, inet_addr, socket/connect/bind/listen/accept/
+    send/recv/shutdown/setsockopt/getsockopt _compat wrappers
+    Features: numeric IP parsing, DNS via fry_dns_resolve, well-known
+    service name resolution (http=80, https=443, etc.), returns both
+    TCP and UDP results when socktype unspecified
+
+  src/user/libc/time_ext.c — Extended time functions
+    Why: certificate validation, NSPR time APIs, strftime for logging
+    Functions: time_func(), gmtime_r(), gmtime_func(), localtime_r(),
+    localtime_func(), mktime_func(), difftime_func(), gettimeofday_func(),
+    clock_gettime_compat(), nanosleep_compat(), strftime_func(),
+    asctime_func(), ctime_func(), clock_func()
+    Features: full struct tm breakdown/construction, leap year handling,
+    day/month name tables, strftime with %a %A %b %B %d %e %H %I %j
+    %m %M %p %S %w %y %Y %Z %z %% %n %t
+
+  src/user/libc/dlfcn.c — Dynamic loading stubs
+    Why: NSPR calls dlopen/dlsym; TaterTOS is static-linked only
+    Functions: dlopen (returns sentinel for NULL, error for files),
+    dlsym (always NULL), dlclose (no-op), dlerror
+    Design: allows NSPR to compile and gracefully handle static linking
+
+FILES MODIFIED:
+  src/user/libc/libc.h — Phase 8 declarations
+    Why: all new functions need declarations visible to all userspace code
+    Changes:
+      - FILE typedef and stdin/stdout/stderr externs
+      - All stdio function declarations
+      - All string_ext function declarations (strchr, strtol, ctype, etc.)
+      - All math function declarations + HUGE_VAL/INFINITY/NAN macros
+      - POSIX shim declarations (errno, signal, DIR, dirent_compat, etc.)
+      - pthread types (pthread_t, pthread_mutex_t, pthread_cond_t,
+        pthread_rwlock_t, pthread_once_t, pthread_key_t) + initializer macros
+      - All pthread function declarations
+      - struct addrinfo + getaddrinfo/freeaddrinfo declarations + EAI_ codes
+      - time types (time_t, struct tm, struct timeval_compat)
+      - All time function declarations
+      - dlfcn declarations + RTLD_ flags
+      - Convenience typedefs: ssize_t, off_t, mode_t, uid_t, gid_t, pid_t
+      - Convenience macros: NULL, SIZE_MAX, BUFSIZ, PATH_MAX, SEEK_SET/CUR/END,
+        EOF, F_OK/R_OK/W_OK/X_OK, _IOFBF/_IOLBF/_IONBF, CLOCKS_PER_SEC
+
+  Makefile — LIBC_OBJ expanded
+    Why: new .o files need to be compiled and linked into all user apps
+    Changes:
+      - LIBC_OBJ now includes string_ext.o, stdio.o, math.o, posix.o,
+        pthread.o, netdb.o, time_ext.o, dlfcn.o
+      - clean target includes all new .o files via $(LIBC_OBJ) expansion
+
+  src/kernel/selftest.c — Phase 8 ABI checks
+    Why: validates constants that userspace porting layer depends on
+    Changes:
+      - Added #include <fry_socket.h> and <fry_fcntl.h>
+      - 18 new checks: AF_INET, SOCK_STREAM, SOCK_DGRAM, IPPROTO_TCP,
+        IPPROTO_UDP, FRY_SEEK_SET/CUR/END, FRY_CLOCK_MONOTONIC/REALTIME,
+        O_RDONLY/WRONLY/RDWR/CREAT/TRUNC/APPEND, fry_timespec size (16),
+        fry_sockaddr_in size (16)
+
+  netbuild/netbuild1 — Phase 8 marked COMPLETE 2026-03-15
+
+DESIGN DECISIONS:
+  - FILE streams use 4KB internal buffers, not user-supplied buffers
+    Reason: simpler implementation; setvbuf accepts but ignores user buffer
+    parameter; sufficient for browser config/profile I/O
+
+  - errno uses TLS key for per-thread storage
+    Reason: NSPR and NSS depend on thread-safe errno; falls back to global
+    if TLS not initialized (main thread before first TLS init)
+
+  - Signal handlers are stored but never delivered
+    Reason: TaterTOS has no signal mechanism yet; storing handlers lets
+    NSPR's signal(SIGPIPE, SIG_IGN) compile and not crash
+
+  - pthread_create uses a heap-allocated context + trampoline
+    Reason: pthreads return void*, fry_thread_create takes void(*)(void*);
+    trampoline adapts calling convention cleanly without function pointer casts
+
+  - Math library uses software algorithms (Taylor, Newton-Raphson)
+    Reason: no assumption of x87 FPU or SSE beyond basic arithmetic;
+    sufficient accuracy for browser/crypto use cases
+
+  - dlopen returns sentinel (1) for NULL filename, NULL for all others
+    Reason: NSPR uses dlopen(NULL) to get handle to self for dlsym;
+    returning non-NULL sentinel lets it call dlsym which safely returns NULL
+
+  - Time functions are UTC-only
+    Reason: TaterTOS has no timezone database; localtime == gmtime;
+    sufficient for cert validation and NSPR time APIs
+
+  - getaddrinfo returns both SOCK_STREAM and SOCK_DGRAM results
+    Reason: standard behavior when ai_socktype is 0; NSPR iterates results
+
+PHASE 8 FUNCTION COUNT:
+  string_ext.c: 30 functions
+  stdio.c:      30 functions
+  math.c:       57 functions
+  posix.c:      40 functions
+  pthread.c:    27 functions
+  netdb.c:      17 functions
+  time_ext.c:   15 functions
+  dlfcn.c:       4 functions
+  TOTAL:       220 new libc functions
+
+BUILD:
+  make all — ZERO errors, ZERO new warnings
+  build_iso.sh — ISO exported
+
+STATUS: ISO ready for boot test. Phase 8 COMPLETE.

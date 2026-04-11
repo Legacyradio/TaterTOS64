@@ -4,12 +4,19 @@
 #include "netcore.h"
 
 void kprint(const char *fmt, ...);
+void kprint_serial_only(const char *fmt, ...);
 
-/* NIC driver hooks — I219 wired (primary), WiFi (shelved fallback) */
+/* NIC driver hooks — I219 wired (primary), e1000 QEMU (fallback), WiFi (shelved) */
 int i219_is_ready(void);
 int i219_tx_packet(const uint8_t *frame, uint16_t len);
 int i219_rx_poll(uint32_t timeout_ms);
 void i219_set_rx_callback(void (*cb)(const uint8_t *data, uint16_t len));
+
+int e1000_is_ready(void);
+int e1000_tx_packet(const uint8_t *frame, uint16_t len);
+int e1000_rx_poll(uint32_t timeout_ms);
+void e1000_set_rx_callback(void (*cb)(const uint8_t *data, uint16_t len));
+const uint8_t *e1000_get_mac(void);
 
 /* ---- Helpers ---- */
 
@@ -129,9 +136,11 @@ static int eth_send(const uint8_t dst_mac[6], uint16_t ethertype,
     n_put16(frame + 12, ethertype);
     n_copy(frame + 14, payload, payload_len);
 
-    /* Try wired NIC first, fall back to WiFi */
+    /* Try wired NICs first, fall back to WiFi */
     if (i219_is_ready())
         return i219_tx_packet(frame, 14 + payload_len);
+    if (e1000_is_ready())
+        return e1000_tx_packet(frame, 14 + payload_len);
     return wifi_tx_packet(frame, 14 + payload_len);
 }
 
@@ -193,6 +202,11 @@ static void arp_process(const uint8_t *pkt, uint16_t len) {
         arp_cache[free_slot].ip = sender_ip;
         n_copy(arp_cache[free_slot].mac, sender_mac, 6);
         arp_cache[free_slot].valid = 1;
+        kprint_serial_only("ARP: learned %u.%u.%u.%u -> %02x:%02x:%02x:%02x:%02x:%02x\n",
+            (sender_ip>>24)&0xFF, (sender_ip>>16)&0xFF,
+            (sender_ip>>8)&0xFF, sender_ip&0xFF,
+            sender_mac[0], sender_mac[1], sender_mac[2],
+            sender_mac[3], sender_mac[4], sender_mac[5]);
         arp_cache[free_slot].pending = 0;
     }
 
@@ -281,6 +295,13 @@ static int ip_send(uint32_t dst_ip, uint8_t protocol,
         net_poll();
         if (arp_resolve(next_hop, dst_mac) != 0) {
             /* Still pending — send anyway to broadcast (works for DHCP) */
+            static int arp_fail_trace;
+            if (arp_fail_trace < 5) {
+                kprint_serial_only("ARP_FAIL: next_hop=%u.%u.%u.%u sending broadcast\n",
+                    (next_hop>>24)&0xFF, (next_hop>>16)&0xFF,
+                    (next_hop>>8)&0xFF, next_hop&0xFF);
+                arp_fail_trace++;
+            }
             return eth_send(BROADCAST_MAC, 0x0800, pkt, total_len);
         }
     }
@@ -312,6 +333,17 @@ static void ip_process(const uint8_t *pkt, uint16_t len) {
 
     const uint8_t *payload = pkt + ihl;
     uint16_t payload_len = total_len - ihl;
+
+    {
+        static int ip_trace_count;
+        if (protocol == IP_PROTO_TCP && ip_trace_count < 5) {
+            kprint_serial_only("IP_RX: proto=%u src=%u.%u.%u.%u len=%u\n",
+                protocol,
+                (src_ip>>24)&0xFF, (src_ip>>16)&0xFF,
+                (src_ip>>8)&0xFF, src_ip&0xFF, payload_len);
+            ip_trace_count++;
+        }
+    }
 
     switch (protocol) {
     case IP_PROTO_ICMP: icmp_process(src_ip, payload, payload_len); break;
@@ -356,6 +388,12 @@ struct udp_binding {
 static struct udp_binding udp_bindings[UDP_MAX_BINDS];
 static uint16_t udp_ephemeral = 49152; /* ephemeral port counter */
 
+static udp_socket_rx_t g_udp_socket_handler = 0;
+
+void udp_set_socket_handler(udp_socket_rx_t handler) {
+    g_udp_socket_handler = handler;
+}
+
 int udp_bind(uint16_t port, udp_rx_cb_t cb) {
     for (int i = 0; i < UDP_MAX_BINDS; i++) {
         if (!udp_bindings[i].active) {
@@ -366,6 +404,15 @@ int udp_bind(uint16_t port, udp_rx_cb_t cb) {
         }
     }
     return -1;
+}
+
+void udp_unbind(uint16_t port) {
+    for (int i = 0; i < UDP_MAX_BINDS; i++) {
+        if (udp_bindings[i].active && udp_bindings[i].port == port) {
+            udp_bindings[i].active = 0;
+            return;
+        }
+    }
 }
 
 int udp_send(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port,
@@ -401,6 +448,11 @@ static void udp_process(uint32_t src_ip, const uint8_t *data, uint16_t len) {
             udp_bindings[i].cb(src_ip, src_port, dst_port, payload, payload_len);
             return;
         }
+    }
+
+    /* Fallback: socket-layer UDP handler */
+    if (g_udp_socket_handler) {
+        g_udp_socket_handler(dst_port, src_ip, src_port, payload, payload_len);
     }
 }
 
@@ -591,10 +643,8 @@ int dhcp_discover(void) {
  * TCP (Transmission Control Protocol)
  * ================================================================ */
 
-/* TCP states */
-#define TCP_CLOSED      0
+/* TCP states — TCP_CLOSED, TCP_ESTABLISHED, TCP_LISTEN, TCP_SYN_RECV defined in netcore.h */
 #define TCP_SYN_SENT    1
-#define TCP_ESTABLISHED 2
 #define TCP_FIN_WAIT_1  3
 #define TCP_FIN_WAIT_2  4
 #define TCP_CLOSE_WAIT  5
@@ -616,11 +666,13 @@ struct tcp_conn {
     uint32_t ack_num;       /* expected next byte from remote */
     uint8_t  state;
     uint8_t  active;
+    int8_t   listen_parent; /* index of listen socket that spawned this, -1 if client */
+    uint8_t  accepted;      /* 1 if accept() has returned this connection */
 
     /* Receive buffer */
     uint8_t  rx_buf[TCP_RX_BUF_SIZE];
-    uint16_t rx_head;
-    uint16_t rx_tail;
+    uint32_t rx_head;
+    uint32_t rx_tail;
 
     /* Retransmit state */
     uint32_t last_ack_sent;
@@ -652,7 +704,7 @@ static int tcp_send_segment(struct tcp_conn *c, uint8_t flags,
     n_put32(pkt + 8, c->ack_num);         /* ack number */
     pkt[12] = (uint8_t)((tcp_hdr_len / 4) << 4); /* data offset */
     pkt[13] = flags;
-    n_put16(pkt + 14, 8192);              /* window size */
+    n_put16(pkt + 14, 65535);             /* window size — max for TCP without scaling */
     n_put16(pkt + 16, 0);                 /* checksum placeholder */
     n_put16(pkt + 18, 0);                 /* urgent pointer */
 
@@ -698,6 +750,8 @@ tcp_conn_t tcp_connect(uint32_t dst_ip, uint16_t dst_port) {
     c->seq_num = tcp_isn();
     c->state = TCP_SYN_SENT;
     c->active = 1;
+    c->listen_parent = -1;
+    c->accepted = 1; /* client connections are always "accepted" */
 
     /* Send SYN */
     tcp_send_segment(c, TCP_SYN, 0, 0);
@@ -743,11 +797,11 @@ int tcp_send(tcp_conn_t conn, const uint8_t *data, uint16_t len) {
     return sent;
 }
 
-int tcp_recv(tcp_conn_t conn, uint8_t *buf, uint16_t max_len) {
+int tcp_recv(tcp_conn_t conn, uint8_t *buf, uint32_t max_len) {
     if (conn < 0 || conn >= TCP_MAX_CONNECTIONS) return -1;
     struct tcp_conn *c = &tcp_conns[conn];
 
-    uint16_t available = 0;
+    uint32_t available = 0;
     if (c->rx_head >= c->rx_tail)
         available = c->rx_head - c->rx_tail;
     else
@@ -755,15 +809,15 @@ int tcp_recv(tcp_conn_t conn, uint8_t *buf, uint16_t max_len) {
 
     if (available == 0) return 0;
 
-    uint16_t to_read = available;
+    uint32_t to_read = available;
     if (to_read > max_len) to_read = max_len;
 
-    for (uint16_t i = 0; i < to_read; i++) {
+    for (uint32_t i = 0; i < to_read; i++) {
         buf[i] = c->rx_buf[c->rx_tail];
         c->rx_tail = (c->rx_tail + 1) % TCP_RX_BUF_SIZE;
     }
 
-    return to_read;
+    return (int)to_read;
 }
 
 void tcp_close(tcp_conn_t conn) {
@@ -782,6 +836,56 @@ void tcp_close(tcp_conn_t conn) {
 int tcp_is_connected(tcp_conn_t conn) {
     if (conn < 0 || conn >= TCP_MAX_CONNECTIONS) return 0;
     return tcp_conns[conn].state == TCP_ESTABLISHED;
+}
+
+int tcp_get_state(tcp_conn_t conn) {
+    if (conn < 0 || conn >= TCP_MAX_CONNECTIONS) return TCP_CLOSED;
+    if (!tcp_conns[conn].active) return TCP_CLOSED;
+    return tcp_conns[conn].state;
+}
+
+uint32_t tcp_rx_available(tcp_conn_t conn) {
+    if (conn < 0 || conn >= TCP_MAX_CONNECTIONS) return 0;
+    struct tcp_conn *c = &tcp_conns[conn];
+    if (c->rx_head >= c->rx_tail)
+        return c->rx_head - c->rx_tail;
+    return TCP_RX_BUF_SIZE - c->rx_tail + c->rx_head;
+}
+
+tcp_conn_t tcp_listen(uint16_t port) {
+    int slot = -1;
+    for (int i = 0; i < TCP_MAX_CONNECTIONS; i++) {
+        if (!tcp_conns[i].active) { slot = i; break; }
+    }
+    if (slot < 0) return -1;
+
+    struct tcp_conn *c = &tcp_conns[slot];
+    n_zero(c, sizeof(*c));
+    c->local_port = port;
+    c->state = TCP_LISTEN;
+    c->active = 1;
+    c->listen_parent = -1;
+    c->accepted = 1; /* listen socket itself is "accepted" */
+
+    kprint("NET: TCP listen on port %u (slot %d)\n", port, slot);
+    return slot;
+}
+
+tcp_conn_t tcp_accept(tcp_conn_t listen_handle) {
+    if (listen_handle < 0 || listen_handle >= TCP_MAX_CONNECTIONS) return -1;
+    if (tcp_conns[listen_handle].state != TCP_LISTEN) return -1;
+
+    /* Find an ESTABLISHED connection spawned by this listener that hasn't been accepted */
+    for (int i = 0; i < TCP_MAX_CONNECTIONS; i++) {
+        if (tcp_conns[i].active &&
+            tcp_conns[i].listen_parent == listen_handle &&
+            tcp_conns[i].state == TCP_ESTABLISHED &&
+            !tcp_conns[i].accepted) {
+            tcp_conns[i].accepted = 1;
+            return i;
+        }
+    }
+    return -1;
 }
 
 static void tcp_process(uint32_t src_ip, const uint8_t *data, uint16_t len) {
@@ -812,6 +916,44 @@ static void tcp_process(uint32_t src_ip, const uint8_t *data, uint16_t len) {
     }
 
     if (!c) {
+        /* Check for a LISTEN connection on this port */
+        struct tcp_conn *listener = 0;
+        int listener_idx = -1;
+        for (int i = 0; i < TCP_MAX_CONNECTIONS; i++) {
+            if (tcp_conns[i].active && tcp_conns[i].state == TCP_LISTEN &&
+                tcp_conns[i].local_port == dst_port) {
+                listener = &tcp_conns[i];
+                listener_idx = i;
+                break;
+            }
+        }
+
+        if (listener && (flags & TCP_SYN) && !(flags & TCP_ACK)) {
+            /* Incoming SYN on listening port — allocate a new connection */
+            int slot = -1;
+            for (int i = 0; i < TCP_MAX_CONNECTIONS; i++) {
+                if (!tcp_conns[i].active) { slot = i; break; }
+            }
+            if (slot < 0) return; /* no free slots — drop SYN silently */
+
+            struct tcp_conn *nc = &tcp_conns[slot];
+            n_zero(nc, sizeof(*nc));
+            nc->remote_ip = src_ip;
+            nc->remote_port = src_port;
+            nc->local_port = dst_port;
+            nc->seq_num = tcp_isn();
+            nc->ack_num = seq + 1;
+            nc->state = TCP_SYN_RECV;
+            nc->active = 1;
+            nc->listen_parent = (int8_t)listener_idx;
+            nc->accepted = 0;
+
+            /* Send SYN-ACK */
+            tcp_send_segment(nc, TCP_SYN | TCP_ACK, 0, 0);
+            nc->seq_num++; /* SYN consumes one sequence number */
+            return;
+        }
+
         /* Send RST for unexpected segments */
         if (!(flags & TCP_RST)) {
             struct tcp_conn dummy;
@@ -833,6 +975,16 @@ static void tcp_process(uint32_t src_ip, const uint8_t *data, uint16_t len) {
     }
 
     switch (c->state) {
+    case TCP_SYN_RECV:
+        /* Waiting for final ACK of 3-way handshake */
+        if (flags & TCP_ACK) {
+            c->state = TCP_ESTABLISHED;
+            kprint("NET: TCP accepted connection %u.%u.%u.%u:%u\n",
+                   (src_ip>>24)&0xFF, (src_ip>>16)&0xFF,
+                   (src_ip>>8)&0xFF, src_ip&0xFF, src_port);
+        }
+        break;
+
     case TCP_SYN_SENT:
         if ((flags & (TCP_SYN | TCP_ACK)) == (TCP_SYN | TCP_ACK)) {
             c->ack_num = seq + 1;
@@ -841,29 +993,55 @@ static void tcp_process(uint32_t src_ip, const uint8_t *data, uint16_t len) {
         }
         break;
 
-    case TCP_ESTABLISHED:
-        if (flags & TCP_FIN) {
-            c->ack_num = seq + payload_len + 1;
+    case TCP_ESTABLISHED: {
+        static int tcp_data_trace;
+        if (payload_len > 0 && tcp_data_trace < 3) {
+            kprint_serial_only("TCP_RX: conn=%d len=%u rxhead=%u rxtail=%u\n",
+                (int)(c - tcp_conns), payload_len, c->rx_head, c->rx_tail);
+            tcp_data_trace++;
+        }
+        /* Buffer any payload data FIRST, even if FIN is also set */
+        if (payload_len > 0) {
+            /* Validate sequence number — only accept in-order data.
+             * Out-of-order or duplicate segments corrupt the stream
+             * (no reorder buffer), so drop them and let TCP retry. */
+            if (seq != c->ack_num) {
+                /* Always send duplicate ACK — triggers fast retransmit
+                 * after 3 dup ACKs (RFC 5681). Without this, we'd wait
+                 * for the sender's retransmit timeout (~1s). */
+                tcp_send_segment(c, TCP_ACK, 0, 0);
+                break;
+            }
+            uint16_t buffered = 0;
+            for (uint16_t i = 0; i < payload_len; i++) {
+                uint32_t next = (c->rx_head + 1) % TCP_RX_BUF_SIZE;
+                if (next == c->rx_tail) break; /* buffer full */
+                c->rx_buf[c->rx_head] = payload[i];
+                c->rx_head = next;
+                buffered++;
+            }
+            c->ack_num = seq + buffered;
+            if (flags & TCP_FIN) {
+                /* FIN consumes one sequence number after the data */
+                c->ack_num++;
+                tcp_send_segment(c, TCP_ACK, 0, 0);
+                c->state = TCP_CLOSE_WAIT;
+                tcp_send_segment(c, TCP_FIN | TCP_ACK, 0, 0);
+                c->seq_num++;
+                c->state = TCP_LAST_ACK;
+            } else {
+                tcp_send_segment(c, TCP_ACK, 0, 0);
+            }
+        } else if (flags & TCP_FIN) {
+            /* FIN with no data */
+            c->ack_num = seq + 1;
             tcp_send_segment(c, TCP_ACK, 0, 0);
             c->state = TCP_CLOSE_WAIT;
-            /* Auto-close our end too */
             tcp_send_segment(c, TCP_FIN | TCP_ACK, 0, 0);
             c->seq_num++;
             c->state = TCP_LAST_ACK;
-        } else {
-            /* Data received */
-            if (payload_len > 0) {
-                for (uint16_t i = 0; i < payload_len; i++) {
-                    uint16_t next = (c->rx_head + 1) % TCP_RX_BUF_SIZE;
-                    if (next == c->rx_tail) break; /* buffer full */
-                    c->rx_buf[c->rx_head] = payload[i];
-                    c->rx_head = next;
-                }
-                c->ack_num = seq + payload_len;
-                tcp_send_segment(c, TCP_ACK, 0, 0);
-            }
         }
-        break;
+        } break;
 
     case TCP_FIN_WAIT_1:
         if (flags & TCP_ACK) {
@@ -907,18 +1085,19 @@ static uint16_t dns_txid;
 static void dns_rx(uint32_t src_ip, uint16_t src_port,
                     uint16_t dst_port, const uint8_t *data, uint16_t len) {
     (void)src_ip; (void)src_port; (void)dst_port;
-    if (len < 12) return;
+    if (len < 12) { kprint_serial_only("DNS: rx len=%u too short\n", len); return; }
 
     uint16_t txid = n_be16(data + 0);
-    if (txid != dns_txid) return;
+    if (txid != dns_txid) { kprint_serial_only("DNS: rx txid %04x != expected %04x\n", txid, dns_txid); return; }
 
     uint16_t flags = n_be16(data + 2);
+    kprint_serial_only("DNS: rx flags=%04x ancount=%u len=%u\n", flags, n_be16(data + 6), len);
     if (!(flags & 0x8000)) return; /* not a response */
-    if ((flags & 0x000F) != 0) return; /* error */
+    if ((flags & 0x000F) != 0) { kprint_serial_only("DNS: rx RCODE=%u\n", flags & 0x000F); return; }
 
     uint16_t qdcount = n_be16(data + 4);
     uint16_t ancount = n_be16(data + 6);
-    if (ancount == 0) return;
+    if (ancount == 0) { kprint_serial_only("DNS: rx ancount=0\n"); return; }
 
     /* Skip question section */
     uint16_t pos = 12;
@@ -935,22 +1114,27 @@ static void dns_rx(uint32_t src_ip, uint16_t src_port,
 
     /* Parse first A record answer */
     for (uint16_t a = 0; a < ancount && pos + 12 <= len; a++) {
-        /* Skip name (may be pointer) */
+        /* Skip name (may be pointer or labels+pointer) */
         if ((data[pos] & 0xC0) == 0xC0) {
             pos += 2;
         } else {
-            while (pos < len && data[pos] != 0) pos += 1 + data[pos];
-            pos++;
+            while (pos < len && data[pos] != 0) {
+                if ((data[pos] & 0xC0) == 0xC0) { pos += 2; goto ans_name_done; }
+                pos += 1 + data[pos];
+            }
+            pos++; /* skip zero terminator */
         }
+    ans_name_done:
 
-        if (pos + 10 > len) break;
+        if (pos + 10 > len) { kprint_serial_only("DNS: ans[%u] truncated pos=%u len=%u\n", a, pos, len); break; }
         uint16_t rtype = n_be16(data + pos);
         uint16_t rdlen = n_be16(data + pos + 8);
+        kprint_serial_only("DNS: ans[%u] rtype=%u rdlen=%u pos=%u\n", a, rtype, rdlen, pos);
         pos += 10;
 
         if (rtype == 1 && rdlen == 4 && pos + 4 <= len) {
-            /* A record: 4-byte IPv4 address */
-            dns_result_ip = n_be32(data + pos);
+            /* A record: store raw bytes (network byte order) for sin_addr convention */
+            n_copy(&dns_result_ip, data + pos, 4);
             dns_resolved = 1;
             return;
         }
@@ -958,8 +1142,48 @@ static void dns_rx(uint32_t src_ip, uint16_t src_port,
     }
 }
 
+/* ---- Simple DNS cache ---- */
+#define DNS_CACHE_SIZE 8
+static struct {
+    char hostname[128];
+    uint32_t ip;  /* network byte order */
+} dns_cache[DNS_CACHE_SIZE];
+static uint32_t dns_cache_count;
+
+static uint32_t dns_cache_lookup(const char *hostname) {
+    for (uint32_t i = 0; i < dns_cache_count; i++) {
+        const char *a = hostname, *b = dns_cache[i].hostname;
+        while (*a && *b && *a == *b) { a++; b++; }
+        if (*a == 0 && *b == 0) return dns_cache[i].ip;
+    }
+    return 0;
+}
+
+static void dns_cache_store(const char *hostname, uint32_t ip) {
+    if (dns_cache_count >= DNS_CACHE_SIZE) dns_cache_count = DNS_CACHE_SIZE - 1;
+    char *dst = dns_cache[dns_cache_count].hostname;
+    uint32_t j = 0;
+    while (hostname[j] && j < 127) { dst[j] = hostname[j]; j++; }
+    dst[j] = 0;
+    dns_cache[dns_cache_count].ip = ip;
+    dns_cache_count++;
+}
+
 uint32_t dns_resolve(const char *hostname) {
-    if (!g_net.configured || !g_net.dns_server) return 0;
+    kprint_serial_only("DNS: resolve \"%s\" configured=%d dns=0x%x\n",
+           hostname, g_net.configured, g_net.dns_server);
+
+    /* Check cache first */
+    uint32_t cached = dns_cache_lookup(hostname);
+    if (cached) {
+        kprint_serial_only("DNS: cache hit for \"%s\"\n", hostname);
+        return cached;
+    }
+
+    if (!g_net.configured || !g_net.dns_server) {
+        kprint_serial_only("DNS: gate fail — no network\n");
+        return 0;
+    }
 
     /* Bind DNS response port */
     uint16_t dns_port = udp_ephemeral++;
@@ -1004,7 +1228,7 @@ uint32_t dns_resolve(const char *hostname) {
     n_put16(pkt + pos, 1); pos += 2;
     n_put16(pkt + pos, 1); pos += 2;
 
-    kprint("NET: DNS query for \"%s\"\n", hostname);
+    kprint_serial_only("NET: DNS query for \"%s\"\n", hostname);
     udp_send(g_net.dns_server, 53, dns_port, pkt, pos);
 
     /* Wait for response (up to 5 seconds, 2 retries) */
@@ -1021,8 +1245,9 @@ uint32_t dns_resolve(const char *hostname) {
                     }
                 }
                 char ip_buf[16];
-                net_ip_str(dns_result_ip, ip_buf, sizeof(ip_buf));
-                kprint("NET: DNS resolved \"%s\" → %s\n", hostname, ip_buf);
+                net_ip_str(n_be32((const uint8_t *)&dns_result_ip), ip_buf, sizeof(ip_buf));
+                kprint_serial_only("NET: DNS resolved \"%s\" -> %s\n", hostname, ip_buf);
+                dns_cache_store(hostname, dns_result_ip);
                 return dns_result_ip;
             }
             net_udelay(5000);
@@ -1041,7 +1266,7 @@ uint32_t dns_resolve(const char *hostname) {
         }
     }
 
-    kprint("NET: DNS failed for \"%s\"\n", hostname);
+    kprint_serial_only("NET: DNS failed for \"%s\"\n", hostname);
     return 0;
 }
 
@@ -1084,9 +1309,30 @@ void netcore_attach_i219(void) {
     kprint("NET: attached I219 wired Ethernet\n");
 }
 
+/* Called by e1000_init() after HW is ready */
+void netcore_attach_e1000(void) {
+    e1000_set_rx_callback(net_rx);
+    /* Copy MAC from e1000 into netcore config */
+    const uint8_t *mac = e1000_get_mac();
+    for (int i = 0; i < 6; i++) g_net.mac[i] = mac[i];
+    kprint("NET: attached e1000 Ethernet (QEMU)\n");
+}
+
+static uint32_t net_poll_count;
 void net_poll(void) {
+    net_poll_count++;
     if (i219_is_ready()) {
         i219_rx_poll(0);
+        return;
+    }
+    if (e1000_is_ready()) {
+        int n = e1000_rx_poll(0);
+        if (n > 0) {
+            static int poll_rx_trace;
+            if (poll_rx_trace < 10)
+                kprint_serial_only("NET_POLL: rx=%d total_polls=%u\n", n, net_poll_count);
+            poll_rx_trace++;
+        }
         return;
     }
     iwl_rx_poll(0);

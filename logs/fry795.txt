@@ -1,0 +1,40 @@
+fry795 — Disabled PSA crypto + TLS 1.3 — crash persists
+=====================================================================
+Timestamp: 2026-04-02
+
+CHANGE:
+  Disabled MBEDTLS_USE_PSA_CRYPTO and MBEDTLS_SSL_PROTO_TLS1_3 in
+  mbedtls_config.h. TLS layer now uses legacy crypto backend (direct
+  AES/SHA calls, no PSA dispatch). TLS 1.2 only. Added MBEDTLS_PKCS1_V15
+  and MBEDTLS_PKCS1_V21 (required by legacy RSA path). Removed TLS 1.2
+  cap code and g_tls_had_connection from ts_http.h (no longer needed
+  since TLS 1.3 is gone entirely).
+
+  PSA_CRYPTO_C kept enabled for psa_generate_random() RNG callback only.
+
+WHY:
+  PSA crypto was the prime suspect for the RIP=0x0 crash — complex global
+  state, driver dispatch tables, key slot management. Disabling it tests
+  whether the crash is PSA-specific or deeper in mbedTLS.
+
+RESULT:
+  Same crash. First reuse request succeeds (Google logo, 5482 bytes).
+  Second reuse request crashes: RIP=0x0, CR2=0x0. Identical to PSA-enabled
+  builds.
+
+CONCLUSION:
+  The crash is NOT in PSA crypto. It's in mbedTLS's core TLS 1.2 record
+  layer / handshake code (legacy path). This rules out PSA state corruption
+  as root cause.
+
+FILES CHANGED:
+  MODIFIED:
+    src/user/apps/mbedtls/include/mbedtls/mbedtls_config.h
+      - Disabled MBEDTLS_USE_PSA_CRYPTO
+      - Disabled MBEDTLS_PSA_CRYPTO_CONFIG
+      - Disabled MBEDTLS_SSL_PROTO_TLS1_3
+      - Added MBEDTLS_PKCS1_V15, MBEDTLS_PKCS1_V21
+    src/user/apps/ts_http.h
+      - Removed g_tls_had_connection and TLS 1.2 cap logic
+
+Build: clean. ISO exported. QEMU verified — crash confirmed.

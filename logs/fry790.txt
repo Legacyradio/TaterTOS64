@@ -1,0 +1,73 @@
+fry790 — Fix TLS (NO_RNG), hide script content, switch to HTTPS
+=====================================================================
+Timestamp: 2026-03-31
+
+GOAL: Fix three blocking issues in one pass:
+  A) TLS handshake fails with -0x7400 (SSL_NO_RNG)
+  B) <script> tag content renders as visible text
+  C) Google loaded over HTTP instead of HTTPS
+
+ROOT CAUSES AND FIXES:
+
+A) TLS: -0x7400 = MBEDTLS_ERR_SSL_NO_RNG (NOT alloc failure)
+   ssl_conf_check() at ssl_tls.c:1361 checks conf->f_rng == NULL.
+   mbedtls_ssl_config_defaults() does NOT set the RNG callback — caller
+   must explicitly call mbedtls_ssl_conf_rng(). ts_tls_setup never did.
+
+   FIX: Initialize CTR-DRBG + entropy context in ts_tls_global_init(),
+   then call mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &drbg)
+   in ts_tls_setup() after config_defaults.
+
+   Files: src/user/apps/ts_http.h
+     - Added g_tls_ctr_drbg + g_tls_entropy globals
+     - ts_tls_global_init: init + seed CTR-DRBG
+     - ts_tls_setup: mbedtls_ssl_conf_rng() call added
+
+B) Script content visible in render:
+   ts_layout.h had no handling for <script> or <noscript> tags.
+   Text tokens inside script tags flowed through to the render tree
+   as visible text, showing raw JavaScript source in the viewport.
+
+   FIX: Added in_script state variable. <script>/<noscript> open sets
+   in_script=1, close clears it. Text tokens skip when in_script.
+
+   Files: src/user/apps/ts_layout.h
+     - Added in_script var (line 327)
+     - Open tag handler: set in_script=1 for script/noscript
+     - Close tag handler: clear in_script=0
+     - Text handler: skip when in_script
+
+C) HTTPS for Google:
+   Auto-navigate was http://google.com — Google serves stripped-down
+   page over HTTP. Changed to https://www.google.com/ for the real page.
+
+   File: src/user/apps/tatersurf.c (line 1342)
+
+ALSO: Removed debug fprintf traces from ts_http.h (fry788-789 traces).
+
+Files changed:
+  MODIFIED:
+    src/user/apps/ts_http.h      (TLS RNG fix, removed debug traces)
+    src/user/apps/ts_layout.h    (script content hiding)
+    src/user/apps/tatersurf.c    (HTTPS auto-navigate)
+
+ADDITIONAL FIX — Non-blocking TLS handshake:
+
+D) TLS handshake blocked the main thread before the event loop started.
+   navigate() → ts_http_get() → blocking handshake → window never rendered.
+   User saw all-black window because render() never ran during handshake.
+
+   FIX: Made TLS handshake fully non-blocking:
+   - ts_http_get() now returns immediately with state=TS_HTTP_TLS_HANDSHAKE
+   - Socket set to O_NONBLOCK via fry_fcntl
+   - ts_http_poll() handles handshake incrementally (one attempt per poll cycle)
+   - After handshake completes, ts_http__send_request() sends the HTTP GET
+   - Extracted HTTP request building into ts_http__send_request() helper
+     (shared by both plain HTTP and post-handshake HTTPS paths)
+   - tatersurf.c event loop polls socket during TLS_HANDSHAKE state
+   - Handshake ticks on every poll cycle (not just on POLLIN)
+   - Timeout: 3000 attempts × 33ms poll = ~100 seconds
+
+   Files: src/user/apps/ts_http.h, src/user/apps/tatersurf.c
+
+Build: clean. ISO exported.

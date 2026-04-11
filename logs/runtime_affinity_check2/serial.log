@@ -1,0 +1,33 @@
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+BdsDxe: starting Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+
+TATER EFI: start
+TATER EFI: build 2026-03-04-dell-nvme-scan
+TATER EFI: LI ok
+TATER EFI: SFS ok
+TATER EFI: volume ok
+TATER EFI: kernel ok
+TATER EFI: kbuf=0x000000007DD54000 ksz=0x0000000000245778
+TATER EFI: elf loaded
+TATER EFI: entry resolved
+TATER EFI: GOP ok
+TATER EFI: ramdisk built
+TATER EFI: handoff mmap size
+TATER EFI: handoff mmap alloc
+TATER EFI: handoff mapbuf=0x000000007DF9D000 entry=0x00000000020000AB
+TATER EFI: handoff ExitBS
+RrrcCxSsEeLlI219: not found on PCI bus
+selftest: running
+selftest: 77 passed, 0 failed
+K_AP_SCHED cpu=K_K_AP_SCHAP_SCHED c3
+ED cpu=2
+pu=1
+init: pid=5
+ACPI: ECDT not found (len=0)
+ACPI: P2SB unhide failed via CF8, using SBREG_BAR_DEFAULT 0xfd000000
+ACPI: espi_clear_errors[0]: LPC mode (not eSPI), skip
+ACPI: EC all candidates failed, EC not available
+ACPI: eSPI PID cand=0x72 CFG_VAL=00000000 invalid
+ACPI: eSPI PID cand=0xc7 CFG_VAL=00000000 invalid
+ACPI: eSPI PID cand=0x6e CFG_VAL=00000000 invalid
+VM COMMIT OK: pid=9 va=0x100000000000 pa=0x3df2000 cr3=0x7bb4d000 pte=0x8000000000000006 pages=1001

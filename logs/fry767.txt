@@ -1,0 +1,83 @@
+fry767 — TaterSurf Phase B3: Layout and rendering engine (ts_layout.h)
+=====================================================================
+Timestamp: 2026-03-27T18:00:00Z
+
+Context:
+  TaterSurf needs to take HTML tokens and CSS rules and produce
+  positioned render nodes that can be painted to the screen.
+
+Changes:
+  New file: src/user/apps/ts_layout.h (header-only, ~920 LOC)
+
+  Document structure (struct ts_document):
+    nodes[8192] — flat list of render nodes in document order
+    text_buf[128KB] — shared text storage (nodes point into here)
+    links[512] — link targets with bounding boxes
+    stylesheet — CSS rules from <style> blocks
+    title[256] — page title from <title> tag
+    content_width/content_height — computed after layout
+
+  Render node types:
+    TS_NODE_TEXT — text run with style (color, bold, italic, underline,
+      strikethrough, font scale, link index, preformatted, monospace)
+    TS_NODE_BREAK — line/paragraph break with configurable spacing
+    TS_NODE_HRULE — horizontal rule
+    TS_NODE_IMAGE — placeholder with alt text (Level 3 fills in actual image)
+    TS_NODE_LIST_MARKER — bullet (unordered) or number (ordered) for <li>
+
+  Document building (ts_doc_build):
+    Walks HTML tokens with a style stack (push on open tag, pop on close).
+    Tag handling:
+      h1-h6: heading styles (h1=3x scale, h2=2x, h3-h6=bold)
+      b/strong: bold, i/em: italic, u: underline, s/del: strikethrough
+      a[href]: link (accent color, underline, records href for navigation)
+      pre: preformatted (preserve whitespace, monospace background)
+      code: monospace with code background
+      blockquote: indented, italic, accent color
+      p/div/section/article/header/footer/main/nav: block breaks
+      br: line break, hr: horizontal rule
+      ul/ol/li: lists with bullets/numbers and indentation
+      img: image placeholder with alt text and width/height attributes
+      table/tr/td/th: basic table cell separation
+      title: page title capture
+      style: CSS content isolation (tokenizer handles)
+    Text processing:
+      Entity decoding (via ts_decode_entities)
+      Whitespace collapsing (non-pre mode)
+      Preformatted text preserved as-is
+
+  Layout (ts_doc_layout):
+    Inline flow: text nodes flow left-to-right with word-wrap at viewport width
+    Block flow: break nodes advance y position with configurable spacing
+    List indentation: 24px per nesting level
+    Image sizing: uses width/height attributes, defaults to 200x100
+    Link bounding boxes: computed from union of link's node positions
+    Margin: 8px default page margin
+
+  Rendering (ts_doc_render):
+    Viewport culling: skip nodes above/below visible area
+    Text rendering: gfx_draw_char at computed positions
+    Bold effect: double-strike at +1px offset
+    Scaled text: heading sizes (Level 0 uses bold+offset; Level 1 gets proper scaling)
+    Underline: 1px line below text baseline
+    Strikethrough: 1px line at text midpoint
+    Horizontal rules: full-width line in border color
+    Images: gray placeholder box with [IMG] + alt text
+
+  Hit testing (ts_doc_hit_test):
+    Maps viewport click position to link index via bounding box check.
+
+  Color theme (dark, matching TaterTOS64v3):
+    Background 0x0E131B, text 0xE6ECF8, headings 0xFFFFFF,
+    links 0x29B6F6, visited 0xB388FF, code bg 0x1A2233,
+    pre bg 0x161D27, blockquote 0x3A7CA5
+
+Verification:
+  Compile test: build document from multi-element HTML (headings,
+  bold, italic, links, lists, pre, img, hr), layout at 900px,
+  render to gfx_ctx, hit test.
+  Result: compiles clean, zero errors. Unused-function warnings
+  expected (test doesn't use every CSS/HTML utility function).
+
+Artifacts:
+  src/user/apps/ts_layout.h

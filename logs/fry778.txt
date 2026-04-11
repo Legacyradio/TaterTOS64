@@ -1,0 +1,98 @@
+fry778 — Integration session: e1000 driver, TaterSurf wiring, icons, bug fixes
+=====================================================================
+Timestamp: 2026-03-28T00:30:00Z
+
+SESSION CHANGES (all from fry777 continuation):
+
+1. E1000 NIC DRIVER — src/drivers/net/e1000.c (NEW, ~300 LOC)
+   - Full Intel 82540EM driver for QEMU (-nic user,model=e1000)
+   - PCI probe (8086:100E/100C/100F), MMIO BAR0, EEPROM MAC read
+   - 32-entry TX/RX descriptor rings, 8KB DMA buffers
+   - Polled mode (no IRQ), legacy descriptors
+   - Hooked into netcore.c (TX fallback + RX poll + attach)
+
+2. NETCORE UPDATES — src/drivers/net/netcore.c
+   - Added e1000 driver hooks (is_ready, tx_packet, rx_poll, set_rx_callback)
+   - TX path: i219 → e1000 → wifi fallback
+   - net_poll: i219 → e1000 → wifi
+   - netcore_attach_e1000() copies MAC + registers RX callback
+
+3. GUI: DYNAMIC START MENU — src/user/gui/gui.c
+   - Removed hardcoded app list from discover_apps()
+   - Now 100% dynamic via discover_primary_apps() scanning /apps, /, /fry, etc.
+   - Blacklisted test apps: VMTEST, VMFAULT, ABITEST, THTEST, EVLOOP, INIT
+
+4. GUI: DESKTOP ICON SYSTEM — src/user/gui/gui.c (NEW feature)
+   - Icon data structures: 48x48 BGRX pixels loaded from .ICON files
+   - Icon-to-app mapping table (browse→TaterSurf, files→FileMan, etc.)
+   - load_desktop_icons(): reads /icons/*.ICON via fry_open, chunked reads
+   - layout_desktop_icons(): right-side column layout
+   - draw_desktop_icons(): pixel blit + centered text label
+   - desktop_icon_hit(): click detection → launch_app_index()
+
+5. ICON CONVERTER — tools/png2icon.py (NEW)
+   - Converts 128x128 PNG → 48x48 BGRX .ICON format
+   - Header: 4-byte width + 4-byte height + pixel data
+   - Transparent pixels → desktop background color
+
+6. FIREFOX SYSROOT REMOVED — sysroot/ directory deleted
+   - 98 stub headers from abandoned Firefox porting attempt
+
+7. EFI LOADER: RAMDISK EXPANSION
+   - efi_handoff.h: RAMDISK_MAXFILES bumped 16 → 48
+   - efi_loader.c: FRY_FILE_COUNT bumped 15 → 29
+   - Added TATERSURF.FRY + EVLOOP.FRY + 12 icon files to ramdisk packer
+   - Each file has 9 path variants for live/install compatibility
+
+8. BUILD_ISO.SH: ICON DEPLOYMENT
+   - Icons copied to /icons/ on FS_IMG, EFI_IMG, and ISO_DIR
+   - mmd + mcopy for FAT images, mkdir + cp for ISO directory
+
+9. C++ SHIMS FOR OPENH264 (from fry777, listed for completeness)
+   - cmath, cstdio, cstddef, cstdint, cassert, climits, new
+   - wels_thread_stubs.cpp, cxxrt.cpp
+
+10. KERNEL: assert.h — added extern "C" for C++ compat
+11. KERNEL: vmm.h/vmm.c — PAT write-combining for framebuffer
+
+RESOLVED THIS SESSION:
+  - TaterSurf now appears in start menu (was missing from EFI ramdisk packer)
+  - Desktop icons now render on desktop (RAMDISK_MAXFILES was 16, bumped to 48)
+  - ICON_PATH_ENTRY macro fixed: 10 params → 11 (BROWSE.ICON was truncated to BROWSE.ICO)
+  - EFI loader silently failed to compile with macro errors — stale .efi was shipped in multiple builds
+  - Test apps (VMTEST, VMFAULT, ABITEST, THTEST, EVLOOP) blacklisted from start menu
+  - e1000 NIC confirmed working in QEMU (user verified network connectivity)
+
+KNOWN ISSUES (as of this log):
+  - TaterSurf aborts on launch — process starts but immediately exits
+  - Likely cause: massive DOM context allocation (~16+ MB for 4096 nodes),
+    QuickJS runtime init, or minimp4 IMPLEMENTATION pulling in realloc/other
+  - Need to debug startup path in tatersurf.c main() to isolate crash point
+
+Files changed this session:
+  NEW:
+    src/drivers/net/e1000.c (rewritten from 7-line stub)
+    tools/png2icon.py
+    out/icons/*.ICON (12 files)
+    src/user/apps/openh264/cxxrt.cpp
+    src/user/apps/openh264/wels_thread_stubs.cpp
+    src/user/apps/openh264/shim/{cmath,cstdio,cstddef,cstdint,cassert,climits,new}
+    src/user/apps/ts_video.h
+    src/user/apps/ts_h264_wrap.h
+    src/user/apps/ts_h264_wrap.cpp
+    src/user/apps/opus/silk/resampler_rom.c
+    src/user/apps/opus/silk/decode_pitch.c
+  MODIFIED:
+    Makefile
+    build_iso.sh
+    src/boot/efi_handoff.h (RAMDISK_MAXFILES 16→48)
+    src/boot/efi_loader.c (FRY_FILE_COUNT 15→29, new path entries)
+    src/kernel/mm/vmm.h (VMM_FLAG_WC)
+    src/kernel/mm/vmm.c (setup_pat, FB WC mapping)
+    src/include/assert.h (extern "C" guard)
+    src/drivers/net/netcore.c (e1000 hooks)
+    src/user/gui/gui.c (dynamic menu, icon system, blacklist)
+    src/user/apps/tatersurf.c (DOM/JS/video/audio pipeline)
+    src/user/apps/ts_dom_bindings.h (forward declarations)
+  DELETED:
+    sysroot/ (98 Firefox stub headers)

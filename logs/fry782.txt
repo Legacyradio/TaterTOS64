@@ -1,0 +1,79 @@
+fry782 — DNS debug instrumentation + auto-launch for testing
+=====================================================================
+Timestamp: 2026-03-28
+
+GOAL: Diagnose why DNS fails for bing.com (err-2, -ENOENT from fry781).
+
+PROBLEM: Serial log shows ZERO networking output. No "init: net", no DHCP,
+no DNS prints. QEMU's -serial file: uses buffered I/O — when user closes
+QEMU, unflushed buffer is lost. 3 minutes of runtime produced no networking
+output in serial.log.
+
+CHANGES MADE (this fry):
+  1. netcore.c dns_rx(): Added debug kprints at every early-return gate:
+     - len < 12
+     - txid mismatch
+     - flags (RCODE error)
+     - ancount == 0
+     - Per-answer: rtype, rdlen, pos
+     - Answer truncation
+
+  2. tatersurf.c main(): Added auto-navigate to http://bing.com/ before
+     event loop so DNS triggers without user interaction.
+
+  3. init.c: Added auto-spawn of TATERSURF.FRY after GUI launch (500ms
+     delay) so TaterSurf opens on boot without user interaction.
+
+CHANGES STILL NEEDED (not yet applied):
+  4. netcore.c dns_resolve(): Add kprint BEFORE the gate check:
+       kprint("DNS: resolve \"%s\" configured=%d dns=0x%x\n",
+              hostname, g_net.configured, g_net.dns_server);
+     And after gate fail:
+       kprint("DNS: gate fail — no network\n");
+     This is critical — if DHCP never ran, dns_resolve() returns 0
+     silently with no output. This is likely why the old fry781 serial
+     log showed "NET: DNS failed" (DHCP worked that time) but the fry782
+     boot showed nothing (DHCP may not have run, gate returned 0 early).
+
+  5. syscall.c SYS_DNS_RESOLVE: Add kprint before calling dns_resolve()
+     so we see the syscall entry even if dns_resolve gate-fails.
+
+  6. main.c Phase 12: Already has "init: net" and DHCP prints. These
+     SHOULD appear in serial log but are being lost to QEMU buffering.
+     Consider adding early_serial_puts() (direct COM1 write, unbuffered)
+     at DHCP success/fail points to bypass kprint buffering.
+
+SERIAL LOG OBSERVATIONS (fry782 boot):
+  - Kernel loaded: ksz=0x247D18 (up from 0x246D18, confirms new build)
+  - pid=7 (unknown), pid=9 (GUI), pid=10 (TaterSurf auto-spawned)
+  - No networking output visible — all lost to QEMU file buffer
+  - No crash, no abort — TaterSurf launched successfully
+
+ROOT CAUSE CANDIDATES (ordered by likelihood):
+  1. QEMU serial file buffering hides all output after ~4KB
+     → Fix: use early_serial_puts() for critical diagnostics, or
+       change QEMU launch to pipe serial through unbuffered I/O
+  2. DHCP not running (e1000_is_ready() returns 0 at boot time)
+     → dns_resolve() gate check silently returns 0
+  3. DHCP runs but fails (slirp timing)
+     → dns_resolve() enters retry loop, times out, prints failure
+  4. DNS response arrives but parser fails (CNAME skip bug)
+     → dns_rx() debug prints will show this
+
+NEXT SESSION:
+  - Apply change #4 (dns_resolve gate print) and #5 (syscall print)
+  - Consider early_serial_puts() for DHCP path to bypass buffering
+  - Rebuild, boot QEMU, let it run 30+ seconds, read serial.log
+  - The debug prints will pinpoint exactly where the data flow stops
+
+Files changed:
+  MODIFIED:
+    src/drivers/net/netcore.c   (dns_rx debug prints)
+    src/user/apps/tatersurf.c   (auto-navigate bing.com)
+    src/user/init/init.c        (auto-spawn TaterSurf)
+  NOT YET MODIFIED:
+    src/drivers/net/netcore.c   (dns_resolve gate print — rejected, do next session)
+    src/kernel/proc/syscall.c   (SYS_DNS_RESOLVE entry print)
+
+Build: clean. ISO exported. QEMU tested — boots, TaterSurf spawns, but
+serial output truncated by buffering.

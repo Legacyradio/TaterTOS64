@@ -1,0 +1,63 @@
+fry765 — TaterSurf Phase B1: HTML tokenizer (ts_html.h)
+=====================================================================
+Timestamp: 2026-03-27T16:00:00Z
+
+Context:
+  TaterSurf needs to parse HTML into tokens for rendering. The
+  tokenizer scans raw HTML bytes in-place without memory allocation.
+
+Changes:
+  New file: src/user/apps/ts_html.h (header-only, ~640 LOC)
+
+  Tokenizer (ts_tokenizer):
+    ts_tok_init(tok, html_buf, len) — initialize with source buffer
+    ts_tok_next(tok, &token) — advance to next token, returns 1 or 0
+
+  Token types:
+    TS_TOK_TEXT — raw text between tags
+    TS_TOK_TAG_OPEN — <tagname attr="val">
+    TS_TOK_TAG_CLOSE — </tagname>
+    TS_TOK_TAG_SELF_CLOSE — <tagname ... />
+    TS_TOK_COMMENT — <!-- ... -->
+    TS_TOK_DOCTYPE — <!DOCTYPE ...>
+    TS_TOK_CDATA — <![CDATA[ ... ]]>
+    TS_TOK_EOF — end of input
+
+  Tag scanning:
+    Handles quoted attributes (single and double quotes)
+    Detects self-closing tags (/>)
+    Isolates <script> and <style> content (consumed as single TEXT
+    token until matching closing tag, preventing false tag detection
+    inside JS/CSS code)
+    Skips processing instructions (<?...?>)
+    Handles unterminated tags/comments gracefully
+
+  Attribute extraction:
+    ts_tok_attr_get(tag, attr_name, buf, max) — extract attribute
+    value from tag token. Case-insensitive name matching. Handles
+    quoted values, unquoted values, and boolean attributes.
+    ts_tok_has_attr(tag, attr_name) — check attribute existence.
+
+  Entity decoding:
+    ts_decode_entities(src, src_len, dst, dst_max) — decode in-place:
+    &amp; &lt; &gt; &quot; &apos; &nbsp; &ensp; &emsp; &copy;
+    &mdash; &ndash; &#NNN; (decimal) &#xHH; (hex)
+    Full UTF-8 encoding for codepoints up to U+10FFFF.
+    Unknown entities passed through as-is.
+
+  Utility functions:
+    ts_html_is_void_element(name, len) — br, hr, img, input, etc.
+    ts_html_is_block(name, len) — div, p, h1-h6, ul, ol, table, etc.
+    ts_html_is_inline(name, len) — a, b, i, em, strong, span, etc.
+
+  Zero-copy design:
+    Tokens point into the original source buffer. No memory
+    allocation during tokenization. Caller owns the source buffer.
+
+Verification:
+  Compile test: tokenize a complete HTML document with tags, text,
+  entities, script block, self-closing img, attributes (href, src).
+  Result: compiles clean, zero errors.
+
+Artifacts:
+  src/user/apps/ts_html.h

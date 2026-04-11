@@ -1,0 +1,44 @@
+fry805 — TaterSurf Browser Upgrade: Step 13 (CSS Transforms/Transitions/Animations)
+=====================================================================================
+Date: 2026-04-03
+Build: clean, zero errors
+
+STEP 13: CSS Transforms, Transitions, Animations (ts_layout.h)
+---------------------------------------------------------------
+
+13a) New fields on struct ts_block_box:
+  - transform_x, transform_y: translateX/Y offsets in pixels
+  - transform_scale_pct: scale * 100 (100 = 1.0x, 0 = unset)
+  - opacity_pct: 0-100 (100 = fully visible, 0 = transparent)
+  - visibility_hidden: 1 = visibility:hidden (takes layout space but invisible)
+
+13b) CSS property parsing in ts_doc__apply_box_props():
+  - opacity: parses float 0.0-1.0, converts to 0-100 percentage
+  - visibility: hidden/collapse → visibility_hidden = 1
+  - transform: translateX(px), translateY(px), translate(x,y), scale(n), none
+  - transition-*: all 5 sub-properties parsed (acknowledged, values snap immediately)
+  - animation-*: all 8 sub-properties parsed (acknowledged, values snap immediately)
+
+13c) Rendering — box pass:
+  - Box positions offset by transform_x/transform_y
+  - Scale applied around center point (adjusts bx/by/bw/bh)
+  - visibility:hidden boxes skipped entirely
+  - opacity 0 boxes skipped (fully transparent)
+
+13d) Rendering — node pass:
+  - Nodes inherit transform offsets from their parent box
+  - Nodes in visibility:hidden or opacity:0 boxes are skipped
+
+13e) @keyframes handling:
+  - CSS parser already skips all @-rules (including @keyframes) with
+    proper nested brace counting — no changes needed
+
+NOTE: True animated transitions/animations require frame-by-frame interpolation
+with a timer system. Current implementation snaps to final values. This prevents
+JS/CSS errors and correctly handles static transform states (which is what most
+sites use transforms for — positioning, not animation).
+
+Files modified:
+  src/user/apps/ts_layout.h — box struct, property parsing, render transform application
+
+Plan reference: TATERSURF_UPGRADE_PLAN.md Step 13

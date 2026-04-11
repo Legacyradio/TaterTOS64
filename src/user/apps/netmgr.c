@@ -483,7 +483,7 @@ static void process_input_stream(void) {
                 } else if (hdr.type == TW_MSG_KEY_EVENT && need == (int)sizeof(tw_msg_key_t)) {
                     tw_msg_key_t km;
                     memcpy(&km, input_stream, sizeof(km));
-                    handle_key((char)(uint8_t)km.key);
+                    handle_key((char)km.ascii);
                 } else if (hdr.type == TW_MSG_MOUSE_EVENT && need == (int)sizeof(tw_msg_mouse_t)) {
                     tw_msg_mouse_t mm;
                     memcpy(&mm, input_stream, sizeof(mm));

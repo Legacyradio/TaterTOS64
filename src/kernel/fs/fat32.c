@@ -679,3 +679,481 @@ int fat32_stat(struct fat32_fs *fs, const char *path, uint32_t *size_out, uint8_
     if (attr_out) *attr_out = f.attr;
     return 0;
 }
+
+/* ===== Phase 6: Filesystem Expansion ===== */
+
+/*
+ * fat32_seek — Reposition read/write offset within an open file.
+ * whence: 0=SEEK_SET, 1=SEEK_CUR, 2=SEEK_END.
+ * Returns new absolute position on success, -1 on error.
+ */
+int64_t fat32_seek(struct fat32_file *f, int64_t offset, int whence) {
+    if (!f) return -1;
+    int64_t new_pos;
+    switch (whence) {
+    case 0: /* SEEK_SET */
+        new_pos = offset;
+        break;
+    case 1: /* SEEK_CUR */
+        new_pos = (int64_t)f->pos + offset;
+        break;
+    case 2: /* SEEK_END */
+        new_pos = (int64_t)f->size + offset;
+        break;
+    default:
+        return -1;
+    }
+    if (new_pos < 0) return -1;
+    if (new_pos > (int64_t)0xFFFFFFFFLL) return -1; /* FAT32 max file size */
+    f->pos = (uint32_t)new_pos;
+    return new_pos;
+}
+
+/*
+ * Free all clusters in a chain starting at 'cluster'.
+ */
+static void fat32_free_chain(struct fat32_fs *fs, uint32_t cluster) {
+    uint32_t chain_steps = 0;
+    uint32_t chain_limit = fat32_chain_step_limit(fs);
+    while (cluster >= 2 && cluster < 0x0FFFFFF8) {
+        if (chain_steps++ >= chain_limit) break;
+        uint32_t next = read_fat_entry(fs, cluster);
+        write_fat_entry(fs, cluster, 0);
+        cluster = next;
+    }
+}
+
+/*
+ * Walk a cluster chain for 'count' steps and return the cluster at step N.
+ * Returns 0 on error (chain too short).
+ */
+static uint32_t fat32_walk_chain(struct fat32_fs *fs, uint32_t start, uint32_t count) {
+    uint32_t cl = start;
+    uint32_t chain_limit = fat32_chain_step_limit(fs);
+    for (uint32_t i = 0; i < count; i++) {
+        if (cl < 2 || cl >= 0x0FFFFFF8) return 0;
+        if (i >= chain_limit) return 0;
+        cl = read_fat_entry(fs, cl);
+    }
+    return cl;
+}
+
+/*
+ * fat32_truncate — Set file to new_size bytes.
+ * Truncating down frees excess clusters. Truncating up to the same size is a no-op.
+ * Extending beyond current size is not supported (write to extend instead).
+ * Returns 0 on success, -1 on error.
+ */
+int fat32_truncate(struct fat32_file *f, uint32_t new_size) {
+    if (!f || !f->fs) return -1;
+    if (f->attr & ATTR_DIR) return -1;
+    if (new_size == f->size) return 0;
+
+    /* Extending: only support truncate-down and truncate-to-zero */
+    if (new_size > f->size) return -1;
+
+    struct fat32_fs *fs = f->fs;
+    uint64_t cluster_size = (uint64_t)fs->sectors_per_cluster * (uint64_t)fs->bytes_per_sector;
+    if (cluster_size == 0) return -1;
+
+    if (new_size == 0) {
+        /* Free entire chain */
+        if (f->first_cluster >= 2) {
+            fat32_free_chain(fs, f->first_cluster);
+        }
+        f->first_cluster = 0;
+        f->size = 0;
+        f->pos = 0;
+        update_dir_entry_size(fs, f->dir_cluster, f->dir_offset, 0);
+        update_dir_entry_cluster(fs, f->dir_cluster, f->dir_offset, 0);
+        return 0;
+    }
+
+    /* Calculate how many clusters the new size needs */
+    uint32_t clusters_needed = (uint32_t)((new_size + cluster_size - 1) / cluster_size);
+    if (clusters_needed == 0) clusters_needed = 1;
+
+    /* Walk chain to the last cluster we want to keep */
+    uint32_t keep_last = fat32_walk_chain(fs, f->first_cluster, clusters_needed - 1);
+    if (keep_last < 2) return -1;
+
+    /* Free the chain after the last kept cluster */
+    uint32_t next_after = read_fat_entry(fs, keep_last);
+    if (next_after >= 2 && next_after < 0x0FFFFFF8) {
+        fat32_free_chain(fs, next_after);
+    }
+    /* Mark the kept last cluster as end-of-chain */
+    write_fat_entry(fs, keep_last, 0x0FFFFFFF);
+
+    f->size = new_size;
+    if (f->pos > new_size) f->pos = new_size;
+    update_dir_entry_size(fs, f->dir_cluster, f->dir_offset, new_size);
+    return 0;
+}
+
+/*
+ * Build an 8.3 short name from a filename component.
+ * Returns 0 on success, -1 if the name cannot be represented as 8.3.
+ * out must be exactly 11 bytes.
+ */
+static int build_short_name(const char *name, uint8_t *out) {
+    if (!name || !out) return -1;
+    for (int i = 0; i < 11; i++) out[i] = ' ';
+
+    /* Find dot position */
+    int dot_pos = -1;
+    int len = 0;
+    for (int i = 0; name[i]; i++) {
+        if (name[i] == '.' && dot_pos < 0) dot_pos = i;
+        len++;
+    }
+    if (len == 0 || len > 12) return -1;
+
+    /* Base name: up to 8 chars before dot */
+    int base_len = (dot_pos >= 0) ? dot_pos : len;
+    if (base_len > 8 || base_len == 0) return -1;
+    for (int i = 0; i < base_len; i++) {
+        char c = name[i];
+        if (c >= 'a' && c <= 'z') c = (char)(c - 32);
+        if (c == ' ' || c == '"' || c == '/' || c == '\\' ||
+            c == '[' || c == ']' || c == ';' || c == '=' || c == ',') return -1;
+        out[i] = (uint8_t)c;
+    }
+
+    /* Extension: up to 3 chars after dot */
+    if (dot_pos >= 0) {
+        const char *ext = name + dot_pos + 1;
+        int ext_len = 0;
+        while (ext[ext_len]) ext_len++;
+        if (ext_len > 3) return -1;
+        for (int i = 0; i < ext_len; i++) {
+            char c = ext[i];
+            if (c >= 'a' && c <= 'z') c = (char)(c - 32);
+            out[8 + i] = (uint8_t)c;
+        }
+    }
+    return 0;
+}
+
+/*
+ * Find a free 32-byte directory entry slot in a directory cluster chain.
+ * Returns 0 on success, filling out_cluster and out_offset.
+ * If no free slot exists, extends the directory by allocating a new cluster.
+ */
+static int find_free_dir_slot(struct fat32_fs *fs, uint32_t dir_cluster,
+                              uint32_t *out_cluster, uint32_t *out_offset) {
+    if (!fs) return -1;
+    uint32_t cl = dir_cluster;
+    uint32_t prev = 0;
+    uint8_t sector[FAT32_MAX_SECTOR];
+    if (fs->bytes_per_sector > sizeof(sector)) return -1;
+    uint32_t chain_steps = 0;
+    uint32_t chain_limit = fat32_chain_step_limit(fs);
+
+    while (cl >= 2 && cl < 0x0FFFFFF8) {
+        if (chain_steps++ >= chain_limit) return -1;
+        uint64_t lba = fat32_cluster_to_lba(fs, cl);
+        for (uint32_t s = 0; s < fs->sectors_per_cluster; s++) {
+            if (read_sector(fs, lba + s, sector) != 0) return -1;
+            for (uint32_t off = 0; off < fs->bytes_per_sector; off += 32) {
+                uint8_t first = sector[off];
+                if (first == 0x00 || first == 0xE5) {
+                    *out_cluster = cl;
+                    *out_offset = s * fs->bytes_per_sector + off;
+                    return 0;
+                }
+            }
+        }
+        prev = cl;
+        cl = read_fat_entry(fs, cl);
+    }
+
+    /* No free slot found — extend the directory */
+    uint32_t newc = alloc_cluster(fs, prev);
+    if (!newc) return -1;
+    *out_cluster = newc;
+    *out_offset = 0;
+    return 0;
+}
+
+/*
+ * Write a 32-byte directory entry at the given cluster + offset.
+ */
+static int write_dir_entry(struct fat32_fs *fs, uint32_t dir_cluster,
+                           uint32_t dir_offset, const uint8_t *entry) {
+    uint64_t lba = fat32_cluster_to_lba(fs, dir_cluster)
+                 + (dir_offset / fs->bytes_per_sector);
+    uint32_t off = dir_offset % fs->bytes_per_sector;
+    uint8_t sector[FAT32_MAX_SECTOR];
+    if (fs->bytes_per_sector > sizeof(sector)) return -1;
+    if (read_sector(fs, lba, sector) != 0) return -1;
+    for (int i = 0; i < 32; i++) sector[off + i] = entry[i];
+    return write_sector(fs, lba, sector);
+}
+
+/*
+ * Split path into parent dir path and filename.
+ * E.g. "/foo/bar/baz.txt" -> parent="/foo/bar", name="baz.txt".
+ * root-level: "/baz.txt" -> parent="", name="baz.txt".
+ * Returns 0 on success.
+ */
+static int split_path(const char *path, char *parent, uint32_t parent_sz,
+                      char *name, uint32_t name_sz) {
+    if (!path || !parent || !name) return -1;
+    const char *p = path;
+    if (*p == '/') p++;
+    if (*p == 0) return -1; /* can't create root */
+
+    /* Find last slash */
+    const char *last_slash = 0;
+    for (const char *s = p; *s; s++) {
+        if (*s == '/') last_slash = s;
+    }
+
+    if (!last_slash) {
+        /* File in root directory */
+        parent[0] = 0;
+        uint32_t i = 0;
+        while (p[i] && i + 1 < name_sz) { name[i] = p[i]; i++; }
+        name[i] = 0;
+    } else {
+        /* File in subdirectory */
+        uint32_t plen = (uint32_t)(last_slash - p);
+        if (plen + 1 >= parent_sz) return -1;
+        for (uint32_t i = 0; i < plen; i++) parent[i] = p[i];
+        parent[plen] = 0;
+        const char *n = last_slash + 1;
+        uint32_t i = 0;
+        while (n[i] && i + 1 < name_sz) { name[i] = n[i]; i++; }
+        name[i] = 0;
+    }
+    return 0;
+}
+
+/*
+ * Resolve a directory path to its cluster number.
+ * Empty path means root directory.
+ */
+static int resolve_dir_cluster(struct fat32_fs *fs, const char *dir_path,
+                               uint32_t *out_cluster) {
+    if (!fs || !out_cluster) return -1;
+    if (!dir_path || dir_path[0] == 0) {
+        *out_cluster = fs->root_cluster;
+        return 0;
+    }
+
+    const char *p = dir_path;
+    uint32_t cur = fs->root_cluster;
+    while (*p) {
+        char name[260];
+        uint32_t n = 0;
+        while (*p && *p != '/' && n < sizeof(name) - 1) {
+            name[n++] = *p++;
+        }
+        name[n] = 0;
+        if (*p == '/') p++;
+
+        uint32_t cl = 0;
+        uint8_t attr = 0;
+        if (find_in_dir(fs, cur, name, &cl, 0, &attr, 0, 0) != 0) return -1;
+        if (!(attr & ATTR_DIR)) return -1;
+        cur = cl;
+    }
+    *out_cluster = cur;
+    return 0;
+}
+
+/*
+ * fat32_create — Create a new empty file or directory entry.
+ * attr: 0 for regular file, ATTR_DIR for directory.
+ * Returns 0 on success, -1 on error.
+ */
+int fat32_create(struct fat32_fs *fs, const char *path, uint8_t attr) {
+    if (!fs || !path) return -1;
+    char parent[260], name[260];
+    if (split_path(path, parent, sizeof(parent), name, sizeof(name)) != 0) return -1;
+
+    uint32_t dir_cluster;
+    if (resolve_dir_cluster(fs, parent, &dir_cluster) != 0) return -1;
+
+    /* Check if name already exists */
+    uint32_t dummy;
+    if (find_in_dir(fs, dir_cluster, name, &dummy, 0, 0, 0, 0) == 0) return -1;
+
+    /* Build 8.3 entry */
+    uint8_t entry[32];
+    for (int i = 0; i < 32; i++) entry[i] = 0;
+    if (build_short_name(name, entry) != 0) return -1;
+    entry[11] = attr | ATTR_ARCHIVE;
+
+    uint32_t first_cluster = 0;
+    if (attr & ATTR_DIR) {
+        /* Allocate a cluster for the new directory and write "." and ".." */
+        first_cluster = alloc_cluster(fs, 0);
+        if (!first_cluster) return -1;
+
+        /* Write "." entry */
+        uint8_t dot[32];
+        for (int i = 0; i < 32; i++) dot[i] = 0;
+        dot[0] = '.';
+        for (int i = 1; i < 11; i++) dot[i] = ' ';
+        dot[11] = ATTR_DIR;
+        *(uint16_t *)(dot + 20) = (uint16_t)((first_cluster >> 16) & 0xFFFF);
+        *(uint16_t *)(dot + 26) = (uint16_t)(first_cluster & 0xFFFF);
+
+        /* Write ".." entry */
+        uint8_t dotdot[32];
+        for (int i = 0; i < 32; i++) dotdot[i] = 0;
+        dotdot[0] = '.';
+        dotdot[1] = '.';
+        for (int i = 2; i < 11; i++) dotdot[i] = ' ';
+        dotdot[11] = ATTR_DIR;
+        uint32_t parent_cl = (dir_cluster == fs->root_cluster) ? 0 : dir_cluster;
+        *(uint16_t *)(dotdot + 20) = (uint16_t)((parent_cl >> 16) & 0xFFFF);
+        *(uint16_t *)(dotdot + 26) = (uint16_t)(parent_cl & 0xFFFF);
+
+        /* Write both entries to the first sector of the new cluster */
+        uint8_t sector[FAT32_MAX_SECTOR];
+        if (fs->bytes_per_sector > sizeof(sector)) { fat32_free_chain(fs, first_cluster); return -1; }
+        uint64_t lba = fat32_cluster_to_lba(fs, first_cluster);
+        if (read_sector(fs, lba, sector) != 0) { fat32_free_chain(fs, first_cluster); return -1; }
+        for (int i = 0; i < 32; i++) sector[i] = dot[i];
+        for (int i = 0; i < 32; i++) sector[32 + i] = dotdot[i];
+        if (write_sector(fs, lba, sector) != 0) { fat32_free_chain(fs, first_cluster); return -1; }
+    }
+
+    /* Set cluster in entry */
+    *(uint16_t *)(entry + 20) = (uint16_t)((first_cluster >> 16) & 0xFFFF);
+    *(uint16_t *)(entry + 26) = (uint16_t)(first_cluster & 0xFFFF);
+    /* Size is 0 for both files and directories */
+    *(uint32_t *)(entry + 28) = 0;
+
+    /* Find free slot in parent directory and write entry */
+    uint32_t slot_cl, slot_off;
+    if (find_free_dir_slot(fs, dir_cluster, &slot_cl, &slot_off) != 0) {
+        if (first_cluster) fat32_free_chain(fs, first_cluster);
+        return -1;
+    }
+    if (write_dir_entry(fs, slot_cl, slot_off, entry) != 0) {
+        if (first_cluster) fat32_free_chain(fs, first_cluster);
+        return -1;
+    }
+    return 0;
+}
+
+/*
+ * fat32_mkdir — Create a new directory.
+ */
+int fat32_mkdir(struct fat32_fs *fs, const char *path) {
+    return fat32_create(fs, path, ATTR_DIR);
+}
+
+/*
+ * Mark a directory entry as deleted (0xE5) at the given cluster + offset.
+ */
+static int mark_dir_entry_deleted(struct fat32_fs *fs, uint32_t dir_cluster,
+                                  uint32_t dir_offset) {
+    uint64_t lba = fat32_cluster_to_lba(fs, dir_cluster)
+                 + (dir_offset / fs->bytes_per_sector);
+    uint32_t off = dir_offset % fs->bytes_per_sector;
+    uint8_t sector[FAT32_MAX_SECTOR];
+    if (fs->bytes_per_sector > sizeof(sector)) return -1;
+    if (read_sector(fs, lba, sector) != 0) return -1;
+    sector[off] = 0xE5;
+    return write_sector(fs, lba, sector);
+}
+
+/*
+ * fat32_unlink — Delete a file.
+ * Does not delete directories (use rmdir for that).
+ * Returns 0 on success, -1 on error.
+ */
+int fat32_unlink(struct fat32_fs *fs, const char *path) {
+    if (!fs || !path) return -1;
+    struct fat32_file f;
+    if (fat32_open(fs, path, &f) != 0) return -1;
+    if (f.attr & ATTR_DIR) return -1; /* can't unlink directories */
+
+    /* Free the cluster chain */
+    if (f.first_cluster >= 2) {
+        fat32_free_chain(fs, f.first_cluster);
+    }
+
+    /* Mark directory entry as deleted */
+    return mark_dir_entry_deleted(fs, f.dir_cluster, f.dir_offset);
+}
+
+/*
+ * fat32_rename — Rename/move a file or directory.
+ *
+ * Strategy: create new directory entry with old file's clusters,
+ * then delete old entry. Handles same-directory and cross-directory renames.
+ * Returns 0 on success, -1 on error.
+ */
+int fat32_rename(struct fat32_fs *fs, const char *old_path, const char *new_path) {
+    if (!fs || !old_path || !new_path) return -1;
+
+    /* Open old file to get its metadata */
+    struct fat32_file old_f;
+    if (fat32_open(fs, old_path, &old_f) != 0) return -1;
+
+    /* Check that new_path doesn't already exist */
+    char new_parent[260], new_name[260];
+    if (split_path(new_path, new_parent, sizeof(new_parent),
+                   new_name, sizeof(new_name)) != 0) return -1;
+
+    uint32_t new_dir_cluster;
+    if (resolve_dir_cluster(fs, new_parent, &new_dir_cluster) != 0) return -1;
+
+    uint32_t check;
+    if (find_in_dir(fs, new_dir_cluster, new_name, &check, 0, 0, 0, 0) == 0) return -1;
+
+    /* Build new 8.3 entry with same cluster/size/attr */
+    uint8_t entry[32];
+    for (int i = 0; i < 32; i++) entry[i] = 0;
+    if (build_short_name(new_name, entry) != 0) return -1;
+    entry[11] = old_f.attr | ATTR_ARCHIVE;
+    *(uint16_t *)(entry + 20) = (uint16_t)((old_f.first_cluster >> 16) & 0xFFFF);
+    *(uint16_t *)(entry + 26) = (uint16_t)(old_f.first_cluster & 0xFFFF);
+    *(uint32_t *)(entry + 28) = old_f.size;
+
+    /* Write new entry */
+    uint32_t slot_cl, slot_off;
+    if (find_free_dir_slot(fs, new_dir_cluster, &slot_cl, &slot_off) != 0) return -1;
+    if (write_dir_entry(fs, slot_cl, slot_off, entry) != 0) return -1;
+
+    /* Delete old entry */
+    if (mark_dir_entry_deleted(fs, old_f.dir_cluster, old_f.dir_offset) != 0) {
+        /* Try to undo the new entry — best effort */
+        mark_dir_entry_deleted(fs, slot_cl, slot_off);
+        return -1;
+    }
+
+    /* If this is a directory and we moved it to a different parent,
+       update ".." entry to point to new parent */
+    if ((old_f.attr & ATTR_DIR) && old_f.first_cluster >= 2) {
+        char old_parent[260], old_name[260];
+        if (split_path(old_path, old_parent, sizeof(old_parent),
+                       old_name, sizeof(old_name)) == 0) {
+            uint32_t old_dir_cluster;
+            if (resolve_dir_cluster(fs, old_parent, &old_dir_cluster) == 0) {
+                if (old_dir_cluster != new_dir_cluster) {
+                    /* Update ".." in the directory's own cluster */
+                    uint64_t lba = fat32_cluster_to_lba(fs, old_f.first_cluster);
+                    uint8_t sector[FAT32_MAX_SECTOR];
+                    if (fs->bytes_per_sector <= sizeof(sector)) {
+                        if (read_sector(fs, lba, sector) == 0) {
+                            /* ".." is at offset 32 */
+                            uint32_t parent_cl = (new_dir_cluster == fs->root_cluster) ? 0 : new_dir_cluster;
+                            *(uint16_t *)(sector + 32 + 20) = (uint16_t)((parent_cl >> 16) & 0xFFFF);
+                            *(uint16_t *)(sector + 32 + 26) = (uint16_t)(parent_cl & 0xFFFF);
+                            write_sector(fs, lba, sector);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return 0;
+}

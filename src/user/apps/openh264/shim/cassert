@@ -1,0 +1,4 @@
+#ifndef _TATER_CASSERT
+#define _TATER_CASSERT
+#include <assert.h>
+#endif

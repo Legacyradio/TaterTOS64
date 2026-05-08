@@ -1,0 +1,264 @@
+fry822 — Upstream CMake authoritative source list + 2 surprises
+=====================================================================
+DATE (UTC):   2026-04-26 03:25:09
+DATE (LOCAL): 2026-04-25 22:25:09 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSORS:   logs/fry819.txt (rediff), logs/fry821.txt (file manifest)
+TYPE:         Investigation log — NO source code changed.
+UPSTREAM:     ~/ladybird-upstream/AK/CMakeLists.txt
+              ~/ladybird-upstream/Libraries/LibCore/CMakeLists.txt
+
+PURPOSE
+=====================================================================
+fry821 enumerated every file in upstream AK/ and LibCore/ by
+directory listing. CMake is the authoritative source for which
+files are actually compiled. This log resolves any disagreement.
+
+Two surprises surfaced. Both flagged in §"NEW UNKNOWNS" below.
+
+==========================================================================
+AK — AUTHORITATIVE COMPILED SOURCE LIST (37 files)
+==========================================================================
+From AK/CMakeLists.txt lines 1-47.
+
+ALWAYS-COMPILED (36 .cpp files):
+  Assertions.cpp        Hex.cpp                  StringConversions.cpp
+  Base64.cpp            JsonArray.cpp            StringUtils.cpp
+  ByteString.cpp        JsonObject.cpp           StringView.cpp
+  ByteStringImpl.cpp    JsonParser.cpp           Time.cpp
+  CircularBuffer.cpp    JsonValue.cpp            Utf16FlyString.cpp
+  ConstrainedStream.cpp MemoryStream.cpp         Utf16String.cpp
+  CountingStream.cpp    NumberFormat.cpp         Utf16StringData.cpp
+  Error.cpp             OptionParser.cpp         Utf16View.cpp
+  FlyString.cpp         Random.cpp               Utf32View.cpp
+  Format.cpp            StackInfo.cpp            Utf8View.cpp
+  GenericLexer.cpp      Stream.cpp               kmalloc.cpp
+                        String.cpp
+                        StringBase.cpp
+                        StringBuilder.cpp
+
+NON-WINDOWS ONLY (1 .cpp added — TaterTOS gets this):
+  LexicalPath.cpp
+
+WINDOWS-ONLY (skipped):
+  LexicalPathWindows.cpp
+  DemangleWindows.cpp
+
+GENERATED FROM TEMPLATES (we generate manually):
+  Debug.h     — from Debug.h.in via configure_file
+  Backtrace.h — from Backtrace.h.in via configure_file
+
+HEADER-ONLY (not in SOURCES, included transitively): the remaining
+~155 .h files in AK are templates / pure-inline; they are pulled in
+through includes from the 37 .cpp files and don't appear in the
+authoritative compile list.
+
+==========================================================================
+AK — LINKED LIBRARIES (4 dependencies)
+==========================================================================
+Line 69:
+  target_link_libraries(AK PRIVATE FastFloat::fast_float fmt::fmt
+                                    simdutf::simdutf)
+
+Line 75:
+  target_link_libraries(AK ${MIMALLOC_VISIBILITY} mimalloc)
+
+So AK has FOUR third-party deps, not three. fry821 missed mimalloc.
+
+  fmt          — text formatting (header-only build supported)
+  fast_float   — fast string→double parsing (header-only)
+  simdutf      — SIMD UTF-8/16 conversion (single-source amalgamated)
+  mimalloc     — Microsoft's allocator, MIT licensed, ~30 .c files
+
+  Optional, NOT taken on TaterTOS:
+    cpptrace   — backtrace lib (we generate Backtrace.h ourselves)
+
+==========================================================================
+LibCore — AUTHORITATIVE COMPILED SOURCE LIST (37 files for TaterTOS)
+==========================================================================
+From Libraries/LibCore/CMakeLists.txt lines 1-91.
+
+ALWAYS-COMPILED (26 .cpp files):
+  AddressInfoVector.cpp              ResourceImplementationFile.cpp
+  ArgsParser.cpp                     SharedVersion.cpp
+  ConfigFile.cpp                     SocketAddress.cpp
+  DirIterator.cpp                    StandardPaths.cpp
+  Directory.cpp                      SystemServerTakeover.cpp
+  DirectoryEntry.cpp                 ThreadEventQueue.cpp
+  ElapsedTimer.cpp                   Timer.cpp
+  Environment.cpp                    Version.cpp
+  EventLoop.cpp
+  EventLoopImplementation.cpp
+  EventReceiver.cpp
+  File.cpp
+  MappedFile.cpp
+  MimeData.cpp
+  Notifier.cpp
+  ReportTime.cpp
+  Resource.cpp
+  ResourceImplementation.cpp
+
+NON-WINDOWS (8 .cpp added — TaterTOS gets these):
+  AnonymousBuffer.cpp
+  EventLoopImplementationUnix.cpp
+  LocalServer.cpp
+  Process.cpp
+  Socket.cpp
+  System.cpp
+  TCPServer.cpp
+  UDPServer.cpp
+
+PLATFORM-CONDITIONAL → "Unimplemented" picks for TaterTOS (3 .cpp):
+  FileWatcherUnimplemented.cpp           (we have no inotify)
+  Platform/ProcessStatisticsUnimplemented.cpp  (not Linux/Mach)
+  TimeZoneWatcherUnimplemented.cpp       (not Linux/BSD/Apple/Win)
+
+LibCore total compiled = 26 + 8 + 3 = 37 .cpp files for TaterTOS.
+
+Header-only / not-in-SOURCES (included transitively): Forward.h,
+Event.h, FileWatcher.h, NetworkResponse.h, Promise.h, Proxy.h,
+SharedCircularQueue.h, ThreadedPromise.h, Platform/ProcessInfo.h,
+Platform/ProcessStatistics.h, plus the .h companions of every .cpp.
+
+==========================================================================
+LibCore — LINKED LIBRARIES (line 94)
+==========================================================================
+  target_link_libraries(LibCore PRIVATE
+      LibUnicode
+      LibURL
+      LibTextCodec
+      Threads::Threads)
+
+LibCore has THREE Ladybird-internal sister libraries as link deps:
+
+  LibUnicode    — 20 .cpp files (~ICU wrapper + locale)
+  LibURL        — 5 .cpp files
+  LibTextCodec  — 2 .cpp files
+
+Plus pthreads (Threads::Threads), already provided by TaterTOS libc.
+
+This means Chunk 2 ("AK + LibCore build clean") cannot stop at
+LibCore — it must also bring in LibUnicode + LibURL + LibTextCodec
+to resolve symbols at link time. Otherwise LibCore.a builds (it's a
+static lib, no link enforced), but anything that LINKS against
+LibCore.a breaks immediately.
+
+This is fry821 §"OUTSTANDING UNKNOWNS" #1 graduating from "noted"
+to "definitively required."
+
+==========================================================================
+THE TWO SURPRISES (vs fry821)
+==========================================================================
+
+S1. mimalloc dependency.
+    AK's kmalloc.cpp routes allocations through mimalloc instead of
+    libc malloc. mimalloc is ~30 .c files (~10k LOC), MIT licensed,
+    portable C with platform abstractions for Linux/macOS/Windows/BSD.
+    No TaterTOS port exists.
+
+    OPTIONS (decision needed):
+      (S1a) Vendor mimalloc, port its OS abstractions to TaterTOS.
+            Real engineering work. Adds a new high-quality allocator
+            to TaterTOS. Estimated ~1-2 days for the OS-shim layer
+            (mimalloc has clean abstraction boundaries — see its
+            src/prim/ subdirectory).
+      (S1b) Engineer around it: patch AK's kmalloc.cpp to call
+            TaterTOS libc malloc/free directly. This means
+            maintaining a small TaterTOS-specific divergence from
+            upstream AK. Existing TaterTOS libc.c has malloc/free/
+            calloc/realloc/aligned_alloc/posix_memalign/memalign/
+            valloc/pvalloc (verified in fry819).
+
+    Recommendation: S1b. Reason consistent with the TaterLabs ethos
+    (build the road, don't follow the map): TaterTOS already has a
+    working allocator that other apps use. Adding a second allocator
+    on top is mapping-following. The divergence is one #ifdef in
+    AK/kmalloc.cpp — clearly marked, easy to upstream as a config
+    option later if we ever want to.
+
+S2. LibCore's transitive deps are mandatory at link time.
+    LibUnicode + LibURL + LibTextCodec must be ported in Chunk 2,
+    not deferred. Total = 27 additional .cpp files.
+
+    LibUnicode in particular wraps ICU. Two paths:
+      (S2a) Vendor ICU. ICU is huge (~30MB of source).
+      (S2b) Use a slimmed-down LibUnicode that backs onto a smaller
+            Unicode lib (utf-8, character classes, normalization,
+            case mapping). Several upstream Ladybird configs do this
+            for embedded targets.
+      (S2c) Provide TaterTOS-native LibUnicode shims that return
+            ASCII-correct results for everything Unicode and accept
+            that BiDi / complex shaping won't work in v1. Real
+            shaping is a v2 concern.
+
+    Recommendation: defer to fry823 (LibUnicode investigation) for
+    the actual call. This needs reading LibUnicode's CMakeLists +
+    file list to see how much of it is ICU-glue vs internal logic.
+
+==========================================================================
+FINAL CHUNK 2 SCOPE (locking in)
+==========================================================================
+What "AK + LibCore build clean" really means:
+
+  KEEP AS-IS upstream (no edits except generated headers):
+    AK/        37 .cpp + ~155 .h  (compile + transitive)
+    LibCore/   37 .cpp + ~30 .h
+    LibURL/     5 .cpp + companion .h
+    LibTextCodec/  2 .cpp + companion .h
+
+  CONDITIONALLY EDITED upstream:
+    AK/kmalloc.cpp  — patched to call TaterTOS libc malloc/free
+                      (S1b decision pending Zack confirm)
+
+  NATIVE TaterTOS work (engineered, not copied):
+    AK/Backtrace.h  — generated, frame-pointer walker over user RBP
+    AK/Debug.h      — generated, all channels off
+    LibUnicode/     — slim native impl OR ICU vendor (decision in fry823)
+
+  VENDORED 3rd-party (under src/user/apps/ladybird-3rd/):
+    fmt/         header-only
+    fast_float/  header-only
+    simdutf/     amalgamated single-source
+
+  EXISTING TaterTOS surface (no new code, just used):
+    src/user/libc/{libc,pthread,posix,stdio,netdb,math,setjmp.S,
+                   string_ext,time_ext}.{c,h,S}
+
+==========================================================================
+CHUNK 2 EXIT CRITERION (locking in)
+==========================================================================
+1. AK.a, LibCore.a, LibURL.a, LibTextCodec.a, LibUnicode.a build
+   clean with x86_64-elf-g++ -ffreestanding -fno-exceptions -fno-rtti.
+2. A trivial test program ("hello world that uses AK::String + a
+   LibCore::ArgsParser + a LibURL::URL parse") links and runs in
+   QEMU as a .fry.
+3. SHA-256 of every .a recorded.
+4. Clean rebuild via planv3 Rule 12 succeeds (`make clean &&
+   PATH=... build_iso.sh`).
+
+==========================================================================
+DECISIONS PENDING (need Zack)
+==========================================================================
+S1: mimalloc → S1b (patch AK kmalloc.cpp to use TaterTOS libc malloc)
+                vs S1a (vendor + port mimalloc to TaterTOS).
+Recommendation: S1b.
+
+S2: LibUnicode strategy. Defer until fry823 reads its CMakeLists.
+
+==========================================================================
+NEXT
+==========================================================================
+fry823 — Investigation: read LibUnicode/CMakeLists.txt + file list,
+        plus LibURL and LibTextCodec CMakeLists. Determine whether
+        LibUnicode pulls ICU (huge) or is internally self-contained
+        with simdutf (manageable). Answer S2.
+        NO CODE.
+
+==========================================================================
+NO REBUILD THIS STEP
+==========================================================================
+No source modified. No build run. No SHA-256 to record.
+
+END fry822
+=====================================================================

@@ -1,3 +1,18 @@
+*** SUPERSEDED 2026-04-25 ***
+This plan is no longer authoritative. The TaterSurf hand-built engine
+approach (mbedTLS + QuickJS + OpenH264 + libopus + ts_http + ts_url)
+has been retired in favor of a Ladybird engine port (BSD-2 licensed,
+github.com/LadybirdBrowser/ladybird).
+
+Authoritative plan: logs/fry816.txt (Chunks 2a / 2b / 3 / 4 / 5 / 6).
+Supersession recorded: logs/fry817.txt.
+
+src/user/apps/tatersurf.c remains in-tree until the Ladybird port
+renders a page in QEMU; it is then deleted in its own fry log.
+
+The text below is preserved verbatim for historical reference only.
+*** END SUPERSEDED HEADER ***
+
 TaterSurf — Native Web Browser for TaterTOS64v3
 =====================================================================
 DATE: March 27, 2026

@@ -1,0 +1,61 @@
+2026-04-28 17:32:04 CDT
+
+Expanded the real Ladybird build manifests instead of adding stubs:
+- added a real `LibIPC.a` target and linked it into `link_smoke` / `web_smoke`
+- widened `LibGfx.a` toward the actual missing symbol providers
+- widened `LibWeb.a` with real `HTML/Scripting`, `ARIA`, `Infra`, `Layout`, `Page`, `WebIDL`, and `Bindings/MainThreadVM` objects
+- fixed a real libc surface gap by exporting `atan2f`, `lrint`, and `llrint` in `src/include/math.h` because `atan2f` already exists in `src/user/libc/math.c`
+
+Result:
+- `LibIPC` now builds successfully
+- forced `LibWeb` rebuild started compiling the newly added real objects
+- forced `LibGfx` rebuild exposed the next honest blocker before link:
+  `src/user/apps/ladybird/Libraries/LibGfx/ColorSpace.cpp:13:10: fatal error: core/SkColorSpace.h: No such file or directory`
+
+Audit:
+- this is not a code shortcut problem; the widened real LibGfx surface now requires host Skia headers
+- Harfbuzz headers exist on the host (`/usr/include/harfbuzz/hb.h`)
+- no Skia headers were found under the repo, `/usr/include`, `/usr/local/include`, `/opt`, or the home tree
+- repo also does not contain non-Skia fallback implementations for the newly required `ImmutableBitmap` / `ColorSpace` / `PathSkia` / `TypefaceSkia` path
+
+2026-04-28 17:35:36 CDT
+
+Refined the build plumbing around that dependency:
+- added `PKG_CONFIG ?= pkg-config`
+- taught `LIBGFX_CXXFLAGS` to consume host Harfbuzz include roots automatically
+- made `SKIA_CFLAGS` configurable for a future real Skia header location
+- filtered the Harfbuzz `pkg-config` result down to preprocessor/include flags only so the cross compiler does not choke on host-only `-pthread`
+
+Verification:
+- `make libgfx` now picks up Harfbuzz/Freetype include roots automatically
+- after removing the `-pthread` issue, the build lands back on the same real blocker:
+  `src/user/apps/ladybird/Libraries/LibGfx/ColorSpace.cpp:13:10: fatal error: core/SkColorSpace.h: No such file or directory`
+
+2026-04-28 17:39:38 CDT
+
+Installed the real host Skia package and pushed the build further:
+- installed `skia-static 144-1`
+- verified real assets are present:
+  - headers under `/usr/include/include/...`
+  - archive `/usr/lib/libskia.a`
+  - `pkg-config` entry `/usr/lib/pkgconfig/skia.pc`
+- updated the build to consume `pkg-config skia` for headers/libs
+- added `/usr/include` because Skia headers self-include through `include/...`
+- added configurable host libstdc++ include roots to test the next real compile boundary
+
+New blocker after that:
+- the problem is no longer "Skia not installed"
+- `make libgfx` now fails because Skia's headers assume a hosted C++ environment, while this port is compiling freestanding against TaterTOS libc/C++ headers
+- concrete failures include:
+  - `/usr/include/c++/15.2.1/bits/requires_hosted.h:34:4: error: #error "This header is not available in freestanding mode."`
+  - host `FILE` definition conflict between `/usr/include/bits/types/FILE.h` and `src/include/stdio.h`
+  - missing/unsupported hosted std helpers expected by Skia headers (`std::data`, `std::size`, `std::make_reverse_iterator`, `std::remove_pointer_t`, etc.)
+
+Why this matters:
+- this is now an ABI / hosted-vs-freestanding integration blocker, not a missing package blocker
+- real next work is to decide how Skia-backed LibGfx is meant to compile in TaterTOS:
+  either isolate Skia-backed units behind a hosted compatibility layer, or provide a non-Skia implementation path for the required LibGfx surface
+
+Why this matters:
+- we are now blocked by a missing real dependency layer, not by hidden linker churn
+- next meaningful step is to provide/import the Skia development headers and then continue the widened LibGfx build, after which we can rerun `web_smoke` and measure the new unresolved-reference count

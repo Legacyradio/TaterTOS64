@@ -1,0 +1,111 @@
+fry824 — Vendor drop step 1: fmt 12.1.0
+=====================================================================
+DATE (UTC):   2026-04-26 03:40:12
+DATE (LOCAL): 2026-04-25 22:40:12 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSORS:   logs/fry819 (rediff), fry821 (manifest), fry822 (CMake),
+              fry823 (sister-lib carve-out + decision: U1 confirmed,
+                      S1b confirmed, S2 deferred to Chunk 4)
+TYPE:         Vendor drop. Upstream third-party code copied verbatim.
+              No TaterTOS source code modified.
+
+WHAT
+=====================================================================
+Cloned upstream fmt 12.1.0 into:
+  src/user/apps/ladybird-3rd/fmt/
+
+WHY THIS VERSION
+=====================================================================
+~/ladybird-upstream/vcpkg.json `overrides` section pins exactly:
+  { "name": "fmt", "version": "12.1.0#0" }
+
+Matching upstream exactly minimizes API drift — AK's fmt usage
+compiles against the same surface upstream tests against. Older
+versions (11.x) might also work, but pinning to upstream's exact
+version is the pro call: zero risk of an API mismatch we'd then have
+to patch around.
+
+VERSION INFO
+=====================================================================
+  Tag:        12.1.0
+  Commit:     407c905e45ad75fc29bf0f9bb7c5c2fd3475976f
+  FMT_VERSION 120100  (per include/fmt/base.h)
+  License:    MIT (verbatim LICENSE preserved)
+  Copyright:  Victor Zverovich and {fmt} contributors, 2012-present
+
+ON-DISK STATE AFTER THIS LOG
+=====================================================================
+  src/user/apps/ladybird-3rd/fmt/
+    LICENSE              (MIT, verbatim)
+    README.md            (upstream)
+    ChangeLog.md         (upstream)
+    CONTRIBUTING.md      (upstream)
+    CMakeLists.txt       (upstream — NOT used; we drive via Makefile)
+    VENDOR_NOTE.md       (this drop's manifest, written by us)
+    include/             14 .h files (full fmt API)
+    src/                 3 .cc files (format.cc, os.cc, fmt.cc)
+    doc/                 ~212K Sphinx docs (reference-only, not built)
+    support/             ~172K bazel/conan/python tooling (not built)
+    test/                ~2.0M GoogleTest suite (reference-only)
+
+  Total size: 3.2M.
+
+STRIPPED
+=====================================================================
+  .git/  — git metadata only. Standard practice; prevents nested repo
+           confusion. The fact + reasoning is recorded here and in
+           ladybird-3rd/fmt/VENDOR_NOTE.md so a future engineer can
+           re-fetch the exact tree from the SHA above.
+
+WHAT WAS NOT STRIPPED (and why)
+=====================================================================
+  test/ doc/ support/ — kept verbatim. They are inert (not on any
+  build path) but valuable for auditability. planv3 Rule 16 governs
+  source-hash discipline on rebuilds, not vendor-archive size.
+
+  CMakeLists.txt — kept for reference. We drive fmt's build from
+  TaterTOS's Makefile (fry828 will add the rules), not CMake. The
+  upstream CMakeLists is informative only.
+
+COMMANDS RUN
+=====================================================================
+  cd src/user/apps && mkdir -p ladybird-3rd
+  cd ladybird-3rd
+  git clone --depth 1 --branch 12.1.0 https://github.com/fmtlib/fmt.git fmt
+  cd fmt && rm -rf .git
+
+  Verification:
+    $ grep FMT_VERSION include/fmt/base.h    → #define FMT_VERSION 120100
+    $ git rev-parse HEAD (before .git removal) → 407c905e45ad75fc29...
+    $ head -1 LICENSE → MIT copyright line
+    $ du -sh . → 3.2M
+
+NOT DONE (intentional)
+=====================================================================
+  - No Makefile changes. The build rule that consumes this fmt drop
+    is added in fry828, after fast_float (fry825), simdutf (fry826),
+    and AK source copy (fry827) all land.
+  - No source code in src/user/apps/ or src/user/libc/ touched.
+  - No build run.
+  - No SHA-256 of TaterTOS artifacts (planv3 Rule 16 — only on
+    user-requested rebuilds).
+
+INTEGRATION PREVIEW (for fry828)
+=====================================================================
+  AK compile-flag additions (preview, not applied):
+    -I src/user/apps/ladybird-3rd/fmt/include
+
+  AK object-list additions (preview, not applied):
+    src/user/apps/ladybird-3rd/fmt/src/format.cc
+    (src/user/apps/ladybird-3rd/fmt/src/os.cc — only if AK or
+     downstream consumers need it; revisit at fry828 build attempt)
+
+NEXT
+=====================================================================
+fry825 — Vendor drop step 2: fast_float (latest stable, BSL-1.0).
+        Same shape as this log: clone, strip .git, write VENDOR_NOTE,
+        record version pin + SHA. Stop and explain.
+
+END fry824
+=====================================================================

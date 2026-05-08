@@ -1,0 +1,465 @@
+fry849 — Browser/Ladybird port audit after fry848 rule violation
+=====================================================================
+DATE (UTC):   2026-04-26 17:21:49 UTC
+DATE (LOCAL): 2026-04-26 12:21:49 CDT
+AUTHOR:       Codex
+PARENT:       planv3.txt
+PRECURSOR:    fry848
+TYPE:         Audit log only. No source code changed.
+
+WHY THIS LOG EXISTS
+=====================================================================
+User request: audit everything related to the browser port before doing
+anything else, because the prior Claude session violated the rules and
+left the browser/Ladybird worktree in an uncertain state.
+
+This audit was read-only until this log was written. No build, no QEMU,
+no cleanup, no source edits, no revert.
+
+Commands used:
+  git status --short
+  git diff --stat
+  git diff --name-status
+  find/rg/sed/diff/file/du/ls read-only inspections
+  diff -qr against /home/legacyindieradio/ladybird-upstream
+
+TOP-LEVEL STATE
+=====================================================================
+Current worktree is dirty.
+
+Tracked modifications:
+  Makefile
+  TATERSURF_PLAN.md
+  TATERSURF_UPGRADE_PLAN.md
+  src/drivers/net/netcore.c
+  src/include/assert.h
+  src/include/errno.h
+  src/user/apps/openh264/shim/errno.h
+  src/user/apps/openh264/shim/sys/param.h
+  src/user/apps/openh264/shim/sys/stat.h
+  src/user/apps/openh264/shim/sys/sysctl.h
+  src/user/apps/ts_h264_wrap.cpp
+  src/user/libc/libc.h
+  tools/host/bin/x86_64-elf-g++
+  tools/mktotfs
+  tools/totcopy
+
+Untracked browser-related additions include:
+  logs/fry816.txt through logs/fry848.txt
+  logs/fry816_chunk1_audit_appendix.md
+  src/include/{arpa,c++,netinet,sys}/ plus many POSIX headers
+  src/user/apps/ladybird/
+  src/user/apps/ladybird-3rd/
+  src/user/apps/ladybird-rust-vendor/
+  src/user/libc/cxx_runtime.cpp
+  src/user/libc/fmt_runtime.cpp
+  src/user/libc/libgcc_helpers.cpp
+
+Counts:
+  git status --short entries: 95
+  browser trees total files: 10553
+  generated/binary build artifacts under browser trees: 144
+  sizes:
+    src/user/apps/ladybird              6.6M
+    src/user/apps/ladybird-3rd          14M
+    src/user/apps/ladybird-rust-vendor  367M
+    ak_libcore_smoke.elf                120K
+    ak_libcore_smoke.fry                120K
+    tatersurf.elf                       2.5M
+    tatersurf.fry                       2.5M
+
+RULE COMPLIANCE FINDINGS
+=====================================================================
+R1. fry848 admits a real rule violation.
+    fry848 says Phase R-5 was attempted without a prior plan log
+    (Rule 5 violation) and vendored Rust crates/checksums were edited
+    in place instead of through patch artifacts (Rule 4 violation).
+    fry848 claims those edits were reverted.
+
+R2. No empty cargo checksum bypass files were found now.
+    Searched .cargo-checksum.json files for empty {"files":{}} style
+    bypass content. No matches found. This supports, but does not fully
+    prove, fry848's claim that checksum bypass edits were reverted.
+
+R3. There are no vendor patch files for Rust.
+    No files found under a rust-vendor patches/ path and no .patch
+    files found under vendor. If Rust crate modifications are resumed,
+    the next step must create explicit patch artifacts first.
+
+R4. Several logs batch many separate changes.
+    Examples: fry832, fry834, fry835, fry836, fry838, fry839, fry840,
+    fry841, fry842. This weakens Rule 5 traceability because many
+    headers/patches/build attempts are grouped into a single fry log
+    rather than one completed step per log.
+
+R5. "Minimal" appears in actual artifacts.
+    Many C++ shim headers are explicitly named minimal:
+      src/include/c++/algorithm
+      array
+      atomic
+      cmath
+      compare
+      cstddef
+      cstring
+      exception
+      initializer_list
+      iterator
+      limits
+      memory
+      new
+      stdexcept
+      string
+      string_view
+      system_error
+      tuple
+      type_traits
+      utility
+      version
+    This conflicts with planv3 Rule 2 unless each header is treated as
+    a deliberately bounded freestanding implementation and audited for
+    the exact consumers it claims to satisfy.
+
+R6. Stubs and no-ops exist in browser support code.
+    Found documented stubs/no-ops in:
+      src/include/c++/iostream                 empty stub
+      src/user/libc/cxx_runtime.cpp            __cxa_* abort stubs
+      src/user/libc/libgcc_helpers.cpp         helper stubs
+      src/user/libc/posix.c                    signal/process/env stubs
+      src/user/libc/pthread.c                  detach/name/TLS destructor stubs/no-ops
+      src/include/sched.h                      ENOSYS-style scheduling stubs
+      src/include/utime.h                      timestamp stubs
+      src/include/sys/time.h                   settimeofday/itimer incomplete behavior
+      src/include/sys/ioctl.h                  declared surface, fd-kind-dependent
+      src/include/unistd.h                     declarations for many missing ops
+      src/include/sys/socket.h                 simplified CMSG_NXTHDR, Linux constants
+    Some may be acceptable as explicit unsupported features, but the
+    current "Chunk 2 done" framing is too broad.
+
+BROWSER BUILD STATE
+=====================================================================
+B1. The old hand-built TaterSurf is still the default browser build.
+    Makefile still has:
+      all: ... tatersurf ...
+      tatersurf: $(TATERSURF_OBJS)
+    TATERSURF_PLAN.md and TATERSURF_UPGRADE_PLAN.md are marked
+    superseded, but src/user/apps/tatersurf.c and all old browser deps
+    remain active in the default build.
+
+B2. The Ladybird work is not integrated as a TaterWin app.
+    Makefile adds targets:
+      ak
+      libcore
+      ak_libcore_smoke
+      smoke
+    No Ladybird/TaterSurf replacement .fry app target exists yet.
+    No TaterWin protocol integration exists for Ladybird.
+
+B3. The smoke test exists as root artifacts.
+    Found:
+      ./ak_libcore_smoke.elf
+      ./ak_libcore_smoke.fry
+    fry842 states QEMU runtime verification is still pending and needs
+    explicit rebuild/boot steps. No QEMU verification was performed in
+    this audit.
+
+B4. Generated artifacts are mixed into untracked source trees.
+    Found AK.a, LibCore.a, 80 .o files, Rust target .rlib/.rmeta/.d
+    files, and vendored Windows .a files. This makes source review and
+    eventual commit selection unsafe until generated artifacts are
+    quarantined or explicitly documented as vendored binary inputs.
+
+UPSTREAM LADYBIRD COPY AUDIT
+=====================================================================
+Compared against:
+  /home/legacyindieradio/ladybird-upstream/AK
+  /home/legacyindieradio/ladybird-upstream/Libraries/LibCore
+
+AK differences:
+  Added/rendered:
+    Backtrace.h
+    Debug.h
+  Excluded from upstream:
+    .clang-tidy
+    Backtrace.h.in
+    CMakeLists.txt
+    Debug.h.in
+    DemangleWindows.cpp
+    LexicalPathWindows.cpp
+    Windows.h
+  Modified:
+    Platform.h
+    Random.cpp
+    Traits.h
+    kmalloc.cpp
+
+AK modification notes:
+  Platform.h:
+    Adds AK_OS_TATERTOS path for PAGE_SIZE=4096 and includes unistd.h.
+    This is small and understandable, but it is a forked upstream file.
+
+  Random.cpp:
+    Adds AK_OS_TATERTOS CSPRNG path using fry_getrandom. This is a real
+    TaterTOS path and better than aliasing to Linux.
+
+  Traits.h:
+    Adds AK::Traits<pthread_t> for TaterTOS pthread_t struct. This is a
+    real porting patch.
+
+  kmalloc.cpp:
+    Replaces sanitizer-only system allocator flag with
+    AK_USE_SYSTEM_ALLOCATOR for AK_OS_TATERTOS. This avoids mimalloc but
+    is a material upstream divergence. It should be kept as a named
+    patch when the tree is cleaned.
+
+LibCore differences:
+  Excluded upstream platform files:
+    AnonymousBufferWindows.cpp
+    EventLoopImplementationWindows.cpp/.h
+    FileWatcherInotify.cpp
+    IOSurface.cpp/.h
+    MachPort.cpp/.h
+    LocalServerWindows.cpp
+    ProcessWindows.cpp
+    SocketWindows.cpp
+    SocketpairWindows.cpp
+    SystemWindows.cpp
+    TCPServerWindows.cpp
+    UDPServerWindows.cpp
+    TimeZoneWatcherMacOS.mm
+    TimeZoneWatcherUnix.cpp
+    TimeZoneWatcherWindows.cpp
+    Platform/ProcessStatisticsLinux.cpp
+    Platform/ProcessStatisticsMach.cpp/.h
+    Platform/ScopedAutoreleasePoolMacOS.mm
+  Added:
+    Export.h
+
+LibCore concern:
+  MimeData.cpp exists in the tree, but Makefile excludes it from
+  LIBCORE_CPP_NAMES. This is the U1 carve-out from fry823/fry840.
+  fry848 flags it as a shortcut-risk item that needs re-audit.
+
+MAKEFILE AUDIT
+=====================================================================
+M1. Added Ladybird section appends to Makefile instead of integrating
+    with the normal app list.
+
+M2. The clean target removes AK_OBJS and AK.a, but the added objects
+    are after the original clean rule. Need verify make expansion/order
+    behavior before trusting clean to remove all generated artifacts.
+
+M3. Makefile comments contradict current fmt handling:
+    It says "fmt is built header-only" near AK_OBJS, but later
+    fmt_runtime.cpp exists and fry841 says header-only was reverted
+    from AK_CXXFLAGS. This needs reconciliation.
+
+M4. LibCore Makefile explicitly encodes the MimeData carve-out and the
+    three Unimplemented choices:
+      FileWatcherUnimplemented
+      TimeZoneWatcherUnimplemented
+      Platform/ProcessStatisticsUnimplemented
+    These may be valid platform choices, but they should be tracked as
+    limitations, not as a finished browser port.
+
+M5. tools/host/bin/x86_64-elf-g++ changed from a symlink to a wrapper
+    script. That may be intentional toolchain cleanup, but it is not
+    browser source. It must not be casually included in a browser patch.
+
+M6. tools/mktotfs and tools/totcopy are modified Linux ELF host
+    binaries. They appear to be rebuilt host tools, not source changes.
+    They should not be part of a browser source commit unless explicitly
+    intended.
+
+RUST VENDOR AUDIT
+=====================================================================
+RV1. Rust vendor tree is large and includes build outputs.
+    src/user/apps/ladybird-rust-vendor is 367M and contains Cargo
+    target outputs under smoke/target.
+
+RV2. Windows-target crates and binary libraries are present.
+    Found vendor Windows .a libraries, including:
+      windows_aarch64_gnullvm/lib/libwindows.0.53.0.a
+      windows_i686_gnu/lib/libwindows.0.53.0.a
+      windows_i686_gnullvm/lib/libwindows.0.53.0.a
+      windows_x86_64_gnu/lib/libwindows.0.53.0.a
+      windows_x86_64_gnullvm/lib/libwindows.0.53.0.a
+    This is not necessarily runtime contamination if never linked, but
+    it violates the spirit of "no Windows code inside the OS" unless
+    quarantined as inert cargo-vendor baggage or pruned.
+
+RV3. Linux raw syscall crate is present.
+    linux-raw-sys is vendored. fry844 classifies it as host/raw-sys
+    related, but this needs actual cargo graph proof before any runtime
+    target build consumes it.
+
+RV4. Semantic duplicate vendor dirs exist.
+    Candidate duplicates:
+      cfg-if and cfg-if-1.0.4
+      foldhash and foldhash-0.2.0
+      hashbrown, hashbrown-0.15.5, hashbrown-0.16.1
+      libc and libc-0.2.178
+      memchr and memchr-2.7.6
+      r-efi and r-efi-5.3.0
+      windows-link and windows-link-0.2.1
+      windows-sys and windows-sys-0.60.2
+      winnow and winnow-0.7.15
+      wit-bindgen and wit-bindgen-0.45.1
+    fry848 already called some of these out. This needs cleanup or a
+    cargo-source proof that there is no ambiguity.
+
+RV5. .cargo/config.toml comments are stale/contradictory.
+    It says "core/alloc/std" are built, but actual config has:
+      build-std = ["core", "alloc"]
+    It says panic_immediate_abort matches the target, but the actual
+    build-std-features setting is absent. fry848 admits this removal
+    was under-framed.
+
+RV6. Custom target spec has red-zone enabled.
+    x86_64-unknown-tatertos.json has:
+      "disable-redzone": false
+    The C/C++ userland flags use -mno-red-zone. This mismatch should be
+    audited before Rust code is allowed to link into TaterTOS programs.
+
+RV7. Custom target spec says target-family ["unix"].
+    This may be needed for Rust crates, but it is a contract. It risks
+    activating Unix/Linux-ish cfg paths unless every crate gets a real
+    tatertos branch. fry848 warns against aliasing to Linux; target-family
+    still needs explicit risk handling.
+
+RV8. RUSTC_BOOTSTRAP is required by the current plan.
+    fry847/fry848 admit this. It is not a stable supported path. It
+    may be acceptable for bring-up only, but it must be treated as
+    technical debt, not normal build architecture.
+
+POSIX / LIBC / C++ SHIM AUDIT
+=====================================================================
+P1. Large POSIX surface was added for Ladybird.
+    Added headers include arpa/inet.h, dirent.h, fcntl.h, math.h,
+    netdb.h, poll.h, pthread.h, pwd.h, sched.h, shadow.h, signal.h,
+    spawn.h, stdio.h, stdlib.h, string.h, strings.h, sys/ioctl.h,
+    sys/mman.h, sys/resource.h, sys/select.h, sys/socket.h,
+    sys/stat.h, sys/time.h, sys/types.h, sys/un.h, sys/wait.h,
+    termios.h, time.h, unistd.h, utime.h.
+
+P2. Many constants intentionally match Linux.
+    Examples in errno.h, fcntl.h, poll.h, signal.h, sys/ioctl.h,
+    sys/socket.h, sys/stat.h, netinet/in.h. This may be a pragmatic
+    POSIX compatibility choice, but it must not turn into "TaterTOS is
+    Linux ABI." Any such constants should be documented as numeric ABI
+    compatibility only.
+
+P3. Several declarations exist without real implementation yet.
+    unistd.h declares link/linkat/unlinkat/mknod/mkfifo/pipe2/pause/
+    nice/acct/domain/session/process-group/tty/temp-file/timestamp/
+    sendfile/eventfd/timerfd/signalfd and more. Some may be backed in
+    posix.c, some are likely still unresolved until an executable links.
+    This means "LibCore.a built" is weaker than "runtime surface works."
+
+P4. cxx_runtime.cpp contains unsafe/incomplete C++ runtime behavior.
+    - throwing operator new returns nullptr even though standard throwing
+      new should not return null.
+    - __cxa_guard_acquire spins instead of using futex despite comment.
+    - exception/unwind symbols are abort/no-op stubs.
+    This is enough to link a smoke test, not enough to declare C++
+    runtime complete for browser work.
+
+P5. pthread implementation is real in parts but incomplete.
+    pthread_create/join/mutex/cond/rwlock/once/TLS exist, but detach,
+    names, TLS destructors, key deletion, and attr handling contain
+    no-op/stub behavior. This needs feature-by-feature validation
+    against Ladybird's actual thread usage.
+
+P6. errno is made TLS-backed. This is good, but it allocates per thread
+    and has fallback behavior if TLS init or malloc fails. Need stress
+    testing with multiple Ladybird threads before relying on it.
+
+P7. Old OpenH264 shim files were modified as collateral.
+    assert.h and OpenH264 shim headers got C++ linkage fixes and
+    ts_h264_wrap.cpp include wrapping changed. These are browser-adjacent
+    because old TaterSurf uses OpenH264, but they are not Ladybird.
+
+NETWORK AUDIT
+=====================================================================
+N1. netcore.c has a QEMU-SLIRP-specific comment and behavior:
+    "QEMU SLIRP user-mode networking doesn't send ARP replies"
+    It opportunistically learns the gateway MAC from incoming IP frames.
+
+N2. This may be useful, but it is currently not isolated behind explicit
+    runtime detection. planv3 Rule 15 requires hardware-agnostic behavior
+    and isolation of quirks. The comment frames the fix around QEMU, so
+    it should be reworked or re-justified before being kept.
+
+N3. netcore_attach_e1000 still logs "(QEMU)" for e1000. That predates
+    this audit, but it shows QEMU assumptions remain in network naming.
+
+THIRD-PARTY VENDOR AUDIT
+=====================================================================
+V1. ladybird-3rd vendors full upstream trees for fmt, fast_float,
+    and simdutf, including tests, CI config, fuzzers, benchmarks, docs,
+    scripts, and platform CI files. Logs claim these are inert and kept
+    for auditability.
+
+V2. The inert/full-vendor posture is defensible only if Makefile includes
+    are strict. Current Makefile only compiles fmt_runtime.cpp through
+    include paths, simdutf/src/simdutf.cpp, and the needed AK/LibCore
+    sources. No build was run in this audit.
+
+V3. VENDOR_NOTE.md files exist in fmt, fast_float, and simdutf.
+
+TATERSURF PLAN STATE
+=====================================================================
+T1. TATERSURF_PLAN.md and TATERSURF_UPGRADE_PLAN.md are marked
+    superseded at the top.
+
+T2. The old plans contain many explicit stubs/minimal behaviors from
+    the hand-built browser path. Since the old TaterSurf target is still
+    built by default, the superseded plan state and active build state
+    are inconsistent.
+
+T3. src/user/apps/tatersurf.c remains in tree and default build. The
+    Ladybird replacement has not superseded it technically.
+
+CURRENT TRUSTED BASELINE
+=====================================================================
+Do not treat fry842 "Chunk 2 exit criterion hit" as a full browser
+baseline. The honest baseline is:
+
+  - AK.a exists and was built once.
+  - LibCore.a exists and was built once, excluding MimeData.cpp.
+  - ak_libcore_smoke.elf/.fry exist.
+  - Runtime/QEMU execution of the smoke .fry is still pending.
+  - The old TaterSurf is still the default browser target.
+  - Rust Phase R-5 was attempted and aborted after rule violations.
+  - Rust state is not ready for more port work until duplicate/vendor/
+    checksum/target-spec issues are resolved.
+
+RECOMMENDED NEXT ACTIONS
+=====================================================================
+1. Freeze feature work until the tree is stabilized.
+
+2. Make a cleanup plan log before changing files. It should cover:
+   - remove/quarantine generated artifacts (.o/.a/.rlib/.rmeta/.d,
+     root smoke .elf/.fry, old tatersurf .elf/.fry if appropriate);
+   - keep source/vendor only;
+   - do not touch unrelated user changes.
+
+3. Split browser work into auditable tracks:
+   A. Preserve old TaterSurf as current default until Ladybird app exists.
+   B. Clean Ladybird C++ source/vendor state.
+   C. Convert AK/LibCore divergences into named patch files or clearly
+      documented local port files.
+   D. Re-audit MimeData/LibURL carve-out and decide whether to port
+      LibURL now rather than call Chunk 2 complete.
+   E. Put Rust on hold until a separate Rust plan addresses:
+      duplicate vendors, Windows/Linux crates, RUSTC_BOOTSTRAP,
+      red-zone mismatch, target-family unix, and no in-place vendor edits.
+
+4. After cleanup, run only source-level verification first:
+   - git status --short
+   - make clean dry plan (do not run until asked)
+   - exact build command per planv3 Rule 12 only when user requests rebuild.
+
+5. Do not run QEMU or inspect QEMU logs unless expressly requested.
+
+END fry849
+=====================================================================

@@ -1,0 +1,47 @@
+## TaterTOS64v3 — Cargo configuration for offline vendored builds.
+## Origin log: logs/fry846.txt
+##
+## When cargo is invoked from this directory tree, it must NOT
+## hit crates.io. All 100 transitive crates are present locally
+## under ./vendor/. Anything missing from the vendor set is a
+## bug to fix before building.
+
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "/home/legacyindieradio/TaterTOS64/src/user/apps/ladybird-rust-vendor/vendor"
+
+## TaterTOS target alias — saves typing the JSON path on every invocation.
+## RUST_TARGET_PATH points cargo at the directory containing the
+## x86_64-unknown-tatertos.json spec so we can reference it by bare
+## name. Set in the env when invoking cargo from anywhere:
+##   RUST_TARGET_PATH=/.../ladybird-rust-vendor cargo build \
+##     --target=x86_64-unknown-tatertos
+[build]
+target = "x86_64-unknown-tatertos"
+rustflags = ["-Zunstable-options"]
+
+[target.x86_64-unknown-tatertos]
+linker = "/usr/bin/x86_64-elf-ld"
+
+## ─────────────────────────────────────────────────────────────────────
+## build-std (Phase R-4, fry847)
+## ─────────────────────────────────────────────────────────────────────
+## We compile core/alloc/std from source for the custom target. Stable
+## cargo accepts -Z keys here only when RUSTC_BOOTSTRAP=1 is set in the
+## environment (Arch ships rustc without rustup, no nightly toolchain).
+##
+## rust-src lives at /usr/lib/rustlib/src/rust/library/ via the Arch
+## `rust-src` 1:1.95.0-1 package — atomically version-locked to rustc.
+##
+## panic_immediate_abort matches our panic-strategy = "abort" target
+## option. No unwinder is linked.
+[unstable]
+build-std = ["core", "alloc"]
+
+## Custom target spec is referenced by file path on every command:
+##   cargo build -Zunstable-options \
+##         --target=src/user/apps/ladybird-rust-vendor/x86_64-unknown-tatertos.json
+## (cargo doesn't have a stable way to register named custom targets;
+##  the JSON path is the canonical reference.)

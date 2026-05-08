@@ -1,0 +1,56 @@
+Fry Log 909 - Rust std PAL bringup for x86_64-unknown-tatertos
+Timestamp: 2026-05-07 18:15 CDT
+Author: Hermes Agent
+
+State after Fry 908 work:
+
+TARGET SPEC:
+  Created: build/rust/x86_64-unknown-tatertos.json
+  Location: third_party/rust-toolchain/lib/rustlib/x86_64-unknown-tatertos/target.json
+  Key fields: os="tatertos", std=true, panic-strategy="abort", has-thread-local=true
+  Inherits codegen from x86_64-unknown-none (soft-float, no-red-zone, kernel code model)
+  Verified: rustc --target x86_64-unknown-tatertos --print cfg => target_os="tatertos"
+
+GN CHANGES:
+  build/config/rust.gni: rust_abi_target => x86_64-unknown-tatertos (for is_tatertos)
+  build/rust/known-target-triples.txt: added x86_64-unknown-tatertos
+  build/rust/gni_impl/rustc_wrapper.py: added -Zunstable-options detection for custom targets
+  build/rust/gni_impl/rustc_print_cfg.py: added -Zunstable-options detection for custom targets
+
+CORE, COMPILER_BUILTINS, ALLOC:
+  All compile successfully for x86_64-unknown-tatertos via ninja.
+  libcore_core.rlib, libcompiler_builtins_compiler_builtins.rlib, liballoc_alloc.rlib
+  exist in out/tatertos/local_rustc_sysroot/lib/rustlib/x86_64-unknown-tatertos/lib/
+
+STD COMPILATION FAILURE (expected — PAL not implemented):
+  First missing std primitives (from build/rust/std/rules:std):
+
+  1. cfg_select failure — Rust std's platform dispatch doesn't know "tatertos"
+     File: library/std/src/sys/pal.rs or equivalent cfg_select location
+     Fix: add target_os = "tatertos" -> mod tatertos dispatch
+
+  2. sys::io::error — decode_error_kind, errno, error_string, is_interrupted
+     File: library/std/src/sys/tatertos/io.rs (needs creation)
+     What TaterTOS needs: errno-to-Rust-Error mapping, strerror, EINTR detection
+
+  3. sys::thread_local::key — LazyKey, Key, get, set
+     File: library/std/src/sys/tatertos/thread_local.rs (needs creation)
+     What TaterTOS needs: TLS via TaterTOS pthread or native TLS syscalls
+
+  4. sys::random::fill_bytes
+     File: library/std/src/sys/tatertos/random.rs (needs creation)
+     What TaterTOS needs: RDRAND-based entropy (x86_64 has RDRAND)
+
+  5. sys::alloc::System — GlobalAlloc impl
+     File: library/std/src/sys/tatertos/alloc.rs (needs creation)
+     What TaterTOS needs: hook into TaterTOS kernel malloc/free/realloc
+
+CURRENT PLAN:
+  Step 3a: Create library/std/src/sys/tatertos/ directory with stubs
+  Step 3b: Add target_os="tatertos" cfg dispatch in pal.rs
+  Step 3c: Implement io::error (errno -> std::io::Error)
+  Step 3d: Implement random (RDRAND)
+  Step 3e: Implement alloc (hook into TaterTOS malloc)
+  Step 3f: Implement thread_local (LLVM TLS or TaterTOS pthread)
+  Step 3g: Build build/rust/std/rules:std for tatertos
+  Step 4: Retry //base:base

@@ -1,0 +1,485 @@
+LIBWEB_OBJS=src/user/apps/ladybird/Libraries/LibWeb/DOM/AbortController.o src/user/apps/ladybird/Libraries/LibWeb/DOM/AbortSignal.o src/user/apps/ladybird/Libraries/LibWeb/DOM/AbstractElement.o src/user/apps/ladybird/Libraries/LibWeb/DOM/AbstractRange.o src/user/apps/ladybird/Libraries/LibWeb/DOM/Attr.o src/user/apps/ladybird/Libraries/LibWeb/DOM/CharacterData.o src/user/apps/ladybird/Libraries/LibWeb/DOM/Comment.o src/user/apps/ladybird/Libraries/LibWeb/DOM/DOMImplementation.o src/user/apps/ladybird/Libraries/LibWeb/DOM/DOMTokenList.o src/user/apps/ladybird/Libraries/LibWeb/DOM/Document.o src/user/apps/ladybird/Libraries/LibWeb/DOM/DocumentFragment.o src/user/apps/ladybird/Libraries/LibWeb/DOM/DocumentLoadEventDelayer.o src/user/apps/ladybird/Libraries/LibWeb/DOM/DocumentLoading.o src/user/apps/ladybird/Libraries/LibWeb/DOM/DocumentObserver.o src/user/apps/ladybird/Libraries/LibWeb/DOM/DocumentType.o src/user/apps/ladybird/Libraries/LibWeb/DOM/EditingHostManager.o src/user/apps/ladybird/Libraries/LibWeb/DOM/Element.o src/user/apps/ladybird/Libraries/LibWeb/DOM/ElementByIdMap.o src/user/apps/ladybird/Libraries/LibWeb/DOM/ElementFactory.o src/user/apps/ladybird/Libraries/LibWeb/DOM/Event.o src/user/apps/ladybird/Libraries/LibWeb/DOM/EventDispatcher.o src/user/apps/ladybird/Libraries/LibWeb/DOM/EventTarget.o src/user/apps/ladybird/Libraries/LibWeb/DOM/HTMLCollection.o src/user/apps/ladybird/Libraries/LibWeb/DOM/LiveNodeList.o src/user/apps/ladybird/Libraries/LibWeb/DOM/NamedNodeMap.o src/user/apps/ladybird/Libraries/LibWeb/DOM/Node.o src/user/apps/ladybird/Libraries/LibWeb/DOM/NodeList.o src/user/apps/ladybird/Libraries/LibWeb/DOM/NodeOperations.o src/user/apps/ladybird/Libraries/LibWeb/DOM/ParentNode.o src/user/apps/ladybird/Libraries/LibWeb/DOM/Position.o src/user/apps/ladybird/Libraries/LibWeb/DOM/QualifiedName.o src/user/apps/ladybird/Libraries/LibWeb/DOM/Range.o src/user/apps/ladybird/Libraries/LibWeb/DOM/ShadowRoot.o src/user/apps/ladybird/Libraries/LibWeb/DOM/Slot.o src/user/apps/ladybird/Libraries/LibWeb/DOM/SlotRegistry.o src/user/apps/ladybird/Libraries/LibWeb/DOM/Slottable.o src/user/apps/ladybird/Libraries/LibWeb/DOM/StaticNodeList.o src/user/apps/ladybird/Libraries/LibWeb/DOM/StyleElementBase.o src/user/apps/ladybird/Libraries/LibWeb/DOM/StyleInvalidator.o src/user/apps/ladybird/Libraries/LibWeb/DOM/Text.o src/user/apps/ladybird/Libraries/LibWeb/DOM/Utils.o src/user/apps/ladybird/Libraries/LibWeb/HTML/AttributeNames.o src/user/apps/ladybird/Libraries/LibWeb/HTML/BarProp.o src/user/apps/ladybird/Libraries/LibWeb/HTML/BrowsingContext.o src/user/apps/ladybird/Libraries/LibWeb/HTML/BrowsingContextGroup.o src/user/apps/ladybird/Libraries/LibWeb/HTML/CloseWatcher.o src/user/apps/ladybird/Libraries/LibWeb/HTML/CloseWatcherManager.o src/user/apps/ladybird/Libraries/LibWeb/HTML/DOMStringMap.o src/user/apps/ladybird/Libraries/LibWeb/HTML/DocumentState.o src/user/apps/ladybird/Libraries/LibWeb/HTML/EventHandler.o src/user/apps/ladybird/Libraries/LibWeb/HTML/EventNames.o src/user/apps/ladybird/Libraries/LibWeb/HTML/Focus.o src/user/apps/ladybird/Libraries/LibWeb/HTML/FormAssociatedElement.o src/user/apps/ladybird/Libraries/LibWeb/HTML/FormControlInfrastructure.o src/user/apps/ladybird/Libraries/LibWeb/HTML/GlobalEventHandlers.o src/user/apps/ladybird/Libraries/LibWeb/HTML/HTMLAllCollection.o src/user/apps/ladybird/Libraries/LibWeb/HTML/HTMLBodyElement.o src/user/apps/ladybird/Libraries/LibWeb/HTML/HTMLDocument.o src/user/apps/ladybird/Libraries/LibWeb/HTML/HTMLElement.o src/user/apps/ladybird/Libraries/LibWeb/HTML/HTMLHeadElement.o src/user/apps/ladybird/Libraries/LibWeb/HTML/HTMLHtmlElement.o src/user/apps/ladybird/Libraries/LibWeb/HTML/HTMLHyperlinkElementUtils.o src/user/apps/ladybird/Libraries/LibWeb/HTML/HTMLIFrameElement.o src/user/apps/ladybird/Libraries/LibWeb/HTML/HTMLInputElement.o src/user/apps/ladybird/Libraries/LibWeb/HTML/HTMLMetaElement.o src/user/apps/ladybird/Libraries/LibWeb/HTML/HTMLOrSVGElement.o src/user/apps/ladybird/Libraries/LibWeb/HTML/HTMLTitleElement.o src/user/apps/ladybird/Libraries/LibWeb/HTML/History.o src/user/apps/ladybird/Libraries/LibWeb/HTML/ListOfAvailableImages.o src/user/apps/ladybird/Libraries/LibWeb/HTML/Location.o src/user/apps/ladybird/Libraries/LibWeb/HTML/MessageEvent.o src/user/apps/ladybird/Libraries/LibWeb/HTML/MessagePort.o src/user/apps/ladybird/Libraries/LibWeb/HTML/Navigable.o src/user/apps/ladybird/Libraries/LibWeb/HTML/NavigableContainer.o src/user/apps/ladybird/Libraries/LibWeb/HTML/Navigation.o src/user/apps/ladybird/Libraries/LibWeb/HTML/NavigationParams.o src/user/apps/ladybird/Libraries/LibWeb/HTML/Navigator.o src/user/apps/ladybird/Libraries/LibWeb/HTML/Numbers.o src/user/apps/ladybird/Libraries/LibWeb/HTML/PolicyContainers.o src/user/apps/ladybird/Libraries/LibWeb/HTML/SandboxingFlagSet.o src/user/apps/ladybird/Libraries/LibWeb/HTML/SerializedPolicyContainer.o src/user/apps/ladybird/Libraries/LibWeb/HTML/SessionHistoryEntry.o src/user/apps/ladybird/Libraries/LibWeb/HTML/SourceSnapshotParams.o src/user/apps/ladybird/Libraries/LibWeb/HTML/Storage.o src/user/apps/ladybird/Libraries/LibWeb/HTML/StructuredSerialize.o src/user/apps/ladybird/Libraries/LibWeb/HTML/TagNames.o src/user/apps/ladybird/Libraries/LibWeb/HTML/Timer.o src/user/apps/ladybird/Libraries/LibWeb/HTML/TraversableNavigable.o src/user/apps/ladybird/Libraries/LibWeb/HTML/Window.o src/user/apps/ladybird/Libraries/LibWeb/HTML/WindowEventHandlers.o src/user/apps/ladybird/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.o src/user/apps/ladybird/Libraries/LibWeb/HTML/WindowProxy.o src/user/apps/ladybird/Libraries/LibWeb/HTML/EventLoop/EventLoop.o src/user/apps/ladybird/Libraries/LibWeb/HTML/EventLoop/Task.o src/user/apps/ladybird/Libraries/LibWeb/HTML/EventLoop/TaskQueue.o src/user/apps/ladybird/Libraries/LibWeb/HTML/CustomElements/CustomElementDefinition.o src/user/apps/ladybird/Libraries/LibWeb/HTML/CustomElements/CustomElementName.o src/user/apps/ladybird/Libraries/LibWeb/HTML/CustomElements/CustomElementReactionNames.o src/user/apps/ladybird/Libraries/LibWeb/HTML/CustomElements/CustomElementRegistry.o src/user/apps/ladybird/Libraries/LibWeb/HTML/CustomElements/CustomStateSet.o src/user/apps/ladybird/Libraries/LibWeb/HTML/Scripting/Agent.o src/user/apps/ladybird/Libraries/LibWeb/HTML/Scripting/Environments.o src/user/apps/ladybird/Libraries/LibWeb/HTML/Scripting/SimilarOriginWindowAgent.o src/user/apps/ladybird/Libraries/LibWeb/HTML/Scripting/TemporaryExecutionContext.o src/user/apps/ladybird/Libraries/LibWeb/HTML/Scripting/WindowEnvironmentSettingsObject.o src/user/apps/ladybird/Libraries/LibWeb/HTML/Parser/Entities.o src/user/apps/ladybird/Libraries/LibWeb/HTML/Parser/HTMLEncodingDetection.o src/user/apps/ladybird/Libraries/LibWeb/HTML/Parser/HTMLParser.o src/user/apps/ladybird/Libraries/LibWeb/HTML/Parser/HTMLToken.o src/user/apps/ladybird/Libraries/LibWeb/HTML/Parser/HTMLTokenizer.o src/user/apps/ladybird/Libraries/LibWeb/HTML/Parser/ListOfActiveFormattingElements.o src/user/apps/ladybird/Libraries/LibWeb/HTML/Parser/NamedCharacterReferences.o src/user/apps/ladybird/Libraries/LibWeb/HTML/Parser/StackOfOpenElements.o src/user/apps/ladybird/Libraries/LibWeb/ARIA/ARIAMixin.o src/user/apps/ladybird/Libraries/LibWeb/ARIA/AttributeNames.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Angle.o src/user/apps/ladybird/Libraries/LibWeb/CSS/AnimationEvent.o src/user/apps/ladybird/Libraries/LibWeb/CSS/BooleanExpression.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CascadedProperties.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Clip.o src/user/apps/ladybird/Libraries/LibWeb/CSS/ComputedProperties.o src/user/apps/ladybird/Libraries/LibWeb/CSS/ContainerQuery.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CountersSet.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CounterStyle.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CounterStyleDefinition.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSS.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSAnimation.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSConditionRule.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSContainerRule.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSCounterStyleRule.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSDescriptors.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSFontFaceDescriptors.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSFontFaceRule.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSFontFeatureValuesMap.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSFontFeatureValuesRule.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSFunctionDeclarations.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSFunctionDescriptors.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSFunctionRule.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSGroupingRule.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSImageValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSImportRule.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSKeyframeRule.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSKeyframesRule.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSKeywordValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSLayerBlockRule.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSLayerStatementRule.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSMarginRule.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSMathClamp.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSMathInvert.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSMathMax.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSMathMin.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSMathNegate.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSMathProduct.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSMathSum.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSMathValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSMatrixComponent.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSMediaRule.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSNamespaceRule.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSNestedDeclarations.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSNumericArray.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSNumericValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSPageRule.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSPageDescriptors.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSPerspective.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSPropertyRule.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSRotate.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSRule.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSRuleList.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSScale.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSSkew.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSSkewX.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSSkewY.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSStyleDeclaration.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSStyleProperties.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSStyleRule.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSStyleSheet.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSSupportsRule.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSTransformComponent.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSTransformValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSTransition.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSTranslate.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSUnitValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSUnparsedValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CSSVariableReferenceValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/ColorFunctionDescriptor.o src/user/apps/ladybird/Libraries/LibWeb/CSS/ColorInterpolation.o src/user/apps/ladybird/Libraries/LibWeb/CSS/CustomPropertyData.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Descriptor.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Display.o src/user/apps/ladybird/Libraries/LibWeb/CSS/EasingFunction.o src/user/apps/ladybird/Libraries/LibWeb/CSS/EdgeRect.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Fetch.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Filter.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Flex.o src/user/apps/ladybird/Libraries/LibWeb/CSS/FontComputer.o src/user/apps/ladybird/Libraries/LibWeb/CSS/FontFace.o src/user/apps/ladybird/Libraries/LibWeb/CSS/FontLoading.o src/user/apps/ladybird/Libraries/LibWeb/CSS/FontFaceSet.o src/user/apps/ladybird/Libraries/LibWeb/CSS/FontFaceSetLoadEvent.o src/user/apps/ladybird/Libraries/LibWeb/CSS/FontFeatureData.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Frequency.o src/user/apps/ladybird/Libraries/LibWeb/CSS/GridTrackPlacement.o src/user/apps/ladybird/Libraries/LibWeb/CSS/GridTrackSize.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Interpolation.o src/user/apps/ladybird/Libraries/LibWeb/CSS/InvalidationSet.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Length.o src/user/apps/ladybird/Libraries/LibWeb/CSS/LengthBox.o src/user/apps/ladybird/Libraries/LibWeb/CSS/MediaList.o src/user/apps/ladybird/Libraries/LibWeb/CSS/MediaQuery.o src/user/apps/ladybird/Libraries/LibWeb/CSS/MediaQueryList.o src/user/apps/ladybird/Libraries/LibWeb/CSS/MediaQueryListEvent.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Number.o src/user/apps/ladybird/Libraries/LibWeb/CSS/NumericType.o src/user/apps/ladybird/Libraries/LibWeb/CSS/PageSelector.o src/user/apps/ladybird/Libraries/LibWeb/CSS/ParsedFontFace.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Percentage.o src/user/apps/ladybird/Libraries/LibWeb/CSS/PreferredColorScheme.o src/user/apps/ladybird/Libraries/LibWeb/CSS/PreferredContrast.o src/user/apps/ladybird/Libraries/LibWeb/CSS/PreferredMotion.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Ratio.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Resolution.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Screen.o src/user/apps/ladybird/Libraries/LibWeb/CSS/ScreenOrientation.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Selector.o src/user/apps/ladybird/Libraries/LibWeb/CSS/SelectorEngine.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Serialize.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Size.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Sizing.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleComputer.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleInvalidation.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleInvalidationData.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleProperty.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StylePropertyMapReadOnly.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StylePropertyMap.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleScope.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleSheet.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleSheetIdentifier.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleSheetInvalidation.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleSheetList.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Supports.o src/user/apps/ladybird/Libraries/LibWeb/CSS/SystemColor.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Time.o src/user/apps/ladybird/Libraries/LibWeb/CSS/TransitionEvent.o src/user/apps/ladybird/Libraries/LibWeb/CSS/URL.o src/user/apps/ladybird/Libraries/LibWeb/CSS/ValueType.o src/user/apps/ladybird/Libraries/LibWeb/CSS/VisualViewport.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Parser/ArbitrarySubstitutionFunctions.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Parser/ComponentValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Parser/DescriptorParsing.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Parser/ErrorReporter.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Parser/GradientParsing.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Parser/Helpers.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Parser/MediaParsing.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Parser/Parser.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Parser/PropertyParsing.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Parser/RuleContext.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Parser/RuleParsing.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Parser/SelectorParsing.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Parser/Syntax.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Parser/SyntaxParsing.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Parser/Token.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Parser/Tokenizer.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Parser/Types.o src/user/apps/ladybird/Libraries/LibWeb/CSS/Parser/ValueParsing.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/AbstractImageStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/AnchorSizeStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/AnchorStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/AngleStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/BackgroundSizeStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/BasicShapeStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/BorderImageSliceStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/BorderRadiusRectStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/BorderRadiusStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/CalculatedStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/ColorFunctionStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/ColorInterpolationMethodStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/ColorSchemeStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/ColorStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/ConicGradientStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/ContentStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/CounterDefinitionsStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/CounterStyleStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/CounterStyleSystemStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/CounterStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/CursorStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/CustomIdentStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/DimensionStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/DisplayStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/EasingStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/EdgeStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/FilterValueListStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/FontSourceStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/FontStyleStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/FunctionStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/GridAutoFlowStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/GridTemplateAreaStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/GridTrackPlacementStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/GridTrackSizeListStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/ImageSetStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/ImageStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/IntegerStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/KeywordStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/LengthStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/LinearGradientStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/NumberStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/OpacityValueStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/OpenTypeTaggedStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/PositionStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/RadialGradientStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/RadialSizeStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/RandomValueSharingStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/RatioStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/RectStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/RepeatStyleStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/ScrollbarColorStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/ShadowStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/ShorthandStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/StyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/StyleValueList.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/SuperellipseStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/TextIndentStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/TextUnderlinePositionStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/TransformationStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/TreeCountingFunctionStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/TupleStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/UnicodeRangeStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/UnresolvedStyleValue.o src/user/apps/ladybird/Libraries/LibWeb/Animations/Animatable.o src/user/apps/ladybird/Libraries/LibWeb/Animations/Animation.o src/user/apps/ladybird/Libraries/LibWeb/Animations/AnimationEffect.o src/user/apps/ladybird/Libraries/LibWeb/Animations/AnimationPlaybackEvent.o src/user/apps/ladybird/Libraries/LibWeb/Animations/AnimationTimeline.o src/user/apps/ladybird/Libraries/LibWeb/Animations/DocumentTimeline.o src/user/apps/ladybird/Libraries/LibWeb/Animations/KeyframeEffect.o src/user/apps/ladybird/Libraries/LibWeb/Animations/PseudoElementParsing.o src/user/apps/ladybird/Libraries/LibWeb/Animations/ScrollTimeline.o src/user/apps/ladybird/Libraries/LibWeb/Animations/TimeValue.o src/user/apps/ladybird/Libraries/LibWeb/Fetch/Body.o src/user/apps/ladybird/Libraries/LibWeb/Fetch/BodyInit.o src/user/apps/ladybird/Libraries/LibWeb/Fetch/Enums.o src/user/apps/ladybird/Libraries/LibWeb/Fetch/FetchMethod.o src/user/apps/ladybird/Libraries/LibWeb/Fetch/Headers.o src/user/apps/ladybird/Libraries/LibWeb/Fetch/Request.o src/user/apps/ladybird/Libraries/LibWeb/Fetch/Response.o src/user/apps/ladybird/Libraries/LibWeb/IntersectionObserver/IntersectionObserver.o src/user/apps/ladybird/Libraries/LibWeb/IntersectionObserver/IntersectionObserverEntry.o src/user/apps/ladybird/Libraries/LibWeb/Platform/EventLoopPlugin.o src/user/apps/ladybird/Libraries/LibWeb/Platform/Timer.o src/user/apps/ladybird/Libraries/LibWeb/HighResolutionTime/Performance.o src/user/apps/ladybird/Libraries/LibWeb/HighResolutionTime/TimeOrigin.o src/user/apps/ladybird/Libraries/LibWeb/ViewTransition/ViewTransition.o src/user/apps/ladybird/Libraries/LibWeb/Editing/CommandNames.o src/user/apps/ladybird/Libraries/LibWeb/Editing/Commands.o src/user/apps/ladybird/Libraries/LibWeb/Namespace.o src/user/apps/ladybird/Libraries/LibWeb/Infra/Strings.o src/user/apps/ladybird/Libraries/LibWeb/Layout/FormattingContext.o src/user/apps/ladybird/Libraries/LibWeb/Layout/LayoutState.o src/user/apps/ladybird/Libraries/LibWeb/Layout/SVGFormattingContext.o src/user/apps/ladybird/Libraries/LibWeb/Layout/TreeBuilder.o src/user/apps/ladybird/Libraries/LibWeb/Page/Page.o src/user/apps/ladybird/Libraries/LibWeb/Painting/AccumulatedVisualContext.o src/user/apps/ladybird/Libraries/LibWeb/Painting/BackgroundPainting.o src/user/apps/ladybird/Libraries/LibWeb/Painting/BorderPainting.o src/user/apps/ladybird/Libraries/LibWeb/Painting/BorderRadiiData.o src/user/apps/ladybird/Libraries/LibWeb/Painting/BorderRadiusCornerClipper.o src/user/apps/ladybird/Libraries/LibWeb/Painting/BordersData.o src/user/apps/ladybird/Libraries/LibWeb/Painting/BoxModelMetrics.o src/user/apps/ladybird/Libraries/LibWeb/Painting/DisplayList.o src/user/apps/ladybird/Libraries/LibWeb/Painting/DisplayListCommand.o src/user/apps/ladybird/Libraries/LibWeb/Painting/DisplayListRecorder.o src/user/apps/ladybird/Libraries/LibWeb/Painting/DisplayListRecordingContext.o src/user/apps/ladybird/Libraries/LibWeb/Painting/ExternalContentSource.o src/user/apps/ladybird/Libraries/LibWeb/Painting/Paintable.o src/user/apps/ladybird/Libraries/LibWeb/Painting/PaintableBox.o src/user/apps/ladybird/Libraries/LibWeb/Painting/PaintableFragment.o src/user/apps/ladybird/Libraries/LibWeb/Painting/PaintableWithLines.o src/user/apps/ladybird/Libraries/LibWeb/Painting/PaintStyle.o src/user/apps/ladybird/Libraries/LibWeb/Painting/ResolvedCSSFilter.o src/user/apps/ladybird/Libraries/LibWeb/Painting/ScrollFrame.o src/user/apps/ladybird/Libraries/LibWeb/Painting/ScrollState.o src/user/apps/ladybird/Libraries/LibWeb/Painting/StackingContext.o src/user/apps/ladybird/Libraries/LibWeb/Painting/ViewportPaintable.o src/user/apps/ladybird/Libraries/LibWeb/WebIDL/AbstractOperations.o src/user/apps/ladybird/Libraries/LibWeb/WebIDL/CallbackType.o src/user/apps/ladybird/Libraries/LibWeb/WebIDL/DOMException.o src/user/apps/ladybird/Libraries/LibWeb/WebIDL/Promise.o src/user/apps/ladybird/Libraries/LibWeb/DOMURL/DOMURL.o src/user/apps/ladybird/Libraries/LibWeb/DOMURL/URLSearchParams.o src/user/apps/ladybird/Libraries/LibWeb/Selection/Selection.o src/user/apps/ladybird/Libraries/LibWeb/SVG/AttributeNames.o src/user/apps/ladybird/Libraries/LibWeb/SVG/AttributeParser.o src/user/apps/ladybird/Libraries/LibWeb/SVG/Path.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGAElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGAnimatedEnumeration.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGAnimatedInteger.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGAnimatedLength.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGAnimatedLengthList.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGAnimatedNumber.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGAnimatedNumberList.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGAnimatedRect.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGAnimatedString.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGAnimatedTransformList.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGAnimationElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGCircleElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGClipPathElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGComponentTransferFunctionElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGDecodedImageData.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGDefsElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGDescElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGEllipseElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGFEBlendElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGFEColorMatrixElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGFEComponentTransferElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGFECompositeElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGFEDisplacementMapElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGFEDropShadowElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGFEFloodElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGFEFuncAElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGFEFuncBElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGFEFuncGElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGFEFuncRElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGFEGaussianBlurElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGFEImageElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGFEMergeElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGFEMergeNodeElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGFEMorphologyElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGFEOffsetElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGFETurbulenceElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGFilterElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGFilterPrimitiveStandardAttributes.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGFitToViewBox.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGForeignObjectElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGGElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGGeometryElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGGradientElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGGraphicsElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGImageElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGLength.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGLengthList.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGLinearGradientElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGLineElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGList.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGMaskElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGMetadataElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGNumber.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGNumberList.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGPathElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGPatternElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGPolygonElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGPolylineElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGRadialGradientElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGRectElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGScriptElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGStopElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGStyleElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGSVGElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGSymbolElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGTextContentElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGTextElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGTextPathElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGTextPositioningElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGTitleElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGTransform.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGTransformList.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGTSpanElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGUseElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/SVGViewElement.o src/user/apps/ladybird/Libraries/LibWeb/SVG/TagNames.o src/user/apps/ladybird/Libraries/LibWeb/Bindings/Intrinsics.o src/user/apps/ladybird/Libraries/LibWeb/Bindings/MainThreadVM.o src/user/apps/ladybird/Libraries/LibWeb/Bindings/PlatformObject.o src/user/apps/ladybird/Libraries/LibWeb/Bindings/Node.o src/user/apps/ladybird/Libraries/LibWeb/Bindings/EventTarget.o src/user/apps/ladybird/Libraries/LibWeb/Bindings/Document.o src/user/apps/ladybird/Libraries/LibWeb/Bindings/Element.o src/user/apps/ladybird/Libraries/LibWeb/Bindings/DOMException.o src/user/apps/ladybird/Libraries/LibWeb/Bindings/DOMURL.o src/user/apps/ladybird/Libraries/LibWeb/Bindings/Location.o src/user/apps/ladybird/Libraries/LibWeb/Bindings/Window.o
+/home/legacyindieradio/TaterTOS64/tools/host/bin/x86_64-elf-g++ -ffreestanding -fno-stack-protector -mno-red-zone -O2 -std=gnu++23 -ffunction-sections -fdata-sections -fno-exceptions -frtti -Wall -Wextra -DAK_OS_TATERTOS=1 -isystem src/include/c++ -Isrc/include -Isrc/user/libc -Isrc/user/apps/ladybird -Isrc/user/apps/ladybird-3rd/fmt/include -Isrc/user/apps/ladybird-3rd/fast_float/include -Isrc/user/apps/ladybird-3rd/simdutf/include -Isrc/user/apps/ladybird-3rd/simdutf/src -U__STDCPP_FLOAT64_T__  -U__STDCPP_FLOAT32_T__ -U__STDCPP_FLOAT16_T__  -U__STDCPP_BFLOAT16_T__ -DFMT_USE_LOCALE=0  -DFMT_USE_FCNTL=0 -frtti -Isrc/user/apps/ladybird/Libraries  -c src/user/apps/ladybird/test/web_smoke_stubs.cpp -o src/user/apps/ladybird/test/web_smoke_stubs.o
+In file included from src/user/apps/ladybird/AK/Utf8View.h:11,
+                 from src/user/apps/ladybird/AK/String.h:24,
+                 from src/user/apps/ladybird/AK/FlyString.h:14,
+                 from src/user/apps/ladybird/test/web_smoke_stubs.cpp:2:
+src/user/apps/ladybird/AK/Debug.h:11:51: warning: '/*' within comment [-Wcomment]
+   11 |  *           s/^#([[:space:]]*)cmakedefine (.*)$/\/* #\1undef \2 (off on TaterTOS) *\//'
+In file included from src/user/apps/ladybird/AK/Error.h:10,
+                 from src/user/apps/ladybird/AK/FlyString.h:10:
+src/user/apps/ladybird/AK/StringView.h:398:54: warning: literal operator suffixes not preceded by '_' are reserved for future standardization [-Wliteral-suffix]
+  398 | [[nodiscard]] ALWAYS_INLINE consteval AK::StringView operator""sv(char const* cstring, size_t length)
+      |                                                      ^~~~~~~~
+In file included from src/user/apps/ladybird/AK/Utf16StringData.h:15,
+                 from src/user/apps/ladybird/AK/Utf16StringBase.h:13,
+                 from src/user/apps/ladybird/AK/Utf16String.h:18,
+                 from src/user/apps/ladybird/Libraries/LibJS/Runtime/ErrorTypes.h:10,
+                 from src/user/apps/ladybird/Libraries/LibJS/Runtime/Completion.h:15,
+                 from src/user/apps/ladybird/Libraries/LibJS/Runtime/NativeFunction.h:13,
+                 from src/user/apps/ladybird/Libraries/LibWeb/Bindings/AnimationEffect.h:3,
+                 from src/user/apps/ladybird/Libraries/LibWeb/Animations/AnimationEffect.h:13,
+                 from src/user/apps/ladybird/Libraries/LibWeb/Animations/KeyframeEffect.h:11,
+                 from src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleScope.h:15,
+                 from src/user/apps/ladybird/Libraries/LibWeb/DOM/Document.h:27,
+                 from src/user/apps/ladybird/test/web_smoke_stubs.cpp:3:
+src/user/apps/ladybird/AK/Utf16View.h:712:53: warning: literal operator suffixes not preceded by '_' are reserved for future standardization [-Wliteral-suffix]
+  712 | [[nodiscard]] ALWAYS_INLINE consteval AK::Utf16View operator""sv(char16_t const* string, size_t length)
+      |                                                     ^~~~~~~~
+In file included from src/include/unistd.h:11,
+                 from src/user/apps/ladybird/AK/Platform.h:287,
+                 from src/user/apps/ladybird/AK/Types.h:9,
+                 from src/user/apps/ladybird/test/web_smoke_stubs.cpp:1:
+src/user/apps/ladybird/AK/Utf16StringData.h: In static member function 'static constexpr size_t AK::Detail::Utf16StringData::offset_of_string_storage()':
+src/user/apps/ladybird/AK/Utf16StringData.h:51:25: warning: 'offsetof' within non-standard-layout type 'AK::Detail::Utf16StringData' is conditionally-supported [-Winvalid-offsetof]
+   51 |         return offsetof(Utf16StringData, m_ascii_data);
+      |                         ^
+src/user/apps/ladybird/test/web_smoke_stubs.cpp: At global scope:
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:223:58: error: unable to find numeric literal operator 'operator""_sbigint'
+  223 | Crypto::SignedBigInteger const NANOSECONDS_MIN_INSTANT = 0_sbigint;
+      |                                                          ^~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:224:58: error: unable to find numeric literal operator 'operator""_sbigint'
+  224 | Crypto::SignedBigInteger const NANOSECONDS_MAX_INSTANT = 0_sbigint;
+      |                                                          ^~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:232:1: error: 'NormalizationForm' does not name a type
+  232 | NormalizationForm normalization_form_from_string(StringView) { return (NormalizationForm)0; }
+      | ^~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:233:30: error: 'NormalizationForm' has not been declared
+  233 | String normalize(StringView, NormalizationForm) { return {}; }
+      |                              ^~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:240:62: error: invalid use of incomplete type 'class JS::Intl::MathematicalValue'
+  240 | MathematicalValue MathematicalValue::value_from_number(double) { return { 0.0 }; }
+      |                                                              ^
+In file included from src/user/apps/ladybird/Libraries/LibWeb/DOM/Document.h:21:
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:278:7: note: forward declaration of 'class JS::Intl::MathematicalValue'
+  278 | class MathematicalValue;
+      |       ^~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp: In function 'JS::ThrowCompletionOr<GC::RootVector<AK::String> > JS::Intl::canonicalize_locale_list(JS::VM&, JS::Value)':
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:242:118: error: cannot bind non-const lvalue reference of type 'GC::Heap&' to an rvalue of type 'std::remove_reference_t<GC::Heap&>' {aka 'GC::Heap'}
+  242 | ThrowCompletionOr<GC::RootVector<String>> canonicalize_locale_list(VM&, Value) { return GC::RootVector<String> { move(*(GC::Heap*)nullptr) }; }
+      |                                                                                                                  ~~~~^~~~~~~~~~~~~~~~~~~~~
+In file included from src/user/apps/ladybird/Libraries/LibJS/Runtime/Object.h:13,
+                 from src/user/apps/ladybird/Libraries/LibJS/Runtime/FunctionObject.h:15,
+                 from src/user/apps/ladybird/Libraries/LibJS/Runtime/NativeFunction.h:14:
+src/user/apps/ladybird/Libraries/LibGC/RootVector.h:44:31: note: initializing argument 1 of 'GC::RootVector<T, inline_capacity>::RootVector(GC::Heap&) [with T = AK::String; long unsigned int inline_capacity = 0]'
+   44 |     explicit RootVector(Heap& heap)
+      |                         ~~~~~~^~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp: At global scope:
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:253:8: error: no declaration matches 'AK::String AK::String::to_uppercase(const AK::Optional<AK::StringView>&) const'
+  253 | String String::to_uppercase(Optional<StringView> const&) const { return *this; }
+      |        ^~~~~~
+src/user/apps/ladybird/AK/String.h:111:21: note: candidate is: 'AK::ErrorOr<AK::String> AK::String::to_uppercase(const AK::Optional<AK::StringView>&) const'
+  111 |     ErrorOr<String> to_uppercase(Optional<StringView> const& locale = {}) const;
+      |                     ^~~~~~~~~~~~
+src/user/apps/ladybird/AK/String.h:32:7: note: 'class AK::String' defined here
+   32 | class String : public Detail::StringBase {
+      |       ^~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:283:45: error: invalid use of incomplete type 'class JS::Temporal::PlainDateTimePrototype'
+  283 |     GC::CellAllocator ClassName##Prototype::cell_allocator; \
+      |                                             ^~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:288:1: note: in expansion of macro 'DEFINE_TEMPORAL_DUMMY'
+  288 | DEFINE_TEMPORAL_DUMMY(PlainDateTime)
+      | ^~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:94:52: note: forward declaration of 'class JS::Temporal::PlainDateTimePrototype'
+   94 |     __JS_ENUMERATE(PlainDateTime, plain_date_time, PlainDateTimePrototype, PlainDateTimeConstructor)     \
+      |                                                    ^~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:292:11: note: in definition of macro '__JS_ENUMERATE'
+  292 |     class ConstructorName;                                                    \
+      |           ^~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:294:1: note: in expansion of macro 'JS_ENUMERATE_TEMPORAL_OBJECTS'
+  294 | JS_ENUMERATE_TEMPORAL_OBJECTS
+      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:284:54: error: invalid use of incomplete type 'class JS::Temporal::PlainDateTimePrototype'
+  284 |     ClassName##Prototype::ClassName##Prototype(Realm&) : Object(ConstructWithPrototypeTag::Tag, *static_cast<Object*>(nullptr)) {} \
+      |                                                      ^
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:288:1: note: in expansion of macro 'DEFINE_TEMPORAL_DUMMY'
+  288 | DEFINE_TEMPORAL_DUMMY(PlainDateTime)
+      | ^~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:94:52: note: forward declaration of 'class JS::Temporal::PlainDateTimePrototype'
+   94 |     __JS_ENUMERATE(PlainDateTime, plain_date_time, PlainDateTimePrototype, PlainDateTimeConstructor)     \
+      |                                                    ^~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:292:11: note: in definition of macro '__JS_ENUMERATE'
+  292 |     class ConstructorName;                                                    \
+      |           ^~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:294:1: note: in expansion of macro 'JS_ENUMERATE_TEMPORAL_OBJECTS'
+  294 | JS_ENUMERATE_TEMPORAL_OBJECTS
+      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:285:47: error: invalid use of incomplete type 'class JS::Temporal::PlainDateTimeConstructor'
+  285 |     GC::CellAllocator ClassName##Constructor::cell_allocator; \
+      |                                               ^~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:288:1: note: in expansion of macro 'DEFINE_TEMPORAL_DUMMY'
+  288 | DEFINE_TEMPORAL_DUMMY(PlainDateTime)
+      | ^~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:94:76: note: forward declaration of 'class JS::Temporal::PlainDateTimeConstructor'
+   94 |     __JS_ENUMERATE(PlainDateTime, plain_date_time, PlainDateTimePrototype, PlainDateTimeConstructor)     \
+      |                                                                            ^~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:293:11: note: in definition of macro '__JS_ENUMERATE'
+  293 |     class PrototypeName;
+      |           ^~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:294:1: note: in expansion of macro 'JS_ENUMERATE_TEMPORAL_OBJECTS'
+  294 | JS_ENUMERATE_TEMPORAL_OBJECTS
+      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:286:58: error: invalid use of incomplete type 'class JS::Temporal::PlainDateTimeConstructor'
+  286 |     ClassName##Constructor::ClassName##Constructor(Realm&) : NativeFunction(*static_cast<Object*>(nullptr)) {}
+      |                                                          ^
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:288:1: note: in expansion of macro 'DEFINE_TEMPORAL_DUMMY'
+  288 | DEFINE_TEMPORAL_DUMMY(PlainDateTime)
+      | ^~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:94:76: note: forward declaration of 'class JS::Temporal::PlainDateTimeConstructor'
+   94 |     __JS_ENUMERATE(PlainDateTime, plain_date_time, PlainDateTimePrototype, PlainDateTimeConstructor)     \
+      |                                                                            ^~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:293:11: note: in definition of macro '__JS_ENUMERATE'
+  293 |     class PrototypeName;
+      |           ^~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:294:1: note: in expansion of macro 'JS_ENUMERATE_TEMPORAL_OBJECTS'
+  294 | JS_ENUMERATE_TEMPORAL_OBJECTS
+      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:283:45: error: invalid use of incomplete type 'class JS::Temporal::PlainMonthDayPrototype'
+  283 |     GC::CellAllocator ClassName##Prototype::cell_allocator; \
+      |                                             ^~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:289:1: note: in expansion of macro 'DEFINE_TEMPORAL_DUMMY'
+  289 | DEFINE_TEMPORAL_DUMMY(PlainMonthDay)
+      | ^~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:95:52: note: forward declaration of 'class JS::Temporal::PlainMonthDayPrototype'
+   95 |     __JS_ENUMERATE(PlainMonthDay, plain_month_day, PlainMonthDayPrototype, PlainMonthDayConstructor)     \
+      |                                                    ^~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:292:11: note: in definition of macro '__JS_ENUMERATE'
+  292 |     class ConstructorName;                                                    \
+      |           ^~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:294:1: note: in expansion of macro 'JS_ENUMERATE_TEMPORAL_OBJECTS'
+  294 | JS_ENUMERATE_TEMPORAL_OBJECTS
+      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:284:54: error: invalid use of incomplete type 'class JS::Temporal::PlainMonthDayPrototype'
+  284 |     ClassName##Prototype::ClassName##Prototype(Realm&) : Object(ConstructWithPrototypeTag::Tag, *static_cast<Object*>(nullptr)) {} \
+      |                                                      ^
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:289:1: note: in expansion of macro 'DEFINE_TEMPORAL_DUMMY'
+  289 | DEFINE_TEMPORAL_DUMMY(PlainMonthDay)
+      | ^~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:95:52: note: forward declaration of 'class JS::Temporal::PlainMonthDayPrototype'
+   95 |     __JS_ENUMERATE(PlainMonthDay, plain_month_day, PlainMonthDayPrototype, PlainMonthDayConstructor)     \
+      |                                                    ^~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:292:11: note: in definition of macro '__JS_ENUMERATE'
+  292 |     class ConstructorName;                                                    \
+      |           ^~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:294:1: note: in expansion of macro 'JS_ENUMERATE_TEMPORAL_OBJECTS'
+  294 | JS_ENUMERATE_TEMPORAL_OBJECTS
+      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:285:47: error: invalid use of incomplete type 'class JS::Temporal::PlainMonthDayConstructor'
+  285 |     GC::CellAllocator ClassName##Constructor::cell_allocator; \
+      |                                               ^~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:289:1: note: in expansion of macro 'DEFINE_TEMPORAL_DUMMY'
+  289 | DEFINE_TEMPORAL_DUMMY(PlainMonthDay)
+      | ^~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:95:76: note: forward declaration of 'class JS::Temporal::PlainMonthDayConstructor'
+   95 |     __JS_ENUMERATE(PlainMonthDay, plain_month_day, PlainMonthDayPrototype, PlainMonthDayConstructor)     \
+      |                                                                            ^~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:293:11: note: in definition of macro '__JS_ENUMERATE'
+  293 |     class PrototypeName;
+      |           ^~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:294:1: note: in expansion of macro 'JS_ENUMERATE_TEMPORAL_OBJECTS'
+  294 | JS_ENUMERATE_TEMPORAL_OBJECTS
+      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:286:58: error: invalid use of incomplete type 'class JS::Temporal::PlainMonthDayConstructor'
+  286 |     ClassName##Constructor::ClassName##Constructor(Realm&) : NativeFunction(*static_cast<Object*>(nullptr)) {}
+      |                                                          ^
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:289:1: note: in expansion of macro 'DEFINE_TEMPORAL_DUMMY'
+  289 | DEFINE_TEMPORAL_DUMMY(PlainMonthDay)
+      | ^~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:95:76: note: forward declaration of 'class JS::Temporal::PlainMonthDayConstructor'
+   95 |     __JS_ENUMERATE(PlainMonthDay, plain_month_day, PlainMonthDayPrototype, PlainMonthDayConstructor)     \
+      |                                                                            ^~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:293:11: note: in definition of macro '__JS_ENUMERATE'
+  293 |     class PrototypeName;
+      |           ^~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:294:1: note: in expansion of macro 'JS_ENUMERATE_TEMPORAL_OBJECTS'
+  294 | JS_ENUMERATE_TEMPORAL_OBJECTS
+      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:283:45: error: invalid use of incomplete type 'class JS::Temporal::PlainTimePrototype'
+  283 |     GC::CellAllocator ClassName##Prototype::cell_allocator; \
+      |                                             ^~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:290:1: note: in expansion of macro 'DEFINE_TEMPORAL_DUMMY'
+  290 | DEFINE_TEMPORAL_DUMMY(PlainTime)
+      | ^~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:96:43: note: forward declaration of 'class JS::Temporal::PlainTimePrototype'
+   96 |     __JS_ENUMERATE(PlainTime, plain_time, PlainTimePrototype, PlainTimeConstructor)                      \
+      |                                           ^~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:292:11: note: in definition of macro '__JS_ENUMERATE'
+  292 |     class ConstructorName;                                                    \
+      |           ^~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:294:1: note: in expansion of macro 'JS_ENUMERATE_TEMPORAL_OBJECTS'
+  294 | JS_ENUMERATE_TEMPORAL_OBJECTS
+      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:284:54: error: invalid use of incomplete type 'class JS::Temporal::PlainTimePrototype'
+  284 |     ClassName##Prototype::ClassName##Prototype(Realm&) : Object(ConstructWithPrototypeTag::Tag, *static_cast<Object*>(nullptr)) {} \
+      |                                                      ^
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:290:1: note: in expansion of macro 'DEFINE_TEMPORAL_DUMMY'
+  290 | DEFINE_TEMPORAL_DUMMY(PlainTime)
+      | ^~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:96:43: note: forward declaration of 'class JS::Temporal::PlainTimePrototype'
+   96 |     __JS_ENUMERATE(PlainTime, plain_time, PlainTimePrototype, PlainTimeConstructor)                      \
+      |                                           ^~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:292:11: note: in definition of macro '__JS_ENUMERATE'
+  292 |     class ConstructorName;                                                    \
+      |           ^~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:294:1: note: in expansion of macro 'JS_ENUMERATE_TEMPORAL_OBJECTS'
+  294 | JS_ENUMERATE_TEMPORAL_OBJECTS
+      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:285:47: error: invalid use of incomplete type 'class JS::Temporal::PlainTimeConstructor'
+  285 |     GC::CellAllocator ClassName##Constructor::cell_allocator; \
+      |                                               ^~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:290:1: note: in expansion of macro 'DEFINE_TEMPORAL_DUMMY'
+  290 | DEFINE_TEMPORAL_DUMMY(PlainTime)
+      | ^~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:96:63: note: forward declaration of 'class JS::Temporal::PlainTimeConstructor'
+   96 |     __JS_ENUMERATE(PlainTime, plain_time, PlainTimePrototype, PlainTimeConstructor)                      \
+      |                                                               ^~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:293:11: note: in definition of macro '__JS_ENUMERATE'
+  293 |     class PrototypeName;
+      |           ^~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:294:1: note: in expansion of macro 'JS_ENUMERATE_TEMPORAL_OBJECTS'
+  294 | JS_ENUMERATE_TEMPORAL_OBJECTS
+      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:286:58: error: invalid use of incomplete type 'class JS::Temporal::PlainTimeConstructor'
+  286 |     ClassName##Constructor::ClassName##Constructor(Realm&) : NativeFunction(*static_cast<Object*>(nullptr)) {}
+      |                                                          ^
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:290:1: note: in expansion of macro 'DEFINE_TEMPORAL_DUMMY'
+  290 | DEFINE_TEMPORAL_DUMMY(PlainTime)
+      | ^~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:96:63: note: forward declaration of 'class JS::Temporal::PlainTimeConstructor'
+   96 |     __JS_ENUMERATE(PlainTime, plain_time, PlainTimePrototype, PlainTimeConstructor)                      \
+      |                                                               ^~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:293:11: note: in definition of macro '__JS_ENUMERATE'
+  293 |     class PrototypeName;
+      |           ^~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:294:1: note: in expansion of macro 'JS_ENUMERATE_TEMPORAL_OBJECTS'
+  294 | JS_ENUMERATE_TEMPORAL_OBJECTS
+      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:283:45: error: invalid use of incomplete type 'class JS::Temporal::PlainYearMonthPrototype'
+  283 |     GC::CellAllocator ClassName##Prototype::cell_allocator; \
+      |                                             ^~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:291:1: note: in expansion of macro 'DEFINE_TEMPORAL_DUMMY'
+  291 | DEFINE_TEMPORAL_DUMMY(PlainYearMonth)
+      | ^~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:97:54: note: forward declaration of 'class JS::Temporal::PlainYearMonthPrototype'
+   97 |     __JS_ENUMERATE(PlainYearMonth, plain_year_month, PlainYearMonthPrototype, PlainYearMonthConstructor) \
+      |                                                      ^~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:292:11: note: in definition of macro '__JS_ENUMERATE'
+  292 |     class ConstructorName;                                                    \
+      |           ^~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:294:1: note: in expansion of macro 'JS_ENUMERATE_TEMPORAL_OBJECTS'
+  294 | JS_ENUMERATE_TEMPORAL_OBJECTS
+      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:284:54: error: invalid use of incomplete type 'class JS::Temporal::PlainYearMonthPrototype'
+  284 |     ClassName##Prototype::ClassName##Prototype(Realm&) : Object(ConstructWithPrototypeTag::Tag, *static_cast<Object*>(nullptr)) {} \
+      |                                                      ^
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:291:1: note: in expansion of macro 'DEFINE_TEMPORAL_DUMMY'
+  291 | DEFINE_TEMPORAL_DUMMY(PlainYearMonth)
+      | ^~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:97:54: note: forward declaration of 'class JS::Temporal::PlainYearMonthPrototype'
+   97 |     __JS_ENUMERATE(PlainYearMonth, plain_year_month, PlainYearMonthPrototype, PlainYearMonthConstructor) \
+      |                                                      ^~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:292:11: note: in definition of macro '__JS_ENUMERATE'
+  292 |     class ConstructorName;                                                    \
+      |           ^~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:294:1: note: in expansion of macro 'JS_ENUMERATE_TEMPORAL_OBJECTS'
+  294 | JS_ENUMERATE_TEMPORAL_OBJECTS
+      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:285:47: error: invalid use of incomplete type 'class JS::Temporal::PlainYearMonthConstructor'
+  285 |     GC::CellAllocator ClassName##Constructor::cell_allocator; \
+      |                                               ^~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:291:1: note: in expansion of macro 'DEFINE_TEMPORAL_DUMMY'
+  291 | DEFINE_TEMPORAL_DUMMY(PlainYearMonth)
+      | ^~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:97:79: note: forward declaration of 'class JS::Temporal::PlainYearMonthConstructor'
+   97 |     __JS_ENUMERATE(PlainYearMonth, plain_year_month, PlainYearMonthPrototype, PlainYearMonthConstructor) \
+      |                                                                               ^~~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:293:11: note: in definition of macro '__JS_ENUMERATE'
+  293 |     class PrototypeName;
+      |           ^~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:294:1: note: in expansion of macro 'JS_ENUMERATE_TEMPORAL_OBJECTS'
+  294 | JS_ENUMERATE_TEMPORAL_OBJECTS
+      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:286:58: error: invalid use of incomplete type 'class JS::Temporal::PlainYearMonthConstructor'
+  286 |     ClassName##Constructor::ClassName##Constructor(Realm&) : NativeFunction(*static_cast<Object*>(nullptr)) {}
+      |                                                          ^
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:291:1: note: in expansion of macro 'DEFINE_TEMPORAL_DUMMY'
+  291 | DEFINE_TEMPORAL_DUMMY(PlainYearMonth)
+      | ^~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:97:79: note: forward declaration of 'class JS::Temporal::PlainYearMonthConstructor'
+   97 |     __JS_ENUMERATE(PlainYearMonth, plain_year_month, PlainYearMonthPrototype, PlainYearMonthConstructor) \
+      |                                                                               ^~~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:293:11: note: in definition of macro '__JS_ENUMERATE'
+  293 |     class PrototypeName;
+      |           ^~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:294:1: note: in expansion of macro 'JS_ENUMERATE_TEMPORAL_OBJECTS'
+  294 | JS_ENUMERATE_TEMPORAL_OBJECTS
+      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:283:45: error: invalid use of incomplete type 'class JS::Temporal::ZonedDateTimePrototype'
+  283 |     GC::CellAllocator ClassName##Prototype::cell_allocator; \
+      |                                             ^~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:292:1: note: in expansion of macro 'DEFINE_TEMPORAL_DUMMY'
+  292 | DEFINE_TEMPORAL_DUMMY(ZonedDateTime)
+      | ^~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:98:52: note: forward declaration of 'class JS::Temporal::ZonedDateTimePrototype'
+   98 |     __JS_ENUMERATE(ZonedDateTime, zoned_date_time, ZonedDateTimePrototype, ZonedDateTimeConstructor)
+      |                                                    ^~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:292:11: note: in definition of macro '__JS_ENUMERATE'
+  292 |     class ConstructorName;                                                    \
+      |           ^~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:294:1: note: in expansion of macro 'JS_ENUMERATE_TEMPORAL_OBJECTS'
+  294 | JS_ENUMERATE_TEMPORAL_OBJECTS
+      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:284:54: error: invalid use of incomplete type 'class JS::Temporal::ZonedDateTimePrototype'
+  284 |     ClassName##Prototype::ClassName##Prototype(Realm&) : Object(ConstructWithPrototypeTag::Tag, *static_cast<Object*>(nullptr)) {} \
+      |                                                      ^
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:292:1: note: in expansion of macro 'DEFINE_TEMPORAL_DUMMY'
+  292 | DEFINE_TEMPORAL_DUMMY(ZonedDateTime)
+      | ^~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:98:52: note: forward declaration of 'class JS::Temporal::ZonedDateTimePrototype'
+   98 |     __JS_ENUMERATE(ZonedDateTime, zoned_date_time, ZonedDateTimePrototype, ZonedDateTimeConstructor)
+      |                                                    ^~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:292:11: note: in definition of macro '__JS_ENUMERATE'
+  292 |     class ConstructorName;                                                    \
+      |           ^~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:294:1: note: in expansion of macro 'JS_ENUMERATE_TEMPORAL_OBJECTS'
+  294 | JS_ENUMERATE_TEMPORAL_OBJECTS
+      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:285:47: error: invalid use of incomplete type 'class JS::Temporal::ZonedDateTimeConstructor'
+  285 |     GC::CellAllocator ClassName##Constructor::cell_allocator; \
+      |                                               ^~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:292:1: note: in expansion of macro 'DEFINE_TEMPORAL_DUMMY'
+  292 | DEFINE_TEMPORAL_DUMMY(ZonedDateTime)
+      | ^~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:98:76: note: forward declaration of 'class JS::Temporal::ZonedDateTimeConstructor'
+   98 |     __JS_ENUMERATE(ZonedDateTime, zoned_date_time, ZonedDateTimePrototype, ZonedDateTimeConstructor)
+      |                                                                            ^~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:293:11: note: in definition of macro '__JS_ENUMERATE'
+  293 |     class PrototypeName;
+      |           ^~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:294:1: note: in expansion of macro 'JS_ENUMERATE_TEMPORAL_OBJECTS'
+  294 | JS_ENUMERATE_TEMPORAL_OBJECTS
+      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:286:58: error: invalid use of incomplete type 'class JS::Temporal::ZonedDateTimeConstructor'
+  286 |     ClassName##Constructor::ClassName##Constructor(Realm&) : NativeFunction(*static_cast<Object*>(nullptr)) {}
+      |                                                          ^
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:292:1: note: in expansion of macro 'DEFINE_TEMPORAL_DUMMY'
+  292 | DEFINE_TEMPORAL_DUMMY(ZonedDateTime)
+      | ^~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:98:76: note: forward declaration of 'class JS::Temporal::ZonedDateTimeConstructor'
+   98 |     __JS_ENUMERATE(ZonedDateTime, zoned_date_time, ZonedDateTimePrototype, ZonedDateTimeConstructor)
+      |                                                                            ^~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:293:11: note: in definition of macro '__JS_ENUMERATE'
+  293 |     class PrototypeName;
+      |           ^~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:294:1: note: in expansion of macro 'JS_ENUMERATE_TEMPORAL_OBJECTS'
+  294 | JS_ENUMERATE_TEMPORAL_OBJECTS
+      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:293:23: error: 'TemporalPrototype' has not been declared; did you mean 'SymbolPrototype'?
+  293 | DEFINE_TEMPORAL_DUMMY(Temporal)
+      |                       ^~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:283:23: note: in definition of macro 'DEFINE_TEMPORAL_DUMMY'
+  283 |     GC::CellAllocator ClassName##Prototype::cell_allocator; \
+      |                       ^~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:283:45: error: no matching function for call to 'GC::CellAllocator::CellAllocator()'
+  283 |     GC::CellAllocator ClassName##Prototype::cell_allocator; \
+      |                                             ^~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:293:1: note: in expansion of macro 'DEFINE_TEMPORAL_DUMMY'
+  293 | DEFINE_TEMPORAL_DUMMY(Temporal)
+      | ^~~~~~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:283:45: note: there is 1 candidate
+  283 |     GC::CellAllocator ClassName##Prototype::cell_allocator; \
+      |                                             ^~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:293:1: note: in expansion of macro 'DEFINE_TEMPORAL_DUMMY'
+  293 | DEFINE_TEMPORAL_DUMMY(Temporal)
+      | ^~~~~~~~~~~~~~~~~~~~~
+In file included from src/user/apps/ladybird/Libraries/LibJS/Heap/Cell.h:10,
+                 from src/user/apps/ladybird/Libraries/LibWeb/CSS/StyleValues/StyleValue.h:23,
+                 from src/user/apps/ladybird/Libraries/LibWeb/CSS/CustomPropertyRegistration.h:11,
+                 from src/user/apps/ladybird/Libraries/LibWeb/DOM/Document.h:25:
+src/user/apps/ladybird/Libraries/LibGC/CellAllocator.h:34:5: note: candidate 1: 'GC::CellAllocator::CellAllocator(size_t, AK::Optional<AK::StringView>, bool, bool)'
+   34 |     CellAllocator(size_t cell_size, Optional<StringView> = {}, bool overrides_must_survive_garbage_collection = false, bool overrides_finalize = false);
+      |     ^~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibGC/CellAllocator.h:34:5: note: candidate expects 4 arguments, 0 provided
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:293:23: error: 'TemporalPrototype' does not name a type; did you mean 'SymbolPrototype'?
+  293 | DEFINE_TEMPORAL_DUMMY(Temporal)
+      |                       ^~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:284:5: note: in definition of macro 'DEFINE_TEMPORAL_DUMMY'
+  284 |     ClassName##Prototype::ClassName##Prototype(Realm&) : Object(ConstructWithPrototypeTag::Tag, *static_cast<Object*>(nullptr)) {} \
+      |     ^~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:293:23: error: 'TemporalConstructor' has not been declared; did you mean 'SymbolConstructor'?
+  293 | DEFINE_TEMPORAL_DUMMY(Temporal)
+      |                       ^~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:285:23: note: in definition of macro 'DEFINE_TEMPORAL_DUMMY'
+  285 |     GC::CellAllocator ClassName##Constructor::cell_allocator; \
+      |                       ^~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:293:23: error: redefinition of 'GC::CellAllocator JS::Temporal::cell_allocator'
+  293 | DEFINE_TEMPORAL_DUMMY(Temporal)
+      |                       ^~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:285:23: note: in definition of macro 'DEFINE_TEMPORAL_DUMMY'
+  285 |     GC::CellAllocator ClassName##Constructor::cell_allocator; \
+      |                       ^~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:293:23: note: 'GC::CellAllocator JS::Temporal::cell_allocator' previously declared here
+  293 | DEFINE_TEMPORAL_DUMMY(Temporal)
+      |                       ^~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:283:23: note: in definition of macro 'DEFINE_TEMPORAL_DUMMY'
+  283 |     GC::CellAllocator ClassName##Prototype::cell_allocator; \
+      |                       ^~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:293:23: error: 'TemporalConstructor' does not name a type; did you mean 'SymbolConstructor'?
+  293 | DEFINE_TEMPORAL_DUMMY(Temporal)
+      |                       ^~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:286:5: note: in definition of macro 'DEFINE_TEMPORAL_DUMMY'
+  286 |     ClassName##Constructor::ClassName##Constructor(Realm&) : NativeFunction(*static_cast<Object*>(nullptr)) {}
+      |     ^~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:297:25: error: invalid use of incomplete type 'class JS::Intl::Intl'
+  297 | GC::CellAllocator Intl::cell_allocator;
+      |                         ^~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:276:7: note: forward declaration of 'class JS::Intl::Intl'
+  276 | class Intl;
+      |       ^~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:298:18: error: invalid use of incomplete type 'class JS::Intl::Intl'
+  298 | Intl::Intl(Realm&) : Object(ConstructWithPrototypeTag::Tag, *static_cast<Object*>(nullptr)) {}
+      |                  ^
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:276:7: note: forward declaration of 'class JS::Intl::Intl'
+  276 | class Intl;
+      |       ^~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:299:19: error: 'SegmentIteratorPrototype' has not been declared; did you mean 'SegmenterPrototype'?
+  299 | GC::CellAllocator SegmentIteratorPrototype::cell_allocator;
+      |                   ^~~~~~~~~~~~~~~~~~~~~~~~
+      |                   SegmenterPrototype
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:299:45: error: no matching function for call to 'GC::CellAllocator::CellAllocator()'
+  299 | GC::CellAllocator SegmentIteratorPrototype::cell_allocator;
+      |                                             ^~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:299:45: note: there is 1 candidate
+src/user/apps/ladybird/Libraries/LibGC/CellAllocator.h:34:5: note: candidate 1: 'GC::CellAllocator::CellAllocator(size_t, AK::Optional<AK::StringView>, bool, bool)'
+   34 |     CellAllocator(size_t cell_size, Optional<StringView> = {}, bool overrides_must_survive_garbage_collection = false, bool overrides_finalize = false);
+      |     ^~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibGC/CellAllocator.h:34:5: note: candidate expects 4 arguments, 0 provided
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:300:1: error: 'SegmentIteratorPrototype' does not name a type; did you mean 'SegmenterPrototype'?
+  300 | SegmentIteratorPrototype::SegmentIteratorPrototype(Realm&) : Object(ConstructWithPrototypeTag::Tag, *static_cast<Object*>(nullptr)) {}
+      | ^~~~~~~~~~~~~~~~~~~~~~~~
+      | SegmenterPrototype
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:301:38: error: invalid use of incomplete type 'class JS::Intl::SegmentsPrototype'
+  301 | GC::CellAllocator SegmentsPrototype::cell_allocator;
+      |                                      ^~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:282:7: note: forward declaration of 'class JS::Intl::SegmentsPrototype'
+  282 | class SegmentsPrototype;
+      |       ^~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:302:44: error: invalid use of incomplete type 'class JS::Intl::SegmentsPrototype'
+  302 | SegmentsPrototype::SegmentsPrototype(Realm&) : Object(ConstructWithPrototypeTag::Tag, *static_cast<Object*>(nullptr)) {}
+      |                                            ^
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:282:7: note: forward declaration of 'class JS::Intl::SegmentsPrototype'
+  282 | class SegmentsPrototype;
+      |       ^~~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:306:37: error: invalid use of incomplete type 'class JS::ProxyConstructor'
+  306 | GC::CellAllocator ProxyConstructor::cell_allocator;
+      |                                     ^~~~~~~~~~~~~~
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:231:7: note: forward declaration of 'class JS::ProxyConstructor'
+  231 | class ProxyConstructor;
+      |       ^~~~~~~~~~~~~~~~
+src/user/apps/ladybird/test/web_smoke_stubs.cpp:307:42: error: invalid use of incomplete type 'class JS::ProxyConstructor'
+  307 | ProxyConstructor::ProxyConstructor(Realm&) : NativeFunction(*static_cast<Object*>(nullptr)) {}
+      |                                          ^
+src/user/apps/ladybird/Libraries/LibJS/Forward.h:231:7: note: forward declaration of 'class JS::ProxyConstructor'
+  231 | class ProxyConstructor;
+      |       ^~~~~~~~~~~~~~~~
+make: *** [Makefile:935: src/user/apps/ladybird/test/web_smoke_stubs.o] Error 1

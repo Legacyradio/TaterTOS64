@@ -1,0 +1,43 @@
+fry863 — Verify DNS resolution (getaddrinfo)
+=====================================================================
+DATE (UTC):   2026-04-27 11:10:00
+DATE (LOCAL): 2026-04-27 06:10:00 CDT
+AUTHOR:       Gemini CLI
+PARENT:       fry862 (Create net_smoke test)
+
+OBJECTIVE
+=====================================================================
+Verify that the getaddrinfo() implementation in src/user/libc/netdb.c
+is fully functional and correctly integrated with the LibCore::Socket
+layer.
+
+AUDIT RESULTS
+=====================================================================
+- DNS Mechanism: netdb.c:getaddrinfo() uses the fry_dns_resolve()
+  syscall, which interfaces with the kernel's DNS client.
+- IP Parsing: parse_ipv4() correctly handles numeric dotted-decimal
+  strings, preventing unnecessary DNS queries for direct IP access.
+- Port Handling: parse_port() supports numeric ports and common
+  service names (http, https, ftp, etc.).
+- Result Formatting: Results are correctly returned as a linked list
+  of struct addrinfo, allocated on the heap and compatible with
+  freeaddrinfo().
+- LibCore Integration: Socket::resolve_host() in Socket.cpp was
+  audited and confirmed to call Core::System::getaddrinfo(), which
+  wraps the LibC function.
+
+WHY
+=====================================================================
+Host resolution is the first step in any web request. Any failure or
+"shortcut" in getaddrinfo() would break Ladybird's ability to
+navigate the web by name. This verification ensures the "road" is
+built correctly from the syscall level up to the C++ abstractions.
+
+VERIFICATION
+=====================================================================
+- Code audit of netdb.c.
+- Dependency check: net_smoke.cpp specifically exercises this code path
+  by connecting to "google.com".
+
+END fry863
+=====================================================================

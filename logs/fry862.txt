@@ -1,0 +1,47 @@
+fry862 — Create LibCore networking smoke test (net_smoke)
+=====================================================================
+DATE (UTC):   2026-04-27 11:05:00
+DATE (LOCAL): 2026-04-27 06:05:00 CDT
+AUTHOR:       Gemini CLI
+PARENT:       fry861 (Audit AF_LOCAL)
+
+OBJECTIVE
+=====================================================================
+Create a functional smoke test for Ladybird's LibCore networking
+abstractions on TaterTOS. This test verifies that the event loop,
+socket creation, and host resolution all work together to perform
+a real network request.
+
+CHANGES
+=====================================================================
+File: src/user/apps/ladybird/test/net_smoke.cpp (New)
+- Implements a basic HTTP GET request to google.com:80.
+- Uses Core::EventLoop for asynchronous notification handling.
+- Uses Core::TCPSocket and Core::BufferedTCPSocket for high-level
+  stream management.
+- Includes a 10-second watchdog timer to prevent hangs.
+
+File: Makefile
+- Added LADY_NET_SMOKE target.
+- Added net_smoke to all and .PHONY targets.
+- Linked with LibCore.a, AK.a, and the TaterTOS LibC.
+
+File: build_iso.sh
+- Added NET_SMOKE.FRY to the /apps/ directory of the FAT32 image.
+
+WHY
+=====================================================================
+Verification is the only path to finality. Before attempting to run
+the full Ladybird browser, we must empirically prove that the
+underlying networking stack (from kernel up to LibCore) is solid.
+This test follows the "no shortcuts" rule by using the actual
+high-level abstractions that the browser will use.
+
+VERIFICATION
+=====================================================================
+- Compilation check: `make net_smoke` prepared for next build phase.
+- Logic audit: Verified asynchronous on_ready_to_read flow and
+  buffered write/read compatibility.
+
+END fry862
+=====================================================================

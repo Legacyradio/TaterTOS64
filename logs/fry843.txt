@@ -1,0 +1,301 @@
+fry843 — Full re-audit. Rust integrated from the ground up.
+=====================================================================
+DATE (UTC):   2026-04-26 15:47:05
+DATE (LOCAL): 2026-04-26 10:47:05 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSOR:    fry842 (Chunk 2 done) — supersedes the slim-port
+              draft of this number.
+TYPE:         Audit log — NO source code modified.
+
+ZACK'S DIRECTIVE
+=====================================================================
+"do a full audit again well logging all of your fines related to
+adding rust ... TaterSurf was terrible with performance and
+everything else."
+
+The performance story IS the reason for the port. Skipping the
+Rust pieces (LibJS AsmInterpreter, libregex_rust, libunicode_rust,
+libjs_rust, libgfx_rust) loses the actual win. Re-audit accordingly.
+This log INTEGRATES Rust into the TaterTOS port plan as a
+first-class dependency.
+
+THE UPSTREAM RUST LANDSCAPE — MEASURED
+=====================================================================
+
+WORKSPACE: ~/ladybird-upstream/Cargo.toml
+  members:
+    Libraries/LibGfx/Rust       (libgfx_rust)
+    Libraries/LibJS/Rust        (libjs_rust)
+    Libraries/LibRegex/Rust     (libregex_rust)
+    Libraries/LibUnicode/Rust   (libunicode_rust)
+  exclude:
+    Libraries/LibJS/AsmIntGen   (host tool; runs on build host)
+  Plus standalone:
+    Libraries/LibJS/BytecodeDef (path dep used by AsmIntGen + libjs_rust)
+
+  panic = "abort" (workspace-wide; perfect for freestanding/no-std).
+
+ALL Cargo.toml FILES
+  ./Cargo.toml                            (workspace root)
+  ./Libraries/LibGfx/Rust/Cargo.toml      (yuv = "0.8")
+  ./Libraries/LibJS/Rust/Cargo.toml       (libunicode_rust, num-bigint,
+                                           num-traits, num-integer,
+                                           cbindgen, bytecode_def)
+  ./Libraries/LibJS/AsmIntGen/Cargo.toml  (bytecode_def)
+  ./Libraries/LibJS/BytecodeDef/Cargo.toml (no deps)
+  ./Libraries/LibRegex/Rust/Cargo.toml    (libunicode_rust, cbindgen)
+  ./Libraries/LibUnicode/Rust/Cargo.toml  (icu_calendar, icu_locale,
+                                           calendrical_calculations,
+                                           cbindgen)
+
+CARGO.LOCK SUMMARY
+  103 unique transitive crates.
+  43,878 LOC of .rs files in upstream's vendored crates.
+  Notable transitive crates:
+    icu_calendar, icu_calendar_data, icu_collections, icu_locale,
+    icu_locale_core, icu_locale_data, icu_provider — the entire
+    ICU4X stack (replaces the C++ ICU dependency on Linux/Mac).
+    calendrical_calculations
+    num-bigint, num-traits, num-integer
+    yuv (color conversion for LibGfx)
+    cbindgen (generates C++ FFI headers)
+    libc (Rust's POSIX surface — Linux/Mac/Win — needs TaterTOS port)
+    getrandom (entropy source — Linux/Mac/Win — needs TaterTOS port)
+    windows-* (Windows-only — won't be linked on TaterTOS)
+
+HOST RUST ENVIRONMENT — INSTALLED
+=====================================================================
+  /usr/bin/rustc  1.95.0  (Arch Linux 1:1.95.0-1)
+  /usr/bin/cargo  1.95.0
+  rustup:         NOT INSTALLED  (Arch ships rust without rustup
+                                  by default; this is fine for
+                                  stable, but prevents nightly +
+                                  rust-src component.)
+
+  rustc --print target-list — relevant entries:
+    x86_64-unknown-none           ← bare-metal x86_64, no OS,
+                                    no_std only. CLOSEST stock target.
+    x86_64-unknown-linux-musl     ← static-musl Linux. NOT TaterTOS
+                                    (would need glibc-replacement
+                                    syscalls, but kernel ABI mismatch).
+
+  Neither stock target IS TaterTOS. Both would need patching.
+  TaterTOS path: define a custom target via a JSON spec file
+  (`x86_64-unknown-tatertos.json`), no rustup needed for stable
+  (custom JSON specs work on stable rustc since 2018).
+
+PORTING-RUST-TO-TATERTOS — REAL ENGINEERING SCOPE
+=====================================================================
+
+This is its own phase. Tracked here so the cost is on paper.
+
+PHASE R-1 — Custom Rust target spec (~1-3 days).
+  Write `x86_64-unknown-tatertos.json` describing TaterTOS's ABI:
+    arch=x86_64, os=tatertos, target_pointer_width=64,
+    panic-strategy=abort, dynamic-linking=false,
+    no_default_libraries=true, executables=false (lib-only),
+    target_endian=little, max_atomic_width=64,
+    pre_link_args=[], features=+sse,+sse2 (avoid AVX requirement
+    that early-boot CPU detection might not have set).
+  Test: `cargo build --target x86_64-unknown-tatertos.json` on a
+        trivial #![no_std] hello-world crate produces an .o that
+        the TaterTOS x86_64-elf-ld can swallow.
+
+PHASE R-2 — `core` and `alloc` rebuilt for the target (~3-5 days).
+  Rust's core (no_std, no allocator) ports trivially — pure code,
+  no platform calls. Use `-Z build-std=core,alloc` (requires
+  unstable rustc OR vendoring the `core`/`alloc` source and
+  building manually; both work on stable with effort).
+  alloc requires `#[global_allocator]` — point it at TaterTOS libc
+  malloc/free (same S1b pattern AK uses).
+  Test: a #![no_std] crate using Vec<u8>, String, Box compiles +
+        runs on TaterTOS, allocations succeed, no UB.
+
+PHASE R-3 — `libc` and `getrandom` crate forks/patches (~3-5 days).
+  The Rust `libc` crate has #[cfg(target_os = "linux")] etc.
+  branches. We add a #[cfg(target_os = "tatertos")] branch
+  exporting our libc surface (we already have a complete one from
+  Chunks 1-2). Same for `getrandom` — point it at fry_getrandom.
+  Vendor the patched crate as a Cargo path dep so cargo doesn't
+  try to fetch from crates.io.
+  Test: a Rust crate that does `std::fs::File::open` (still needs
+        std — see R-4) or `getrandom::getrandom(buf)` works on
+        TaterTOS.
+
+PHASE R-4 — `std` (the big one — ~5-10 days).
+  Rust's `std` crate is the platform-abstraction layer.
+  Target-os shim lives in library/std/src/sys/. We add
+  library/std/src/sys/tatertos/ wrapping our libc shim.
+  Modules: alloc, io, fs, net, thread, sync, env, time, process,
+  args, os, path, panic. Each is a few hundred LOC of glue.
+  Most of these have a "unix" parent we can clone from.
+  Output: rust-std-tatertos.tgz — a copy of the std crate built
+  for our target. Ship to cargo via $CARGO_HOME/sysroot.
+
+PHASE R-5 — Cargo workspace bring-up (~2-3 days).
+  Run `cargo vendor` on Ladybird's workspace root (on the host)
+  to capture all 103 transitive crates offline. Move that to
+  TaterTOS source tree as src/user/apps/ladybird-rust-vendor/.
+  Configure cargo to use [source.crates-io] = vendored.
+  Test: `cargo build --target x86_64-unknown-tatertos.json
+         --workspace --offline` produces 4 .a files
+         (libgfx_rust.a, libjs_rust.a, libregex_rust.a,
+          libunicode_rust.a).
+
+PHASE R-6 — Per-crate fixups for non-Linux targets (~3-7 days).
+  Crates that have `#[cfg(any(target_os = "linux", ...))]` need
+  TaterTOS added to the cfg list. Most are mechanical:
+  - libc (already covered in R-3)
+  - getrandom (already in R-3)
+  - icu_provider, icu_calendar — unlikely to need fixes (data-only)
+  - num-bigint, num-traits, num-integer — pure math, no fixes
+  - calendrical_calculations — pure math, no fixes
+  - hashbrown, foldhash, indexmap — collections, no platform code
+  - cbindgen — host tool, runs on build host, never compiled for
+    TaterTOS target. Skip.
+  - clap and friends — host tool only. Skip.
+  - yuv — pure math. No fixes likely.
+
+PHASE R-7 — AsmIntGen + cbindgen runtime invocations (~1-2 days).
+  AsmIntGen is the Rust binary that generates platform-specific
+  assembly for LibJS's AsmInterpreter. It runs on the BUILD HOST
+  (not TaterTOS target). Build it with cargo on the host. Run
+  during make to produce asmint_x86_64.S. Then assemble that .S
+  into an .o using TaterTOS's x86_64-elf-as.
+  cbindgen similarly generates C++ FFI headers from Rust source.
+  Run on build host, output goes into the TaterTOS source tree.
+
+TOTAL HONEST ESTIMATE: 17-35 days of focused work.
+That's 3-5 weeks. Same scale as a kernel feature phase.
+
+WHY THIS IS WORTH IT (vs. the slim-port shortcut)
+=====================================================================
+
+WHAT THE SLIM-PORT WOULD HAVE LOST:
+
+1. AsmInterpreter for JS bytecode.
+   Modern Ladybird's AsmInterpreter is a hand-tuned x86_64
+   assembly bytecode interpreter that's roughly 2-4x faster than
+   the C++ fallback on real workloads. JS-heavy sites
+   (Facebook, YouTube comments, Twitter/X) spend most of their
+   time in this loop. Skipping it = a browser that feels like
+   TaterSurf. Defeats the entire point of the port.
+
+2. libregex_rust.
+   A Rust regex engine. Faster + more correct + safer than the
+   C++ regex fallback. Modern web pages hit regex constantly
+   (URL parsing, content-security-policy matching, autofill).
+
+3. libunicode_rust + ICU4X.
+   The ICU4X Rust crate replaces the legacy C++ ICU dependency.
+   Smaller binary, faster collation, faster locale-aware
+   formatting. Without it, Intl.DateTimeFormat etc. don't work.
+
+4. libgfx_rust.
+   Currently provides yuv color-conversion for media. Probably
+   grows over time as Ladybird converts more rendering pipeline
+   to Rust.
+
+5. libjs_rust.
+   Cleaner BigInt arithmetic, JSON parser, class blueprint
+   bookkeeping. Some of this can be reimplemented in C++ but
+   that's wasted engineering — the Rust version exists, works,
+   and is what upstream tests against.
+
+THE TATERLABS ETHOS APPLIES HERE.
+=====================================================================
+We engineer, we invent, we blaze our own trails.
+
+Adding Rust to TaterTOS is on-trail engineering, not Linux/Windows
+code. Rust as a language has no Linux dependency. The Rust crates
+Ladybird uses are MIT/Apache-2.0 dual-licensed, target-portable,
+and explicitly designed to be ported to new platforms.
+
+Rust compiles to the same x86_64 ELF object format we already use
+for C/C++. Cross-compiling to a custom target is a documented
+rustc feature (custom JSON specs). Multiple OSes have been ported
+this way: Redox, FreeBSD's nascent Rust support, Hubris, Tock,
+Theseus, etc.
+
+This is the road. The slim port was the map.
+
+THE NEW PHASE PLAN
+=====================================================================
+
+Phase R (Rust-on-TaterTOS) — the prerequisite to a full Chunk 3:
+  fry844  Audit Cargo.lock more deeply: which crates have
+           target-os branches we'll need to extend.
+  fry845  Write x86_64-unknown-tatertos.json target spec.
+  fry846  Vendor Ladybird's full Cargo workspace (`cargo vendor`)
+           into TaterTOS source tree.
+  fry847  Bring up rustc against the JSON target. Test:
+           a Rust hello-world #![no_std] crate compiles to .o
+           and the TaterTOS linker swallows it.
+  fry848  Port `core` + `alloc` against TaterTOS libc allocator.
+  fry849  Port the `libc` crate's TaterTOS branch.
+  fry850  Port the `getrandom` crate's TaterTOS branch.
+  fry851  Port `std` against our POSIX shim (subdirectory by
+           subdirectory; one fry log per subdirectory).
+  fry∞    Build the 4 Ladybird Rust crates (libgfx_rust,
+           libjs_rust, libregex_rust, libunicode_rust) on TaterTOS.
+           Phase R DONE.
+
+Phase R is open. Chunk 3 is BLOCKED on Phase R.
+
+CHUNK 3 IS UNBLOCKED ONCE PHASE R FINISHES:
+  - Resume LibJS port WITHOUT carve-outs.
+  - AsmInterpreter compiles + executes.
+  - Intl/* compiles + executes.
+  - RegExp* compiles + executes.
+  - Estimated chunk 3 effort once Phase R is done: ~20-25 fry logs
+    (vs. 25-35 for the slim port — Phase R does most of the
+    heavy lifting upstream of LibJS).
+
+DECISIONS LOCKED FOR PHASE R
+=====================================================================
+  R-D1  Custom target spec (x86_64-unknown-tatertos) instead of
+        re-targetting x86_64-unknown-none.
+        Reason: x86_64-unknown-none is no_std-only and has no
+        notion of process/thread/syscalls. Ladybird's Rust crates
+        use std (collections, Vec, String, etc. via std). We
+        need a target with std.
+
+  R-D2  Stable rustc 1.95.0 (already on host). Custom JSON target
+        specs work on stable since 2018. No nightly required.
+
+  R-D3  panic = "abort" (matches workspace setting). No unwinder
+        port needed — same posture as our -fno-exceptions C++.
+
+  R-D4  Vendor crates offline via `cargo vendor`. No network
+        access required during TaterTOS builds.
+
+  R-D5  AsmIntGen + cbindgen run on BUILD HOST, not TaterTOS
+        target. Output (generated .S, .h) is committed to the
+        TaterTOS source tree as a normal build artefact.
+
+  R-D6  Rust target_os=tatertos is the new cfg gate. Each crate
+        with a Linux/Mac/Win cfg cascade gets a tatertos branch
+        added. Vendored crate copies; we maintain the diff.
+
+NOT DONE (intentional — audit only)
+=====================================================================
+- No source touched.
+- No Rust toolchain bring-up attempted.
+- No Cargo workspace vendored.
+
+CHUNK 2 STATUS REMINDER
+=====================================================================
+Chunk 2 is DONE. AK.a + LibCore.a + smoke.fry remain valid.
+None of that is thrown away. Phase R + reopened Chunk 3 layer
+on top.
+
+NEXT
+=====================================================================
+fry844 — Phase R-1 audit: deep-read Cargo.lock for every crate's
+        target-os cfg surface. Output: a manifest of which crates
+        need TaterTOS branches and roughly how many lines of patch
+        each will require.
+
+END fry843
+=====================================================================

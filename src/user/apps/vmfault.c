@@ -1,5 +1,7 @@
 #include "../libc/libc.h"
-#include <stdint.h>
+#include "../libc/fry.h"
+#include <stdio.h>
+
 
 #define PAGE_SIZE 4096u
 

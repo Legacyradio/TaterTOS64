@@ -31,7 +31,14 @@ enum fry_fd_kind {
     FD_FILE       = 1,   /* VFS file — fd_ptrs[fd] is struct vfs_file* */
     FD_PIPE_READ  = 2,   /* read end of a pipe — fd_ptrs[fd] is struct fry_pipe* */
     FD_PIPE_WRITE = 3,   /* write end of a pipe — fd_ptrs[fd] is struct fry_pipe* */
-    FD_SOCKET     = 4    /* socket — fd_ptrs[fd] is struct fry_socket* */
+    FD_SOCKET     = 4,   /* socket — fd_ptrs[fd] is struct fry_socket* */
+    FD_EPOLL      = 5,   /* epoll — fd_ptrs[fd] is struct epoll_cb* */
+    FD_EVENTFD    = 6,   /* eventfd — fd_ptrs[fd] is struct eventfd_cb* */
+    FD_DIR        = 7,    /* directory handle — fd_ptrs[fd] points at fd_paths[fd] */
+    FD_TIMERFD    = 8,    /* timerfd — fd_ptrs[fd] is struct timerfd_cb* */
+    FD_SIGNALFD   = 9,    /* signalfd — fd_ptrs[fd] is struct signalfd_cb* */
+    FD_INOTIFY    = 10,    /* inotify — fd_ptrs[fd] is struct inotify_cb* */
+    FD_MEMFD      = 11     /* memfd — fd_ptrs[fd] is struct memfd_cb* */
 };
 
 /*
@@ -79,6 +86,8 @@ struct fry_process_shared {
     void *fd_ptrs[FRY_FD_MAX];
     uint8_t  fd_kind[FRY_FD_MAX];   /* enum fry_fd_kind per fd */
     uint32_t fd_flags[FRY_FD_MAX];  /* per-fd flags (O_NONBLOCK etc.) */
+    char     fd_paths[FRY_FD_MAX][FRY_PATH_MAX]; /* canonical path for *at() dirfd resolution */
+    char     cwd[FRY_PATH_MAX];                   /* current working directory (chdir/getcwd) */
     uint16_t open_fds;
     uint16_t _res_pad;
     uint64_t heap_start;
@@ -150,6 +159,11 @@ struct fry_process {
     int32_t wait_result;
     uint8_t is_kernel;
     uint8_t wait_poll;     /* 1 if blocked in poll() — wake on any fd event */
+    uint8_t no_new_privs;
+    uint8_t dumpable;
+    uint8_t thp_disabled;
+    uint8_t _prctl_pad[3];
+    uint64_t timer_slack_ns;
     uint64_t kernel_stack_phys;
     uint32_t kernel_stack_pages;
     void (*kentry)(void *arg);

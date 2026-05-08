@@ -1,0 +1,69 @@
+fry851 — rust-src package install attempt for browser Rust bring-up
+=====================================================================
+DATE (UTC):   2026-04-26 17:37:12 UTC
+DATE (LOCAL): 2026-04-26 12:37:12 CDT
+AUTHOR:       Codex
+PARENT:       planv3.txt
+PRECURSOR:    fry850
+TYPE:         Package install support log. No source code changed.
+
+WHY THIS LOG EXISTS
+=====================================================================
+User attempted to run:
+  sudo pacman -S --noconfirm rust-srcokay so do that remember to log ur moves and don't forget the rules they are not negotiable
+
+Shell result:
+  /bin/bash: -c: line 1: unexpected EOF while looking for matching `''
+
+Interpretation:
+  The natural-language instruction was accidentally appended to the
+  command, so bash parsed malformed input. The intended command is:
+    sudo pacman -S --noconfirm rust-src
+
+BOUNDARIES
+=====================================================================
+This is not browser feature work. It only installs or confirms the
+system `rust-src` package needed by the Rust bring-up path documented
+in fry847/fry848.
+
+No source edits, no build, no QEMU, no SHA-256 verification.
+
+EXECUTION LOG
+=====================================================================
+[2026-04-26 17:37 UTC / 12:37 CDT] Recorded malformed user-shell
+command and intended corrected command before running anything.
+
+Why: planv3 logging rules are non-negotiable; even support/setup moves
+that affect the browser/Rust path need an audit trail.
+
+[2026-04-26 17:37 UTC / 12:37 CDT] Attempted corrected package command.
+
+Command:
+  sudo pacman -S --noconfirm rust-src
+
+Result:
+  Failed before package work began:
+    sudo: a terminal is required to read the password; either use the -S
+    option to read from standard input or configure an askpass helper
+
+Why:
+  The command needs interactive sudo authentication. This Codex session
+  cannot provide a password prompt through pacman/sudo.
+
+[2026-04-26 17:38 UTC / 12:38 CDT] Checked whether rust-src is already
+installed.
+
+Command:
+  pacman -Q rust-src
+
+Result:
+  rust-src 1:1.95.0-1
+
+Why:
+  The failed sudo install may be harmless if the package already exists.
+  This confirms the required rust-src package is installed, matching the
+  version referenced by the prior Rust bring-up logs.
+
+Conclusion:
+  No further package action is needed for rust-src in this pass.
+  No source code changed. No build run. No QEMU run.

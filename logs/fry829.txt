@@ -1,0 +1,169 @@
+fry829 — F3 implementation: src/include/unistd.h + AK Platform.h
+         bypass. Build #2 attempted. Error #2 captured.
+=====================================================================
+DATE (UTC):   2026-04-26 03:56:36
+DATE (LOCAL): 2026-04-25 22:56:36 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSORS:   fry827 (AK source), fry828 (Makefile + Error #1: unistd.h)
+TYPE:         New file + targeted patch + 2nd build attempt.
+
+WHAT THIS LOG DID
+=====================================================================
+
+DIFF 1 (NEW FILE): src/include/unistd.h
+-----------------------------------------------------------
+Engineered POSIX <unistd.h> for TaterTOS userland. Forwards to the
+existing fry_* / *_compat primitives in src/user/libc/{libc,posix}.c.
+Real code, not a stub.
+
+Contents (high level):
+  - #include <fry_types.h> for pid_t, ssize_t, off_t, uid_t, gid_t.
+  - STDIN_FILENO / STDOUT_FILENO / STDERR_FILENO constants.
+  - _SC_PAGESIZE / _SC_PAGE_SIZE / _SC_NPROCESSORS_ONLN / _SC_OPEN_MAX
+    / _SC_CLK_TCK constants — values match the case numbers
+    sysconf_compat() handles in posix.c:594.
+  - SEEK_SET / SEEK_CUR / SEEK_END (guarded — match fry_seek.h).
+  - F_OK / X_OK / W_OK / R_OK access() mode bits.
+  - extern decls for the libc *_compat / posix-named backends.
+  - static inline POSIX-named forwarders: read, write, close, lseek,
+    dup, pipe, getpid, getppid, getuid, geteuid, getgid, getegid,
+    sysconf, getpagesize, usleep, sleep.
+
+Symbol set is intentionally minimal — grow as future ports demand.
+Each future addition gets its own fry log per planv3 Rule 5.
+
+Static-inline forwarders are the cleanest pattern here:
+  - Zero runtime cost (compiler folds them into direct calls).
+  - No new symbols introduced into the link line.
+  - The libc.h backends remain the single source of truth.
+
+DIFF 2: AK/Platform.h — TaterTOS PAGE_SIZE bypass
+-----------------------------------------------------------
+At line 274-283 of AK/Platform.h, added an AK_OS_TATERTOS branch
+between the AK_OS_WINDOWS and the else (sysconf-based) branches:
+
+  Before (only the unchanged else branch shown for context):
+    #    else
+    #        include <unistd.h>
+    #        undef PAGE_SIZE
+    #        define PAGE_SIZE sysconf(_SC_PAGESIZE)
+    #    endif
+
+  After:
+    #    elif defined(AK_OS_TATERTOS)
+    // TaterTOS divergence (logs/fry829.txt): page size is fixed at 4096
+    // (FRY_PAGE_SIZE in src/include/fry_limits.h). Skip the runtime
+    // sysconf(_SC_PAGESIZE) call — compile-time constant is faster and
+    // avoids pulling sysconf into AK's hot path.
+    #        define PAGE_SIZE 4096u
+    #    else
+    [unchanged sysconf path remains]
+    #    endif
+
+Marked divergence with comment pointing at this log.
+
+REGRESSION SAFETY
+=====================================================================
+- src/include/unistd.h is a new file. Cannot break any existing code
+  unless an existing TaterTOS source already defined a conflicting
+  unistd.h — verified `find /home/legacyindieradio/TaterTOS64/src
+  -name unistd.h` returned only the new file.
+- AK/Platform.h is in src/user/apps/ladybird/AK/, only used by AK.
+  No other TaterTOS source includes it.
+
+BUILD #2 RESULT
+=====================================================================
+Cmd: PATH=... make ak
+
+Past Error #1 (unistd.h). Cleared.
+Failed at Error #2:
+
+  src/user/apps/ladybird/AK/Types.h:135:14:
+  fatal error: sys/types.h: No such file or directory
+    135 | #    include <sys/types.h>
+
+Triggering chain:
+  Assertions.cpp -> Format.h -> CheckedFormatString.h -> AllOf.h
+   -> Concepts.h -> Forward.h -> SinglyLinkedListSizePolicy.h
+   -> Types.h:135
+
+Context (Types.h around line 135):
+  using pid_t = int;
+  #else
+  #    include <stddef.h>
+  #    include <stdint.h>
+  #    include <sys/types.h>           <- error here
+  #    if defined(AK_OS_WINDOWS)
+  using ssize_t = AK::Detail::MakeSigned<size_t>;
+  using mode_t = unsigned short;
+  using pid_t = int;
+
+What AK uses sys/types.h for here: import POSIX integer types
+(pid_t, ssize_t, mode_t, etc.) outside the AK_OS_WINDOWS branch.
+
+WHY THIS HAPPENED — same class as Error #1
+=====================================================================
+TaterTOS has fry_types.h with these typedefs but no <sys/types.h>
+top-level header. POSIX upstream code that #includes <sys/types.h>
+hits the same wall as <unistd.h> did. Same fix shape applies.
+
+This was not a surprise — fry821 and fry828 both pre-flagged
+"sister POSIX headers (sys/stat.h, sys/mman.h, dirent.h, sys/socket.h,
+etc.) likely missing." sys/types.h is the most foundational of these.
+
+FIX FOR fry830 (next log)
+=====================================================================
+Engineer src/include/sys/types.h. Tiny file: re-export the typedefs
+already in fry_types.h, plus a couple POSIX-ish typedefs AK Types.h
+references (clock_t, time_t, key_t — verify which AK actually uses
+on the TaterTOS code path).
+
+Same pattern as unistd.h:
+  - One new file under src/include/sys/.
+  - Forward to fry_types.h for the existing typedefs.
+  - Define any POSIX names not already covered by fry_types.h.
+  - Real code, not a stub.
+
+ALSO LIKELY in the next few error classes:
+  sys/stat.h, sys/mman.h, sys/select.h, sys/socket.h, dirent.h,
+  fcntl.h (already partially in src/include/fry_fcntl.h — needs a
+  POSIX-named alias header), pthread.h.
+
+Each gets its own fry log. None are stubs — each is engineered to
+forward to the real TaterTOS libc backing.
+
+DIFFS APPLIED IN fry829 (this log)
+=====================================================================
+Files created (1):
+  src/include/unistd.h                       — new POSIX shim
+
+Files modified (1):
+  src/user/apps/ladybird/AK/Platform.h       — TaterTOS PAGE_SIZE branch
+
+No other TaterTOS source touched.
+No Makefile changes.
+
+LSP DIAGNOSTICS NOTE
+=====================================================================
+Clang LSP reported `unistd.h:23: 'fry_types.h' file not found with
+<angled> include`. This is a false positive — every TaterTOS build
+invocation passes -Isrc/include. The actual build resolved
+fry_types.h correctly (build advanced past unistd.h to Error #2).
+Same class of LSP-without-build-flags warning documented in fry827.
+
+NOT DONE (intentional — discipline)
+=====================================================================
+- No fix for Error #2 attempted yet. Awaiting Zack go-ahead.
+- No additional .cpp files compiled (still failing at Assertions.cpp,
+  the first compile target).
+- No Makefile changes.
+- No SHA-256.
+
+NEXT
+=====================================================================
+fry830 — Engineer src/include/sys/types.h. Rerun `make ak`. Capture
+        Error #3. Stop.
+
+END fry829
+=====================================================================

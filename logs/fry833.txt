@@ -1,0 +1,167 @@
+fry833 — strings.h + minimal <version>/<string>/<atomic> for simdutf.
+=====================================================================
+DATE (UTC):   2026-04-26 04:26:03
+DATE (LOCAL): 2026-04-25 23:26:03 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSOR:    fry832 (Assertions.cpp first compile + cXxx batch)
+TYPE:         4 new headers, all engineered (not stubs).
+
+WHY THIS LOG
+=====================================================================
+After fry832 closed, the build advanced to Base64.cpp which pulls in
+simdutf.h. simdutf needs a chunk of C++ stdlib container surface
+that AK doesn't otherwise touch (std::string, std::atomic,
+std::string_view). Each is a substantive engineering decision —
+not "wrap a libc header" — so this log groups those four decisions
+together and explains each.
+
+FOUR MOVES, ONE LOG
+=====================================================================
+
+MOVE 1: src/include/strings.h  (POSIX <strings.h>, plural)
+-------------------------------------------------------
+Triggered by: simdutf/portability.h:12
+
+  Content: strcasecmp/strncasecmp + legacy BSD bzero/bcopy/bcmp/
+  index/rindex (the latter as inline forwarders to memset/memmove/
+  memcmp/strchr/strrchr).
+
+  Engineering note: strcasecmp + strncasecmp already exist in
+  src/user/libc/posix.c. The header just declares them.
+
+MOVE 2: src/include/c++/version  (C++20 library feature-test header)
+--------------------------------------------------------------------
+Triggered by: simdutf/portability.h:23
+
+  Defines exactly the __cpp_lib_* macros that match what our
+  minimal libc++ shim provides:
+    __cpp_lib_three_way_comparison        — we have <compare>
+    __cpp_lib_constexpr_dynamic_alloc     — we have construct_at
+    __cpp_lib_is_constant_evaluated       — compiler builtin
+    __cpp_lib_byte                        — std::byte in <cstddef>
+    __cpp_lib_integer_sequence            — in <utility>
+    __cpp_lib_exchange_function           — std::exchange in <utility>
+
+  Deliberately UN-defined (so simdutf's optional feature paths
+  bypass them):
+    __cpp_lib_format, __cpp_lib_optional, __cpp_lib_span,
+    __cpp_lib_ranges, __cpp_lib_concepts, __cpp_lib_filesystem,
+    __cpp_lib_string_view, __cpp_lib_jthread.
+
+  Conservative posture: declare what we ship, no more.
+
+MOVE 3: src/include/c++/string  (minimal std::string class)
+-----------------------------------------------------------
+Triggered by: simdutf/encoding_types.h:3 + implementation.h
+
+  Decision context: AK uses simdutf only via free functions
+  (base64_*, find, utf*_length_from_*, convert_utf16_to_utf8_*,
+  to_well_formed_utf16le). simdutf's std::string surface lives in
+  debug-name / kernel-listing methods that AK never invokes. But
+  simdutf's headers still REFERENCE std::string in declarations,
+  forcing parse-time visibility.
+
+  Three pro options considered:
+    W1 vendor minimal std::string  — chosen
+    W3 patch simdutf headers (6 sites)  — rejected: drift risk
+       on upstream pulls + 6 scattered #ifdef blocks
+    W4 simdutf SIMDUTF_NO_STRING flag  — verified: doesn't exist
+
+  Implementation: ~150 LOC class with malloc-backed dynamic buffer.
+  Surface scoped:
+    default ctor, ctor(const char*), ctor(const char*, size_t)
+    copy ctor / copy-assign / move ctor / move-assign / dtor
+    c_str() / data() / size() / length() / empty()
+    operator== / operator!=
+
+  Deliberately omitted (each future addition logged):
+    operator+ / +=, append, substr, find, replace, insert, erase,
+    iterators, reserve, clear, resize, push_back, char_traits-
+    parameterized templates, std::basic_string<>.
+
+  Real implementation, not a stub — it allocates, copies, frees.
+  But surface is intentionally narrow.
+
+MOVE 4: src/include/c++/atomic  (std::atomic + atomic_flag + fences)
+--------------------------------------------------------------------
+Triggered by: simdutf/implementation.h:4
+
+  Decision context: simdutf uses std::atomic<T*> ONCE at line 5434
+  for its kernel-pointer cache. AK has its own AK/Atomic.h. So this
+  shim only needs to satisfy the std::atomic<T*> declaration parse.
+
+  Implementation: ~110 LOC template wrapping GCC __atomic_*
+  builtins. Real semantics — these are the same builtins TaterTOS's
+  kernel scheduler already uses (src/kernel/proc/sched.c).
+
+  Surface:
+    memory_order enum (matches libstdc++ ABI values)
+    template<typename T> atomic<T> with:
+      load/store/exchange
+      compare_exchange_strong/weak
+      fetch_add/sub/or/and/xor
+      operator T(), operator=, ++/--, +=/-=
+    atomic_flag (test_and_set, clear)
+    atomic_thread_fence, atomic_signal_fence
+
+  Deliberately omitted: atomic<bool>, atomic<integral>
+  specializations beyond the generic template, atomic_ref, wait/
+  notify (C++20 — needs futex backend, deferred).
+
+  Real implementation, not a stub.
+
+BUILD PROGRESS
+=====================================================================
+  After MOVE 1 (strings.h):       advances past simdutf/portability.h:12
+  After MOVE 2 (version):         advances past portability.h:23
+  After MOVE 3 (string):          advances past encoding_types.h:3
+  After MOVE 4 (atomic):          advances past implementation.h:4
+  Build now stops at:             implementation.h:23 — <string_view>
+
+Base64.cpp is still file 2 of 37, but the simdutf parse chain has
+progressed deep into implementation.h. Next move (string_view shim)
+should clear that file.
+
+Build progress is genuine: each new shim is a real engineering
+artifact, not a stub. Testing time is on the build itself, not on
+shim correctness — these will be exercised when AK's actual
+simdutf calls run, and we'll grow them as the build's runtime
+behaviour reveals more surface.
+
+DIFFS — this log
+=====================================================================
+  4 new files:
+    src/include/strings.h
+    src/include/c++/version
+    src/include/c++/string
+    src/include/c++/atomic
+  0 patched files.
+  0 Makefile changes.
+
+CURRENT TaterTOS HEADER SURFACE (post-fry833)
+=====================================================================
+src/include/                 11 top-level POSIX headers + sys/, c++/
+src/include/c++/             20 libc++ shim headers
+src/include/sys/             1 (types.h)
+
+Likely-needed-soon headers (still unwritten):
+  string_view, optional?, span?, type_traits, concepts (each is a
+  judgment call — AK has its own variants, but simdutf and fmt may
+  pull them via headers)
+  POSIX: fcntl.h, sys/stat.h, sys/mman.h, sys/socket.h, sys/select.h,
+  dirent.h, signal.h, time.h, pthread.h, ctype.h, inttypes.h, etc.
+
+NOT DONE (intentional)
+=====================================================================
+  - <string_view> not yet written (next error class).
+  - No build SHA / clean rebuild yet — still iterating on AK file 2/37.
+
+NEXT
+=====================================================================
+fry834 — Engineer minimal <string_view> (C++17 non-owning view).
+        AK's own AK::StringView is the workhorse; std::string_view
+        is needed only at simdutf parse time. ~80 LOC. Build #15.
+
+END fry833
+=====================================================================

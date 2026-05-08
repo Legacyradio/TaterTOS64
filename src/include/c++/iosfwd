@@ -1,0 +1,7 @@
+#pragma once
+
+namespace std {
+    template<class charT, class traits> class basic_ostream;
+    template<class charT, class traits> class basic_istream;
+    struct char_traits_char; // Forward declare a dummy to satisfy basic types
+}

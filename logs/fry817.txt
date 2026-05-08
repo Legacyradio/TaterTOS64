@@ -1,0 +1,74 @@
+fry817 — Supersede TATERSURF_PLAN.md and TATERSURF_UPGRADE_PLAN.md
+=====================================================================
+DATE (UTC):   2026-04-26 02:31:04
+DATE (LOCAL): 2026-04-25 21:31:04 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSOR:    logs/fry816.txt (Ladybird port plan + Decision Gate)
+
+WHAT
+=====================================================================
+Marked the following files SUPERSEDED with banners pointing at
+logs/fry816.txt (authoritative plan) and this log (supersession record):
+
+  TATERSURF_PLAN.md          (March 27 hand-built engine plan)
+  TATERSURF_UPGRADE_PLAN.md  (April 3 upgrade plan)
+
+Both files preserved verbatim below their banners for historical
+reference. No content removed.
+
+WHY
+=====================================================================
+1. The hand-built TaterSurf engine (mbedTLS + QuickJS + OpenH264 +
+   libopus + ts_http + ts_url) has been retired by Zack with the
+   words "tatersurf is a fucking nightmare."
+
+2. The replacement: a port of Ladybird's engine (AK + LibCore + LibJS
+   + LibWeb + LibGfx + LibRequests, all BSD-2 licensed, from
+   github.com/LadybirdBrowser/ladybird).
+
+3. Decision Gate (fry816 §8) called explicitly by Zack as "the most
+   professional way possible":
+     D1 YES — supersede TATERSURF_*.md
+     D2 3a  — -fno-exceptions + ErrorOr<T> audit (no libunwind)
+     D3 A   — use cross-compiler libstdc++ headers as-is
+     D4 YES — bring Phase 23 thread syscalls forward as Chunk 2a
+     D5 YES — port lives at src/user/apps/ladybird/, tatersurf.c
+              stays in tree until Ladybird renders a page in QEMU
+
+4. src/user/apps/tatersurf.c is intentionally not modified or removed
+   in this log. It remains in tree as a working baseline until the
+   Ladybird port is functional. Its eventual deletion will be its own
+   fry log.
+
+DIFFS APPLIED
+=====================================================================
+TATERSURF_PLAN.md
+  - Added 12-line SUPERSEDED banner above the existing header.
+
+TATERSURF_UPGRADE_PLAN.md
+  - Added 8-line SUPERSEDED banner above the existing header.
+
+VERIFICATION
+=====================================================================
+$ grep -c "SUPERSEDED 2026-04-25" TATERSURF_PLAN.md
+1
+$ grep -c "SUPERSEDED 2026-04-25" TATERSURF_UPGRADE_PLAN.md
+1
+
+NEXT
+=====================================================================
+fry818 — Phase 23 prerequisite step 1:
+  src/kernel/proc/process.h — add struct fry_thread + per-process
+  threads[FRY_THREAD_MAX] array (FRY_THREAD_MAX = 16 per planv3 §3824).
+  No behavior change yet; struct + storage only. Existing single-
+  thread path continues to use threads[0] implicitly.
+
+NO REBUILD THIS STEP
+=====================================================================
+This log records a docs-only supersession. No source code changed.
+No clean rebuild required (planv3 Rule 12 invoked only on code
+changes). No SHA-256 to record (planv3 Rule 16).
+
+END fry817
+=====================================================================

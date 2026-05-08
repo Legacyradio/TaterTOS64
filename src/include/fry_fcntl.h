@@ -15,6 +15,7 @@
 #define O_TRUNC    0x200
 #define O_APPEND   0x400
 #define O_NONBLOCK 0x800
+#define O_CLOEXEC  0x80000
 
 /* fcntl commands */
 #define F_GETFD     1

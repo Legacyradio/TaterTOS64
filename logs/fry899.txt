@@ -1,0 +1,67 @@
+Fry Log 899 - Chrome/GN compatibility probe
+Timestamp: 2026-05-07 09:00 CDT
+
+Task:
+- Build chrome_probe userspace app exercising the next likely Chromium-facing
+  syscalls: uname, sysinfo, getrusage, getpriority/setpriority, fsync,
+  fdatasync, sched_getaffinity, pthread_barrier, pthread_spin, splice, tee, mlock.
+- Wire into init auto-run after smoketest.
+- Boot QEMU with serial capture and verify compile/link/runtime.
+
+Changes made (source-verified, no QEMU log edits):
+
+Headers added:
+- src/include/sys/utsname.h — struct utsname, uname()
+- src/include/sys/sysinfo.h — struct sysinfo, sysinfo()
+- src/include/sys/mlock.h  — mlock/munlock/mlockall/munlockall
+
+Headers expanded:
+- src/include/sched.h — cpu_set_t, CPU_ZERO/SET/CLR/ISSET/COUNT,
+  sched_getaffinity/sched_setaffinity declarations
+- src/include/pthread.h — pthread_barrier_t, pthread_spinlock_t types
+  and all barrier/spinlock function declarations
+- src/include/unistd.h — fsync, fdatasync, splice, tee declarations
+
+Libc (src/user/libc/):
+- libc.c — syscall enum entries 132-144, fry_uname/fry_sysinfo/.../fry_tee wrappers
+- fry.h — declarations for the 13 new fry_* wrappers
+- posix.c — POSIX wrappers: uname, sysinfo, getrusage, getpriority, setpriority,
+  fsync, fdatasync, sched_getaffinity, sched_setaffinity, mlock, munlock,
+  mlockall, munlockall, splice, tee. Also fixed getrlimit/setrlimit void*
+  signature mismatch with the header.
+- pthread.c — pthread_barrier_init/destroy/wait, pthread_spin_init/destroy/
+  lock/trylock/unlock (working implementations, user-mode atomics)
+
+Kernel (src/kernel/proc/):
+- syscall.c — enum entries 132-144, explicit case stubs returning -ENOSYS
+
+Build system:
+- Makefile — CHROME_PROBE_OBJS variable, chrome_probe target with frypack,
+  added to USER_OBJS, .PHONY, all:, clean:
+- build_iso.sh — chrome_probe added to make targets, mcopy to EFI_IMG
+  (apps section + multi-dir loop), cp to ISO staging (apps/ + multi-dir loop),
+  mcopy to fs.img
+
+Init:
+- src/user/init/init.c — chrome_probe auto-run after smoketest
+
+Userspace app:
+- src/user/apps/chrome_probe.c — tests 13 syscall groups, PASS/FAIL per test
+
+Verification:
+- make clean + make chrome_probe: PASS
+- Full build_iso.sh: PASS (ISO at out/tatertos64v3.iso)
+- QEMU boot with serial capture:
+  - smoketest: 15 passed, 0 failed
+  - chrome_probe: 5 passed, 7 failed
+  - 5 PASS: pthread_barrier, pthread_spin, splice, tee, mlock
+  - 7 FAIL (errno=38 ENOSYS as expected): uname, sysinfo, getrusage,
+    getpriority, setpriority, fsync, fdatasync, sched_getaffinity
+  - GUI launches normally after
+
+Known issue (handing off for next pass):
+- 7 syscalls return -ENOSYS from kernel stubs. Implement kernel handlers:
+  SYS_UNAME(132), SYS_SYSINFO(133), SYS_GETRUSAGE(134),
+  SYS_GETPRIORITY(135), SYS_SETPRIORITY(136),
+  SYS_FSYNC(137), SYS_FDATASYNC(138),
+  SYS_SCHED_GETAFFINITY(139), SYS_SCHED_SETAFFINITY(140)

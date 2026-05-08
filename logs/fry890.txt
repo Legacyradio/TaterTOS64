@@ -1,0 +1,53 @@
+2026-05-06 21:21:24 CDT
+
+TaterTOS64v3 Chrome Port — Filesystem Probe Syscalls
+
+Completed work:
+- Added userspace declarations for faccessat() and readlinkat() in src/include/unistd.h.
+- Added private fry ABI wrappers for fry_faccessat(), fry_readlinkat(), and fry_fstatat().
+- Allocated syscall numbers:
+  - SYS_FACCESSAT = 112
+  - SYS_READLINKAT = 113
+  - SYS_FSTATAT = 114
+- Implemented libc syscall thunks in src/user/libc/libc.c.
+- Replaced access() with a syscall-backed faccessat(AT_FDCWD, ...) wrapper.
+- Replaced the readlink() hard stub with readlinkat(AT_FDCWD, ...), backed by the new syscall.
+- Replaced the fstatat() userspace stat(path) fallback with syscall-backed fstatat().
+- Centralized fry_stat to POSIX struct stat conversion in posix.c.
+- Corrected POSIX stat mode conversion to use the VFS directory bit 0x10 instead of 0x1.
+- Implemented kernel SYS_FACCESSAT:
+  - Validates mode and supported flags.
+  - Supports AT_FDCWD and absolute paths.
+  - Supports AT_EMPTY_PATH for existing file descriptors.
+  - Returns ENOTSUP for unresolved directory-fd-relative paths.
+  - Treats existing nodes as accessible because TaterTOS does not yet enforce uid/gid permissions.
+- Implemented kernel SYS_READLINKAT:
+  - Validates output buffer and path.
+  - Returns ENOENT for missing paths.
+  - Returns EINVAL for existing non-symlinks because no mounted TaterTOS filesystem exposes symlink metadata yet.
+  - Returns ENOTSUP for unresolved directory-fd-relative paths.
+- Implemented kernel SYS_FSTATAT:
+  - Validates flags and output buffer.
+  - Supports AT_EMPTY_PATH for FD_FILE descriptors.
+  - Supports AT_FDCWD and absolute paths through vfs_stat().
+  - Returns ENOTSUP for unresolved directory-fd-relative paths.
+
+Why:
+- Chromium and GN probe filesystem features heavily during startup and configuration.
+- access/faccessat, fstatat, and readlink/readlinkat must return meaningful errno values instead of silent libc stubs or path-only shortcuts.
+- The stat mode conversion bug could misclassify read-only files as directories, which would poison Chromium path probing.
+- Directory-fd-relative paths were not faked because the current FD_FILE model does not retain directory path metadata required for correct resolution.
+
+Verification:
+- Ran git diff --check for the touched files: clean.
+- Ran required clean step:
+  make clean
+- Ran required clean verbose rebuild:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+- Build completed successfully.
+- ISO produced at:
+  out/tatertos64v3.iso
+
+Notes:
+- Existing build warnings remain in unrelated/pre-existing areas.
+- QEMU/runtime logs were not touched.

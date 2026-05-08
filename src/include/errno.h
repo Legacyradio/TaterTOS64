@@ -42,6 +42,59 @@
 #define ECHILD  10   /* No child processes */
 #define EWOULDBLOCK EAGAIN  /* Operation would block */
 
+/*
+ * Additional POSIX values added in fry834 (Ladybird port) — match
+ * Linux numbers so ported code sees familiar values.
+ */
+#define EDEADLK       35  /* Resource deadlock would occur */
+#define EDEADLOCK     EDEADLK
+#define ENOLCK        37  /* No record locks available */
+#define ELOOP         40  /* Too many levels of symbolic links */
+#define ENOMSG        42  /* No message of desired type */
+#define EIDRM         43  /* Identifier removed */
+#define ENODATA       61  /* No data available */
+#define EBADMSG       74  /* Not a data message */
+#define EOVERFLOW     75  /* Value too large for defined data type */
+#define ENOTUNIQ      76  /* Name not unique on network */
+#define EILSEQ        84  /* Invalid or incomplete multibyte/wide character */
+#define ENOTSUP       95  /* Operation not supported */
+#define EOPNOTSUPP    ENOTSUP
+#define EHOSTDOWN    112  /* Host is down */
+#define ESTALE       116  /* Stale file handle */
+#define EDQUOT       122  /* Disk quota exceeded */
+#define ECANCELED    125  /* Operation canceled */
+#define EOWNERDEAD   130  /* Owner died (mutex robust attribute) */
+#define ENOTRECOVERABLE 131 /* State not recoverable */
+#define ENODEV       19  /* No such device */
+#define EPROTO       71  /* Protocol error */
+#define ETXTBSY      26  /* Text file busy */
+#define ENOTTY       25  /* Inappropriate ioctl for device */
+#define ENOLINK      67  /* Link has been severed */
+#define ENXIO         6
+#define EXDEV        18  /* Cross-device link */
+#define EROFS        30  /* Read-only file system */
+#define EMLINK       31  /* Too many links */
+#define EDOM         33  /* Math argument out of domain */
+#define ENOEXEC       8  /* Exec format error */
+#define EFBIG        27  /* File too large */
+
+/*
+ * errno — POSIX requires this be a per-thread modifiable lvalue.
+ * TaterTOS implements it via __errno_location() in src/user/libc/libc.c
+ * (declared in libc.h:677). Make it accessible from <errno.h> too.
+ */
+#ifdef __cplusplus
+extern "C" {
+#endif
+int *__errno_location(void);
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+
+#ifndef errno
+#define errno (*__errno_location())
+#endif
+
 /* Network / socket errors */
 #define ENOTSOCK      88  /* Socket operation on non-socket */
 #define EDESTADDRREQ  89  /* Destination address required */
@@ -59,5 +112,14 @@
 #define EHOSTUNREACH 113  /* No route to host */
 #define EALREADY     114  /* Operation already in progress */
 #define EINPROGRESS  115  /* Operation now in progress */
+#define EMSGSIZE      90  /* Message too long */
+#define ENOBUFS      105  /* No buffer space available */
+#define EPROTONOSUPPORT 93
+#define ESOCKTNOSUPPORT 94
+#define ENETDOWN     100
+#define ENETRESET    102
+#define ESHUTDOWN    108
+#define ETOOMANYREFS 109
+#define EUSERS        87
 
 #endif /* _TATERTOS_ERRNO_H */

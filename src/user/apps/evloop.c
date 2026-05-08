@@ -9,7 +9,11 @@
 // in the status bar and displays the HTTP response in the window.
 
 #include "../libc/libc.h"
+#include "../libc/fry.h"
 #include "../libc/gfx.h"
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <poll.h>
 #include "../libc/taterwin.h"
 
 #include <stdint.h>

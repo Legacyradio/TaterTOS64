@@ -1,0 +1,38 @@
+Fry Log 905 - Chromium //base:base milestone — C++ compile + QEMU verification
+Timestamp: 2026-05-07 14:25 CDT
+
+Status: Chromium //base:base C++ cross-compiles against TaterTOS libc.
+All 12 chrome_probe tests pass in QEMU.
+
+Milestone details:
+
+1. gn gen for pinned Chromium:
+   - Repo: /home/legacyindieradio/chromium-tatertos/src/
+   - Commit: bbac87806289b0b55d10bddc66b3155b68dcaab5
+   - Args: target_os="tatertos" target_cpu="x64" is_debug=false is_clang=false
+           symbol_level=0
+   - Result: 2400 targets from 471 files
+
+2. ninja //base:base C++ compilation:
+   - TaterTOS toolchain: 2331/2336 targets (136 .o files)
+   - 5 remaining Rust stdlib failures (x86_64-unknown-none unsupported)
+   - Host toolchain (clang_x64): 2930/2930 targets clean
+   - Archives built: liballocator_base.a, liballocator_core.a, libcpp.a
+
+3. TaterTOS ISO image:
+   - Build: make all + build_iso.sh — clean
+   - QEMU boot (OVMF UEFI, TCG, serial capture):
+     chrome_probe: 12 passed, 0 failed
+     smoketest: 15/15 passed
+
+4. TaterTOS libc additions (cumulative across this phase):
+   - Headers: wchar.h, locale.h, link.h, elf.h, sys/cdefs.h, sys/syscall.h
+   - Functions: strtold, strcoll, strxfrm, strerror_r, pread, mkstemp, mkdtemp,
+     getc/putc (real functions), vfscanf, vsscanf, mblen, system, quick_exit,
+     at_quick_exit, timespec_get, + all float/long-double math variants
+   - Types: mbstate_t, fpos_t, float_t, double_t, FP_* constants
+
+5. Next:
+   - Fix Rust stdlib for x86_64-unknown-none, or
+   - Disable Rust for tatertos toolchain in GN config
+   - Move on to //base:base full link test or next Chromium component

@@ -1,5 +1,7 @@
 #include "../libc/libc.h"
-#include <stdint.h>
+#include "../libc/fry.h"
+#include <stdio.h>
+
 #include <errno.h>
 
 #define SMOKE_WORKERS 4

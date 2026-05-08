@@ -1,0 +1,116 @@
+fry825 — Vendor drop step 2: fast_float v8.1.0
+=====================================================================
+DATE (UTC):   2026-04-26 03:43:00 (approx; clone immediately followed
+                                   fry824's 03:40:12)
+DATE (LOCAL): 2026-04-25 22:43:00 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSORS:   fry823 (sister-lib carve-out + decisions),
+              fry824 (vendor drop step 1: fmt 12.1.0)
+TYPE:         Vendor drop. No TaterTOS source code modified.
+
+WHAT
+=====================================================================
+Cloned upstream fast_float v8.1.0 into:
+  src/user/apps/ladybird-3rd/fast_float/
+
+WHY THIS VERSION
+=====================================================================
+~/ladybird-upstream/vcpkg.json `overrides`:
+  { "name": "fast-float", "version": "8.1.0#0" }
+
+Match upstream exactly. Same reasoning as fry824 (fmt) — minimize
+API drift, get the same surface upstream tests against.
+
+VERSION INFO
+=====================================================================
+  Tag:        v8.1.0
+  Commit:     88b1e5321c6918cbe091afd76728296290668403
+  Version:    FASTFLOAT_VERSION_MAJOR/MINOR/PATCH = 8/1/0
+              (per include/fast_float/float_common.h)
+  License:    Triple-licensed: Apache-2.0 OR Boost-1.0 OR MIT
+              (we elect Apache-2.0; all three license files preserved)
+  Copyright:  The fast_float authors, 2021.
+
+LIBRARY SHAPE
+=====================================================================
+HEADER-ONLY. No `src/`. AK consumers (Format.cpp, NumberFormat.cpp,
+StringConversions.cpp) #include <fast_float/fast_float.h> and the
+templates compile in-place.
+
+This means fry828's Makefile only needs:
+  -I src/user/apps/ladybird-3rd/fast_float/include
+
+No object file added.
+
+ON-DISK STATE AFTER THIS LOG
+=====================================================================
+  src/user/apps/ladybird-3rd/fast_float/
+    LICENSE-APACHE   (verbatim)
+    LICENSE-BOOST    (verbatim)
+    LICENSE-MIT      (verbatim)
+    AUTHORS          (upstream)
+    CONTRIBUTORS     (upstream)
+    BUILD.bazel      (upstream — not used)
+    MODULE.bazel     (upstream — not used)
+    CMakeLists.txt   (upstream — not used)
+    README.md        (upstream)
+    SECURITY.md      (upstream)
+    clang-format-ignore.txt  (upstream)
+    VENDOR_NOTE.md   (this drop's manifest, written by us)
+    benchmarks/      (~?K, inert reference-only)
+    ci/              (CI config, inert)
+    cmake/           (CMake glue, inert)
+    fuzz/            (fuzz tests, inert)
+    include/         (THE library — header-only)
+    script/          (release helpers, inert)
+    tests/           (test suite, inert)
+
+  Total size: 828K.
+
+STRIPPED
+=====================================================================
+  .git/ — git metadata only. Standard practice.
+
+WHAT WAS NOT STRIPPED (and why)
+=====================================================================
+  Same posture as fry824: keep tests/fuzz/benchmarks/ci/script/cmake
+  for auditability. They are not on any TaterTOS build path. Disk
+  is cheap. A future engineer can audit fast_float's behavior
+  without re-cloning.
+
+COMMANDS RUN
+=====================================================================
+  cd src/user/apps/ladybird-3rd
+  git clone --depth 1 --branch v8.1.0 \
+            https://github.com/fastfloat/fast_float.git fast_float
+  cd fast_float
+  git rev-parse HEAD            # 88b1e5321c6918cbe091afd76728296290668403
+  rm -rf .git
+  du -sh .                      # 828K
+
+  Verification:
+    grep VERSION include/fast_float/float_common.h → 8/1/0 confirmed
+    head LICENSE-MIT → "MIT License — Copyright (c) 2021 ..."
+
+NOT DONE (intentional)
+=====================================================================
+  - No Makefile changes.
+  - No source code under src/user/apps/ or src/user/libc/ touched.
+  - No build run.
+
+INTEGRATION PREVIEW (for fry828)
+=====================================================================
+  AK compile-flag additions (preview, not applied):
+    -I src/user/apps/ladybird-3rd/fast_float/include
+
+  No object-list addition (header-only).
+
+NEXT
+=====================================================================
+fry826 — Vendor drop step 3: simdutf. Match upstream vcpkg pin.
+        Single-source amalgamated build (one .cpp + one .h).
+        Stop and explain.
+
+END fry825
+=====================================================================

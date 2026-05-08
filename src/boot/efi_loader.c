@@ -34,6 +34,7 @@ typedef uint8_t BOOLEAN;
 
 #define EFI_FILE_MODE_READ EFI_OPEN_MODE_READ
 #define EFI_FILE_READ_ONLY 0x0000000000000001ULL
+#define EFI_FILE_DIRECTORY 0x0000000000000010ULL
 
 typedef struct {
     UINT32 Data1;
@@ -487,6 +488,7 @@ static uint64_t g_fail_seg = 0;
 /* Early kernel page tables identity-map low 4GiB during EFI handoff. */
 #define TATER_BOOT_IDENTITY_LIMIT 0x100000000ULL
 #define TATER_BOOT_IDENTITY_MAX_ADDR (TATER_BOOT_IDENTITY_LIMIT - 1ULL)
+#define TATER_EFI_SERIAL_TRACE 0
 
 static void efi_serial_puthex64(uint64_t v) {
     static const char hex[] = "0123456789ABCDEF";
@@ -538,6 +540,291 @@ static EFI_STATUS read_file(EFI_BOOT_SERVICES *bs, EFI_FILE_PROTOCOL *root, CHAR
 
     *out_buf = (void*)(uintptr_t)addr;
     *out_size = sz;
+    return EFI_SUCCESS;
+}
+
+struct ramdisk_scan_file {
+    char name[128];
+    void *buf;
+    UINTN size;
+};
+
+struct ramdisk_scan_list {
+    struct ramdisk_scan_file *files;
+    UINTN count;
+    UINTN cap;
+    UINTN total_size;
+};
+
+static char ascii_upper(char c) {
+    if (c >= 'a' && c <= 'z') return (char)(c - 32);
+    return c;
+}
+
+static CHAR16 char16_upper(CHAR16 c) {
+    if (c >= (CHAR16)'a' && c <= (CHAR16)'z') return (CHAR16)(c - 32);
+    return c;
+}
+
+static UINTN char16_len(const CHAR16 *s) {
+    UINTN n = 0;
+    while (s && s[n]) n++;
+    return n;
+}
+
+static int char16_ieq_lit(const CHAR16 *s, const char *lit) {
+    UINTN i = 0;
+    if (!s || !lit) return 0;
+    while (s[i] && lit[i]) {
+        if (char16_upper(s[i]) != (CHAR16)ascii_upper(lit[i])) return 0;
+        i++;
+    }
+    return s[i] == 0 && lit[i] == 0;
+}
+
+static int char_ieq(const char *a, const char *b) {
+    UINTN i = 0;
+    if (!a || !b) return 0;
+    while (a[i] && b[i]) {
+        if (ascii_upper(a[i]) != ascii_upper(b[i])) return 0;
+        i++;
+    }
+    return a[i] == 0 && b[i] == 0;
+}
+
+static int char16_suffix_ieq(const CHAR16 *name, const char *suffix) {
+    UINTN n = char16_len(name);
+    UINTN s = 0;
+    while (suffix && suffix[s]) s++;
+    if (!name || !suffix || n < s) return 0;
+    for (UINTN i = 0; i < s; i++) {
+        if (char16_upper(name[n - s + i]) != (CHAR16)ascii_upper(suffix[i])) return 0;
+    }
+    return 1;
+}
+
+static int ramdisk_should_load_name(const CHAR16 *name) {
+    return char16_suffix_ieq(name, ".FRY") ||
+           char16_suffix_ieq(name, ".TOT") ||
+           char16_suffix_ieq(name, ".TXT") ||
+           char16_suffix_ieq(name, ".ICON") ||
+           char16_suffix_ieq(name, ".ucode") ||
+           char16_suffix_ieq(name, ".ttf") ||
+           char16_suffix_ieq(name, ".RUN");
+}
+
+static int ramdisk_path_append(CHAR16 out[260], const CHAR16 *base, const CHAR16 *name) {
+    UINTN pos = 0;
+    if (!out || !base || !name) return -1;
+    while (base[pos]) {
+        if (pos + 1 >= 260) return -1;
+        out[pos] = base[pos];
+        pos++;
+    }
+    if (pos == 0) {
+        out[pos++] = (CHAR16)'\\';
+    } else if (pos > 1 && out[pos - 1] != (CHAR16)'\\') {
+        if (pos + 1 >= 260) return -1;
+        out[pos++] = (CHAR16)'\\';
+    }
+    for (UINTN i = 0; name[i]; i++) {
+        if (pos + 1 >= 260) return -1;
+        out[pos++] = name[i];
+    }
+    out[pos] = 0;
+    return 0;
+}
+
+static void ramdisk_path_to_unix_name(const CHAR16 *path, char out[128]) {
+    UINTN pi = 0;
+    UINTN oi = 0;
+    if (!out) return;
+    out[0] = 0;
+    if (!path) return;
+    while (path[pi] == (CHAR16)'\\' || path[pi] == (CHAR16)'/') pi++;
+    while (path[pi] && oi + 1 < 128) {
+        CHAR16 c = path[pi++];
+        if (c == (CHAR16)'\\') c = (CHAR16)'/';
+        out[oi++] = (c < 128) ? (char)c : '_';
+    }
+    out[oi] = 0;
+}
+
+static int ramdisk_scan_contains(const struct ramdisk_scan_list *list, const char *name) {
+    if (!list || !name) return 0;
+    for (UINTN i = 0; i < list->count; i++) {
+        if (char_ieq(list->files[i].name, name)) return 1;
+    }
+    return 0;
+}
+
+static EFI_STATUS ramdisk_scan_grow(EFI_BOOT_SERVICES *bs, struct ramdisk_scan_list *list) {
+    UINTN new_cap = list->cap ? (list->cap * 2) : 16;
+    struct ramdisk_scan_file *new_files = 0;
+    EFI_STATUS st = bs->AllocatePool(EfiLoaderData,
+                                     new_cap * sizeof(struct ramdisk_scan_file),
+                                     (void **)&new_files);
+    if (EFI_ERROR(st)) return st;
+    memclr(new_files, new_cap * sizeof(struct ramdisk_scan_file));
+    if (list->files && list->count) {
+        memcopy(new_files, list->files, list->count * sizeof(struct ramdisk_scan_file));
+        bs->FreePool(list->files);
+    }
+    list->files = new_files;
+    list->cap = new_cap;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS ramdisk_scan_add(EFI_BOOT_SERVICES *bs, struct ramdisk_scan_list *list,
+                                   const char *name, void *buf, UINTN size) {
+    if (!list || !name || !buf || size == 0) return EFI_INVALID_PARAMETER;
+    if (list->count == list->cap) {
+        EFI_STATUS st = ramdisk_scan_grow(bs, list);
+        if (EFI_ERROR(st)) return st;
+    }
+    struct ramdisk_scan_file *f = &list->files[list->count++];
+    UINTN i = 0;
+    while (name[i] && i + 1 < sizeof(f->name)) {
+        f->name[i] = name[i];
+        i++;
+    }
+    f->name[i] = 0;
+    f->buf = buf;
+    f->size = size;
+    list->total_size += size;
+    return EFI_SUCCESS;
+}
+
+static void ramdisk_scan_try_load(EFI_BOOT_SERVICES *bs, EFI_FILE_PROTOCOL *root,
+                                  const CHAR16 *path, struct ramdisk_scan_list *list) {
+    char unix_name[128];
+    void *buf = 0;
+    UINTN size = 0;
+    ramdisk_path_to_unix_name(path, unix_name);
+    if (!unix_name[0] || ramdisk_scan_contains(list, unix_name)) return;
+    if (EFI_ERROR(read_file(bs, root, (CHAR16 *)path,
+                            (EFI_PHYSICAL_ADDRESS)TATER_BOOT_IDENTITY_MAX_ADDR,
+                            &buf, &size)) || !buf || size == 0) {
+        return;
+    }
+    if (!EFI_ERROR(ramdisk_scan_add(bs, list, unix_name, buf, size)) &&
+        TATER_EFI_SERIAL_TRACE) {
+        efi_serial_puts("EFI: ramdisk scan file ");
+        efi_serial_puts(unix_name);
+        efi_serial_puts("\n");
+    }
+}
+
+static void ramdisk_scan_dir(EFI_BOOT_SERVICES *bs, EFI_FILE_PROTOCOL *root,
+                             const CHAR16 *path, int recursive, UINTN depth,
+                             struct ramdisk_scan_list *list) {
+    EFI_FILE_PROTOCOL *dir = 0;
+    EFI_STATUS st;
+    UINTN info_cap = 4096;
+    EFI_FILE_INFO *info = 0;
+
+    if (!bs || !root || !path || !list || depth > 16) return;
+    st = root->Open(root, &dir, (CHAR16 *)path, EFI_FILE_MODE_READ, 0);
+    if (EFI_ERROR(st) || !dir) return;
+
+    st = bs->AllocatePool(EfiLoaderData, info_cap, (void **)&info);
+    if (EFI_ERROR(st) || !info) {
+        dir->Close(dir);
+        return;
+    }
+
+    for (;;) {
+        UINTN rd = info_cap;
+        st = dir->Read(dir, &rd, info);
+        if (st == EFI_BUFFER_TOO_SMALL) {
+            EFI_FILE_INFO *new_info = 0;
+            if (rd <= info_cap) break;
+            if (EFI_ERROR(bs->AllocatePool(EfiLoaderData, rd, (void **)&new_info)) || !new_info) break;
+            bs->FreePool(info);
+            info = new_info;
+            info_cap = rd;
+            continue;
+        }
+        if (EFI_ERROR(st) || rd == 0) break;
+        if (!info->FileName[0]) continue;
+        if (char16_ieq_lit(info->FileName, ".") || char16_ieq_lit(info->FileName, "..")) continue;
+
+        CHAR16 child[260];
+        if (ramdisk_path_append(child, path, info->FileName) != 0) continue;
+
+        if (info->Attribute & EFI_FILE_DIRECTORY) {
+            if (recursive) ramdisk_scan_dir(bs, root, child, recursive, depth + 1, list);
+        } else if (ramdisk_should_load_name(info->FileName)) {
+            ramdisk_scan_try_load(bs, root, child, list);
+        }
+    }
+
+    bs->FreePool(info);
+    dir->Close(dir);
+}
+
+static void ramdisk_scan_filesystem(EFI_BOOT_SERVICES *bs, EFI_FILE_PROTOCOL *root,
+                                    struct ramdisk_scan_list *list) {
+    static CHAR16 root_path[] = {'\\', 0};
+    static CHAR16 system_path[] = {'\\','s','y','s','t','e','m',0};
+    static CHAR16 apps_path[] = {'\\','a','p','p','s',0};
+    static CHAR16 icons_path[] = {'\\','i','c','o','n','s',0};
+    static CHAR16 firmware_path[] = {'\\','f','i','r','m','w','a','r','e',0};
+    static CHAR16 fonts_path[] = {'\\','f','o','n','t','s',0};
+
+    ramdisk_scan_dir(bs, root, root_path, 0, 0, list);
+    ramdisk_scan_dir(bs, root, system_path, 1, 0, list);
+    ramdisk_scan_dir(bs, root, apps_path, 1, 0, list);
+    ramdisk_scan_dir(bs, root, icons_path, 1, 0, list);
+    ramdisk_scan_dir(bs, root, firmware_path, 1, 0, list);
+    ramdisk_scan_dir(bs, root, fonts_path, 1, 0, list);
+    ramdisk_scan_dir(bs, root, root_path, 1, 0, list);
+}
+
+static EFI_STATUS ramdisk_pack_scanned(EFI_BOOT_SERVICES *bs,
+                                       const struct ramdisk_scan_list *list,
+                                       struct fry_handoff *handoff) {
+    UINTN pack_count;
+    UINTN data_total = 0;
+    UINTN rd_total;
+    UINTN rd_pages;
+    EFI_PHYSICAL_ADDRESS rd_addr;
+    EFI_STATUS st;
+
+    if (!bs || !list || !handoff || list->count == 0) return EFI_NOT_FOUND;
+    pack_count = (list->count > RAMDISK_MAXFILES) ? RAMDISK_MAXFILES : list->count;
+    for (UINTN i = 0; i < pack_count; i++) data_total += list->files[i].size;
+
+    rd_total = sizeof(struct ramdisk_header) + data_total;
+    rd_pages = (rd_total + 4095) / 4096;
+    rd_addr = (EFI_PHYSICAL_ADDRESS)TATER_BOOT_IDENTITY_MAX_ADDR;
+    st = bs->AllocatePages(AllocateMaxAddress, EfiLoaderData, rd_pages, &rd_addr);
+    if (EFI_ERROR(st)) return st;
+
+    struct ramdisk_header *rdhdr = (struct ramdisk_header *)(uintptr_t)rd_addr;
+    memclr(rdhdr, rd_pages * 4096);
+    rdhdr->magic = RAMDISK_MAGIC;
+    rdhdr->count = (uint32_t)pack_count;
+
+    UINTN cursor = sizeof(struct ramdisk_header);
+    for (UINTN i = 0; i < pack_count; i++) {
+        struct ramdisk_entry *re = &rdhdr->entries[i];
+        const char *nm = list->files[i].name;
+        UINTN ni = 0;
+        while (nm[ni] && ni < sizeof(re->name) - 1) {
+            re->name[ni] = nm[ni];
+            ni++;
+        }
+        re->name[ni] = 0;
+        re->offset = (uint64_t)cursor;
+        re->size = (uint64_t)list->files[i].size;
+        memcopy((uint8_t *)(uintptr_t)rd_addr + cursor,
+                list->files[i].buf, list->files[i].size);
+        cursor += list->files[i].size;
+    }
+
+    handoff->ramdisk_base = (uint64_t)(uintptr_t)rd_addr;
+    handoff->ramdisk_size = (uint64_t)rd_total;
     return EFI_SUCCESS;
 }
 
@@ -662,8 +949,6 @@ static uint64_t get_rsdp(EFI_SYSTEM_TABLE *st) {
 }
 
 typedef void (*kernel_entry_t)(struct fry_handoff *handoff);
-
-#define TATER_EFI_SERIAL_TRACE 0
 
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     g_st = SystemTable;
@@ -796,358 +1081,83 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     handoff->ramdisk_base = 0;
     handoff->ramdisk_size = 0;
 
-    // Load runtime payloads into a ramdisk for ISO/USB boot without NVMe.
-    // This includes userspace binaries plus any file-backed firmware the kernel
-    // needs before block-backed storage is available.
-    // Strategy:
-    //   1. Try common locations on the primary filesystem (li->DeviceHandle):
-    //      \fry\, \FRY\, root (\), plus common EFI subdirectories.
-    //   2. If nothing is found there, scan all EFI_SIMPLE_FILE_SYSTEM_PROTOCOL
-    //      handles (firmware sometimes maps the EFI partition differently).
+    // Dynamically scan EFI filesystems for runtime payloads needed by
+    // ramdisk boots. NVMe-only boots keep the zeroed handoff ramdisk fields.
     {
-        enum { FRY_FILE_COUNT = 29, FRY_PATH_VARIANTS = 9, ICON_FILENAME_MAX = 11 };
-        static CHAR16 fry_paths[FRY_FILE_COUNT][FRY_PATH_VARIANTS][64] = {
-            {
-                {'\\','s','y','s','t','e','m','\\','I','N','I','T','.','F','R','Y',0},
-                {'\\','I','N','I','T','.','F','R','Y',0},
-                {'\\','f','r','y','\\','I','N','I','T','.','F','R','Y',0},
-                {'\\','F','R','Y','\\','I','N','I','T','.','F','R','Y',0},
-                {'\\','E','F','I','\\','f','r','y','\\','I','N','I','T','.','F','R','Y',0},
-                {'\\','E','F','I','\\','F','R','Y','\\','I','N','I','T','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','I','N','I','T','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','I','N','I','T','.','F','R','Y',0},
-            },
-            {
-                {'\\','s','y','s','t','e','m','\\','G','U','I','.','F','R','Y',0},
-                {'\\','G','U','I','.','F','R','Y',0},
-                {'\\','f','r','y','\\','G','U','I','.','F','R','Y',0},
-                {'\\','F','R','Y','\\','G','U','I','.','F','R','Y',0},
-                {'\\','E','F','I','\\','f','r','y','\\','G','U','I','.','F','R','Y',0},
-                {'\\','E','F','I','\\','F','R','Y','\\','G','U','I','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','G','U','I','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','G','U','I','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','F','R','Y','\\','G','U','I','.','F','R','Y',0},
-            },
-            {
-                {'\\','a','p','p','s','\\','S','H','E','L','L','.','T','O','T',0},
-                {'\\','S','H','E','L','L','.','T','O','T',0},
-                {'\\','f','r','y','\\','S','H','E','L','L','.','T','O','T',0},
-                {'\\','F','R','Y','\\','S','H','E','L','L','.','T','O','T',0},
-                {'\\','E','F','I','\\','f','r','y','\\','S','H','E','L','L','.','T','O','T',0},
-                {'\\','E','F','I','\\','F','R','Y','\\','S','H','E','L','L','.','T','O','T',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','S','H','E','L','L','.','T','O','T',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','S','H','E','L','L','.','T','O','T',0},
-            },
-            {
-                {'\\','a','p','p','s','\\','S','Y','S','I','N','F','O','.','F','R','Y',0},
-                {'\\','S','Y','S','I','N','F','O','.','F','R','Y',0},
-                {'\\','f','r','y','\\','S','Y','S','I','N','F','O','.','F','R','Y',0},
-                {'\\','F','R','Y','\\','S','Y','S','I','N','F','O','.','F','R','Y',0},
-                {'\\','E','F','I','\\','f','r','y','\\','S','Y','S','I','N','F','O','.','F','R','Y',0},
-                {'\\','E','F','I','\\','F','R','Y','\\','S','Y','S','I','N','F','O','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','S','Y','S','I','N','F','O','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','S','Y','S','I','N','F','O','.','F','R','Y',0},
-            },
-            {
-                {'\\','a','p','p','s','\\','U','P','T','I','M','E','.','F','R','Y',0},
-                {'\\','U','P','T','I','M','E','.','F','R','Y',0},
-                {'\\','f','r','y','\\','U','P','T','I','M','E','.','F','R','Y',0},
-                {'\\','F','R','Y','\\','U','P','T','I','M','E','.','F','R','Y',0},
-                {'\\','E','F','I','\\','f','r','y','\\','U','P','T','I','M','E','.','F','R','Y',0},
-                {'\\','E','F','I','\\','F','R','Y','\\','U','P','T','I','M','E','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','U','P','T','I','M','E','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','U','P','T','I','M','E','.','F','R','Y',0},
-            },
-            {
-                {'\\','a','p','p','s','\\','P','S','.','F','R','Y',0},
-                {'\\','P','S','.','F','R','Y',0},
-                {'\\','f','r','y','\\','P','S','.','F','R','Y',0},
-                {'\\','F','R','Y','\\','P','S','.','F','R','Y',0},
-                {'\\','E','F','I','\\','f','r','y','\\','P','S','.','F','R','Y',0},
-                {'\\','E','F','I','\\','F','R','Y','\\','P','S','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','P','S','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','P','S','.','F','R','Y',0},
-            },
-            {
-                {'\\','a','p','p','s','\\','F','I','L','E','M','A','N','.','F','R','Y',0},
-                {'\\','F','I','L','E','M','A','N','.','F','R','Y',0},
-                {'\\','f','r','y','\\','F','I','L','E','M','A','N','.','F','R','Y',0},
-                {'\\','F','R','Y','\\','F','I','L','E','M','A','N','.','F','R','Y',0},
-                {'\\','E','F','I','\\','f','r','y','\\','F','I','L','E','M','A','N','.','F','R','Y',0},
-                {'\\','E','F','I','\\','F','R','Y','\\','F','I','L','E','M','A','N','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','F','I','L','E','M','A','N','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','F','I','L','E','M','A','N','.','F','R','Y',0},
-            },
-            {
-                {'\\','a','p','p','s','\\','N','E','T','M','G','R','.','F','R','Y',0},
-                {'\\','N','E','T','M','G','R','.','F','R','Y',0},
-                {'\\','f','r','y','\\','N','E','T','M','G','R','.','F','R','Y',0},
-                {'\\','F','R','Y','\\','N','E','T','M','G','R','.','F','R','Y',0},
-                {'\\','E','F','I','\\','f','r','y','\\','N','E','T','M','G','R','.','F','R','Y',0},
-                {'\\','E','F','I','\\','F','R','Y','\\','N','E','T','M','G','R','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','N','E','T','M','G','R','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','N','E','T','M','G','R','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','F','R','Y','\\','N','E','T','M','G','R','.','F','R','Y',0},
-            },
-            {
-                {'\\','a','p','p','s','\\','V','M','T','E','S','T','.','F','R','Y',0},
-                {'\\','V','M','T','E','S','T','.','F','R','Y',0},
-                {'\\','f','r','y','\\','V','M','T','E','S','T','.','F','R','Y',0},
-                {'\\','F','R','Y','\\','V','M','T','E','S','T','.','F','R','Y',0},
-                {'\\','E','F','I','\\','f','r','y','\\','V','M','T','E','S','T','.','F','R','Y',0},
-                {'\\','E','F','I','\\','F','R','Y','\\','V','M','T','E','S','T','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','V','M','T','E','S','T','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','V','M','T','E','S','T','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','F','R','Y','\\','V','M','T','E','S','T','.','F','R','Y',0},
-            },
-            {
-                {'\\','a','p','p','s','\\','V','M','F','A','U','L','T','.','F','R','Y',0},
-                {'\\','V','M','F','A','U','L','T','.','F','R','Y',0},
-                {'\\','f','r','y','\\','V','M','F','A','U','L','T','.','F','R','Y',0},
-                {'\\','F','R','Y','\\','V','M','F','A','U','L','T','.','F','R','Y',0},
-                {'\\','E','F','I','\\','f','r','y','\\','V','M','F','A','U','L','T','.','F','R','Y',0},
-                {'\\','E','F','I','\\','F','R','Y','\\','V','M','F','A','U','L','T','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','V','M','F','A','U','L','T','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','V','M','F','A','U','L','T','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','F','R','Y','\\','V','M','F','A','U','L','T','.','F','R','Y',0},
-            },
-            {
-                {'\\','a','p','p','s','\\','T','H','T','E','S','T','.','F','R','Y',0},
-                {'\\','T','H','T','E','S','T','.','F','R','Y',0},
-                {'\\','f','r','y','\\','T','H','T','E','S','T','.','F','R','Y',0},
-                {'\\','F','R','Y','\\','T','H','T','E','S','T','.','F','R','Y',0},
-                {'\\','E','F','I','\\','f','r','y','\\','T','H','T','E','S','T','.','F','R','Y',0},
-                {'\\','E','F','I','\\','F','R','Y','\\','T','H','T','E','S','T','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','T','H','T','E','S','T','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','T','H','T','E','S','T','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','F','R','Y','\\','T','H','T','E','S','T','.','F','R','Y',0},
-            },
-            {
-                {'\\','V','M','T','E','S','T','.','T','X','T',0},
-                {'\\','a','p','p','s','\\','V','M','T','E','S','T','.','T','X','T',0},
-                {'\\','f','r','y','\\','V','M','T','E','S','T','.','T','X','T',0},
-                {'\\','F','R','Y','\\','V','M','T','E','S','T','.','T','X','T',0},
-                {'\\','E','F','I','\\','V','M','T','E','S','T','.','T','X','T',0},
-                {'\\','E','F','I','\\','f','r','y','\\','V','M','T','E','S','T','.','T','X','T',0},
-                {'\\','E','F','I','\\','F','R','Y','\\','V','M','T','E','S','T','.','T','X','T',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','V','M','T','E','S','T','.','T','X','T',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','V','M','T','E','S','T','.','T','X','T',0},
-            },
-            {
-                {'\\','V','M','T','E','S','T','.','R','U','N',0},
-                {'\\','f','r','y','\\','V','M','T','E','S','T','.','R','U','N',0},
-                {'\\','F','R','Y','\\','V','M','T','E','S','T','.','R','U','N',0},
-                {'\\','E','F','I','\\','V','M','T','E','S','T','.','R','U','N',0},
-                {'\\','E','F','I','\\','f','r','y','\\','V','M','T','E','S','T','.','R','U','N',0},
-                {'\\','E','F','I','\\','F','R','Y','\\','V','M','T','E','S','T','.','R','U','N',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','V','M','T','E','S','T','.','R','U','N',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','V','M','T','E','S','T','.','R','U','N',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','F','R','Y','\\','V','M','T','E','S','T','.','R','U','N',0},
-            },
-            {
-                {'\\','V','M','F','A','U','L','T','.','R','U','N',0},
-                {'\\','f','r','y','\\','V','M','F','A','U','L','T','.','R','U','N',0},
-                {'\\','F','R','Y','\\','V','M','F','A','U','L','T','.','R','U','N',0},
-                {'\\','E','F','I','\\','V','M','F','A','U','L','T','.','R','U','N',0},
-                {'\\','E','F','I','\\','f','r','y','\\','V','M','F','A','U','L','T','.','R','U','N',0},
-                {'\\','E','F','I','\\','F','R','Y','\\','V','M','F','A','U','L','T','.','R','U','N',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','V','M','F','A','U','L','T','.','R','U','N',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','V','M','F','A','U','L','T','.','R','U','N',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','F','R','Y','\\','V','M','F','A','U','L','T','.','R','U','N',0},
-            },
-            {
-                {'\\','f','i','r','m','w','a','r','e','\\','i','w','l','w','i','f','i','-','9','2','6','0','.','u','c','o','d','e',0},
-                {'\\','f','r','y','\\','f','i','r','m','w','a','r','e','\\','i','w','l','w','i','f','i','-','9','2','6','0','.','u','c','o','d','e',0},
-                {'\\','F','R','Y','\\','f','i','r','m','w','a','r','e','\\','i','w','l','w','i','f','i','-','9','2','6','0','.','u','c','o','d','e',0},
-                {'\\','E','F','I','\\','f','r','y','\\','f','i','r','m','w','a','r','e','\\','i','w','l','w','i','f','i','-','9','2','6','0','.','u','c','o','d','e',0},
-                {'\\','E','F','I','\\','F','R','Y','\\','f','i','r','m','w','a','r','e','\\','i','w','l','w','i','f','i','-','9','2','6','0','.','u','c','o','d','e',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','f','i','r','m','w','a','r','e','\\','i','w','l','w','i','f','i','-','9','2','6','0','.','u','c','o','d','e',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','f','i','r','m','w','a','r','e','\\','i','w','l','w','i','f','i','-','9','2','6','0','.','u','c','o','d','e',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','F','R','Y','\\','f','i','r','m','w','a','r','e','\\','i','w','l','w','i','f','i','-','9','2','6','0','.','u','c','o','d','e',0},
-                {'\\','f','i','r','m','w','a','r','e','\\','i','w','l','w','i','f','i','-','9','2','6','0','-','t','h','-','b','0','-','j','f','-','b','0','-','4','6','.','u','c','o','d','e',0},
-            },
-            { /* TATERSURF.FRY */
-                {'\\','a','p','p','s','\\','T','A','T','E','R','S','U','R','F','.','F','R','Y',0},
-                {'\\','T','A','T','E','R','S','U','R','F','.','F','R','Y',0},
-                {'\\','f','r','y','\\','T','A','T','E','R','S','U','R','F','.','F','R','Y',0},
-                {'\\','F','R','Y','\\','T','A','T','E','R','S','U','R','F','.','F','R','Y',0},
-                {'\\','E','F','I','\\','f','r','y','\\','T','A','T','E','R','S','U','R','F','.','F','R','Y',0},
-                {'\\','E','F','I','\\','F','R','Y','\\','T','A','T','E','R','S','U','R','F','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','T','A','T','E','R','S','U','R','F','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','T','A','T','E','R','S','U','R','F','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','F','R','Y','\\','T','A','T','E','R','S','U','R','F','.','F','R','Y',0},
-            },
-            { /* EVLOOP.FRY */
-                {'\\','a','p','p','s','\\','E','V','L','O','O','P','.','F','R','Y',0},
-                {'\\','E','V','L','O','O','P','.','F','R','Y',0},
-                {'\\','f','r','y','\\','E','V','L','O','O','P','.','F','R','Y',0},
-                {'\\','F','R','Y','\\','E','V','L','O','O','P','.','F','R','Y',0},
-                {'\\','E','F','I','\\','f','r','y','\\','E','V','L','O','O','P','.','F','R','Y',0},
-                {'\\','E','F','I','\\','F','R','Y','\\','E','V','L','O','O','P','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','E','V','L','O','O','P','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','E','V','L','O','O','P','.','F','R','Y',0},
-                {'\\','E','F','I','\\','B','O','O','T','\\','F','R','Y','\\','E','V','L','O','O','P','.','F','R','Y',0},
-            },
-#define ICON_PATH_ENTRY(N1,N2,N3,N4,N5,N6,N7,N8,N9,N10,N11) \
-            { \
-                {'\\','i','c','o','n','s','\\',N1,N2,N3,N4,N5,N6,N7,N8,N9,N10,N11,0}, \
-                {'\\',N1,N2,N3,N4,N5,N6,N7,N8,N9,N10,N11,0}, \
-                {'\\','f','r','y','\\','i','c','o','n','s','\\',N1,N2,N3,N4,N5,N6,N7,N8,N9,N10,N11,0}, \
-                {'\\','F','R','Y','\\','i','c','o','n','s','\\',N1,N2,N3,N4,N5,N6,N7,N8,N9,N10,N11,0}, \
-                {'\\','E','F','I','\\','f','r','y','\\','i','c','o','n','s','\\',N1,N2,N3,N4,N5,N6,N7,N8,N9,N10,N11,0}, \
-                {'\\','E','F','I','\\','F','R','Y','\\','i','c','o','n','s','\\',N1,N2,N3,N4,N5,N6,N7,N8,N9,N10,N11,0}, \
-                {'\\','E','F','I','\\','B','O','O','T','\\','i','c','o','n','s','\\',N1,N2,N3,N4,N5,N6,N7,N8,N9,N10,N11,0}, \
-                {'\\','E','F','I','\\','B','O','O','T','\\','f','r','y','\\','i','c','o','n','s','\\',N1,N2,N3,N4,N5,N6,N7,N8,N9,N10,N11,0}, \
-                {'\\','E','F','I','\\','B','O','O','T','\\','F','R','Y','\\','i','c','o','n','s','\\',N1,N2,N3,N4,N5,N6,N7,N8,N9,N10,N11,0}, \
-            },
-            ICON_PATH_ENTRY('B','R','O','W','S','E','.','I','C','O','N')
-            ICON_PATH_ENTRY('F','I','L','E','S','.','I','C','O','N',0)
-            ICON_PATH_ENTRY('N','E','T','.','I','C','O','N',0,0,0)
-            ICON_PATH_ENTRY('S','Y','S','.','I','C','O','N',0,0,0)
-            ICON_PATH_ENTRY('B','I','N','.','I','C','O','N',0,0,0)
-            ICON_PATH_ENTRY('M','E','D','I','A','.','I','C','O','N',0)
-            ICON_PATH_ENTRY('S','E','T','U','P','.','I','C','O','N',0)
-            ICON_PATH_ENTRY('C','A','L','C','.','I','C','O','N',0,0)
-            ICON_PATH_ENTRY('D','R','A','W','.','I','C','O','N',0,0)
-            ICON_PATH_ENTRY('M','A','I','L','.','I','C','O','N',0,0)
-            ICON_PATH_ENTRY('O','F','F','.','I','C','O','N',0,0,0)
-            ICON_PATH_ENTRY('W','R','I','T','E','.','I','C','O','N',0)
-#undef ICON_PATH_ENTRY
-        };
-        static const char *fry_names[FRY_FILE_COUNT] = {
-            "system/INIT.FRY",
-            "system/GUI.FRY",
-            "apps/SHELL.TOT",
-            "apps/SYSINFO.FRY",
-            "apps/UPTIME.FRY",
-            "apps/PS.FRY",
-            "apps/FILEMAN.FRY",
-            "apps/NETMGR.FRY",
-            "apps/VMTEST.FRY",
-            "apps/VMFAULT.FRY",
-            "apps/THTEST.FRY",
-            "VMTEST.TXT",
-            "VMTEST.RUN",
-            "VMFAULT.RUN",
-            "firmware/iwlwifi-9260.ucode",
-            "apps/TATERSURF.FRY",
-            "apps/EVLOOP.FRY",
-            "icons/BROWSE.ICON",
-            "icons/FILES.ICON",
-            "icons/NET.ICON",
-            "icons/SYS.ICON",
-            "icons/BIN.ICON",
-            "icons/MEDIA.ICON",
-            "icons/SETUP.ICON",
-            "icons/CALC.ICON",
-            "icons/DRAW.ICON",
-            "icons/MAIL.ICON",
-            "icons/OFF.ICON",
-            "icons/WRITE.ICON"
-        };
-        void  *fry_bufs[FRY_FILE_COUNT];
-        UINTN  fry_sizes[FRY_FILE_COUNT];
-        for (int fi = 0; fi < FRY_FILE_COUNT; fi++) { fry_bufs[fi] = 0; fry_sizes[fi] = 0; }
+        struct ramdisk_scan_list scan;
+        memclr(&scan, sizeof(scan));
 
-        UINTN    fry_total = 0;
-        uint32_t fry_found = 0;
+        if (TATER_EFI_SERIAL_TRACE) efi_serial_puts("EFI: ramdisk scan primary SFS\n");
+        ramdisk_scan_filesystem(bs, root, &scan);
 
-        // Helper: try loading all required runtime payload files from a given filesystem root.
-        // Returns number newly found (added to fry_bufs[]).
-        // Defined as an inline block to avoid needing a nested function.
-        #define TRY_LOAD_FRY(fs_root) do {                                    \
-            for (int fi = 0; fi < FRY_FILE_COUNT; fi++) {                     \
-                if (fry_bufs[fi]) continue;  /* already loaded */             \
-                for (int pv = 0; pv < FRY_PATH_VARIANTS && !fry_bufs[fi]; pv++) { \
-                    void *fbuf = 0; UINTN fsz = 0;                           \
-                    if (!EFI_ERROR(read_file(bs, (fs_root), fry_paths[fi][pv],\
-                                             0, &fbuf, &fsz)) && fbuf && fsz > 0) { \
-                        fry_bufs[fi]  = fbuf;                                 \
-                        fry_sizes[fi] = fsz;                                  \
-                        fry_total    += fsz;                                  \
-                        fry_found++;                                          \
-                    }                                                         \
-                }                                                             \
-            }                                                                 \
-        } while (0)
-
-        // Pass 1: primary filesystem (device that loaded BOOTX64.EFI).
-        TRY_LOAD_FRY(root);
         if (TATER_EFI_SERIAL_TRACE) {
-            efi_serial_puts("EFI: fry pass1 found=");
-            efi_serial_putc('0' + (char)(fry_found & 0xF));
+            efi_serial_puts("EFI: ramdisk primary count=0x");
+            efi_serial_puthex64((uint64_t)scan.count);
             efi_serial_puts("\n");
+            efi_serial_puts("EFI: ramdisk scan all SFS handles\n");
         }
 
-        // Pass 2: if primary device was partial, keep scanning all SFS handles
-        // until every expected userspace payload is present.
-        if (fry_found < FRY_FILE_COUNT) {
-            if (TATER_EFI_SERIAL_TRACE) efi_serial_puts("EFI: fry scanning all SFS handles\n");
-            typedef EFI_STATUS (EFIAPI *LocHB_t)(UINTN, EFI_GUID*, void*,
-                                                  UINTN*, EFI_HANDLE**);
-            LocHB_t lhb = (LocHB_t)bs->LocateHandleBuffer;
-            EFI_HANDLE *handles = 0;
-            UINTN num_handles = 0;
-            EFI_STATUS hst = lhb(2 /*ByProtocol*/,
-                                  (EFI_GUID*)&gSimpleFileSystemProtocolGuid,
-                                  0, &num_handles, &handles);
-            if (!EFI_ERROR(hst) && handles) {
-                for (UINTN hi = 0; hi < num_handles && fry_found < FRY_FILE_COUNT; hi++) {
-                    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *sfs2 = 0;
-                    if (EFI_ERROR(bs->HandleProtocol(handles[hi],
-                            (EFI_GUID*)&gSimpleFileSystemProtocolGuid,
-                            (void**)&sfs2)) || !sfs2) continue;
-                    EFI_FILE_PROTOCOL *root2 = 0;
-                    if (EFI_ERROR(sfs2->OpenVolume(sfs2, &root2)) || !root2) continue;
-                    UINTN before = fry_found;
-                    TRY_LOAD_FRY(root2);
-                    root2->Close(root2);
-                    if (fry_found > before) {
-                        if (TATER_EFI_SERIAL_TRACE) efi_serial_puts("EFI: fry found on alt SFS handle\n");
+        typedef EFI_STATUS (EFIAPI *LocHB_t)(UINTN, EFI_GUID*, void*, UINTN*, EFI_HANDLE**);
+        LocHB_t lhb = (LocHB_t)bs->LocateHandleBuffer;
+        EFI_HANDLE *handles = 0;
+        UINTN num_handles = 0;
+        EFI_STATUS hst = lhb(2 /*ByProtocol*/,
+                              (EFI_GUID*)&gSimpleFileSystemProtocolGuid,
+                              0, &num_handles, &handles);
+        if (!EFI_ERROR(hst) && handles) {
+            for (UINTN hi = 0; hi < num_handles; hi++) {
+                EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *sfs2 = 0;
+                if (EFI_ERROR(bs->HandleProtocol(handles[hi],
+                        (EFI_GUID*)&gSimpleFileSystemProtocolGuid,
+                        (void**)&sfs2)) || !sfs2) {
+                    continue;
+                }
+                EFI_FILE_PROTOCOL *root2 = 0;
+                if (EFI_ERROR(sfs2->OpenVolume(sfs2, &root2)) || !root2) {
+                    continue;
+                }
+
+                UINTN before = scan.count;
+                ramdisk_scan_filesystem(bs, root2, &scan);
+                root2->Close(root2);
+
+                if (TATER_EFI_SERIAL_TRACE && scan.count > before) {
+                    efi_serial_puts("EFI: ramdisk alt SFS added=0x");
+                    efi_serial_puthex64((uint64_t)(scan.count - before));
+                    efi_serial_puts("\n");
+                }
+            }
+            bs->FreePool(handles);
+        }
+
+        if (scan.count > 0) {
+            EFI_STATUS rst = ramdisk_pack_scanned(bs, &scan, handoff);
+            if (!EFI_ERROR(rst)) {
+                if (TATER_EFI_SERIAL_TRACE) {
+                    efi_serial_puts("EFI: ramdisk built count=0x");
+                    efi_serial_puthex64((uint64_t)((scan.count > RAMDISK_MAXFILES) ? RAMDISK_MAXFILES : scan.count));
+                    efi_serial_puts(" scanned=0x");
+                    efi_serial_puthex64((uint64_t)scan.count);
+                    efi_serial_puts("\n");
+                    if (scan.count > RAMDISK_MAXFILES) {
+                        efi_serial_puts("EFI: ramdisk scan truncated to header capacity\n");
                     }
                 }
-                bs->FreePool(handles);
-            }
-        }
-        #undef TRY_LOAD_FRY
-
-        if (fry_found > 0) {
-            UINTN rd_total  = sizeof(struct ramdisk_header) + fry_total;
-            UINTN rd_pages  = (rd_total + 4095) / 4096;
-            EFI_PHYSICAL_ADDRESS rd_addr = (EFI_PHYSICAL_ADDRESS)TATER_BOOT_IDENTITY_MAX_ADDR;
-            if (!EFI_ERROR(bs->AllocatePages(AllocateMaxAddress, EfiLoaderData,
-                                              rd_pages, &rd_addr))) {
-                struct ramdisk_header *rdhdr =
-                    (struct ramdisk_header*)(uintptr_t)rd_addr;
-                memclr(rdhdr, rd_total);
-                rdhdr->magic = RAMDISK_MAGIC;
-                rdhdr->count = 0;
-                UINTN cursor = sizeof(struct ramdisk_header);
-                for (int fi = 0; fi < FRY_FILE_COUNT; fi++) {
-                    if (!fry_bufs[fi]) continue;
-                    struct ramdisk_entry *re = &rdhdr->entries[rdhdr->count];
-                    const char *nm = fry_names[fi];
-                    int ni = 0;
-                    while (nm[ni] && ni < 31) { re->name[ni] = nm[ni]; ni++; }
-                    re->name[ni] = 0;
-                    re->offset = (uint64_t)cursor;
-                    re->size   = (uint64_t)fry_sizes[fi];
-                    memcopy((uint8_t*)(uintptr_t)rd_addr + cursor,
-                            fry_bufs[fi], fry_sizes[fi]);
-                    cursor += fry_sizes[fi];
-                    rdhdr->count++;
-                }
-                handoff->ramdisk_base = (uint64_t)(uintptr_t)rd_addr;
-                handoff->ramdisk_size = (uint64_t)rd_total;
-                if (TATER_EFI_SERIAL_TRACE) efi_serial_puts("EFI: ramdisk built\n");
                 efi_puts(SystemTable, L"TATER EFI: ramdisk built\r\n");
             } else {
-                if (TATER_EFI_SERIAL_TRACE) efi_serial_puts("EFI: ramdisk alloc failed\n");
+                if (TATER_EFI_SERIAL_TRACE) {
+                    efi_serial_puts("EFI: ramdisk pack failed st=0x");
+                    efi_serial_puthex64((uint64_t)rst);
+                    efi_serial_puts("\n");
+                }
+                efi_puts(SystemTable, L"TATER EFI: ramdisk pack failed\r\n");
             }
         } else {
-            if (TATER_EFI_SERIAL_TRACE) efi_serial_puts("EFI: no fry files found (NVMe only)\n");
+            if (TATER_EFI_SERIAL_TRACE) efi_serial_puts("EFI: no ramdisk files found (NVMe only)\n");
             efi_puts(SystemTable, L"TATER EFI: no ramdisk (NVMe only)\r\n");
         }
+
+        if (scan.files) bs->FreePool(scan.files);
     }
 
     UINTN map_sz = 0, map_key = 0, desc_sz = 0;

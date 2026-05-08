@@ -1,0 +1,178 @@
+fry836 — basic_string template + system_error class + decay +
+         large type_traits/string/cmath surface expansion.
+         🎯 ALL 37 AK .cpp FILES COMPILED CLEAN.
+=====================================================================
+DATE (UTC):   2026-04-26 12:31:30
+DATE (LOCAL): 2026-04-26 07:31:30 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSOR:    fry835 (8 new headers + assert.h fix + STDCPP_FLOAT -U)
+TYPE:         Many shim expansions + 23 build attempts + major
+              milestone reached.
+
+🎯 MILESTONE: AK COMPILE SET FULLY GREEN
+=====================================================================
+All 37 upstream AK .cpp files (per fry822 manifest) compile clean
+on TaterTOS64v3 with x86_64-elf-g++ 15.2.0:
+
+  Assertions Base64 ByteString ByteStringImpl CircularBuffer
+  ConstrainedStream CountingStream Error FlyString Format GenericLexer
+  Hex JsonArray JsonObject JsonParser JsonValue LexicalPath
+  MemoryStream NumberFormat OptionParser Random StackInfo Stream
+  String StringBase StringBuilder StringConversions StringUtils
+  StringView Time Utf16FlyString Utf16String Utf16StringData
+  Utf16View Utf32View Utf8View kmalloc
+
+Build now stops on fmt's format.cc (vendored 3rd-party). Distinct
+surface from AK — being addressed in fry837.
+
+DIFFS APPLIED IN fry836
+=====================================================================
+
+A. EXPANDED <string> shim — basic_string<CharT, Traits, Allocator> template
+   - Converted std::string from a single class to a template
+     parameterised on CharT/Traits/Allocator.
+   - Added: char_traits<>, allocator_default<>, npos, size_type,
+     iterator/const_iterator (CharT*), front/back, max_size, resize
+     (single-arg + two-arg), reserve, clear, [] operator.
+   - Standard aliases: string, u8string, u16string, u32string, wstring.
+   - Reason: fmt and simdutf reference std::basic_string<...> in
+     formatter declarations; bare class wasn't enough.
+
+B. EXPANDED <string_view> shim — basic_string_view<CharT, Traits> template
+   - Same pattern: turned the class into a template parameterised
+     on CharT.
+   - Aliases: string_view, u16string_view, u32string_view, wstring_view.
+
+C. EXPANDED <system_error> shim — full error_code/error_category/
+   system_error class.
+   - Added: error_category virtual base, generic_category() and
+     system_category() singletons, error_code class (value + cat
+     pointer + message()/operator bool()/comparison), system_error
+     subclass of runtime_error, is_error_code_enum<errc>,
+     make_error_code(errc).
+   - Reason: fmt declares format_system_error returning
+     std::system_error.
+
+D. EXPANDED <type_traits> shim — many additions
+   - decay / decay_t / remove_extent / add_pointer / is_function
+     (forward + full)
+   - is_fundamental / is_null_pointer / is_scalar / is_object /
+     is_empty / is_polymorphic / is_abstract
+   - is_constructible / is_default_constructible /
+     is_copy_constructible / is_move_constructible
+   - is_base_of / is_convertible (SFINAE-based, GCC-portable)
+   - is_assignable / is_copy_assignable / is_move_assignable
+   - is_trivially_copy_constructible / is_trivially_move_constructible
+   - is_nothrow_constructible / is_nothrow_default_constructible /
+     is_nothrow_copy_constructible / is_nothrow_move_constructible /
+     is_nothrow_assignable / is_nothrow_copy_assignable /
+     is_nothrow_move_assignable
+   - is_member_pointer / is_member_function_pointer /
+     is_member_object_pointer
+   - declval forward-declared at top using a private
+     remove_reference_fwd (so SFINAE helpers can use it before the
+     canonical remove_reference appears).
+
+E. EXPANDED <memory> shim — full allocator_traits surface
+   - allocator_traits<Alloc> with: value_type, pointer/const_pointer,
+     size_type/difference_type, propagate_on_container_copy/move/swap,
+     is_always_equal (all false / true singletons),
+     allocate/deallocate/max_size/select_on_container_copy_construction,
+     construct/destroy.
+
+F. EXPANDED <algorithm> shim
+   - copy_backward (used by fast_float bigint).
+   - Removed swap (it's in <utility>; was double-defined).
+
+G. PATCHED math.h
+   - Replaced macro form of isfinite/isinf/isnan/isnormal/signbit
+     with C++ inline overloads OUTSIDE the extern "C" block (C still
+     gets the macro form). Reason: `std::isfinite(x)` macro-expanded
+     to `std::__builtin_isfinite(x)` which is invalid in C++.
+
+H. EXPANDED <cmath> shim
+   - Added inline forwarders for isfinite/isinf/isnan/isnormal so
+     `std::isfinite(...)` etc. compile.
+
+I. PATCHED <climits> shim
+   - Added LLONG_MIN/LLONG_MAX/ULLONG_MAX (gcc freestanding limits.h
+     omits the C99 long-long values).
+
+J. PATCHED <limits> shim
+   - Fixed the typo `_TATERTOS_NL_INT_AGAIN` (left over from fry834).
+     Replaced with proper hand-written specialisations for char16_t
+     and char32_t.
+   - The `_TATERTOS_NL_FLOAT(long double, ...)` macro invocation
+     also choked because `long double` is two tokens; replaced with
+     a hand-written specialisation for long double.
+
+K. MAKEFILE
+   - AK_CXXFLAGS gained `-DFMT_USE_LOCALE=0 -DFMT_USE_FCNTL=0`.
+     These tell fmt to bypass <locale> and <fcntl.h> in its
+     internal-formatter paths — neither is available in our shim
+     and neither is needed for AK's actual fmt usage.
+
+L. POSIX shim additions (3 small)
+   - <time.h>: clockid_t typedef, timegm() inline forwarder,
+     extern timezone/daylight/tzname[2], CLOCK_MONOTONIC_COARSE +
+     CLOCK_REALTIME_COARSE aliases.
+
+BUILD ATTEMPTS (this batch alone)
+=====================================================================
+#36 basic_string template + system_error + decay
+#37 allocator_traits max_size
+#38 is_fundamental
+#39 math.h is{finite,inf,nan,normal} → inline functions
+#40 basic_string iterators + max_size, type_traits is_base_of
+#41 is_assignable
+#42 math.h moved C++ overloads outside extern "C"
+#43 climits LLONG_*
+#44 limits typo fix (char16_t / char32_t / long double)
+#45 type_traits has_trivial_destructor
+#46 type_traits is_function forward decl for is_object
+#47 is_convertible SFINAE-based (gcc-portable)
+#48 algorithm: removed swap dup
+#49 algorithm: copy_backward
+#50 type_traits: is_member_pointer/function_pointer/object_pointer
+#51 time.h: clockid_t + timegm + tzname + CLOCK_MONOTONIC_COARSE
+#52 #53 #54 #55 #56 progress through Time.cpp
+#57 Makefile: FMT_USE_LOCALE=0 FMT_USE_FCNTL=0
+#58 type_traits: declval forward-declared at top
+#59 type_traits: rename remove_reference_tt → remove_reference,
+                 restore the actual struct (had been deleted in
+                 the rename).
+(stop point) → fmt's iterator_traits / std::basic_string::assign
+                error in format.cc.
+
+CURRENT TaterTOS HEADER SURFACE
+=====================================================================
+src/include/                 23 files
+src/include/c++/             29 files
+src/include/sys/             2 files (types.h, time.h)
+
+POST-MILESTONE NOTE
+=====================================================================
+The AK static library (`AK.a`) cannot yet be archived because Make
+also tries to build fmt's format.cc and simdutf's amalgamated TU.
+Both are in the same target rule. Build ordering in fry837 will:
+  1. Get fmt's format.cc to compile (next blocker).
+  2. Get simdutf's amalgamated TU to compile.
+  3. Then `ar rcs AK.a $(AK_OBJS)` succeeds.
+
+NOT DONE (intentional)
+=====================================================================
+- fmt format.cc has its own deep template surface — separate work.
+- simdutf TU not yet attempted.
+- LibCore source not yet copied.
+- No SHA / clean rebuild yet.
+
+NEXT
+=====================================================================
+fry837 — fmt format.cc surface fixes:
+  - std::iterator_traits visibility issue
+  - std::basic_string::assign + other string methods fmt expects
+  - Then move to simdutf compile.
+
+END fry836
+=====================================================================

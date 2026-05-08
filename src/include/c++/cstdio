@@ -1,0 +1,41 @@
+// TaterTOS64v3 — <cstdio>. Wraps <stdio.h>, re-exports into std::.
+// Origin log: logs/fry832.txt
+#pragma once
+#include <stdio.h>
+
+namespace std {
+using ::FILE;
+using ::printf;
+using ::snprintf;
+using ::sprintf;
+using ::vsnprintf;
+using ::vprintf;
+using ::fprintf;
+using ::vfprintf;
+using ::putchar;
+using ::getchar;
+using ::puts;
+using ::fputc;
+using ::fgetc;
+using ::ungetc;
+using ::fgets;
+using ::fputs;
+using ::fopen;
+using ::fdopen;
+using ::fclose;
+using ::fflush;
+using ::fread;
+using ::fwrite;
+using ::fseek;
+using ::ftell;
+using ::rewind;
+using ::feof;
+using ::ferror;
+using ::clearerr;
+using ::fileno;
+using ::setvbuf;
+using ::setbuf;
+using ::fscanf;
+using ::remove;
+using ::rename;
+}

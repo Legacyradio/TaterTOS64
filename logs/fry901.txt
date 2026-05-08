@@ -1,0 +1,38 @@
+Fry Log 901 - GN cross-toolchain setup
+Timestamp: 2026-05-07 10:36 CDT
+
+Task:
+- Build GN build system for x86_64-elf cross-compilation targeting TaterTOS.
+- Create GN toolchain file that uses the tools/host/bin/x86_64-elf-gcc/g++ tools.
+- Validate by compiling chrome_probe.c through GN→Ninja.
+
+GN build:
+- Cloned from https://gn.googlesource.com/gn (commit 2389).
+- Built with g++ (GCC 16.1.1) after stripping clang-specific flags.
+- Required: .gn file must have buildconfig field pointing to BUILDCONFIG.gn
+  (or GN segfaults on gen).
+- Binary installed to tools/host/bin/gn.
+
+Toolchain:
+- build/gn/BUILD.gn — toolchain("tatertos_x64") with cc, cxx, alink, link,
+  solink, copy, stamp tools.
+- build/gn/BUILDCONFIG.gn — set_default_toolchain("//build/gn:tatertos_x64").
+- build/gn/tatertos_toolchain.gni — reference copy (not used directly).
+- .gn — root dotfile pointing to buildconfig and the project root.
+- Root BUILD.gn — executable target for chrome_probe (validation).
+
+Toolchain specifics:
+- Include paths: ../../src/include and ../../src/user/libc (relative to out/).
+- Linker: x86_64-elf-g++ -T ../../user_linker.ld -nostartfiles -nodefaultlibs -static
+- Link includes all libc .o files (libc.o, errno.o, stdio.o, etc.).
+- Object output: {{source_out_dir}}/{{source_name_part}}.o
+- Executable output: {{target_out_dir}}/{{target_output_name}}
+
+Verification:
+- gn gen out/gn_test --root=.: PASS
+- ninja -C out/gn_test: PASS
+- Built chrome_probe ELF at out/gn_test/obj/chrome_probe:
+  ELF 64-bit LSB executable, x86-64, statically linked, 131072 bytes
+  T main at 0x4000c0
+
+Next: wire up Chromium source tree BUILD.gn files to use this toolchain.

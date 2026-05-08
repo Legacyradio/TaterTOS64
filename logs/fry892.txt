@@ -1,0 +1,47 @@
+2026-05-06 23:46:00 CDT
+
+TaterTOS64v3 Chrome Port — pipe2, dup3, socketpair, getcwd/chdir cleanup
+
+Completed work:
+- Added per-process cwd[FRY_PATH_MAX] field to struct fry_process_shared in process.h.
+- Initialized cwd to "/" in shared_init() in process.c.
+- Added SYS_CHDIR handler: resolves path via dirfd resolver, validates target is a directory, stores normalized path in shared->cwd.
+- Added SYS_GETCWD handler (syscall 121): copies shared->cwd to user buffer.
+- Added SYS_PIPE2 handler (syscall 118): like SYS_PIPE but accepts flags parameter (O_NONBLOCK | O_CLOEXEC). Validates flags, stores them on both ends.
+- Added SYS_DUP3 handler (syscall 119): like SYS_DUP2 but accepts flags (only O_CLOEXEC). Properly handles oldfd==newfd case (no close).
+- Added SYS_SOCKETPAIR handler (syscall 120): AF_UNIX (domain=1) only, SOCK_STREAM or SOCK_DGRAM. Allocates two pipe buffers (one per direction), two socket structs, two FDs. Stores pipe indices in tcp_handle/listen_handle fields. Writes [fd0, fd1] to user array.
+- Updated SYS_SEND to detect socketpair sockets (domain==1, tcp_handle<FRY_PIPE_MAX) and route writes through pipe_write() instead of tcp_send().
+- Updated SYS_RECV to detect socketpair sockets and route reads through pipe_read() instead of tcp_recv().
+- Updated SYS_CLOSE to clean up socketpair pipe buffers instead of calling tcp_close().
+- Updated SYS_DUP3 close-newfd block with socketpair-aware cleanup.
+- Updated SYS_DUP2 close-newfd block with socketpair-aware cleanup (pre-existing gap: dup2 didn't handle FD_SOCKET close at all).
+- Updated SYS_SHUTDOWN_SOCK to close pipe ends for socketpair.
+- Updated poll_check_fd() to check pipe buffer state for socketpair sockets.
+- Added enum values: SYS_PIPE2=118, SYS_DUP3=119, SYS_SOCKETPAIR=120, SYS_GETCWD=121.
+
+Libc additions:
+- Added fry_pipe2(), fry_dup3(), fry_socketpair(), fry_getcwd() syscall wrappers in libc.c.
+- Declared all four in fry.h.
+- Added pipe2(), dup3() POSIX wrappers in posix.c.
+- Fixed chdir() in posix.c: now calls fry_chdir() instead of fry_open().
+- Fixed getcwd() in posix.c: now calls fry_getcwd() syscall instead of stubbing to "/".
+- Fixed socketpair() in posix.c: now calls fry_socketpair() instead of returning -1.
+
+Shell changes:
+- Updated cmd_cd() to refresh local CWD from kernel via fry_getcwd() after chdir,
+  replacing the simplistic path-joining logic that failed on ".." paths.
+
+Why:
+- Chromium and GN need pipe2, dup3, and socketpair for subprocess spawning
+  and IPC channel creation.
+- getcwd/chdir were stubs; the shell did its own broken CWD tracking.
+- A per-process kernel CWD is required for correct AT_FDCWD resolution and
+  POSIX compliance.
+
+Verification:
+- make clean + build_iso.sh: passed clean.
+- Only pre-existing unused-function warnings (ACPI).
+- ISO at out/tatertos64v3.iso.
+
+Next recommended slice: pipe2, dup3, and socketpair are done. Next targets for
+the OS-shim layer include: timerfd, signalfd, inotify, and accept4.

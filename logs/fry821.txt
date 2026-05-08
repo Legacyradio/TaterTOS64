@@ -1,0 +1,350 @@
+fry821 — Definitive AK + LibCore file manifest for TaterTOS port
+=====================================================================
+DATE (UTC):   2026-04-26 03:13:02
+DATE (LOCAL): 2026-04-25 22:13:02 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSORS:   logs/fry819.txt (rediff), logs/fry820.txt (cleanup)
+TYPE:         Investigation log — NO source code changed.
+UPSTREAM SNAPSHOT: ~/ladybird-upstream (shallow clone of main)
+
+PURPOSE
+=====================================================================
+Produce the flat copy list for fry824. Every file in upstream AK/ and
+Libraries/LibCore/ is classified as either:
+  KEEP  — copy verbatim into src/user/apps/ladybird/
+  SKIP  — Windows-only, macOS-only, Linux-only, Swift, or CMake-template
+
+Counts:
+  AK upstream: 198 files (197 .h/.cpp + 1 .h.in + 0 .mm)
+  LibCore upstream: 106 files (102 .h/.cpp + 1 .mm + 0 .h.in + 3 special)
+
+==========================================================================
+AK/ — KEEP (193 files)
+==========================================================================
+The core of AK. Pure C++23 templates + a handful of cpp files. Will
+build with x86_64-elf-g++ -ffreestanding -fno-exceptions -fno-rtti
+linked against TaterTOS libc.
+
+  AllOf.h                         IDAllocator.h
+  AnyOf.h                         InsertionSort.h
+  Array.h                         IntegralMath.h
+  Assertions.cpp                  IntrusiveDetails.h
+  Assertions.h                    IntrusiveList.h
+  Atomic.h                        IntrusiveListRelaxedConst.h
+  AtomicRefCounted.h              IntrusiveRedBlackTree.h
+  Badge.h                         IPv4Address.h
+  Base64.cpp                      IPv6Address.h
+  Base64.h                        IterationDecision.h
+  BigIntBase.h                    Iterator.h
+  BinaryHeap.h                    JsonArray.cpp
+  BinarySearch.h                  JsonArray.h
+  BitCast.h                       JsonArraySerializer.h
+  Bitmap.h                        JsonObject.cpp
+  BitmapView.h                    JsonObject.h
+  BitStream.h                     JsonObjectSerializer.h
+  BufferedStream.h                JsonParser.cpp
+  BuiltinWrappers.h               JsonParser.h
+  BumpAllocator.h                 JsonValue.cpp
+  ByteBuffer.h                    JsonValue.h
+  ByteReader.h                    kmalloc.cpp
+  ByteString.cpp                  kmalloc.h
+  ByteString.h                    LEB128.h
+  ByteStringImpl.cpp              LexicalPath.cpp
+  ByteStringImpl.h                LexicalPath.h
+  CharacterTypes.h                LsanSuppressions.h
+  Checked.h                       Math.h
+  CheckedFormatString.h           MaybeOwned.h
+  CircularBuffer.cpp              MemMem.h
+  CircularBuffer.h                Memory.h
+  CircularQueue.h                 MemoryStream.cpp
+  Concepts.h                      MemoryStream.h
+  ConstrainedStream.cpp           NeverDestroyed.h
+  ConstrainedStream.h             Noncopyable.h
+  CopyOnWrite.h                   NonnullOwnPtr.h
+  CountingStream.cpp              NonnullRawPtr.h
+  CountingStream.h                NonnullRefPtr.h
+  COWVector.h                     NumberFormat.cpp
+  DateConstants.h                 NumberFormat.h
+  DefaultDelete.h                 NumericLimits.h
+  Demangle.h                      Optional.h
+  Diagnostics.h                   OptionParser.cpp
+  DisjointChunks.h                OptionParser.h
+  DistinctNumeric.h               OwnPtr.h
+  DoublyLinkedList.h              Platform.h
+  Endian.h                        Queue.h
+  EnumBits.h                      QuickSort.h
+  Enumerate.h                     Random.cpp
+  Error.cpp                       Random.h
+  Error.h                         RedBlackTree.h
+  Find.h                          RefCounted.h
+  FixedArray.h                    RefPtr.h
+  FixedBitmap.h                   Result.h
+  FixedPoint.h                    ReverseIterator.h
+  FloatingPoint.h                 SaturatingMath.h
+  FlyString.cpp                   ScopedValueRollback.h
+  FlyString.h                     ScopeGuard.h
+  Format.cpp                      ScopeLogger.h
+  Format.h                        SegmentedVector.h
+  Forward.h                       SIMD.h
+  Function.h                      SIMDExtras.h
+  GenericLexer.cpp                Singleton.h
+  GenericLexer.h                  SinglyLinkedList.h
+  GenericShorthands.h             SinglyLinkedListSizePolicy.h
+  HashFunctions.h                 SourceGenerator.h
+  HashMap.h                       SourceLocation.h
+  HashTable.h                     Span.h
+  Hex.cpp                         Stack.h
+  Hex.h                           StackInfo.cpp
+  StackInfo.h                     StringHash.h
+  StackUnwinder.h                 StringNumber.h
+  StdLibExtraDetails.h            StringUtils.cpp
+  StdLibExtras.h                  StringUtils.h
+  Stream.cpp                      StringView.cpp
+  Stream.h                        StringView.h
+  String.cpp                      TemporaryChange.h
+  StringBase.cpp                  Time.cpp
+  StringBase.h                    Time.h
+  StringBuilder.cpp               Traits.h
+  StringBuilder.h                 Trie.h
+  StringConversions.cpp           Try.h
+  StringConversions.h             Tuple.h
+  StringData.h                    TypeCasts.h
+  String.h                        TypedTransfer.h
+                                  TypeList.h
+                                  Types.h
+                                  UFixedBigInt.h
+                                  UFixedBigIntDivision.h
+                                  UnicodeUtils.h
+                                  Utf16FlyString.cpp
+                                  Utf16FlyString.h
+                                  Utf16String.cpp
+                                  Utf16String.h
+                                  Utf16StringBase.h
+                                  Utf16StringData.cpp
+                                  Utf16StringData.h
+                                  Utf16View.cpp
+                                  Utf16View.h
+                                  Utf32View.cpp
+                                  Utf32View.h
+                                  Utf8View.cpp
+                                  Utf8View.h
+                                  ValueComparingRefPtr.h
+                                  Variant.h
+                                  Vector.h
+                                  Weakable.h
+                                  WeakPtr.h
+
+==========================================================================
+AK/ — SKIP (5 files)
+==========================================================================
+  Backtrace.h.in       — CMake template. We generate Backtrace.h
+                          ourselves with TaterTOS-appropriate
+                          backtrace impl (or empty stub if needed)
+                          when AK first #include <AK/Backtrace.h>.
+                          Logged at first compile failure.
+
+  Debug.h.in           — CMake template (Ladybird-debug log channels).
+                          We generate Debug.h with all channels off
+                          for production. Logged at first need.
+
+  DemangleWindows.cpp  — Windows-only impl of Demangle.h.
+                          On TaterTOS, Demangle.h calls libstdc++'s
+                          __cxa_demangle (works freestanding).
+                          If __cxa_demangle is unavailable, we add a
+                          DemangleTaterTOS.cpp stub returning the
+                          mangled name. Decision deferred to first
+                          compile failure.
+
+  LexicalPathWindows.cpp — Windows path handling. Unix-style
+                          LexicalPath.cpp is kept and handles TaterTOS
+                          paths (which are Unix-flavored).
+
+  Windows.h            — Wrapper around <windows.h>. Never included
+                          on non-Windows builds (guarded by
+                          AK_OS_WINDOWS in callers).
+
+==========================================================================
+Libraries/LibCore/ — KEEP (84 files)
+==========================================================================
+Cross-platform + Unix-flavored. EventLoopImplementationUnix.cpp drives
+the run loop; works against TaterTOS pthread + futex + poll surface
+(verified in fry819).
+
+  AddressInfoVector.cpp                Notifier.cpp
+  AddressInfoVector.h                  Notifier.h
+  AnonymousBuffer.cpp                  Platform/ProcessInfo.h
+  AnonymousBuffer.h                    Platform/ProcessStatistics.h
+  ArgsParser.cpp                       Process.cpp
+  ArgsParser.h                         Process.h
+  ConfigFile.cpp                       Promise.h
+  ConfigFile.h                         Proxy.h
+  Directory.cpp                        ReportTime.cpp
+  Directory.h                          ReportTime.h
+  DirectoryEntry.cpp                   Resource.cpp
+  DirectoryEntry.h                     Resource.h
+  DirIterator.cpp                      ResourceImplementation.cpp
+  DirIterator.h                        ResourceImplementation.h
+  ElapsedTimer.cpp                     ResourceImplementationFile.cpp
+  ElapsedTimer.h                       ResourceImplementationFile.h
+  Environment.cpp                      SharedCircularQueue.h
+  Environment.h                        SharedVersion.cpp
+  Event.h                              SharedVersion.h
+  EventLoop.cpp                        Socket.cpp
+  EventLoop.h                          Socket.h
+  EventLoopImplementation.cpp          SocketAddress.cpp
+  EventLoopImplementation.h            SocketAddress.h
+  EventLoopImplementationUnix.cpp      StandardPaths.cpp
+  EventLoopImplementationUnix.h        StandardPaths.h
+  EventReceiver.cpp                    System.cpp
+  EventReceiver.h                      System.h
+  File.cpp                             SystemServerTakeover.cpp
+  File.h                               SystemServerTakeover.h
+  FileWatcher.h                        TCPServer.cpp
+  FileWatcherUnimplemented.cpp         TCPServer.h
+  Forward.h                            ThreadEventQueue.cpp
+  LocalServer.cpp                      ThreadEventQueue.h
+  LocalServer.h                        ThreadedPromise.h
+  MappedFile.cpp                       Timer.cpp
+  MappedFile.h                         Timer.h
+  MimeData.cpp                         TimeZoneWatcher.h
+  MimeData.h                           TimeZoneWatcherUnimplemented.cpp
+  NetworkResponse.h                    UDPServer.cpp
+  Platform/ProcessStatisticsUnimplemented.cpp  UDPServer.h
+                                       Version.cpp
+                                       Version.h
+
+NOTE on Unimplemented variants:
+  FileWatcherUnimplemented.cpp  — kept; FileWatcherInotify.cpp skipped
+  TimeZoneWatcherUnimplemented.cpp — kept; TimeZoneWatcherUnix.cpp skipped
+  Platform/ProcessStatisticsUnimplemented.cpp — kept; Linux/Mach skipped
+
+These three "Unimplemented" files are upstream Ladybird's official
+stubs for non-Linux/non-Mac platforms (e.g. when building Ladybird on
+HaikuOS or fresh BSD ports). They are not shortcuts on our part —
+they are the upstream's designated path for our class of platform.
+The functionality (file-change watching, TZ-change detection, /proc
+stats) can be reimplemented in TaterTOS-native form in a later log
+when there's a real consumer (LibWeb in Chunk 4 likely doesn't need
+any of these for v1 page rendering).
+
+==========================================================================
+Libraries/LibCore/ — SKIP (22 files)
+==========================================================================
+
+WINDOWS-ONLY (10 files):
+  AnonymousBufferWindows.cpp
+  EventLoopImplementationWindows.cpp
+  EventLoopImplementationWindows.h
+  LocalServerWindows.cpp
+  ProcessWindows.cpp
+  SocketpairWindows.cpp
+  SocketWindows.cpp
+  SystemWindows.cpp
+  TCPServerWindows.cpp
+  UDPServerWindows.cpp
+  TimeZoneWatcherWindows.cpp
+
+MACOS-ONLY (6 files):
+  IOSurface.cpp
+  IOSurface.h
+  MachPort.cpp
+  MachPort.h
+  Platform/ProcessStatisticsMach.cpp
+  Platform/ProcessStatisticsMach.h
+  Platform/ScopedAutoreleasePool.h    (Apple-only abstraction)
+  Platform/ScopedAutoreleasePoolMacOS.mm
+  TimeZoneWatcherMacOS.mm
+
+LINUX-ONLY (3 files; we are NOT Linux):
+  FileWatcherInotify.cpp              (uses Linux inotify_*)
+  Platform/ProcessStatisticsLinux.cpp (parses /proc/<pid>/status)
+  TimeZoneWatcherUnix.cpp             (uses inotify on /etc/localtime)
+
+SWIFT BRIDGE (1 file):
+  EventSwift.h                         (Swift interop header)
+
+==========================================================================
+RESULTING FILE COUNTS
+==========================================================================
+  AK/        198 upstream → 193 KEEP, 5 SKIP
+  LibCore/   106 upstream →  84 KEEP, 22 SKIP
+  TOTAL      304 upstream → 277 KEEP, 27 SKIP
+
+==========================================================================
+ON-DISK LAYOUT WHEN fry824 RUNS
+==========================================================================
+  src/user/apps/ladybird/
+    AK/                     193 files copied verbatim
+    Libraries/LibCore/      84 files copied verbatim
+    Libraries/LibCore/Platform/  3 files (ProcessInfo.h,
+                                          ProcessStatistics.h,
+                                          ProcessStatisticsUnimplemented.cpp)
+    Backtrace.h             generated from Backtrace.h.in (TaterTOS impl)
+    Debug.h                 generated from Debug.h.in (channels off)
+    LICENSE                 verbatim BSD-2 from upstream
+
+  src/user/apps/ladybird-3rd/
+    fmt/                    vendored header-only, MIT
+    fast_float/             vendored header-only, BSL-1.0
+    simdutf/                vendored single-source, Apache-2.0
+    LICENSES/               license files preserved
+
+==========================================================================
+OUTSTANDING UNKNOWNS (will resolve at first compile failure)
+==========================================================================
+1. AK includes from libstdc++:
+     <initializer_list> <iterator> <memory> <new> <utility>
+   Verified in fry816 §1. The cross-compiler libstdc++ headers will
+   either work (D3 option A) or pull in glibc paths and need a
+   vendored 5-header replacement (D3 option B). Determined in fry824.
+
+2. AK __cxa_demangle:
+   Demangle.h calls libstdc++'s __cxa_demangle. If the freestanding
+   cross-compiler libstdc++ does not provide it, we either link
+   libsupc++ (LGPL with runtime exception, header-only impl
+   inadvisable) OR write a TaterTOS DemangleTaterTOS.cpp that
+   returns the mangled name unchanged (acceptable fallback — only
+   used in panic/backtrace pretty-printing). Decision at first
+   compile failure.
+
+3. Backtrace.h.in:
+   AK/Backtrace.h.in is a CMake-configured stub that exposes
+   AK::Backtrace. TaterTOS has no unwinder yet (D2 = -fno-exceptions
+   means no __builtin_return_address chain machinery via libgcc_eh),
+   but x86_64 frame-pointer walking through known-RBP saves is
+   trivially implementable. We implement Backtrace.h directly
+   when AK/Format.cpp first #includes it. Logged separately.
+
+4. AK kmalloc.cpp:
+   AK has its own kmalloc / kfree wrappers for use INSIDE Ladybird
+   processes (not the kernel-side TaterTOS kmalloc). The wrappers
+   call malloc / free, which TaterTOS libc.c provides. Should work
+   first try.
+
+5. LibCore/Process.cpp uses posix_spawn / spawn_h:
+   TaterTOS libc.h doesn't expose posix_spawn directly. Existing
+   fry_spawn / fry_spawn_args are the underlying primitives. May
+   need a thin wrapper in libc.c or in Process.cpp. Decision at
+   first compile failure.
+
+6. LibCore/EventLoopImplementationUnix.cpp uses pselect/ppoll/
+   eventfd/timerfd_create:
+   TaterTOS exposes fry_poll. eventfd / timerfd are Linux-specific.
+   This is the biggest unknown — the Unix event loop may need a
+   TaterTOS-tailored EventLoopImplementationTaterTOS.cpp companion
+   to replace eventfd usage with futex-based wakeup. We discover
+   exactly which Linux-isms are touched at fry824 compile time.
+
+==========================================================================
+NEXT
+==========================================================================
+fry822 — Investigation: read upstream AK/CMakeLists.txt and
+        Libraries/LibCore/CMakeLists.txt to enumerate every
+        compile-flag, every generated source, every transitive
+        dep that CMake supplies. The TaterTOS Makefile rule in
+        fry824 must replicate the substantive bits without
+        running CMake. NO CODE.
+
+END fry821
+=====================================================================

@@ -1,0 +1,132 @@
+// TaterTOS64v3 — minimal <vector> for freestanding C++.
+// Origin log: logs/fry868.txt
+//
+// Scoped to the surface required by simdjson and other upstream code.
+// Real implementation using malloc/free.
+
+#pragma once
+
+#ifndef _GLIBCXX_VECTOR
+#define _GLIBCXX_VECTOR
+#endif
+
+#include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
+#include <initializer_list>
+#include <new>
+
+namespace std {
+
+template<typename T>
+class vector {
+public:
+    using value_type = T;
+    using size_type = size_t;
+    using reference = T&;
+    using const_reference = T const&;
+    using pointer = T*;
+    using const_pointer = T const*;
+    using iterator = T*;
+    using const_iterator = T const*;
+
+    vector() : m_data(nullptr), m_size(0), m_cap(0) {}
+    
+    explicit vector(size_type n) : m_data(nullptr), m_size(0), m_cap(0) {
+        if (n > 0) {
+            reserve(n);
+            for (size_type i = 0; i < n; ++i) ::new (static_cast<void*>(&m_data[i])) T();
+            m_size = n;
+        }
+    }
+    
+    ~vector() {
+        for (size_type i = 0; i < m_size; ++i) m_data[i].~T();
+        ::free(m_data);
+    }
+
+    vector(vector const& other) : m_data(nullptr), m_size(0), m_cap(0) {
+        if (other.m_size > 0) {
+            reserve(other.m_size);
+            for (size_type i = 0; i < other.m_size; ++i) m_data[i] = other.m_data[i];
+            m_size = other.m_size;
+        }
+    }
+
+    vector(vector&& other) noexcept : m_data(other.m_data), m_size(other.m_size), m_cap(other.m_cap) {
+        other.m_data = nullptr;
+        other.m_size = 0;
+        other.m_cap = 0;
+    }
+
+    vector& operator=(vector const& other) {
+        if (this != &other) {
+            clear();
+            reserve(other.m_size);
+            for (size_type i = 0; i < other.m_size; ++i) m_data[i] = other.m_data[i];
+            m_size = other.m_size;
+        }
+        return *this;
+    }
+
+    void reserve(size_type n) {
+        if (n <= m_cap) return;
+        T* new_data = static_cast<T*>(::malloc(n * sizeof(T)));
+        if (m_data) {
+            for (size_type i = 0; i < m_size; ++i) new_data[i] = m_data[i];
+            ::free(m_data);
+        }
+        m_data = new_data;
+        m_cap = n;
+    }
+
+    void push_back(T const& val) {
+        if (m_size == m_cap) reserve(m_cap == 0 ? 8 : m_cap * 2);
+        m_data[m_size++] = val;
+    }
+
+    void resize(size_type n) {
+        reserve(n);
+        m_size = n;
+    }
+
+    void insert(iterator pos, const_pointer first, const_pointer last) {
+        size_type count = last - first;
+        size_type offset = pos - m_data;
+        if (m_size + count > m_cap) reserve(m_size + count);
+        
+        // Move existing elements if inserting in the middle.
+        for (size_type i = m_size; i > offset; --i) {
+            m_data[i + count - 1] = m_data[i - 1];
+        }
+        
+        // Copy new elements.
+        for (size_type i = 0; i < count; ++i) {
+            m_data[offset + i] = first[i];
+        }
+        m_size += count;
+    }
+
+    void clear() { m_size = 0; }
+
+    T& operator[](size_type i) { return m_data[i]; }
+    T const& operator[](size_type i) const { return m_data[i]; }
+
+    T* data() { return m_data; }
+    T const* data() const { return m_data; }
+
+    size_type size() const { return m_size; }
+    bool empty() const { return m_size == 0; }
+
+    iterator begin() { return m_data; }
+    const_iterator begin() const { return m_data; }
+    iterator end() { return m_data + m_size; }
+    const_iterator end() const { return m_data + m_size; }
+
+private:
+    T* m_data;
+    size_type m_size;
+    size_type m_cap;
+};
+
+} // namespace std

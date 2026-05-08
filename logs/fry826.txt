@@ -1,0 +1,140 @@
+fry826 — Vendor drop step 3: simdutf v7.4.0
+=====================================================================
+DATE (UTC):   2026-04-26 03:48:00 (approx)
+DATE (LOCAL): 2026-04-25 22:48:00 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSORS:   fry824 (fmt 12.1.0), fry825 (fast_float v8.1.0)
+TYPE:         Vendor drop. No TaterTOS source code modified.
+
+WHAT
+=====================================================================
+Cloned upstream simdutf v7.4.0 into:
+  src/user/apps/ladybird-3rd/simdutf/
+
+Final third-party dep for AK. After this log, all of AK's external
+deps (fmt + fast_float + simdutf) are vendored.
+
+WHY THIS VERSION
+=====================================================================
+~/ladybird-upstream/vcpkg.json `overrides`:
+  { "name": "simdutf", "version": "7.4.0#0" }
+
+Match upstream exactly. Same reasoning as fry824/825 — minimize
+API drift, get the same surface upstream tests against.
+
+VERSION INFO
+=====================================================================
+  Tag:        v7.4.0
+  Commit:     7b3f5afcae322391a03736809ef6eea0c2934388
+  License:    Dual: Apache-2.0 OR MIT (we elect Apache-2.0)
+
+LIBRARY SHAPE — internal amalgamation
+=====================================================================
+simdutf differs in shape from fmt (header-only + one .cc) and
+fast_float (header-only). It uses its OWN amalgamation pattern:
+
+  src/simdutf.cpp (156 LOC) is a single TU that #includes every
+  kernel-specific .cpp/.h:
+    arm64/      icelake/    haswell/    westmere/   ppc64/
+    rvv/        lsx/        lasx/       fallback/   scalar/
+    generic/    tables/
+
+  Preprocessor + macro guards select only the relevant kernels for
+  the target. On TaterTOS x86_64 we'll compile westmere + haswell +
+  icelake + fallback + scalar + generic; arm64/ppc64/rvv/etc. paths
+  are macro-disabled.
+
+Build integration is therefore:
+  - Compile ONE translation unit: src/simdutf.cpp → simdutf.o
+  - TWO include paths needed:
+      -I src/user/apps/ladybird-3rd/simdutf/include   (public API)
+      -I src/user/apps/ladybird-3rd/simdutf/src       (internal)
+
+ON-DISK STATE AFTER THIS LOG
+=====================================================================
+  src/user/apps/ladybird-3rd/simdutf/
+    LICENSE-APACHE   (verbatim, dual-license)
+    LICENSE-MIT      (verbatim)
+    AUTHORS  CONTRIBUTORS  CONTRIBUTING.md
+    README.md  README-RVV.md  SECURITY.md
+    CMakeLists.txt   (upstream — not used; we drive via Makefile)
+    Makefile.crosscompile  Doxyfile  doxygen.sh
+    simdutf.pc.in
+    VENDOR_NOTE.md   (this drop's manifest, written by us)
+    benchmarks/  cmake/  doc/  fuzz/  riscv/  scripts/  tests/
+    tools/  singleheader/    (all reference-only; not on build path)
+    include/         (public API headers)
+    src/             (THE library — amalgamated build)
+
+  Total size: 9.3M.
+
+STRIPPED
+=====================================================================
+  .git/ — git metadata only.
+
+WHAT WAS NOT STRIPPED (and why)
+=====================================================================
+  Same posture as fry824/825. Tests/benchmarks/fuzz/scripts/etc.
+  preserved for auditability. Not on any TaterTOS build path. Disk
+  is cheap.
+
+  Notable preservation: singleheader/ — simdutf supports an
+  alternative build mode where amalgamate.py produces a single .cpp
+  + .h. We use the standard src/ build, NOT singleheader. The
+  scripts are kept anyway in case a future engineer wants to switch
+  modes.
+
+COMMANDS RUN
+=====================================================================
+  cd src/user/apps/ladybird-3rd
+  git clone --depth 1 --branch v7.4.0 \
+            https://github.com/simdutf/simdutf.git simdutf
+  cd simdutf
+  git rev-parse HEAD            # 7b3f5afcae322391a03736809ef6eea0c2934388
+  rm -rf .git
+  du -sh .                      # 9.3M
+
+  Verification:
+    wc -l src/simdutf.cpp        # 156
+    wc -l src/implementation.cpp # 2525
+    ls LICENSE-APACHE LICENSE-MIT  # both present
+
+NOT DONE (intentional)
+=====================================================================
+  - No Makefile changes.
+  - No source code under src/user/apps/ or src/user/libc/ touched.
+  - No build run.
+
+INTEGRATION PREVIEW (for fry828)
+=====================================================================
+  AK compile-flag additions (preview, not applied):
+    -I src/user/apps/ladybird-3rd/simdutf/include
+    -I src/user/apps/ladybird-3rd/simdutf/src
+
+  AK object-list additions (preview, not applied):
+    src/user/apps/ladybird-3rd/simdutf/src/simdutf.cpp
+
+CHUNK 2 VENDOR DROPS — STATE AFTER fry826
+=====================================================================
+  src/user/apps/ladybird-3rd/
+    fmt/          fmt 12.1.0           SHA 407c905e... (3.2M)
+    fast_float/   fast_float v8.1.0    SHA 88b1e532... (828K)
+    simdutf/      simdutf v7.4.0       SHA 7b3f5afc... (9.3M)
+
+  Total ladybird-3rd/ size: ~13.3M.
+  All three vendor drops complete. All match upstream Ladybird
+  vcpkg.json `overrides` exactly.
+
+NEXT
+=====================================================================
+fry827 — Copy upstream AK/ source files (37 .cpp + ~155 .h, per
+        fry821 manifest) into src/user/apps/ladybird/AK/.
+        Apply S1b kmalloc patch (replace mimalloc calls with
+        TaterTOS libc malloc/free). Generate Backtrace.h + Debug.h
+        from upstream .h.in templates.
+        STOP after copy + patch + generate. Do NOT add Makefile
+        rule yet.
+
+END fry826
+=====================================================================

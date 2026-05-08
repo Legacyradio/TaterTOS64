@@ -1,0 +1,304 @@
+fry819 — Full codebase rediff. Userland POSIX/pthread surface
+         already comprehensive. Re-baselined Chunk 2 again.
+=====================================================================
+DATE (UTC):   2026-04-26 03:05:22
+DATE (LOCAL): 2026-04-25 22:05:22 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSORS:   logs/fry816.txt (initial Ladybird port plan, partly wrong)
+              logs/fry817.txt (TATERSURF_*.md superseded)
+              logs/fry818.txt (Phase 23 already done in kernel)
+TYPE:         Investigation log — NO source code changed.
+
+WHY THIS LOG EXISTS
+=====================================================================
+Zack: "I think you need to rediff this whole fucking code base because
+you keep stopping with these things that are already done and it's
+fucking annoying."
+
+Correct call. fry816 and fry818 each surfaced a different "already
+done" piece (kernel threading; full clone-style thread model; futex
+syscalls). I had not yet looked at the userland libc. This log is the
+full read of `src/` so the next plan is grounded in what exists.
+
+CODEBASE INVENTORY (first-party only; vendored deps excluded)
+=====================================================================
+Total first-party source: 210 files, 229,577 LOC.
+
+Tree:
+  src/
+    boot/        UEFI loader + EFI handoff
+    kernel/
+      acpi/  drivers/  entropy/  fs/  irq/  mm/  proc/
+      kprint.c  main.c  panic.c  selftest.c
+    drivers/
+      acpi_bus/  audio/  input/  irqchip/  net/  pci/  smp/
+      storage/  timer/  usb/  video/
+    include/        13 public headers, 500 LOC
+    shared/         (kernel/user shared ABI)
+    user/
+      apps/         all user apps + vendored 3rd-party
+      gui/          compositor (gui.c)
+      init/         init process
+      libc/         userland libc (7,416 LOC)
+      shell/        shell.c
+
+USERLAND LIBC — THE FINDING THAT CHANGES EVERYTHING (7,416 LOC)
+=====================================================================
+File                LOC   Purpose
+src/user/libc/
+  libc.c           1786  Standard libc + fry_* syscall wrappers
+  libc.h           1068  Public surface (decls + 150 macros/types)
+  posix.c           845  "POSIX compatibility shims for NSPR/NSS porting"
+                         — explicit comment in the file. This was
+                         already written for browser code.
+  string_ext.c      839  strchr, strstr, strdup, etc.
+  math.c            599  sin/cos/exp/log/etc.
+  stdio.c           586  printf/fprintf/fopen/fread/fwrite/fseek
+  pthread.c         506  Full pthread API
+  time_ext.c        381  gmtime/localtime/strftime/etc.
+  netdb.c           307  getaddrinfo/gethostbyname
+  gfx.c             198  framebuffer helpers
+  taterwin.h        155  TaterWin SHM message protocol (TW_MSG_*)
+  dlfcn.c            74  dlopen/dlsym (probably stub)
+  setjmp.S           46  x86_64 setjmp/longjmp (per TATERSURF_PLAN A2)
+  gfx.h              26
+  setjmp.h           21  jmp_buf typedef + decls
+
+pthread.c surface (verified by grep over function definitions):
+  pthread_create, pthread_join, pthread_detach, pthread_self,
+  pthread_equal, pthread_kill, pthread_setname_np, pthread_getname_np,
+  pthread_getattr_np, pthread_yield,
+  pthread_mutex_init/destroy/lock/trylock/unlock,
+  pthread_mutexattr_init/destroy/settype,
+  pthread_cond_init/destroy/wait/timedwait/signal/broadcast,
+  pthread_condattr_init/destroy,
+  pthread_rwlock_init/destroy/rdlock/wrlock/unlock,
+  pthread_once,
+  pthread_key_create, pthread_key_delete, pthread_setspecific,
+  pthread_attr_init/destroy/setdetachstate/setstacksize/
+                getstacksize/getstack/setscope/setinheritsched/
+                setschedpolicy/setschedparam/getschedparam/getschedpolicy,
+  pthread_setschedparam, pthread_getschedparam,
+  sched_get_priority_min, sched_get_priority_max, sched_yield.
+
+That is the ENTIRE pthread surface AK + LibCore use, plus more.
+None of it is a stub — the validation app `thtest.c` exercises
+fry_once + fry_tls_set/get + fry_mutex + fry_cond + fry_sem +
+fry_thread_create/exit through 4-worker smoke / 8-worker contention /
+6-worker cond / 6-worker churn rounds.
+
+posix.c surface (verified by grep over function definitions):
+  sigaction_compat, sigemptyset/fillset/addset/delset/ismember,
+  sigprocmask, raise, kill,
+  closedir, chdir, access, unlink, rmdir, mkdir, stat, fstat, lstat,
+  getpid, getppid, getuid, geteuid, getgid, getegid,
+  fork, execve, execv, execvp, waitpid, wait,
+  _exit, abort, atexit, exit,
+  setenv, unsetenv, putenv,
+  usleep, sysconf, getpagesize,
+  pipe, dup, close, read, write, lseek, open, fcntl,
+  munmap, mprotect, msync, madvise, posix_madvise,
+  getrlimit, setrlimit, getrusage,
+  poll, gethostname, isatty,
+  tcgetattr, tcsetattr, cfsetispeed, cfsetospeed, prctl.
+
+libc.c fry_* syscall wrappers (verified by grep):
+  fry_write/read/spawn/exit/gettid/sleep/open/close/pipe/dup/dup2/
+       poll/fcntl/spawn_args/get_argc/get_argv/getenv,
+  fry_socket/connect/bind/listen/accept/send/recv/shutdown_sock/
+       getsockopt/setsockopt/sendto/recvfrom/dns_resolve,
+  fry_getrandom/clock_gettime/nanosleep,
+  fry_lseek/ftruncate/rename/fstat/stat,
+  fry_kbd_event/mouse_get/mouse_get_ext,
+  fry_clipboard_get/clipboard_set,
+  fry_audio_open/write/close/info,
+  fry_getpid/gettime/sbrk,
+  fry_mmap/mmap_fd/mreserve/mguard/mcommit/munmap/mprotect,
+  fry_syscall_raw,
+  fry_shm_alloc/shm_map/shm_free,
+  fry_readdir/readdir_ex,
+  fry_reboot/shutdown/wait/proc_count,
+  fry_thread_create/thread_join/thread_exit/thread_current,
+  fry_futex_wait/futex_wake,
+  fry_tls_set_base/tls_get_base/tls_key_create/tls_get/tls_set,
+  fry_mutex_lock/trylock/unlock,
+  fry_cond_wait/signal/broadcast,
+  fry_sem_init/wait/post,
+  fry_once,
+  fry_setbrightness/getbrightness/getbattery,
+  fry_fb_info/fb_map,
+  fry_proc_output/proc_input.
+
+CONCLUSION: there is no "missing libc surface" of significance for
+AK + LibCore. The userland libc was built specifically for browser
+porting (NSPR/NSS comment in posix.c), and TaterSurf already
+demonstrates a working browser pipeline on top of it.
+
+EXISTING TATERSURF SURFACE — what gets superseded (16 ts_*.h modules)
+=====================================================================
+src/user/apps/
+  tatersurf.c          The main app file (still in tree)
+  ts_h264_wrap.cpp     C++ wrapper around OpenH264
+  ts_h264_wrap.h
+  ts_html.h            HTML tokenizer + tree builder
+  ts_dom.h             DOM tree
+  ts_dom_bindings.h    DOM ↔ JS bindings (QuickJS)
+  ts_css.h             CSS parser + selector matching
+  ts_layout.h          Layout engine
+  ts_font.h            Font handling (stb_truetype)
+  ts_image.h           Image decode (stb_image)
+  ts_video.h           Video pipeline
+  ts_dash.h            DASH streaming
+  ts_http.h            HTTP/1.1 client
+  ts_url.h             URL parser
+  ts_xml.h             XML parser
+  ts_resource.h        Resource fetch/cache
+  ts_trust_anchors.h   Built-in CA bundle
+  ts_webcomp.h         Web Components
+
+VENDORED 3rd-party (already in tree, NOT counted in 229k LOC):
+  src/user/apps/
+    bearssl/    — TLS (TaterSurf's chosen TLS stack per project memory)
+    mbedtls/    — TLS (per TATERSURF_PLAN A5; coexists with bearssl)
+    openh264/   — H.264 decode
+    opus/       — Opus audio decode
+    quickjs/    — JS engine (replaced by Ladybird's LibJS)
+    stb_image.h — image decode (single-header)
+    stb_truetype.h — font rasterizer (single-header)
+    minimp4.h   — fragmented MP4 demux (single-header)
+
+When the Ladybird port is functional, all of these files
+(tatersurf.c + ts_*.h + quickjs/) get deleted in their own logged
+step. bearssl/, mbedtls/, openh264/, opus/, stb_*.h, minimp4.h
+likely stay — Ladybird's LibMedia + LibTLS + LibGfx will use them
+through their own backends (Chunks 5 and 6).
+
+CORRECTIONS TO fry816 PLAN
+=====================================================================
+fry816 §4 ("CHUNK 2b — Ladybird shim layer"):
+  Mostly DELETED. The proposed `src/user/apps/ladybird/shim/`
+  parallel libc layer is NOT needed. The existing
+  `src/user/libc/{pthread,posix,libc,stdio,netdb,math,string_ext,
+  time_ext}.c` already covers the surface AK + LibCore use.
+
+  The remaining real work from fry816 §4 reduces to:
+    (a) Vendor fmt + fast_float + simdutf alongside bearssl/ etc.
+        Location: src/user/apps/ladybird-3rd/  (sibling of bearssl/)
+    (b) Bring in upstream Ladybird AK/ + Libraries/LibCore/ into
+        src/user/apps/ladybird/AK/ + src/user/apps/ladybird/LibCore/
+        (preserving upstream layout for easy diffing against future
+        Ladybird upstream pulls).
+    (c) Add a Makefile target that builds AK.a and LibCore.a with:
+          x86_64-elf-g++ -ffreestanding -fno-exceptions -fno-rtti
+          -nostdlib -I src/include -I src/user/libc
+          -I src/user/apps/ladybird-3rd/{fmt,fast_float,simdutf}
+          -I src/user/apps/ladybird/AK
+          -I src/user/apps/ladybird/Libraries
+        linked against the existing libc (libc.c → libc.o is already
+        in the user link line).
+    (d) Walk compile errors. For each:
+          - missing libc symbol → ADD IT TO src/user/libc/, never to
+            a parallel shim. Every TaterTOS app benefits.
+          - missing C++ glue → first try cross-compiler libstdc++
+            headers (D3 option A); fall back to D3 option B only if
+            that pulls in glibc paths.
+          - missing 3rd-party header → vendor under
+            src/user/apps/ladybird-3rd/.
+          - exception throw site → audit per D2 (-fno-exceptions +
+            convert to ErrorOr<T>).
+
+fry816 §6 (supersession of TATERSURF_*.md):
+  Done in fry817.
+
+fry816 §7 risk register, items still live:
+  R2 (exceptions) — D2 = 3a (-fno-exceptions). LIVE.
+  R3 (C++ stdlib glue) — D3 = A (cross-compiler libstdc++). LIVE.
+  R4 (LibUnicode/LibURL/LibTextCodec transitive deps) — LIVE,
+     handled when LibCore actually #includes them at compile time.
+  R5 (LibIPC multi-process) — LIVE, deferred to its own chunk.
+
+  R1 (Phase 23 thread syscalls) — RESOLVED by fry818 (already done).
+
+REMOVING THE EMPTY DIR I CREATED EARLIER
+=====================================================================
+Earlier in this session I ran:
+  mkdir -p src/user/apps/ladybird/shim/sys
+  mkdir -p src/user/apps/ladybird/3rd
+That action is now wrong — the shim/ dir is not part of the plan.
+The empty dirs need to be removed BEFORE Chunk 2 code begins, so
+the tree state matches the plan. That removal will be its own fry
+log step (fry820) so the change is recorded per planv3 Rule 5.
+
+RE-BASELINED CHUNK 2 (replaces fry818's interim re-baseline)
+=====================================================================
+  fry820  Cleanup: rmdir the empty src/user/apps/ladybird/{shim,3rd}
+          dirs I created in error. Tree returns to a clean state.
+          NO source code changed.
+
+  fry821  Investigation: read upstream Ladybird AK/ + Libraries/LibCore/
+          file lists, separate them into "include in build" vs
+          "exclude (Windows/macOS-only)". Produce a definitive file
+          manifest. NO CODE.
+
+  fry822  Investigation: read upstream Ladybird's CMakeLists.txt
+          for AK + LibCore + LibThreading to enumerate every
+          third-party dep, every generated source, every config
+          flag. The TaterTOS Makefile target in fry824 must
+          replicate the substantive bits of this without using
+          CMake. NO CODE.
+
+  fry823  Vendor third-party deps:
+          src/user/apps/ladybird-3rd/fmt/   (header-only build)
+          src/user/apps/ladybird-3rd/fast_float/
+          src/user/apps/ladybird-3rd/simdutf/
+          License files preserved verbatim.
+          ONE Edit to Makefile to declare the include paths.
+          (This step DOES write files but they are pure vendor
+          drops, not original logic. Stop and explain after.)
+
+  fry824  Bring in upstream AK/ files (the "include" set from
+          fry821). One copy operation per logical group; record
+          file count and SHA-256 of each upstream snapshot.
+          Add Makefile rule `AK.a`. Build it. Walk the first
+          compile errors. Stop after the first error class is
+          understood (do NOT plough through fixing).
+
+  fry825+ Iterate per fry824's error log. One error class per
+          fry log. Each fix either lands in src/user/libc/
+          (extending the shared libc) or in a Ladybird-vendored
+          file (with an upstream-divergence comment). Stop and
+          explain after every fix.
+
+  CHUNK 2 EXIT CRITERION:
+    AK.a + LibCore.a build clean.
+    sha256 recorded for each.
+    Clean rebuild via planv3 Rule 12 succeeds.
+    Then Chunk 3 (LibJS) starts.
+
+DECISION GATE (still applies, unchanged from fry817)
+=====================================================================
+  D1 supersede TATERSURF_*.md       — confirmed 2026-04-25 (fry817)
+  D2 -fno-exceptions + ErrorOr      — confirmed 2026-04-25 (fry817)
+  D3 cross-compiler libstdc++ as-is — confirmed 2026-04-25 (fry817)
+  D4 Phase 23 brought forward       — RESOLVED — already done (fry818)
+  D5 layout under src/user/apps/    — confirmed 2026-04-25 (fry817)
+                                       → Ladybird AK/Libraries go to
+                                         src/user/apps/ladybird/
+                                       → 3rd-party vendor goes to
+                                         src/user/apps/ladybird-3rd/
+
+NO REBUILD THIS STEP
+=====================================================================
+This log is investigation only. No source modified. No build run.
+No SHA-256 to record (planv3 Rule 16).
+
+NEXT
+=====================================================================
+fry820 — Cleanup: remove the empty src/user/apps/ladybird/{shim,3rd}
+        directories created in error earlier this session. Tree-only
+        change, no source files touched.
+        Stop and explain after.
+
+END fry819
+=====================================================================

@@ -1,0 +1,62 @@
+2026-05-06 23:41:54 CDT
+
+TaterTOS64v3 Chrome Port — Dirfd-Aware *at() Filesystem Layer
+
+Completed work:
+- Added FD_DIR = 7 to enum fry_fd_kind.
+- Added per-FD canonical path storage:
+  - struct fry_process_shared::fd_paths[FRY_FD_MAX][FRY_PATH_MAX]
+  - Initialized and cleared fd_paths during shared init, process teardown, and fd_release().
+- Added kernel path normalization and dirfd resolution helpers:
+  - Collapses duplicate slashes.
+  - Handles "." segments.
+  - Handles ".." without escaping above root.
+  - Resolves AT_FDCWD relative paths against "/".
+  - Resolves relative paths against FD_DIR canonical paths.
+  - Returns ENOTDIR when a non-directory descriptor is used as a dirfd.
+- Updated SYS_OPEN and SYS_OPENAT:
+  - Store canonical paths on opened file descriptors.
+  - Open directories as FD_DIR handles when the target is a directory.
+  - Honor O_DIRECTORY with ENOTDIR for non-directories.
+  - Reject writable opens of directories with EISDIR.
+- Updated dup/dup2 to preserve canonical fd path metadata, including FD_DIR descriptors.
+- Updated fstat() kernel behavior to support FD_DIR by statting the stored canonical path.
+- Removed the previous ENOTSUP shortcut from faccessat/readlinkat/fstatat relative dirfd handling.
+- Added syscall numbers:
+  - SYS_MKDIRAT = 115
+  - SYS_UNLINKAT = 116
+  - SYS_RENAMEAT = 117
+- Implemented kernel SYS_MKDIRAT, SYS_UNLINKAT, and SYS_RENAMEAT using the shared dirfd resolver.
+- Added libc fry wrappers:
+  - fry_mkdirat()
+  - fry_unlinkat()
+  - fry_renameat()
+- Added POSIX wrappers:
+  - mkdirat()
+  - unlinkat()
+  - renameat()
+- Routed mkdir(), unlink(), rmdir(), and rename() through their *at() equivalents.
+- Added public declarations in:
+  - src/include/sys/stat.h for mkdirat()
+  - src/include/unistd.h for unlinkat()
+  - src/include/stdio.h for renameat()
+
+Why:
+- Chromium and GN use dirfd-relative filesystem probes extensively.
+- Returning ENOTSUP for ordinary relative *at() calls would create false configuration failures.
+- A directory descriptor must carry stable path context; using the existing vfs_file pointer alone was not sufficient.
+- FD_DIR keeps directory handles explicit without pretending directories are readable regular files.
+
+Verification:
+- Ran git diff --check for touched files: clean.
+- Ran required clean step:
+  make clean
+- Ran required clean verbose rebuild:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+- Build completed successfully.
+- ISO produced at:
+  out/tatertos64v3.iso
+
+Notes:
+- Existing unrelated build warnings remain.
+- QEMU/runtime logs were not touched.

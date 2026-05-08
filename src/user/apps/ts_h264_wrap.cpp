@@ -5,11 +5,13 @@
  * All OpenH264 C++ interaction is confined to this file.
  */
 
+extern "C" {
+#include <string.h>
+}
 #include "ts_h264_wrap.h"
 #include <codec_api.h>
 #include <codec_def.h>
 #include <codec_app_def.h>
-#include <string.h>
 
 extern "C" {
 

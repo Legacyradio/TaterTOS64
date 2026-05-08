@@ -1,0 +1,10 @@
+# Root BUILD.gn for TaterTOS64 Chromium port
+#
+# Validates the cross-toolchain by building the chrome_probe.
+
+executable("chrome_probe") {
+  sources = [
+    "//src/user/apps/chrome_probe.c",
+  ]
+  output_name = "chrome_probe"
+}

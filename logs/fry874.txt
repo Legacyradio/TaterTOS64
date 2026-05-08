@@ -1,0 +1,501 @@
+fry874 - Real Ladybird web_smoke Start
+=====================================================================
+DATE (UTC):   2026-04-28 11:17:21 UTC
+DATE (LOCAL): 2026-04-28 06:17:21 CDT
+AUTHOR:       Codex
+PARENT:       fry873 (Ladybird Port Shortcut Audit)
+
+OBJECTIVE
+=====================================================================
+Replace the empty archive-only link smoke with a real Ladybird web smoke
+test that exercises actual engine code.
+
+PLAN
+=====================================================================
+1. Inspect the currently ported LibGC, LibJS, and LibWeb APIs.
+2. Add a web_smoke test target that does real work, not just includes.
+3. The test must, at minimum:
+   - initialize/use LibGC or JS heap state required by LibWeb objects,
+   - create real LibWeb DOM objects,
+   - build or mutate a DOM tree,
+   - verify observable DOM state and fail on mismatch.
+4. Run `make web_smoke`.
+5. Resolve honest compile/link failures without adding fake stubs.
+6. Record all completed work and blockers here.
+
+RULES
+=====================================================================
+- Follow the plan step by step.
+- No minimal/fake smoke success.
+- Patch-based edits only.
+- Log every completed step with timestamps.
+- Include why for every code change.
+- Do not use QEMU logs.
+
+EXECUTION
+=====================================================================
+DATE (UTC):   2026-04-28 11:17:21 UTC
+DATE (LOCAL): 2026-04-28 06:17:21 CDT
+
+1. Created fry874.txt and began API inspection.
+
+Why:
+fry872's link smoke returned 0 without instantiating or exercising the
+browser engine. The next step must force real LibWeb/LibJS/LibGC usage
+so missing subsystems surface honestly.
+
+2. Added real web_smoke.cpp and Makefile target.
+
+DATE (UTC):   2026-04-28 11:20:00 UTC
+DATE (LOCAL): 2026-04-28 06:20:00 CDT
+
+Changed:
+  src/user/apps/ladybird/test/web_smoke.cpp
+  Makefile
+
+What changed:
+- Added web_smoke target.
+- Added a test that creates a JS VM/realm, creates a LibWeb Document,
+  populates html/head/body, and verifies observable DOM state.
+- Removed duplicate standalone simdjson.o linkage from link_smoke and
+  web_smoke because LibJS.a already contains simdjson.o.
+
+Why:
+The empty link smoke did not exercise engine behavior. The duplicate
+simdjson linkage only became visible once web_smoke pulled real LibJS
+objects from LibJS.a.
+
+3. Narrowed QuickJS linkage for Ladybird regex.
+
+DATE (UTC):   2026-04-28 11:20:46 UTC
+DATE (LOCAL): 2026-04-28 06:20:46 CDT
+
+Changed:
+  Makefile
+
+What changed:
+- Added QUICKJS_REGEX_OBJS for cutils/libregexp/libunicode.
+- Updated link_smoke and web_smoke to use QUICKJS_REGEX_OBJS instead
+  of the full QUICKJS_OBJS set.
+
+Why:
+LibRegex needs QuickJS regexp support, not the full QuickJS engine.
+Linking quickjs.o introduced duplicate lre_check_stack_overflow and
+lre_realloc definitions once real LibRegex symbols were pulled.
+
+4. Added C/POSIX integration fixes needed by LibGC and smoke linking.
+
+DATE (UTC):   2026-04-28 11:22:19 UTC
+DATE (LOCAL): 2026-04-28 06:22:19 CDT
+
+Changed:
+  src/include/setjmp.h
+  src/user/libc/posix.c
+  Makefile
+
+What changed:
+- Added extern "C" guards around setjmp/longjmp declarations.
+- Added madvise() and posix_madvise() wrappers.
+- Added -ffunction-sections/-fdata-sections for Ladybird C++ objects.
+- Added --gc-sections to link_smoke and web_smoke links.
+
+Why:
+LibGC calls setjmp from C++ and requires the unmangled C symbol from
+setjmp.S. LibGC also uses madvise as an advisory memory hint; returning
+success is valid for the current TaterTOS userland because there is no
+kernel paging hint backend yet and GC correctness does not depend on
+the hint. Section GC keeps smoke links focused on code actually reached
+by the test instead of every unused function in a pulled archive object.
+
+5. Fixed freestanding C++ ctype coverage for LibJS DateParser.
+
+DATE (UTC):   2026-04-28 11:30:03 UTC
+DATE (LOCAL): 2026-04-28 06:30:06 CDT
+
+Changed:
+  src/include/c++/cctype
+
+What changed:
+- Added ASCII implementations and global using declarations for
+  isalpha/isalnum/isupper/islower/isprint/isgraph/iscntrl/ispunct/
+  isxdigit/isblank/toupper/tolower.
+
+Why:
+LibJS/Runtime/DateParser.h includes <cctype> and uses unqualified
+isalpha through GenericLexer callbacks. The TaterTOS freestanding
+<cctype> wrapper only exposed isspace and isdigit, so the real LibJS
+build failed before link. Expanding the standard ctype surface keeps
+Ladybird source intact and matches the libc ctype API already declared
+in src/include/ctype.h.
+
+6. Rebuilt LibGC after runtime/header fixes and relinked web_smoke.
+
+DATE (UTC):   2026-04-28 11:32:54 UTC
+DATE (LOCAL): 2026-04-28 06:32:54 CDT
+
+Changed:
+  src/user/apps/ladybird/LibGC.a (generated)
+  src/user/apps/ladybird/Libraries/LibGC/*.o (generated)
+
+What changed:
+- Rebuilt LibGC with the current -frtti flags and corrected setjmp.h.
+- Re-ran make web_smoke.
+
+Result:
+- The stale mangled setjmp(unsigned long*) reference was cleared.
+- The stale missing typeinfo for GC::WeakContainer was cleared.
+- web_smoke still fails at link.
+
+Current honest blockers:
+- LibWeb.a only contains a tiny DOM/bindings subset, but real
+  Document pulls HTML, CSS, Painting, Selection, WebIDL exception,
+  DOMURL, collection, history, parser, animation, fullscreen, and
+  related objects.
+- LibJS.a currently omits real Temporal/Intl object files and the
+  dependent LibUnicode/LibCrypto bigint pieces used by Date/Temporal.
+- The userland C++ runtime still lacks a real __dynamic_cast
+  implementation for RTTI-using LibJS code.
+
+Why:
+This confirms the target has progressed from compile/runtime-header
+failures to real missing Ladybird module coverage. No fake pass was
+introduced.
+
+7. Added static archive grouping for Ladybird smoke links.
+
+DATE (UTC):   2026-04-28 11:34:13 UTC
+DATE (LOCAL): 2026-04-28 06:34:13 CDT
+
+Changed:
+  Makefile
+
+What changed:
+- Wrapped the Ladybird static archives in --start-group/--end-group for
+  link_smoke and web_smoke.
+
+Result:
+- web_smoke still fails with the same classes of unresolved symbols.
+
+Why:
+LibWeb, LibJS, LibGC, LibCore, LibGfx, and AK have cyclic references.
+Archive grouping is the correct linker treatment for cyclic static
+archives. Since this did not materially reduce the failures, the
+remaining unresolved symbols are real manifest/runtime coverage gaps,
+not just archive scan ordering.
+
+8. Probed missing third-party dependency coverage for real modules.
+
+DATE (UTC):   2026-04-28 11:35:16 UTC
+DATE (LOCAL): 2026-04-28 06:35:16 CDT
+
+Changed:
+  none
+
+Checks:
+- Tried compiling LibCrypto/BigInt/SignedBigInteger.cpp.
+- Tried compiling LibUnicode/TimeZone.cpp.
+- Tried compiling LibGfx/ImmutableBitmap.cpp.
+- Tried compiling LibGfx/TextLayout.cpp.
+
+Result:
+- LibCrypto BigInt cannot compile: missing external tommath.h.
+- LibUnicode TimeZone cannot compile: missing ICU headers such as
+  unicode/locid.h.
+- LibGfx ImmutableBitmap/TextLayout cannot compile: missing Skia
+  headers such as core/SkBlender.h and core/SkFont.h.
+
+Why:
+These are real upstream Ladybird dependencies, not symbols that can be
+fixed by adding existing project objects to an archive. This explains
+why simply expanding LibJS/LibWeb/LibGfx manifests is not sufficient for
+Document-level web_smoke yet.
+
+9. Confirmed dependency policy: no reduced Ladybird shortcut.
+
+DATE (UTC):   2026-04-28 11:56:25 UTC
+DATE (LOCAL): 2026-04-28 06:56:25 CDT
+
+Changed:
+  none
+
+What changed:
+- User clarified that this is not a decision point under the stressed
+  rules.
+- The correct next path is to bring in/build the real missing
+  dependencies, not to reduce Ladybird to avoid Temporal/Intl/Skia.
+- Inspected tools/sync_ladybird_deps.sh and current ladybird-3rd
+  vendor directories.
+
+Findings:
+- tools/sync_ladybird_deps.sh copies missing Ladybird library files
+  from /home/legacyindieradio/ladybird-upstream/Libraries into the port.
+- It does not vendor third-party dependencies.
+- Current ladybird-3rd contains fast_float, fmt, simdjson, and simdutf,
+  but no local tommath, ICU, or Skia headers.
+
+Why:
+The port must not fake or bypass real upstream requirements just to make
+web_smoke pass.
+
+10. Vendored and built pinned libtommath, then wired LibCrypto BigInt.
+
+DATE (UTC):   2026-04-28 13:11:55 UTC
+DATE (LOCAL): 2026-04-28 08:11:55 CDT
+
+Changed:
+  Makefile
+  src/include/math.h
+  src/include/c++/cmath
+  src/user/apps/ladybird-3rd/libtommath/ (new vendored dependency)
+  src/user/apps/ladybird/LibTomMath.a (generated)
+  src/user/apps/ladybird/LibCrypto.a (generated)
+  src/user/apps/ladybird-3rd/libtommath/*.o (generated)
+  src/user/apps/ladybird/Libraries/LibCrypto/BigInt/*.o (generated)
+
+What changed:
+- Fetched libtommath v1.3.0, matching Ladybird upstream vcpkg metadata.
+- Added Makefile rules for LibTomMath.a.
+- Added a BigInt-only LibCrypto.a using real SignedBigInteger and
+  UnsignedBigInteger sources.
+- Added LibCrypto.a and LibTomMath.a to link_smoke/web_smoke archive
+  groups.
+- Exposed existing libc math functions ldexp/frexp/scalbn through
+  math.h and c++/cmath so UnsignedBigInteger.cpp compiles.
+
+Verification:
+- make libtommath libcrypto completed.
+- SignedBigInteger.cpp and UnsignedBigInteger.cpp compile against the
+  vendored tommath.h and real libtommath object set.
+
+Why:
+LibJS Date/Temporal paths require real Crypto BigInt behavior. Adding
+the upstream dependency and compiling the real BigInt sources removes
+one actual missing dependency without reducing Ladybird.
+
+11. Added real LibFileSystem coverage and missing LibJS runtime objects.
+
+DATE (UTC):   2026-04-28 13:22:16 UTC
+DATE (LOCAL): 2026-04-28 08:22:16 CDT
+
+Changed:
+  Makefile
+  src/include/sys/statvfs.h
+  src/include/stdlib.h
+  src/user/libc/posix.c
+  src/user/apps/ladybird/LibFileSystem.a (generated)
+  src/user/apps/ladybird/LibJS.a (generated archive update)
+  src/user/apps/ladybird/Libraries/LibFileSystem/FileSystem.o (generated)
+  src/user/apps/ladybird/Libraries/LibJS/Runtime/ArgumentsObject.o (generated)
+  src/user/apps/ladybird/Libraries/LibJS/Runtime/AggregateError.o (generated)
+  src/user/apps/ladybird/Libraries/LibJS/Runtime/AggregateErrorConstructor.o (generated)
+  src/user/apps/ladybird/Libraries/LibJS/Runtime/AggregateErrorPrototype.o (generated)
+
+What changed:
+- Added a LibFileSystem.a target and linked it into link_smoke/web_smoke.
+- Added the POSIX statvfs header/symbols needed to compile upstream
+  LibFileSystem/FileSystem.cpp.
+- Added realpath() to the libc POSIX surface so FileSystem::real_path()
+  compiles. On TaterTOS this canonicalizes . and .. path components;
+  symlink resolution is currently a no-op because the filesystem layer
+  does not expose symlink support.
+- Added ArgumentsObject and AggregateError/AggregateErrorConstructor/
+  AggregateErrorPrototype to the LibJS manifest.
+- Built those new object files and updated LibJS.a without rebuilding
+  the entire already-existing archive.
+
+Verification:
+- make src/user/libc/posix.o completed.
+- make libfilesystem completed.
+- The four new LibJS runtime objects compiled successfully and are
+  present in LibJS.a.
+- make web_smoke still fails at link, but the prior visible
+  ArgumentsObject/AggregateError gaps and FileSystem::exists/is_directory
+  gaps are cleared.
+
+Current honest blockers:
+- LibWeb still needs substantial real module coverage: HTML Window/
+  BrowsingContext/EventLoop/custom elements, DOM ShadowRoot/ParentNode/
+  Range/mutation/slotting, CSS StyleScope/StyleComputer/CSSStyleSheet,
+  WebIDL DOMException/callback plumbing, Selection, Painting/Layout, and
+  HTTP Cookie support.
+- LibGfx still needs real Skia-backed objects such as ImmutableBitmap,
+  GlyphRun, Filter, and related painting display-list support.
+- LibJS still needs real Intl/Temporal/Unicode coverage, which depends
+  on ICU rather than local stubs.
+- LibJS RustIntegration still needs generated RustFFI.h and the Rust
+  crate outputs. The C++ source alone cannot be added honestly.
+- The userland C++ runtime still lacks a real Itanium ABI
+  __dynamic_cast implementation.
+- AsmInterpreter needs its C++ object plus generated architecture
+  assembly from Ladybird's AsmIntGen flow.
+
+Why:
+Document-level web_smoke pulls actual JS runtime and filesystem code.
+Adding the real in-tree objects and POSIX support removes concrete
+missing-symbol classes without reducing the smoke test or faking
+Ladybird behavior.
+
+12. Probed the real AsmInterpreter generation path.
+
+DATE (UTC):   2026-04-28 13:25:04 UTC
+DATE (LOCAL): 2026-04-28 08:25:04 CDT
+
+Changed:
+  /home/legacyindieradio/ladybird-upstream/Libraries/LibJS/AsmIntGen/target/ (generated host build output)
+
+What changed:
+- Built Ladybird's upstream AsmIntGen Rust host tool with cargo.
+- Attempted to compile the upstream gen_asm_offsets.cpp helper against
+  the local ported Ladybird headers.
+
+Verification:
+- cargo build --release completed for AsmIntGen.
+- gen_asm_offsets.cpp reached host link, but failed because it depends
+  on AK::vout from the AK host library.
+
+Result:
+- The AsmInterpreter path is viable, but not complete yet.
+- The next honest step is to add a real host-tool path for
+  gen_asm_offsets, either by linking the needed AK host objects or by
+  adding an equivalent host helper that emits the same layout constants
+  from the same TaterTOS-port headers.
+
+Why:
+AsmInterpreter::is_available/run cannot be faked off under the current
+rules. Upstream generates architecture assembly from the DSL plus
+layout constants, so the port needs that real generation path.
+
+13. Completed the real x86_64 AsmInterpreter generation/build wiring.
+
+DATE (UTC):   2026-04-28 16:05:29 UTC
+DATE (LOCAL): 2026-04-28 11:05:29 CDT
+
+Changed:
+  /home/legacyindieradio/TaterTOS64/Makefile
+  /home/legacyindieradio/TaterTOS64/src/user/apps/ladybird/Libraries/LibJS/Bytecode/AsmInterpreter/asm_offsets.conf
+  /home/legacyindieradio/TaterTOS64/src/user/apps/ladybird/Libraries/LibJS/Bytecode/AsmInterpreter/asmint_x86_64.S
+  /home/legacyindieradio/TaterTOS64/src/user/apps/ladybird/Libraries/LibJS/Bytecode/AsmInterpreter/AsmInterpreter.o
+  /home/legacyindieradio/TaterTOS64/src/user/apps/ladybird/Libraries/LibJS/Bytecode/AsmInterpreter/asmint_x86_64.o
+  /home/legacyindieradio/TaterTOS64/src/user/apps/ladybird/LibJS.a
+
+What changed:
+- Linked the upstream gen_asm_offsets.cpp helper against the needed
+  host-built local AK, fmt, and simdutf sources.
+- Generated asm_offsets.conf from the local TaterTOS-port Ladybird
+  headers.
+- Ran upstream AsmIntGen against upstream asmint.asm and Bytecode.def
+  to generate asmint_x86_64.S.
+- Added Makefile wiring for AsmInterpreter.cpp and the generated
+  x86_64 assembly object in LibJS.a.
+
+Verification:
+- /tmp/gen_asm_offsets linked successfully.
+- asm_offsets.conf and asmint_x86_64.S generated successfully.
+- make src/user/apps/ladybird/Libraries/LibJS/Bytecode/AsmInterpreter/AsmInterpreter.o \
+       src/user/apps/ladybird/Libraries/LibJS/Bytecode/AsmInterpreter/asmint_x86_64.o completed.
+- make libjs completed and rebuilt LibJS.a with the AsmInterpreter
+  objects.
+- make web_smoke still fails at link, but the captured linker log has
+  no remaining AsmInterpreter or asm_interpreter_entry unresolveds.
+
+Current honest blockers:
+- LibWeb module coverage remains incomplete: HTML Window/BrowsingContext/
+  EventLoop/custom elements, DOM ShadowRoot/ParentNode/slotting,
+  CSS StyleScope/CSSStyleSheet, WebIDL DOMException/intrinsics,
+  Selection, Painting/Layout, DOMURL, and HTTP Cookie.
+- LibGfx still needs real Skia-backed ImmutableBitmap/GlyphRun/Filter
+  and display-list support.
+- LibJS still needs real RustIntegration outputs, Intl/Temporal/Unicode
+  and ICU-backed support, plus a real userland Itanium __dynamic_cast.
+
+Why:
+AsmInterpreter is a real upstream runtime component, not optional glue.
+Generating and linking its architecture assembly removes that blocker
+without disabling the runtime path or adding a fake implementation.
+
+14. Added a real userland Itanium ABI dynamic_cast path.
+
+DATE (UTC):   2026-04-28 16:07:30 UTC
+DATE (LOCAL): 2026-04-28 11:07:30 CDT
+
+Changed:
+  /home/legacyindieradio/TaterTOS64/src/user/libc/cxx_runtime.cpp
+  /home/legacyindieradio/TaterTOS64/src/user/libc/cxx_runtime.o
+
+What changed:
+- Added __dynamic_cast to the userland C++ runtime.
+- The implementation reads the object vtable, obtains the complete
+  object and dynamic type from the Itanium ABI vtable header, walks
+  public RTTI bases for __class_type_info, __si_class_type_info, and
+  __vmi_class_type_info layouts, handles virtual-base offsets, and
+  rejects ambiguous or non-public matches.
+
+Verification:
+- make src/user/libc/cxx_runtime.o completed.
+- x86_64-elf-nm src/user/libc/cxx_runtime.o shows __dynamic_cast.
+- make web_smoke still fails at link, but the captured linker log has
+  no remaining __dynamic_cast unresolveds.
+
+Current honest blockers:
+- LibJS RustIntegration symbols remain unresolved: compile_eval,
+  compile_function, compile_builtin_file, compile_module,
+  compile_dynamic_function, and free_function_ast.
+- LibJS Intl/Temporal/Unicode remain unresolved and still require real
+  ICU-backed port work plus the missing Ladybird source coverage.
+- LibWeb and LibGfx still need the same real module coverage listed in
+  step 13.
+
+Why:
+Ladybird uses RTTI heavily through GC/platform object casts. Returning
+the input pointer or disabling RTTI would shortcut correctness. This
+adds actual ABI RTTI traversal so the linker gap is closed without a
+fake cast.
+
+15. Added the real C++ RustIntegration wrapper and generated FFI header.
+
+DATE (UTC):   2026-04-28 16:10:19 UTC
+DATE (LOCAL): 2026-04-28 11:10:19 CDT
+
+Changed:
+  /home/legacyindieradio/ladybird-upstream/target/release/liblibjs_rust.a (host probe artifact)
+  /home/legacyindieradio/ladybird-upstream/target/release/build/libjs_rust-932852ea2a667f9a/out/RustFFI.h (host generated artifact)
+  /home/legacyindieradio/TaterTOS64/src/user/apps/ladybird/Libraries/LibJS/RustFFI.h
+  /home/legacyindieradio/TaterTOS64/src/user/apps/ladybird/Libraries/LibJS/RustIntegration.o
+  /home/legacyindieradio/TaterTOS64/src/user/apps/ladybird/LibJS.a
+  /home/legacyindieradio/TaterTOS64/Makefile
+
+What changed:
+- Built the upstream LibJS Rust crate in host release mode to generate
+  RustFFI.h and inspect the Rust static library shape.
+- Copied the generated RustFFI.h into the local LibJS port tree.
+- Compiled the real RustIntegration.cpp wrapper.
+- Added RustIntegration.o to the LibJS manifest and rebuilt LibJS.a.
+
+Verification:
+- cargo build --release completed for the upstream LibJS Rust crate.
+- make src/user/apps/ladybird/Libraries/LibJS/RustIntegration.o completed.
+- make libjs completed and rebuilt LibJS.a with RustIntegration.o.
+- x86_64-elf-nm src/user/apps/ladybird/LibJS.a shows the C++
+  JS::RustIntegration wrapper symbols are now defined.
+- make web_smoke still fails at link, but the RustIntegration failures
+  are now the raw Rust FFI exports such as rust_compile_eval,
+  rust_compile_function, rust_compile_module, rust_compile_builtin_file,
+  rust_compile_dynamic_function, rust_parse_program, and
+  rust_free_function_ast.
+
+Current honest blocker:
+- The generated host liblibjs_rust.a is not suitable for direct
+  TaterTOS userland linking. It pulls Rust std/Linux-facing symbols such
+  as mmap64, pthread_* helpers, write/writev, pwrite/pwritev, and
+  host process/runtime support.
+- The next real step is a TaterTOS Rust target path: either build the
+  Rust crate for a freestanding target with the required allocator/panic
+  hooks and libc surface, or deliberately port the minimum Rust std
+  syscall surface needed by that archive. Dropping the host archive into
+  the image would be a shortcut and is not acceptable.
+
+Why:
+RustIntegration.cpp is the real Ladybird C++ boundary to the Rust parser
+and bytecode generator. Adding it moves the port from missing C++
+wrapper functions to the actual Rust target-port problem without faking
+parser/compiler behavior.

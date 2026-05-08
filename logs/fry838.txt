@@ -1,0 +1,175 @@
+fry838 — LibCore source copy + 11 POSIX shims + LibMain header +
+         LibThreading headers + Platform header. 11/35 LibCore .cpp green.
+=====================================================================
+DATE (UTC):   2026-04-26 13:31:24
+DATE (LOCAL): 2026-04-26 08:31:24 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSOR:    fry837 (AK.a built)
+
+WHAT
+=====================================================================
+- Copied 36 LibCore .cpp + ~36 .h + 4 Platform files from upstream.
+- Added Makefile target `libcore` → produces
+  src/user/apps/ladybird/LibCore.a.
+- Per U1 (fry823) carve-out, MimeData.cpp is excluded — it's the
+  only LibCore file that #includes <LibURL/Parser.h>. LibURL is
+  deferred to Chunk 4.
+- LibCore compile list: 35 .cpp + 1 Platform/.cpp = 36 .o.
+
+POSIX SHIM HEADERS ADDED THIS LOG (11)
+=====================================================================
+src/include/netdb.h        getaddrinfo / freeaddrinfo / addrinfo
+src/include/sys/socket.h   struct sockaddr / sockaddr_in (POSIX
+                            layout, binary-compatible with
+                            fry_sockaddr); socket/bind/listen/etc.
+                            prototypes; htons/htonl inline forwarders
+src/include/fcntl.h        Top-level fcntl.h (re-exports fry_fcntl.h
+                            + adds POSIX flags: O_EXCL, O_CLOEXEC,
+                            AT_FDCWD, etc.)
+src/include/signal.h       Full POSIX signal surface: SIGHUP..SIGSYS,
+                            sigset_t, struct sigaction, siginfo_t,
+                            sigaction/sigprocmask/sigemptyset/etc.
+                            (TaterTOS doesn't deliver async signals
+                            but the API surface exists)
+src/include/sys/stat.h     struct stat + S_IFMT / S_IRUSR / etc.
+                            S_IS* macros, mkdir/chmod/umask/stat
+src/include/poll.h         POSIX poll + struct pollfd (POLLIN /
+                            POLLOUT / POLLERR / POLLHUP)
+src/include/pwd.h          struct passwd + getpwuid/getpwnam
+                            (TaterTOS no multi-user yet — calls
+                            return null)
+src/include/spawn.h        posix_spawn family + posix_spawnattr_t
+                            + POSIX_SPAWN_* flags
+src/include/sys/ioctl.h    ioctl + TIOCGWINSZ / FIONREAD / struct
+                            winsize
+src/include/sys/resource.h getrlimit/setrlimit/getrusage + struct
+                            rlimit + struct rusage + RLIMIT_*
+src/include/sys/wait.h     wait/waitpid/wait3/wait4/waitid + W*
+                            macros (WEXITSTATUS, WIFEXITED, etc.)
+src/include/termios.h      struct termios + flag constants +
+                            tcgetattr/tcsetattr/tcflush/tcdrain
+src/include/utime.h        struct utimbuf + utime
+src/include/shadow.h       struct spwd + getspnam (multi-user
+                            placeholder)
+src/include/sys/mman.h     mmap/munmap/mprotect/madvise + PROT_* /
+                            MAP_* / MADV_*
+src/include/dirent.h       opendir/readdir/closedir + struct
+                            dirent + DT_* (UNKNOWN/FIFO/CHR/DIR/
+                            BLK/REG/LNK/SOCK/WHT)
+src/include/sys/select.h   select/pselect + fd_set + FD_ZERO/SET/
+                            CLR/ISSET macros
+
+UPSTREAM HEADERS COPIED (no engineering, just brought in)
+=====================================================================
+src/user/apps/ladybird/Libraries/LibMain/Main.h
+src/user/apps/ladybird/Libraries/LibThreading/Mutex.h
+src/user/apps/ladybird/Libraries/LibThreading/RWLock.h
+src/user/apps/ladybird/Libraries/LibThreading/ConditionVariable.h
+src/user/apps/ladybird/Libraries/LibThreading/Forward.h
+src/user/apps/ladybird/Libraries/LibCore/Platform/ScopedAutoreleasePool.h
+
+GENERATED HEADERS
+=====================================================================
+src/user/apps/ladybird/Libraries/LibCore/Export.h
+   Empty CORE_API macro (upstream's CMake-generated EXPLICIT_SYMBOL_EXPORT
+   header). For our static-lib build all exports are unconditional;
+   the macro is empty.
+
+PATCHES
+=====================================================================
+src/include/errno.h
+   - Added errno declaration via __errno_location() (libc.c provides;
+     was previously only in libc.h, not <errno.h>).
+   - Added EMSGSIZE, ENOBUFS, EPROTONOSUPPORT, ESOCKTNOSUPPORT,
+     ENETDOWN, ENETRESET, ESHUTDOWN, ETOOMANYREFS, EUSERS for
+     LibCore network paths.
+
+src/include/signal.h
+   - Removed duplicate sigsetjmp / siglongjmp inline-static
+     definitions; setjmp.h already provides them as macros + the
+     sigjmp_buf typedef.
+
+src/include/stdlib.h
+   - Added secure_getenv (alias of getenv on TaterTOS — no
+     privileged-context distinction yet).
+   - Added clearenv extern declaration.
+
+BUILD ATTEMPTS
+=====================================================================
+#1  AddressInfoVector.cpp → netdb.h missing
+#2  → sys/socket.h missing
+#3  → LibCore/Export.h missing (CMake-generated)
+#4  → fcntl.h missing
+#5  → signal.h missing
+#6  → sys/stat.h missing
+#7  → poll.h missing
+#8  → pwd.h missing
+#9  → batch (pwd, spawn, sys/ioctl, sys/resource, sys/wait, termios,
+       utime) → shadow.h missing
+#10 → sys/mman.h missing
+#11 → setjmp duplicate + errno not declared
+#12 → struct sockaddr typedef vs `struct sockaddr*` in System.h
+#13 → LibMain/Main.h missing (copied)
+#14 → dirent.h missing
+#15 → EMSGSIZE missing
+#16 → DT_WHT missing
+#17 → secure_getenv / clearenv missing
+#18 → LibThreading/RWLock.h missing (copied)
+#19 → LibCore/Platform/ScopedAutoreleasePool.h missing (copied)
+#20 → sys/select.h missing
+(stop point) #21 → AK::Traits<pthread_t> not specialised (real
+                   engineering decision, fry839)
+
+BUILD PROGRESS
+=====================================================================
+LibCore .cpp files compiled clean:
+  AddressInfoVector AnonymousBuffer ArgsParser ConfigFile Directory
+  DirectoryEntry DirIterator ElapsedTimer Environment EventLoop
+  EventLoopImplementation
+  (11 of 35 — a third of the way)
+
+Build now stops on EventLoopImplementationUnix.cpp because the AK
+HashMap<pthread_t, ThreadData*> needs an AK::Traits<pthread_t>
+specialisation that doesn't exist. pthread_t in TaterTOS is a
+struct (containing fry_thread + ctx), not a primitive integer like
+glibc's pthread_t. AK's default Traits<T> requires hash + equality,
+which the struct doesn't provide.
+
+REMAINING UPSTREAM SISTER LIB DEPS DETECTED
+=====================================================================
+- LibMain/Main.h: Main::Arguments struct (copied; ArgsParser uses)
+- LibThreading/{Mutex,RWLock,ConditionVariable}.h: pthread_*-backed
+  primitives (copied; EventLoop uses)
+- ScopedAutoreleasePool.h: macOS-specific RAII (copied; required by
+  EventLoopImplementationUnix.cpp's #include guard but no-op on
+  TaterTOS)
+
+NOT DONE (intentional)
+=====================================================================
+- pthread_t hash specialisation (fry839 — real engineering decision)
+- The remaining 24 LibCore .cpp files
+- LibCore.a archive
+- LibCore link-line dependency on LibURL/LibUnicode/LibTextCodec —
+  per fry823's carve-out, none of these need to be present at .a
+  archive time (archive doesn't link). The link-time dep only matters
+  when an executable links AK + LibCore.
+
+NEXT
+=====================================================================
+fry839 — Engineer AK::Traits<pthread_t> specialisation:
+  Option A: add a #ifdef AK_OS_TATERTOS branch in AK/HashFunctions.h
+            providing hash(pthread_t) by combining the inner
+            fry_thread + ctx pointers.
+  Option B: patch EventLoopImplementationUnix.cpp to key the HashMap
+            by uintptr_t (cast pthread_t to its memory address).
+  Option C: change libc.h's pthread_t to be a thin pointer (sizeof
+            void*) so AK's default Traits<void*> works.
+
+  Recommendation: Option A. Real engineering, scoped to AK. C
+  changes the platform ABI; B is a one-off patch.
+
+  Continue building LibCore.
+
+END fry838
+=====================================================================

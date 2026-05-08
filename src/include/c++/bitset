@@ -1,0 +1,17 @@
+#pragma once
+
+#include <stddef.h>
+
+namespace std {
+    template<size_t N>
+    class bitset {
+    public:
+        bitset() : m_bits(0) {}
+        bitset(unsigned long long val) : m_bits(val) {}
+        bitset& operator=(unsigned long long val) { m_bits = val; return *this; }
+        bool operator[](size_t i) const { return (m_bits >> i) & 1; }
+        void set(size_t i) { m_bits |= (1ULL << i); }
+    private:
+        unsigned long long m_bits;
+    };
+}

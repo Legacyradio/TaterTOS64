@@ -1,0 +1,27 @@
+// TaterTOS64v3 — minimal <iomanip> for freestanding C++.
+// Origin log: logs/fry868.txt
+//
+// Scoped to the surface required by simdjson: hex, setw, setfill.
+
+#pragma once
+
+#include <ostream>
+
+namespace std {
+
+struct _setw { int n; };
+inline _setw setw(int n) { return { n }; }
+
+struct _setfill { char c; };
+inline _setfill setfill(char c) { return { c }; }
+
+inline ostream& hex(ostream& os) { return os; }
+
+// Minimal operator<< for these manipulators.
+template<typename CharT, typename Traits>
+inline basic_ostream<CharT, Traits>& operator<<(basic_ostream<CharT, Traits>& os, _setw) { return os; }
+
+template<typename CharT, typename Traits>
+inline basic_ostream<CharT, Traits>& operator<<(basic_ostream<CharT, Traits>& os, _setfill) { return os; }
+
+} // namespace std

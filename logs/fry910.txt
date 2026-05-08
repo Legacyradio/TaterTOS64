@@ -1,0 +1,43 @@
+Fry Log 910 - Rust std PAL completed for x86_64-unknown-tatertos
+Timestamp: 2026-05-07 18:45 CDT
+Author: Hermes Agent
+
+State: Rust std library COMPILES for x86_64-unknown-tatertos.
+
+Files created (clean-room PAL, no unix inheritance):
+
+  library/std/src/sys/pal/tatertos/mod.rs
+    - init(), cleanup(), abort_internal(), unsupported(), cvt(), cvt_r()
+    - No args::init call (tatertos has no argc/argv concept)
+    - Clean-room implementation, not derived from unix module
+
+  library/std/src/sys/io/error/tatertos.rs
+    - errno(), is_interrupted(), decode_error_kind(), error_string()
+    - Maps TaterTOS errno.h values (EPERM=1 through EINPROGRESS=115)
+    - errno() returns 0 (no TLS errno yet — TODO)
+
+  library/std/src/sys/random/tatertos.rs
+    - fill_bytes() via x86_64 RDRAND instruction
+    - hashmap_random_keys() via rdrand64()
+    - Fallback LFSR PRNG if RDRAND repeatedly fails
+    - Uses reg_byte for setc result
+
+  library/std/src/sys/alloc/tatertos.rs
+    - unsafe impl GlobalAlloc for System
+    - alloc: malloc() for align<=16, memalign() for align>16
+    - dealloc: free()
+    - realloc: realloc()
+    - All via unsafe extern "C" FFI to TaterTOS libc
+
+Files patched:
+  library/std/src/sys/pal/mod.rs — added target_os="tatertos" dispatch
+  library/std/src/sys/io/error/mod.rs — added target_os="tatertos" dispatch
+  library/std/src/sys/random/mod.rs — added target_os="tatertos" dispatch + hashmap exclusion
+  library/std/src/sys/alloc/mod.rs — added target_os="tatertos" dispatch
+  library/std/src/sys/thread_local/mod.rs — added tatertos to hermit guard group (no-op)
+  build/rust/std/rules/BUILD.gn — added 4 new source files
+
+Sysroot built in out/tatertos/local_rustc_sysroot/lib/rustlib/x86_64-unknown-tatertos/lib/
+  20 rlibs including libstd_std.rlib
+
+Next: retry //base:base

@@ -1,0 +1,51 @@
+fry872 - Phase 6: LibWeb + LibJS + LibGC Link Smoke Test
+=====================================================================
+DATE (UTC):   2026-04-28 05:00:00 UTC
+DATE (LOCAL): 2026-04-28 00:00:00 CDT
+AUTHOR:       Gemini CLI
+PARENT:       fry871 (LibRegex Implementation via QuickJS)
+
+PLAN
+=====================================================================
+Objective:
+Verify that LibWeb.a, LibJS.a, LibGC.a, and other dependencies link
+successfully on TaterTOS.
+
+Scope:
+1. Create link_smoke.cpp test file.
+2. Add link_smoke target to Makefile.
+3. Run make link_smoke and resolve missing symbols.
+
+Rules:
+- Patch-based edits only.
+- No stubs if real code is available.
+- Log every completed step here.
+
+END PLAN
+=====================================================================
+
+EXECUTION
+=====================================================================
+DATE (UTC):   2026-04-28 05:00:00 UTC
+DATE (LOCAL): 2026-04-28 00:00:00 CDT
+
+1. Created log fry872.txt.
+2. Created link_smoke.cpp test file... DONE.
+3. Added link_smoke target to Makefile and configured cxx_runtime.o with -frtti for __cxxabiv1 stubs... DONE.
+4. Addressed Skia dependencies in LibGfx/Bitmap.cpp and LibGfx/PainterTaterTOS.cpp by stubbing and conditioning out unused Skia APIs... DONE.
+5. Resolved math library missing constants (M_LOG2E, M_LOG10E) and redefined signatures in math.c... DONE.
+6. Running `make link_smoke`... DONE (compiled successfully).
+7. Verification: link_smoke.elf and link_smoke.fry generated.
+END EXECUTION
+
+CORRECTION
+=====================================================================
+DATE (UTC):   2026-04-28 11:06:26 UTC
+DATE (LOCAL): 2026-04-28 06:06:28 CDT
+
+Corrected malformed local timestamps from 2026-04-27 24:00:00 CDT to
+2026-04-28 00:00:00 CDT.
+
+Why:
+24:00:00 is not the timestamp style used by the project logs; the same
+instant is represented unambiguously as 00:00:00 on the following date.

@@ -1,0 +1,55 @@
+fry858 — Error mapping audit for networking syscalls
+=====================================================================
+DATE (UTC):   2026-04-27 10:40:00
+DATE (LOCAL): 2026-04-27 05:40:00 CDT
+AUTHOR:       Gemini CLI
+PARENT:       fry857 (Verify and add socket options)
+
+OBJECTIVE
+=====================================================================
+Verify that all networking-related POSIX wrappers in src/user/libc/posix.c
+correctly map kernel error codes to the userspace errno variable.
+
+AUDIT RESULTS
+=====================================================================
+The following functions were audited in src/user/libc/posix.c:
+- socket()
+- bind()
+- listen()
+- accept()
+- connect()
+- send() / recv()
+- sendto() / recvfrom()
+- getsockopt() / setsockopt()
+- getsockname() / getpeername()
+- shutdown()
+- poll()
+
+All of the above functions use either posix_error_int() or posix_error()
+to process the return value of their corresponding fry_ syscall.
+These helpers correctly set errno = -rc and return -1 when rc is
+negative, which is the expected POSIX behavior.
+
+The implementation of accept4() added in fry856 also correctly returns
+-1 on failure, though it relies on underlying accept() and fcntl()
+calls which themselves use the posix_error helpers.
+
+WHY
+=====================================================================
+Correct error reporting via errno is critical for LibCore's error
+handling logic (ErrorOr<T>::from_syscall). If a syscall fails without
+setting errno, the application may receive vague or misleading error
+messages, making network debugging impossible.
+
+VERIFICATION
+=====================================================================
+- Visual inspection of src/user/libc/posix.c.
+- Confirmed that posix_error_int and posix_error are defined as:
+  static long posix_error(long rc) {
+      if (rc >= 0) return rc;
+      errno = (int)(-rc);
+      return -1;
+  }
+
+END fry858
+=====================================================================

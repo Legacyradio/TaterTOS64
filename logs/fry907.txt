@@ -1,0 +1,23 @@
+Fry Log 907 - Chromium port handoff / Rust .gni caching blocker
+Timestamp: 2026-05-07 16:00 CDT
+
+State: gn gen works, 2331/2336 C++ targets compile, 5 Rust stdlib targets
+fail, all 12 chrome_probe tests pass in QEMU.
+
+The remaining blocker is a GN .gni caching issue:
+- gcc_toolchain.gni is parsed ONCE in the default tatertos context
+- toolchain_has_rust gets cached as false
+- The linux host toolchain (clang_x64_for_rust_host_build_tools) inherits
+  this cached false and doesn't define rust_macro tool
+- small_ctor proc macro fails because rust_macro is undefined
+
+Three approaches to fix:
+1. Force toolchain_has_rust = true for non-tatertos in the template body
+   after the .gni import (gcc_toolchain.gni:671)
+2. Move cxx_cppdeps outside toolchain_has_rust and drop cxx_rustdeps dep
+3. Add !is_tatertos to small_ctor BUILD.gn to exclude it entirely
+
+All Chromium source patches are applied, TaterTOS libc additions are done.
+To compile from scratch:
+  gn gen out/tatertos --args='target_os="tatertos" target_cpu="x64" is_debug=false is_clang=false symbol_level=0'
+  ninja -C out/tatertos base:base

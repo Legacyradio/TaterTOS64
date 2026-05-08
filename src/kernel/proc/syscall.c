@@ -20,10 +20,12 @@
 #include "../../shared/wifi_abi.h"
 #include "../../drivers/net/netcore.h"
 #include <fry_socket.h>
+#include <sys/prctl.h>
 #include <fry_random.h>
 #include <fry_time.h>
 #include "../entropy/entropy.h"
 #include "../../drivers/timer/rtc.h"
+#include "../../drivers/smp/smp.h"
 #include <fry_seek.h>
 #include <fry_input.h>
 
@@ -88,6 +90,20 @@ static uint8_t g_sys_exit_stack[16384] __attribute__((aligned(16)));
 #define FRY_MAP_FILE    0x40u
 #define FRY_MAP_RESERVE 0x80u
 #define FRY_MAP_GUARD   0x100u
+
+#define FRY_AT_FDCWD            (-100)
+#define FRY_AT_SYMLINK_NOFOLLOW 0x100u
+#define FRY_AT_REMOVEDIR        0x200u
+#define FRY_AT_EACCESS          0x200u
+#define FRY_AT_NO_AUTOMOUNT     0x800u
+#define FRY_AT_EMPTY_PATH       0x1000u
+
+#define FRY_O_ACCMODE   0x3u
+#define FRY_O_DIRECTORY 0x10000u
+
+#define FRY_X_OK 1
+#define FRY_W_OK 2
+#define FRY_R_OK 4
 
 static struct fry_process_shared *proc_shared_state(struct fry_process *p) {
     return p ? p->shared : 0;
@@ -221,7 +237,122 @@ static void fd_release(struct fry_process *p, int fd) {
     shared->fd_table[fd] = -1;
     shared->fd_kind[fd] = FD_NONE;
     shared->fd_flags[fd] = 0;
+    shared->fd_paths[fd][0] = 0;
     if (shared->open_fds > 0) shared->open_fds--;
+}
+
+static uint32_t path_len(const char *s) {
+    uint32_t n = 0;
+    if (!s) return 0;
+    while (s[n]) n++;
+    return n;
+}
+
+static int fd_path_set(struct fry_process_shared *shared, int fd, const char *path) {
+    if (!shared || fd < 3 || fd >= FRY_FD_MAX || !path) return -EINVAL;
+    uint32_t n = path_len(path);
+    if (n == 0 || n >= FRY_PATH_MAX) return -ENAMETOOLONG;
+    for (uint32_t i = 0; i <= n; i++) shared->fd_paths[fd][i] = path[i];
+    return 0;
+}
+
+static int path_append_segment(char out[FRY_PATH_MAX], uint32_t *len,
+                               const char *seg, uint32_t seg_len) {
+    if (!out || !len || !seg || seg_len == 0) return -EINVAL;
+    uint32_t need = *len + ((*len > 1) ? 1u : 0u) + seg_len;
+    if (need >= FRY_PATH_MAX) return -ENAMETOOLONG;
+    if (*len > 1) out[(*len)++] = '/';
+    for (uint32_t i = 0; i < seg_len; i++) out[(*len)++] = seg[i];
+    out[*len] = 0;
+    return 0;
+}
+
+static void path_pop_segment(char out[FRY_PATH_MAX], uint32_t *len) {
+    if (!out || !len || *len <= 1) {
+        if (out) out[0] = '/', out[1] = 0;
+        if (len) *len = 1;
+        return;
+    }
+    while (*len > 1 && out[*len - 1] != '/') (*len)--;
+    if (*len > 1) (*len)--;
+    out[*len] = 0;
+}
+
+static int path_normalize_absolute(const char *in, char out[FRY_PATH_MAX]) {
+    if (!in || !out || in[0] != '/') return -EINVAL;
+    out[0] = '/';
+    out[1] = 0;
+    uint32_t out_len = 1;
+
+    const char *p = in;
+    while (*p) {
+        while (*p == '/') p++;
+        if (!*p) break;
+        const char *seg = p;
+        uint32_t seg_len = 0;
+        while (p[seg_len] && p[seg_len] != '/') seg_len++;
+
+        if (seg_len == 1 && seg[0] == '.') {
+        } else if (seg_len == 2 && seg[0] == '.' && seg[1] == '.') {
+            path_pop_segment(out, &out_len);
+        } else {
+            int rc = path_append_segment(out, &out_len, seg, seg_len);
+            if (rc < 0) return rc;
+        }
+        p += seg_len;
+    }
+
+    return 0;
+}
+
+static int resolve_at_path(struct fry_process *cur, int dirfd,
+                           const char *path, char out[FRY_PATH_MAX]) {
+    if (!cur || !proc_shared_state(cur)) return -ESRCH;
+    if (!path || !out) return -EINVAL;
+    if (path[0] == '/') return path_normalize_absolute(path, out);
+    if (path[0] == 0) return -ENOENT;
+
+    struct fry_process_shared *shared = proc_shared_state(cur);
+    const char *base = "/";
+    if (dirfd != FRY_AT_FDCWD) {
+        if (dirfd < 3 || dirfd >= FRY_FD_MAX) return -EBADF;
+        if (!shared->fd_ptrs[dirfd] || shared->fd_kind[dirfd] == FD_NONE)
+            return -EBADF;
+        if (shared->fd_kind[dirfd] != FD_DIR) return -ENOTDIR;
+        if (!shared->fd_paths[dirfd][0]) return -EBADF;
+        base = shared->fd_paths[dirfd];
+    }
+
+    char joined[FRY_PATH_MAX * 2];
+    uint32_t pos = 0;
+    for (uint32_t i = 0; base[i]; i++) {
+        if (pos + 1 >= sizeof(joined)) return -ENAMETOOLONG;
+        joined[pos++] = base[i];
+    }
+    if (pos == 0) {
+        joined[pos++] = '/';
+    } else if (joined[pos - 1] != '/') {
+        if (pos + 1 >= sizeof(joined)) return -ENAMETOOLONG;
+        joined[pos++] = '/';
+    }
+    for (uint32_t i = 0; path[i]; i++) {
+        if (pos + 1 >= sizeof(joined)) return -ENAMETOOLONG;
+        joined[pos++] = path[i];
+    }
+    joined[pos] = 0;
+
+    return path_normalize_absolute(joined, out);
+}
+
+static int install_fd_path(struct fry_process *cur, int fd, const char *path) {
+    struct fry_process_shared *shared = proc_shared_state(cur);
+    int rc = fd_path_set(shared, fd, path);
+    if (rc < 0) {
+        fd_release(cur, fd);
+        return rc;
+    }
+    if (shared->fd_kind[fd] == FD_DIR) shared->fd_ptrs[fd] = shared->fd_paths[fd];
+    return 0;
 }
 
 static int64_t pipe_read(struct fry_pipe *pp, char *buf, uint64_t len, uint32_t flags) {
@@ -269,6 +400,138 @@ static int64_t pipe_write(struct fry_pipe *pp, const char *buf, uint64_t len, ui
     return (int64_t)nw;
 }
 
+/* Chrome port — POSIX struct definitions */
+struct epoll_item {
+    int fd;
+    uint32_t events;
+    uint64_t data;
+    struct epoll_item *next;
+};
+
+struct epoll_cb {
+    struct epoll_item *items;
+    int count;
+    volatile int lock;
+};
+
+struct epoll_event {
+    uint32_t events;
+    uint64_t data;
+};
+
+struct fry_iovec {
+    uint64_t iov_base;
+    uint64_t iov_len;
+};
+
+struct fry_msghdr {
+    uint64_t msg_name;
+    uint32_t msg_namelen;
+    uint32_t _pad0;
+    uint64_t msg_iov;
+    uint64_t msg_iovlen;
+    uint64_t msg_control;
+    uint64_t msg_controllen;
+    int32_t msg_flags;
+    uint32_t _pad1;
+};
+
+#define EPOLL_CTL_ADD 1
+#define EPOLL_CTL_DEL 2
+#define EPOLL_CTL_MOD 3
+
+/* eventfd — poll_check_fd needs this full type */
+struct eventfd_cb {
+    uint64_t counter;
+    int semaphore;
+    int nonblock;
+    volatile int lock;
+};
+
+/*
+ * Timerfd — file descriptor that becomes readable when a timer expires.
+ * Uses kernel HPET-based ms clock.  it_value = initial expiration (relative),
+ * it_interval = reload value for periodic timers.
+ */
+struct timerfd_cb {
+    uint64_t it_value_ms;     /* ms remaining until next expiration (0 = disarmed) */
+    uint64_t it_interval_ms;  /* periodic reload value (0 = one-shot) */
+    uint64_t deadline_ms;     /* absolute deadline in ms (computed at arm time) */
+    uint64_t expirations;     /* number of expirations that have occurred */
+    int clockid;              /* CLOCK_REALTIME or CLOCK_MONOTONIC */
+    int nonblock;
+    uint8_t used;
+};
+
+/*
+ * Signalfd — file descriptor that becomes readable when matching signals
+ * are pending. TaterTOS does not deliver async signals to user space, but
+ * the signalfd API surface lets Chromium/Ladybird code compile and link.
+ * Pending signals are tracked as a bitmask; the fd becomes readable when
+ * any bit in the mask is set in the process's pending signal set.
+ */
+struct signalfd_cb {
+    uint64_t mask;            /* sigset_t of signals this fd watches */
+    int nonblock;
+    uint8_t used;
+};
+
+/*
+ * Inotify — filesystem event monitoring.
+ * Per-fd watch list and event queue.  TaterTOS VFS generates events
+ * through vfs_inotify_notify() which walks all inotify fds, but only
+ * for operations that pass through the VFS layer (open/create/delete/rename).
+ */
+#define INOTIFY_WATCH_MAX    16
+#define INOTIFY_EVENT_MAX    32
+#define INOTIFY_NAME_MAX     128
+
+struct inotify_watch {
+    int      wd;                 /* watch descriptor (index + 1) */
+    uint32_t mask;               /* event mask being watched */
+    char     path[FRY_PATH_MAX]; /* path being watched */
+    uint8_t  used;
+};
+
+struct inotify_event_buf {
+    int      wd;
+    uint32_t mask;
+    uint32_t cookie;
+    uint32_t len;                /* length of name that follows */
+    char     name[INOTIFY_NAME_MAX];
+};
+
+struct inotify_cb {
+    struct inotify_watch  watches[INOTIFY_WATCH_MAX];
+    int                   watch_count;
+    int                   next_wd;
+    struct inotify_event_buf events[INOTIFY_EVENT_MAX];
+    int                    ev_head;
+    int                    ev_tail;
+    int                    nonblock;
+    uint8_t                used;
+};
+
+/*
+ * Memfd — memory-backed file descriptor.
+ * Behaves like a regular file but backed by physical memory instead of
+ * a filesystem on disk. Supports read, write, lseek, ftruncate, and
+ * mmap (maps the backing pages directly into the process address space).
+ *
+ * Chromium uses memfd_create for: base::SharedMemory, ELF loading,
+ * Mojo shared buffers, and graphics allocation.
+ */
+#define MEMFD_PAGE_CHUNK  4   /* grow by 4 pages (16KB) at a time */
+struct memfd_cb {
+    uint64_t  size;          /* logical file size */
+    uint64_t  capacity;      /* allocated page count * PAGE_SIZE */
+    uint64_t  pos;           /* current read/write position */
+    uint32_t  page_count;    /* number of physical pages allocated */
+    uint64_t *pages;         /* array of physical page addresses (page_count entries) */
+    uint8_t   used;
+    char      name[32];      /* name from memfd_create (for /proc visibility) */
+};
+
 /* Check pollability of a single fd. Returns revents. */
 static uint16_t poll_check_fd(struct fry_process *p, int32_t fd, uint16_t events) {
     struct fry_process_shared *shared = proc_shared_state(p);
@@ -310,7 +573,24 @@ static uint16_t poll_check_fd(struct fry_process *p, int32_t fd, uint16_t events
         struct fry_socket *sk = (struct fry_socket *)shared->fd_ptrs[fd];
         if (!sk || !sk->used) return FRY_POLLNVAL;
         if (sk->type == SOCK_STREAM) {
-            if (sk->state == SOCK_ST_CONNECTED && sk->tcp_handle >= 0) {
+            /* AF_UNIX socketpair: poll via pipe buffers */
+            if (sk->domain == 1 && sk->tcp_handle >= 0 && sk->tcp_handle < FRY_PIPE_MAX) {
+                struct fry_pipe *wpp = &g_pipes[sk->tcp_handle];
+                struct fry_pipe *rpp = &g_pipes[sk->listen_handle];
+                if (!wpp->used || !rpp->used) {
+                    revents |= FRY_POLLHUP;
+                } else {
+                    /* Writable if write pipe has space */
+                    if (pipe_space_avail(wpp) > 0 || wpp->readers == 0)
+                        revents |= FRY_POLLOUT;
+                    /* Readable if read pipe has data */
+                    if (pipe_data_avail(rpp))
+                        revents |= FRY_POLLIN;
+                    /* HUP when writers side is closed */
+                    if (wpp->readers == 0)
+                        revents |= FRY_POLLHUP;
+                }
+            } else if (sk->state == SOCK_ST_CONNECTED && sk->tcp_handle >= 0) {
                 if (tcp_rx_available(sk->tcp_handle) > 0)
                     revents |= FRY_POLLIN;
                 if (tcp_is_connected(sk->tcp_handle))
@@ -341,6 +621,48 @@ static uint16_t poll_check_fd(struct fry_process *p, int32_t fd, uint16_t events
                 revents |= FRY_POLLIN;
             revents |= FRY_POLLOUT; /* UDP is always writable */
         }
+    } else if (kind == FD_EPOLL) {
+        /* epoll fds are always readable (events may be ready) */
+        if (events & FRY_POLLIN) revents |= FRY_POLLIN;
+    } else if (kind == FD_EVENTFD) {
+        struct eventfd_cb *ev = (struct eventfd_cb *)shared->fd_ptrs[fd];
+        if (!ev) return FRY_POLLNVAL;
+        if (ev->counter > 0) {
+            if (events & FRY_POLLIN) revents |= FRY_POLLIN;
+        }
+        /* Always writable (counter can be incremented) */
+        if (events & FRY_POLLOUT) revents |= FRY_POLLOUT;
+    } else if (kind == FD_TIMERFD) {
+        struct timerfd_cb *tm = (struct timerfd_cb *)shared->fd_ptrs[fd];
+        if (!tm || !tm->used) return FRY_POLLNVAL;
+        if (tm->expirations > 0) {
+            if (events & FRY_POLLIN) revents |= FRY_POLLIN;
+        }
+        if (events & FRY_POLLOUT) revents |= FRY_POLLOUT;
+    } else if (kind == FD_SIGNALFD) {
+        struct signalfd_cb *sf = (struct signalfd_cb *)shared->fd_ptrs[fd];
+        if (!sf || !sf->used) return FRY_POLLNVAL;
+        /* Check if any signals in the mask are pending for this process */
+        struct fry_process *cp = proc_current();
+        if (cp && cp->shared) {
+            /* TaterTOS doesn't track async pending signals.  For now,
+             * signalfd is always readable (signal-zero semantics) so that
+             * poll()-based event loops calling signalfd don't hang. */
+            if (events & FRY_POLLIN) revents |= FRY_POLLIN;
+        }
+        if (events & FRY_POLLOUT) revents |= FRY_POLLOUT;
+    } else if (kind == FD_INOTIFY) {
+        struct inotify_cb *in = (struct inotify_cb *)shared->fd_ptrs[fd];
+        if (!in || !in->used) return FRY_POLLNVAL;
+        if (in->ev_head != in->ev_tail) {
+            if (events & FRY_POLLIN) revents |= FRY_POLLIN;
+        }
+        if (events & FRY_POLLOUT) revents |= FRY_POLLOUT;
+    } else if (kind == FD_MEMFD) {
+        struct memfd_cb *mf = (struct memfd_cb *)shared->fd_ptrs[fd];
+        if (!mf || !mf->used) return FRY_POLLNVAL;
+        if (events & FRY_POLLIN) revents |= FRY_POLLIN;
+        if (events & FRY_POLLOUT) revents |= FRY_POLLOUT;
     }
 
     return revents & (events | FRY_POLLERR | FRY_POLLHUP | FRY_POLLNVAL);
@@ -367,6 +689,163 @@ static uint16_t g_sock_next_port = 49200;
 
 static uint16_t sock_ephemeral_port(void) {
     return g_sock_next_port++;
+}
+
+/* ====================================================================
+ * Memfd helpers
+ * ==================================================================== */
+
+/*
+ * Grow the memfd backing store to at least new_capacity bytes.
+ * Pages are allocated from PMM and physically contiguous is preferred
+ * but not required — we track a page list. Returns 0 on success.
+ */
+static int memfd_grow(struct memfd_cb *mf, uint64_t new_capacity) {
+    if (!mf || new_capacity <= mf->capacity) return 0;
+    uint32_t need_pages = (uint32_t)((new_capacity + PAGE_SIZE - 1ULL) / PAGE_SIZE);
+    if (need_pages > 1024 * 1024) return -1; /* sanity cap: 4GB */
+    uint32_t old_pages = mf->page_count;
+
+    /* Allocate new page array */
+    uint64_t *new_pages = (uint64_t *)kmalloc(need_pages * sizeof(uint64_t));
+    if (!new_pages) return -1;
+
+    /* Copy old page pointers */
+    for (uint32_t i = 0; i < old_pages; i++)
+        new_pages[i] = mf->pages[i];
+
+    /* Allocate new pages */
+    for (uint32_t i = old_pages; i < need_pages; i++) {
+        new_pages[i] = pmm_alloc_page();
+        if (!new_pages[i]) {
+            /* Free what we allocated so far */
+            for (uint32_t j = old_pages; j < i; j++)
+                pmm_free_page(new_pages[j]);
+            kfree(new_pages);
+            return -1;
+        }
+        /* Zero the new page */
+        uint8_t *virt = (uint8_t *)(uintptr_t)vmm_phys_to_virt(new_pages[i]);
+        for (uint32_t z = 0; z < PAGE_SIZE; z++) virt[z] = 0;
+    }
+
+    kfree(mf->pages);
+    mf->pages = new_pages;
+    mf->page_count = need_pages;
+    mf->capacity = (uint64_t)need_pages * PAGE_SIZE;
+    return 0;
+}
+
+static void memfd_free_pages(struct memfd_cb *mf) {
+    if (!mf || !mf->pages) return;
+    for (uint32_t i = 0; i < mf->page_count; i++) {
+        if (mf->pages[i])
+            pmm_free_page(mf->pages[i]);
+    }
+    kfree(mf->pages);
+    mf->pages = 0;
+    mf->page_count = 0;
+    mf->capacity = 0;
+}
+
+static int64_t memfd_read(struct memfd_cb *mf, void *buf, uint64_t len) {
+    if (!mf || !buf || len == 0) return -EINVAL;
+    if (mf->pos >= mf->size) return 0; /* EOF */
+    uint64_t available = mf->size - mf->pos;
+    if (len > available) len = available;
+    if (len == 0) return 0;
+
+    uint64_t offset_in_file = mf->pos;
+    uint8_t *dst = (uint8_t *)buf;
+    uint64_t remaining = len;
+
+    while (remaining > 0) {
+        uint32_t page_idx = (uint32_t)(offset_in_file / PAGE_SIZE);
+        uint32_t page_off = (uint32_t)(offset_in_file % PAGE_SIZE);
+        uint32_t chunk = (uint32_t)(PAGE_SIZE - page_off);
+        if (chunk > remaining) chunk = (uint32_t)remaining;
+
+        if (page_idx >= mf->page_count) break;
+        uint8_t *virt = (uint8_t *)(uintptr_t)vmm_phys_to_virt(mf->pages[page_idx]);
+        for (uint32_t i = 0; i < chunk; i++)
+            dst[i] = virt[page_off + i];
+
+        dst += chunk;
+        offset_in_file += chunk;
+        remaining -= chunk;
+    }
+
+    uint64_t done = len - remaining;
+    mf->pos += done;
+    return (int64_t)done;
+}
+
+static int64_t memfd_write(struct memfd_cb *mf, const void *buf, uint64_t len) {
+    if (!mf || !buf || len == 0) return -EINVAL;
+
+    uint64_t end_pos = mf->pos + len;
+    if (end_pos > mf->capacity) {
+        /* Grow the buffer */
+        if (memfd_grow(mf, end_pos) != 0) return -ENOMEM;
+    }
+
+    uint64_t offset_in_file = mf->pos;
+    const uint8_t *src = (const uint8_t *)buf;
+    uint64_t remaining = len;
+
+    while (remaining > 0) {
+        uint32_t page_idx = (uint32_t)(offset_in_file / PAGE_SIZE);
+        uint32_t page_off = (uint32_t)(offset_in_file % PAGE_SIZE);
+        uint32_t chunk = (uint32_t)(PAGE_SIZE - page_off);
+        if (chunk > remaining) chunk = (uint32_t)remaining;
+
+        if (page_idx >= mf->page_count) break;
+        uint8_t *virt = (uint8_t *)(uintptr_t)vmm_phys_to_virt(mf->pages[page_idx]);
+        for (uint32_t i = 0; i < chunk; i++)
+            virt[page_off + i] = src[i];
+
+        src += chunk;
+        offset_in_file += chunk;
+        remaining -= chunk;
+    }
+
+    uint64_t done = len - remaining;
+    mf->pos += done;
+    if (mf->pos > mf->size) mf->size = mf->pos;
+    return (int64_t)done;
+}
+
+static int64_t memfd_lseek(struct memfd_cb *mf, int64_t offset, int whence) {
+    if (!mf) return -EINVAL;
+    uint64_t new_pos;
+    switch (whence) {
+        case FRY_SEEK_SET:
+            if (offset < 0) return -EINVAL;
+            new_pos = (uint64_t)offset;
+            break;
+        case FRY_SEEK_CUR:
+            if ((int64_t)mf->pos + offset < 0) return -EINVAL;
+            new_pos = (uint64_t)((int64_t)mf->pos + offset);
+            break;
+        case FRY_SEEK_END:
+            if ((int64_t)mf->size + offset < 0) return -EINVAL;
+            new_pos = (uint64_t)((int64_t)mf->size + offset);
+            break;
+        default:
+            return -EINVAL;
+    }
+    mf->pos = new_pos;
+    return (int64_t)new_pos;
+}
+
+static int memfd_truncate(struct memfd_cb *mf, uint64_t length) {
+    if (!mf) return -EINVAL;
+    if (length > mf->capacity) {
+        if (memfd_grow(mf, length) != 0) return -ENOMEM;
+    }
+    mf->size = length;
+    if (mf->pos > mf->size) mf->pos = mf->size;
+    return 0;
 }
 
 /* UDP socket handler — called by netcore for unmatched UDP datagrams */
@@ -911,7 +1390,57 @@ enum {
     SYS_AUDIO_OPEN  = 96,
     SYS_AUDIO_WRITE = 97,
     SYS_AUDIO_CLOSE = 98,
-    SYS_AUDIO_INFO  = 99
+    SYS_AUDIO_INFO  = 99,
+    SYS_CHDIR = 100,
+
+    /* Chrome port — POSIX expansion (Phase 1/2) */
+    SYS_EPOLL_CREATE = 101,
+    SYS_EPOLL_CTL    = 102,
+    SYS_EPOLL_WAIT   = 103,
+    SYS_EVENTFD      = 104,
+    SYS_OPENAT       = 105,
+    SYS_READV        = 106,
+    SYS_WRITEV       = 107,
+    SYS_SENDMSG      = 108,
+    SYS_RECVMSG      = 109,
+    SYS_PRCTL        = 110,
+    SYS_MADVISE      = 111,
+    SYS_FACCESSAT    = 112,
+    SYS_READLINKAT   = 113,
+    SYS_FSTATAT      = 114,
+    SYS_MKDIRAT      = 115,
+    SYS_UNLINKAT     = 116,
+    SYS_RENAMEAT     = 117,
+    SYS_PIPE2        = 118,
+    SYS_DUP3         = 119,
+    SYS_SOCKETPAIR   = 120,
+    SYS_GETCWD       = 121,
+    /* --- Phase 9: Chrome port — timerfd/signalfd/inotify/accept4 --- */
+    SYS_ACCEPT4      = 122,
+    SYS_TIMERFD_CREATE  = 123,
+    SYS_TIMERFD_SETTIME = 124,
+    SYS_TIMERFD_GETTIME = 125,
+    SYS_SIGNALFD        = 126,
+    SYS_INOTIFY_INIT    = 127,
+    SYS_INOTIFY_ADD_WATCH = 128,
+    SYS_INOTIFY_RM_WATCH  = 129,
+    SYS_MEMFD_CREATE      = 130,
+    SYS_SENDFILE          = 131,
+
+    /* --- Chrome/GN probe syscalls (Phase 10, STUBS) --- */
+    SYS_UNAME             = 132,
+    SYS_SYSINFO           = 133,
+    SYS_GETRUSAGE         = 134,
+    SYS_GETPRIORITY       = 135,
+    SYS_SETPRIORITY       = 136,
+    SYS_FSYNC             = 137,
+    SYS_FDATASYNC         = 138,
+    SYS_SCHED_GETAFFINITY = 139,
+    SYS_SCHED_SETAFFINITY = 140,
+    SYS_MLOCK             = 141,
+    SYS_MUNLOCK           = 142,
+    SYS_SPLICE            = 143,
+    SYS_TEE               = 144,
 };
 
 struct fry_fb_info {
@@ -1548,6 +2077,39 @@ static int vm_map_file_region(struct fry_process *p, uint64_t base, uint64_t len
     return 0;
 }
 
+static int vm_map_memfd_region(struct fry_process *p, uint64_t base, uint64_t length,
+                                uint32_t prot, uint32_t flags, struct memfd_cb *mf) {
+    if (!p || !mf || !mf->used) return -1;
+    if (!vm_range_available(p, base, length)) return -1;
+
+    uint64_t remaining = mf->size;
+    if (remaining > length) remaining = length;
+    uint64_t va = base;
+    uint32_t page_idx = 0;
+
+    while (remaining > 0 && page_idx < mf->page_count) {
+        uint64_t pa = mf->pages[page_idx];
+        if (pa == 0) break;
+
+        uint32_t vmm_flags = VMM_FLAG_PRESENT | VMM_FLAG_USER;
+        if (prot & FRY_PROT_WRITE) vmm_flags |= VMM_FLAG_WRITE;
+        if (!(prot & FRY_PROT_EXEC)) vmm_flags |= VMM_FLAG_NO_EXECUTE;
+
+        vmm_map_user(p->cr3, va, pa, vmm_flags);
+        va += PAGE_SIZE;
+        page_idx++;
+        if (remaining > PAGE_SIZE) remaining -= PAGE_SIZE;
+        else remaining = 0;
+    }
+
+    int slot = vm_region_alloc_slot(p);
+    if (slot < 0) return -1;
+
+    vm_region_fill(&PROC_VMREGS(p)[slot], base, length, prot, flags,
+                   FRY_VM_REGION_ANON_SHARED, VM_BACKING_NONE, 0, 1);
+    return 0;
+}
+
 static int vm_release_region_pages(struct fry_process *p,
                                    const struct fry_vm_region *r,
                                    uint64_t base, uint64_t length) {
@@ -1860,11 +2422,62 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                     }
                     return (uint64_t)ret;
                 }
-                if (kind == FD_PIPE_READ) return (uint64_t)-EBADF; /* can't write read end */
+                if (kind == FD_PIPE_READ) return (uint64_t)-EBADF;
+                if (kind == FD_EVENTFD) {
+                    /* write to eventfd: add value to counter */
+                    struct eventfd_cb *ev = (struct eventfd_cb *)shared->fd_ptrs[fd];
+                    if (!ev) return (uint64_t)-EBADF;
+                    uint64_t val;
+                    if (a3 < 8) return (uint64_t)-EINVAL;
+                    copyin(cur, a2, &val, 8);
+                    while (__sync_lock_test_and_set(&ev->lock, 1)) {}
+                    if (val == 0xFFFFFFFFFFFFFFFFULL && ev->counter == 0xFFFFFFFFFFFFFFFFULL) {
+                        ev->lock = 0;
+                        return (uint64_t)-EAGAIN;
+                    }
+                    uint64_t newval = ev->counter + val;
+                    if (newval < ev->counter) newval = UINT64_MAX;
+                    ev->counter = newval;
+                    ev->lock = 0;
+                    sched_wake_poll_waiters();
+                    return 8;
+                }
+                if (kind == FD_MEMFD) {
+                    struct memfd_cb *mf = (struct memfd_cb *)shared->fd_ptrs[fd];
+                    if (!mf || !mf->used) return (uint64_t)-EBADF;
+                    if (a3 == 0) return 0;
+                    if (!user_buf_mapped(cur, a2, a3)) return (uint64_t)-EFAULT;
+                    int64_t ret = memfd_write(mf, (const void *)(uintptr_t)a2, a3);
+                    if (ret < 0) return (uint64_t)ret;
+                    return (uint64_t)ret;
+                }
                 if (kind == FD_SOCKET) {
                     struct fry_socket *sk = (struct fry_socket *)shared->fd_ptrs[fd];
                     if (!sk || !sk->used) return (uint64_t)-EBADF;
                     if (sk->type == SOCK_STREAM) {
+                        /* AF_UNIX socketpair: route through pipe buffers */
+                        if (sk->domain == 1 && sk->tcp_handle >= 0 && sk->tcp_handle < FRY_PIPE_MAX) {
+                            struct fry_pipe *pp = &g_pipes[sk->tcp_handle];
+                            if (!pp->used) return (uint64_t)-ENOTCONN;
+                            uint32_t wrflags = shared->fd_flags[fd];
+                            int64_t sent = pipe_write(pp, (const char *)buf, a3, wrflags);
+                            if (sent < 0 && sent != -EAGAIN) return (uint64_t)sent;
+                            if (sent == -EAGAIN) {
+                                if (wrflags & O_NONBLOCK) return (uint64_t)-EAGAIN;
+                                sched_block_poll(cur->pid, UINT64_MAX);
+                                sched_yield();
+                                cur = proc_current();
+                                if (!cur) return (uint64_t)-ESRCH;
+                                shared = proc_shared_state(cur);
+                                if (!shared || !shared->fd_ptrs[fd]) return (uint64_t)-EBADF;
+                                sk = (struct fry_socket *)shared->fd_ptrs[fd];
+                                if (!sk || !sk->used || sk->tcp_handle < 0) return (uint64_t)-EBADF;
+                                pp = &g_pipes[sk->tcp_handle];
+                                sent = pipe_write(pp, (const char *)buf, a3, 0);
+                            }
+                            if (sent < 0) return (uint64_t)sent;
+                            return (uint64_t)sent;
+                        }
                         if (sk->state != SOCK_ST_CONNECTED) return (uint64_t)-ENOTCONN;
                         if (sk->tcp_handle < 0) return (uint64_t)-ENOTCONN;
                         int sent = tcp_send(sk->tcp_handle, (const uint8_t *)buf, (uint16_t)a3);
@@ -1929,11 +2542,114 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                     }
                     return (uint64_t)ret;
                 }
-                if (kind == FD_PIPE_WRITE) return (uint64_t)-EBADF; /* can't read write end */
+                if (kind == FD_PIPE_WRITE) return (uint64_t)-EBADF;
+                if (kind == FD_EVENTFD) {
+                    struct eventfd_cb *ev = (struct eventfd_cb *)shared->fd_ptrs[fd];
+                    if (!ev) return (uint64_t)-EBADF;
+                    while (__sync_lock_test_and_set(&ev->lock, 1)) {}
+                    if (ev->counter == 0) {
+                        ev->lock = 0;
+                        if (ev->nonblock) return (uint64_t)-EAGAIN;
+                        /* Block — yield and retry later */
+                        ev->lock = 0;
+                        return (uint64_t)-EAGAIN;
+                    }
+                    uint64_t val;
+                    if (ev->semaphore) {
+                        val = 1;
+                        ev->counter--;
+                    } else {
+                        val = ev->counter;
+                        ev->counter = 0;
+                    }
+                    ev->lock = 0;
+                    copyout(cur, &val, a2, 8);
+                    sched_wake_poll_waiters();
+                    return 8;
+                }
+                if (kind == FD_TIMERFD) {
+                    struct timerfd_cb *tm = (struct timerfd_cb *)shared->fd_ptrs[fd];
+                    if (!tm || !tm->used) return (uint64_t)-EBADF;
+                    uint64_t freq = hpet_get_freq_hz();
+                    uint64_t now_ms = (hpet_read_counter() * 1000ULL) / freq;
+                    while (tm->it_value_ms > 0 && tm->deadline_ms > 0 && now_ms >= tm->deadline_ms) {
+                        tm->expirations++;
+                        if (tm->it_interval_ms > 0) {
+                            tm->deadline_ms += tm->it_interval_ms;
+                        } else {
+                            tm->it_value_ms = 0;
+                            tm->deadline_ms = 0;
+                        }
+                    }
+                    if (tm->expirations == 0) {
+                        if (tm->nonblock) return (uint64_t)-EAGAIN;
+                        return (uint64_t)-EAGAIN;
+                    }
+                    uint64_t val = tm->expirations;
+                    tm->expirations = 0;
+                    copyout(cur, &val, a2, 8);
+                    return 8;
+                }
+                if (kind == FD_INOTIFY) {
+                    struct inotify_cb *in = (struct inotify_cb *)shared->fd_ptrs[fd];
+                    if (!in || !in->used) return (uint64_t)-EBADF;
+                    if (in->ev_head == in->ev_tail) {
+                        if (in->nonblock) return (uint64_t)-EAGAIN;
+                        return (uint64_t)-EAGAIN;
+                    }
+                    struct inotify_event_buf *ev = &in->events[in->ev_tail];
+                    uint32_t ev_size = sizeof(int32_t) * 3 + sizeof(uint32_t) + ev->len;
+                    if (ev_size > (uint32_t)a3) ev_size = (uint32_t)a3;
+                    uint8_t *out = (uint8_t *)buf;
+                    *(int32_t *)(out + 0) = ev->wd;
+                    *(uint32_t *)(out + 4) = ev->mask;
+                    *(uint32_t *)(out + 8) = ev->cookie;
+                    *(uint32_t *)(out + 12) = ev->len;
+                    for (uint32_t i = 0; i < ev->len && i < (uint32_t)INOTIFY_NAME_MAX && (16 + i) < ev_size; i++)
+                        out[16 + i] = (uint8_t)ev->name[i];
+                    in->ev_tail = (in->ev_tail + 1) % INOTIFY_EVENT_MAX;
+                    return (uint64_t)ev_size;
+                }
+                if (kind == FD_MEMFD) {
+                    struct memfd_cb *mf = (struct memfd_cb *)shared->fd_ptrs[fd];
+                    if (!mf || !mf->used) return (uint64_t)-EBADF;
+                    int64_t ret = memfd_read(mf, buf, a3);
+                    if (ret < 0) return (uint64_t)ret;
+                    return (uint64_t)ret;
+                }
                 if (kind == FD_SOCKET) {
                     struct fry_socket *sk = (struct fry_socket *)shared->fd_ptrs[fd];
                     if (!sk || !sk->used) return (uint64_t)-EBADF;
                     if (sk->type == SOCK_STREAM) {
+                        /* AF_UNIX socketpair: route through pipe buffers */
+                        if (sk->domain == 1 && sk->listen_handle >= 0 && sk->listen_handle < FRY_PIPE_MAX) {
+                            struct fry_pipe *pp = &g_pipes[sk->listen_handle];
+                            if (!pp->used) {
+                                if (pp->writers == 0) return 0;
+                                return (uint64_t)-ENOTCONN;
+                            }
+                            uint32_t rdflags = shared->fd_flags[fd];
+                            int64_t nr = pipe_read(pp, buf, a3, rdflags);
+                            if (nr > 0) return (uint64_t)nr;
+                            if (pp->writers == 0) return 0;
+                            if (nr == -EAGAIN) {
+                                if (rdflags & O_NONBLOCK) return (uint64_t)-EAGAIN;
+                                sched_block_poll(cur->pid, UINT64_MAX);
+                                sched_yield();
+                                cur = proc_current();
+                                if (!cur) return (uint64_t)-ESRCH;
+                                shared = proc_shared_state(cur);
+                                if (!shared || !shared->fd_ptrs[fd]) return (uint64_t)-EBADF;
+                                sk = (struct fry_socket *)shared->fd_ptrs[fd];
+                                if (!sk || !sk->used) return (uint64_t)-EBADF;
+                                pp = &g_pipes[sk->listen_handle];
+                                nr = pipe_read(pp, buf, a3, 0);
+                                if (nr > 0) return (uint64_t)nr;
+                                if (pp->writers == 0) return 0;
+                                return (uint64_t)-EAGAIN;
+                            }
+                            return 0;
+                        }
                         if (sk->state != SOCK_ST_CONNECTED) return (uint64_t)-ENOTCONN;
                         if (sk->tcp_handle < 0) return (uint64_t)-ENOTCONN;
                         /* Poll network before reading */
@@ -2052,13 +2768,29 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             }
             return 0;
         case SYS_OPEN: {
+            char raw_path[FRY_PATH_MAX];
             char path[FRY_PATH_MAX];
             struct fry_process_shared *shared;
-            if (copy_user_string(cur, a1, path, sizeof(path)) != 0) return (uint64_t)-EFAULT;
+            if (copy_user_string(cur, a1, raw_path, sizeof(raw_path)) != 0) return (uint64_t)-EFAULT;
             if (!cur) return (uint64_t)-ESRCH;
             shared = proc_shared_state(cur);
             if (!shared) return (uint64_t)-ESRCH;
             uint32_t flags = (uint32_t)a2;
+            int rpath = resolve_at_path(cur, FRY_AT_FDCWD, raw_path, path);
+            if (rpath < 0) return (uint64_t)rpath;
+
+            struct vfs_stat st;
+            if (vfs_stat(path, &st) == 0 && (st.attr & 0x10u)) {
+                if ((flags & FRY_O_ACCMODE) != O_RDONLY) return (uint64_t)-EISDIR;
+                int fd = fd_alloc(cur);
+                if (fd < 0) return (uint64_t)-EMFILE;
+                fd_install(cur, fd, shared->fd_paths[fd], FD_DIR, flags & O_NONBLOCK);
+                int prc = install_fd_path(cur, fd, path);
+                if (prc < 0) return (uint64_t)prc;
+                return (uint64_t)fd;
+            }
+            if (flags & FRY_O_DIRECTORY) return (uint64_t)-ENOTDIR;
+
             int fd = fd_alloc(cur);
             if (fd < 0) return (uint64_t)-EMFILE;
             struct vfs_file *f = vfs_open(path);
@@ -2068,6 +2800,11 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             }
             if (!f) return (uint64_t)-ENOENT;
             fd_install(cur, fd, f, FD_FILE, flags & O_NONBLOCK);
+            int prc = install_fd_path(cur, fd, path);
+            if (prc < 0) {
+                vfs_close(f);
+                return (uint64_t)prc;
+            }
             return (uint64_t)fd;
         }
         case SYS_CLOSE: {
@@ -2101,8 +2838,18 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                 struct fry_socket *sk = (struct fry_socket *)cptr;
                 if (sk && sk->used) {
                     if (sk->type == SOCK_STREAM) {
-                        if (sk->tcp_handle >= 0) tcp_close(sk->tcp_handle);
-                        if (sk->listen_handle >= 0) tcp_close(sk->listen_handle);
+                        /* AF_UNIX socketpair: close pipe buffers instead of TCP */
+                        if (sk->domain == 1 && sk->tcp_handle >= 0 && sk->tcp_handle < FRY_PIPE_MAX) {
+                            struct fry_pipe *pp = &g_pipes[sk->tcp_handle];
+                            if (pp->writers > 0) pp->writers--;
+                            if (pp->readers == 0 && pp->writers == 0) { pp->used = 0; pp->head = 0; pp->tail = 0; }
+                            pp = &g_pipes[sk->listen_handle];
+                            if (pp->readers > 0) pp->readers--;
+                            if (pp->readers == 0 && pp->writers == 0) { pp->used = 0; pp->head = 0; pp->tail = 0; }
+                        } else {
+                            if (sk->tcp_handle >= 0) tcp_close(sk->tcp_handle);
+                            if (sk->listen_handle >= 0) tcp_close(sk->listen_handle);
+                        }
                     }
                     sk->used = 0;
                     sk->state = SOCK_ST_CLOSED;
@@ -2110,6 +2857,18 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                     sk->listen_handle = -1;
                 }
                 sched_wake_poll_waiters();
+            } else if (ckind == FD_TIMERFD) {
+                struct timerfd_cb *tm = (struct timerfd_cb *)cptr;
+                if (tm) { tm->used = 0; kfree(tm); }
+            } else if (ckind == FD_SIGNALFD) {
+                struct signalfd_cb *sf = (struct signalfd_cb *)cptr;
+                if (sf) { sf->used = 0; kfree(sf); }
+            } else if (ckind == FD_INOTIFY) {
+                struct inotify_cb *in = (struct inotify_cb *)cptr;
+                if (in) { in->used = 0; kfree(in); }
+            } else if (ckind == FD_MEMFD) {
+                struct memfd_cb *mf = (struct memfd_cb *)cptr;
+                if (mf) { mf->used = 0; memfd_free_pages(mf); kfree(mf); }
             }
             fd_release(cur, cfd);
             return 0;
@@ -2667,7 +3426,18 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                     if (vm_map_anon_private_region(cur, base, length, prot, flags) != 0) return (uint64_t)-ENOMEM;
                 }
             } else {
-                if (vm_map_file_region(cur, base, length, prot, flags, fd) != 0) return (uint64_t)-ENOMEM;
+                /* fd-backed mapping — check for FD_MEMFD vs FD_FILE */
+                struct fry_process_shared *shared = proc_shared_state(cur);
+                if (fd >= 3 && fd < FRY_FD_MAX && shared && shared->fd_ptrs[fd] &&
+                    shared->fd_kind[fd] == FD_MEMFD) {
+                    struct memfd_cb *mf = (struct memfd_cb *)shared->fd_ptrs[fd];
+                    if (!mf || !mf->used) return (uint64_t)-EBADF;
+                    if (vm_map_memfd_region(cur, base, length, prot, flags, mf) != 0)
+                        return (uint64_t)-ENOMEM;
+                } else {
+                    if (vm_map_file_region(cur, base, length, prot, flags, fd) != 0)
+                        return (uint64_t)-ENOMEM;
+                }
             }
             return base;
         }
@@ -2692,6 +3462,108 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             if (length == 0) return (uint64_t)-EINVAL;
             if (!vm_prot_supported(prot)) return (uint64_t)-EINVAL;
             return (uint64_t)vm_mprotect_region_range(cur, base, length, prot);
+        }
+        case SYS_PRCTL: {
+            if (!cur) return (uint64_t)-ESRCH;
+            int option = (int)a1;
+
+            switch (option) {
+                case PR_SET_NAME: {
+                    char name[16];
+                    if (copy_user_string(cur, a2, name, sizeof(name)) != 0)
+                        return (uint64_t)-EFAULT;
+                    for (uint32_t i = 0; i < sizeof(cur->name); i++) cur->name[i] = 0;
+                    for (uint32_t i = 0; i < 15 && name[i]; i++) cur->name[i] = name[i];
+                    return 0;
+                }
+                case PR_GET_NAME: {
+                    char out[16];
+                    if (!user_buf_writable(cur, a2, sizeof(out))) return (uint64_t)-EFAULT;
+                    for (uint32_t i = 0; i < sizeof(out); i++) out[i] = 0;
+                    for (uint32_t i = 0; i < 15 && cur->name[i]; i++) out[i] = cur->name[i];
+                    return (uint64_t)copyout(cur, out, a2, sizeof(out));
+                }
+                case PR_SET_NO_NEW_PRIVS:
+                    if (a2 != 1 || a3 || a4 || a5) return (uint64_t)-EINVAL;
+                    cur->no_new_privs = 1;
+                    return 0;
+                case PR_GET_NO_NEW_PRIVS:
+                    return cur->no_new_privs ? 1 : 0;
+                case PR_SET_DUMPABLE:
+                    if (a2 > 1 || a3 || a4 || a5) return (uint64_t)-EINVAL;
+                    cur->dumpable = (uint8_t)a2;
+                    return 0;
+                case PR_GET_DUMPABLE:
+                    return cur->dumpable ? 1 : 0;
+                case PR_GET_SECCOMP:
+                    return 0;
+                case PR_SET_SECCOMP:
+                    return (uint64_t)-ENOTSUP;
+                case PR_SET_TIMERSLACK:
+                    cur->timer_slack_ns = a2 ? a2 : 50000;
+                    return 0;
+                case PR_GET_TIMERSLACK:
+                    return cur->timer_slack_ns;
+                case PR_SET_THP_DISABLE:
+                    if (a2 > 1 || a3 || a4 || a5) return (uint64_t)-EINVAL;
+                    cur->thp_disabled = (uint8_t)a2;
+                    return 0;
+                case PR_GET_THP_DISABLE:
+                    return cur->thp_disabled ? 1 : 0;
+                case PR_SET_PTRACER:
+                    return 0;
+                case PR_GET_PDEATHSIG: {
+                    uint32_t sig = 0;
+                    if (!user_buf_writable(cur, a2, sizeof(sig))) return (uint64_t)-EFAULT;
+                    return (uint64_t)copyout(cur, &sig, a2, sizeof(sig));
+                }
+                case PR_SET_PDEATHSIG:
+                    return a2 ? (uint64_t)-ENOTSUP : 0;
+                case PR_SET_VMA: {
+                    char vma_name[80];
+                    uint64_t base = a3;
+                    uint64_t length = a4;
+                    if (a2 != PR_SET_VMA_ANON_NAME) return (uint64_t)-EINVAL;
+                    if (length == 0) return 0;
+                    if ((base & (PAGE_SIZE - 1ULL)) != 0) return (uint64_t)-EINVAL;
+                    if (length > UINT64_MAX - (PAGE_SIZE - 1ULL)) return (uint64_t)-EINVAL;
+                    length = (length + (PAGE_SIZE - 1ULL)) & ~(PAGE_SIZE - 1ULL);
+                    if (vm_region_find_containing(cur, base, length) < 0)
+                        return (uint64_t)-ENOMEM;
+                    if (a5 && copy_user_string(cur, a5, vma_name, sizeof(vma_name)) != 0)
+                        return (uint64_t)-EFAULT;
+                    return 0;
+                }
+                default:
+                    return (uint64_t)-EINVAL;
+            }
+        }
+        case SYS_MADVISE: {
+            if (!cur) return (uint64_t)-ESRCH;
+            uint64_t base = a1;
+            uint64_t length = a2;
+            int advice = (int)a3;
+
+            switch (advice) {
+                case 0:  /* MADV_NORMAL */
+                case 1:  /* MADV_RANDOM */
+                case 2:  /* MADV_SEQUENTIAL */
+                case 3:  /* MADV_WILLNEED */
+                case 4:  /* MADV_DONTNEED */
+                case 8:  /* MADV_FREE */
+                case 14: /* MADV_HUGEPAGE */
+                    break;
+                default:
+                    return (uint64_t)-EINVAL;
+            }
+
+            if (length == 0) return 0;
+            if ((base & (PAGE_SIZE - 1ULL)) != 0) return (uint64_t)-EINVAL;
+            if (length > UINT64_MAX - (PAGE_SIZE - 1ULL)) return (uint64_t)-EINVAL;
+            length = (length + (PAGE_SIZE - 1ULL)) & ~(PAGE_SIZE - 1ULL);
+            if (vm_region_find_containing(cur, base, length) < 0)
+                return (uint64_t)-ENOMEM;
+            return 0;
         }
         /* ================================================================
          * Phase 3: IPC / Descriptor model syscalls
@@ -2740,6 +3612,14 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             int newfd = fd_alloc(cur);
             if (newfd < 0) return (uint64_t)-EMFILE;
             fd_install(cur, newfd, optr, okind, shared->fd_flags[oldfd]);
+            if (shared->fd_paths[oldfd][0]) {
+                int prc = fd_path_set(shared, newfd, shared->fd_paths[oldfd]);
+                if (prc < 0) {
+                    fd_release(cur, newfd);
+                    return (uint64_t)prc;
+                }
+                if (okind == FD_DIR) shared->fd_ptrs[newfd] = shared->fd_paths[newfd];
+            }
             /* Increment pipe refcount if duplicating a pipe end */
             if (okind == FD_PIPE_READ) {
                 ((struct fry_pipe *)optr)->readers++;
@@ -2777,10 +3657,51 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                     struct fry_pipe *pp = (struct fry_pipe *)shared->fd_ptrs[newfd2];
                     if (pp->writers > 0) pp->writers--;
                     if (pp->readers == 0 && pp->writers == 0) { pp->used = 0; pp->head = 0; pp->tail = 0; }
+                } else if (shared->fd_kind[newfd2] == FD_SOCKET) {
+                    struct fry_socket *sk = (struct fry_socket *)shared->fd_ptrs[newfd2];
+                    if (sk && sk->used) {
+                        if (sk->type == SOCK_STREAM) {
+                            if (sk->domain == 1 && sk->tcp_handle >= 0 && sk->tcp_handle < FRY_PIPE_MAX) {
+                                struct fry_pipe *pp = &g_pipes[sk->tcp_handle];
+                                if (pp->writers > 0) pp->writers--;
+                                if (pp->readers == 0 && pp->writers == 0) { pp->used = 0; pp->head = 0; pp->tail = 0; }
+                                pp = &g_pipes[sk->listen_handle];
+                                if (pp->readers > 0) pp->readers--;
+                                if (pp->readers == 0 && pp->writers == 0) { pp->used = 0; pp->head = 0; pp->tail = 0; }
+                            } else {
+                                if (sk->tcp_handle >= 0) tcp_close(sk->tcp_handle);
+                                if (sk->listen_handle >= 0) tcp_close(sk->listen_handle);
+                            }
+                        }
+                        sk->used = 0;
+                        sk->state = SOCK_ST_CLOSED;
+                        sk->tcp_handle = -1;
+                        sk->listen_handle = -1;
+                    }
+                } else if (shared->fd_kind[newfd2] == FD_TIMERFD) {
+                    struct timerfd_cb *tm = (struct timerfd_cb *)shared->fd_ptrs[newfd2];
+                    if (tm) { tm->used = 0; kfree(tm); }
+                } else if (shared->fd_kind[newfd2] == FD_SIGNALFD) {
+                    struct signalfd_cb *sf = (struct signalfd_cb *)shared->fd_ptrs[newfd2];
+                    if (sf) { sf->used = 0; kfree(sf); }
+                } else if (shared->fd_kind[newfd2] == FD_INOTIFY) {
+                    struct inotify_cb *in = (struct inotify_cb *)shared->fd_ptrs[newfd2];
+                    if (in) { in->used = 0; kfree(in); }
+                } else if (shared->fd_kind[newfd2] == FD_MEMFD) {
+                    struct memfd_cb *mf = (struct memfd_cb *)shared->fd_ptrs[newfd2];
+                    if (mf) { mf->used = 0; memfd_free_pages(mf); kfree(mf); }
                 }
                 fd_release(cur, newfd2);
             }
             fd_install(cur, newfd2, optr2, okind2, shared->fd_flags[oldfd2]);
+            if (shared->fd_paths[oldfd2][0]) {
+                int prc = fd_path_set(shared, newfd2, shared->fd_paths[oldfd2]);
+                if (prc < 0) {
+                    fd_release(cur, newfd2);
+                    return (uint64_t)prc;
+                }
+                if (okind2 == FD_DIR) shared->fd_ptrs[newfd2] = shared->fd_paths[newfd2];
+            }
             if (okind2 == FD_PIPE_READ) ((struct fry_pipe *)optr2)->readers++;
             else if (okind2 == FD_PIPE_WRITE) ((struct fry_pipe *)optr2)->writers++;
             return (uint64_t)newfd2;
@@ -2848,6 +3769,17 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                     /* Only O_NONBLOCK is user-settable after open */
                     shared->fd_flags[ffd] = (shared->fd_flags[ffd] & ~(uint32_t)O_NONBLOCK) |
                                              ((uint32_t)a3 & O_NONBLOCK);
+                    return 0;
+                case F_GETFD:
+                    /* Return 0 or FD_CLOEXEC (1) based on O_CLOEXEC flag */
+                    return (uint64_t)((shared->fd_flags[ffd] & O_CLOEXEC) ? 1 : 0);
+                case F_SETFD:
+                    /* Only FD_CLOEXEC is settable */
+                    if (a3 & ~1) return (uint64_t)-EINVAL;
+                    if (a3 & 1)
+                        shared->fd_flags[ffd] |= O_CLOEXEC;
+                    else
+                        shared->fd_flags[ffd] &= ~(uint32_t)O_CLOEXEC;
                     return 0;
                 default:
                     return (uint64_t)-EINVAL;
@@ -3222,6 +4154,29 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             const uint8_t *buf = (const uint8_t *)(uintptr_t)a2;
 
             if (sk->type == SOCK_STREAM) {
+                /* AF_UNIX socketpair: route through pipe buffers */
+                if (sk->domain == 1 && sk->tcp_handle >= 0 && sk->tcp_handle < FRY_PIPE_MAX) {
+                    struct fry_pipe *pp = &g_pipes[sk->tcp_handle];
+                    if (!pp->used) return (uint64_t)-ENOTCONN;
+                    uint32_t fdflags = shared->fd_flags[sfd];
+                    int sent = pipe_write(pp, (const char *)buf, a3, fdflags);
+                    if (sent < 0 && sent != -EAGAIN) return (uint64_t)sent;
+                    if (sent == -EAGAIN) {
+                        if (fdflags & O_NONBLOCK) return (uint64_t)-EAGAIN;
+                        sched_block_poll(cur->pid, UINT64_MAX);
+                        sched_yield();
+                        cur = proc_current();
+                        if (!cur) return (uint64_t)-ESRCH;
+                        shared = proc_shared_state(cur);
+                        if (!shared || !shared->fd_ptrs[sfd]) return (uint64_t)-EBADF;
+                        sk = (struct fry_socket *)shared->fd_ptrs[sfd];
+                        if (!sk || !sk->used || sk->tcp_handle < 0) return (uint64_t)-EBADF;
+                        pp = &g_pipes[sk->tcp_handle];
+                        sent = pipe_write(pp, (const char *)buf, a3, 0);
+                    }
+                    if (sent < 0) return (uint64_t)sent;
+                    return (uint64_t)sent;
+                }
                 if (sk->state != SOCK_ST_CONNECTED || sk->tcp_handle < 0)
                     return (uint64_t)-ENOTCONN;
                 int sent = tcp_send(sk->tcp_handle, buf, (uint16_t)a3);
@@ -3260,6 +4215,35 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             int nonblock = (fdflags & O_NONBLOCK) || (rflags & MSG_DONTWAIT);
 
             if (sk->type == SOCK_STREAM) {
+                /* AF_UNIX socketpair: route through pipe buffers */
+                if (sk->domain == 1 && sk->listen_handle >= 0 && sk->listen_handle < FRY_PIPE_MAX) {
+                    struct fry_pipe *pp = &g_pipes[sk->listen_handle];
+                    if (!pp->used) {
+                        /* Both writers gone and pipe empty = EOF */
+                        if (pp->writers == 0 && !pipe_data_avail(pp)) return 0;
+                        return (uint64_t)-ENOTCONN;
+                    }
+                    int nr = pipe_read(pp, (char *)buf, a3, 0);
+                    if (nr > 0) return (uint64_t)nr;
+                    /* EOF: all writers closed and buffer empty */
+                    if (pp->writers == 0 && !pipe_data_avail(pp)) return 0;
+                    /* No data available */
+                    if (nonblock) return (uint64_t)-EAGAIN;
+                    /* Block and retry */
+                    sched_block_poll(cur->pid, UINT64_MAX);
+                    sched_yield();
+                    cur = proc_current();
+                    if (!cur) return (uint64_t)-ESRCH;
+                    shared = proc_shared_state(cur);
+                    if (!shared || !shared->fd_ptrs[rfd]) return (uint64_t)-EBADF;
+                    sk = (struct fry_socket *)shared->fd_ptrs[rfd];
+                    if (!sk || !sk->used || sk->listen_handle < 0) return (uint64_t)-EBADF;
+                    pp = &g_pipes[sk->listen_handle];
+                    nr = pipe_read(pp, (char *)buf, a3, 0);
+                    if (nr > 0) return (uint64_t)nr;
+                    if (pp->writers == 0 && !pipe_data_avail(pp)) return 0;
+                    return (uint64_t)-EAGAIN;
+                }
                 if (sk->tcp_handle < 0)
                     return (uint64_t)-ENOTCONN;
                 net_poll();
@@ -3341,7 +4325,15 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             if (!sk || !sk->used) return (uint64_t)-EBADF;
 
             if (sk->type == SOCK_STREAM && sk->tcp_handle >= 0) {
-                tcp_close(sk->tcp_handle);
+                /* AF_UNIX socketpair: close pipe writers instead of TCP */
+                if (sk->domain == 1 && sk->tcp_handle < FRY_PIPE_MAX && sk->listen_handle < FRY_PIPE_MAX) {
+                    struct fry_pipe *pp = &g_pipes[sk->tcp_handle];
+                    if (pp->writers > 0) pp->writers--;
+                    pp = &g_pipes[sk->listen_handle];
+                    if (pp->readers > 0) pp->readers--;
+                } else {
+                    tcp_close(sk->tcp_handle);
+                }
                 sk->tcp_handle = -1;
             }
             sk->state = SOCK_ST_SHUTDOWN;
@@ -3525,6 +4517,288 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             return (uint64_t)-EINVAL;
         }
 
+        case SYS_SENDMSG: {
+            struct fry_msghdr msg;
+            struct fry_process_shared *shared;
+            struct fry_socket *sk;
+            uint64_t total_len = 0;
+            uint64_t copied = 0;
+            uint8_t *linear;
+            uint32_t dst_ip = 0;
+            uint16_t dst_port = 0;
+
+            (void)a3;
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            if (!user_buf_mapped(cur, a2, sizeof(msg))) return (uint64_t)-EFAULT;
+            if (copyin(cur, a2, &msg, sizeof(msg)) != 0) return (uint64_t)-EFAULT;
+            if (msg.msg_control && msg.msg_controllen) return (uint64_t)-ENOTSUP;
+            if (msg.msg_iovlen > 1024) return (uint64_t)-EINVAL;
+            if (msg.msg_iovlen && !user_buf_mapped(cur, msg.msg_iov,
+                                                   msg.msg_iovlen * sizeof(struct fry_iovec)))
+                return (uint64_t)-EFAULT;
+
+            shared = proc_shared_state(cur);
+            int fd = (int)a1;
+            if (fd < 3 || fd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            if (shared->fd_kind[fd] != FD_SOCKET) return (uint64_t)-ENOTSOCK;
+            sk = (struct fry_socket *)shared->fd_ptrs[fd];
+            if (!sk || !sk->used) return (uint64_t)-EBADF;
+
+            for (uint64_t i = 0; i < msg.msg_iovlen; i++) {
+                struct fry_iovec iov;
+                if (copyin(cur, msg.msg_iov + i * sizeof(iov), &iov, sizeof(iov)) != 0)
+                    return (uint64_t)-EFAULT;
+                if (iov.iov_len && !user_buf_mapped(cur, iov.iov_base, iov.iov_len))
+                    return (uint64_t)-EFAULT;
+                if (iov.iov_len > 0x7fffffffffffffffULL - total_len)
+                    return (uint64_t)-EINVAL;
+                total_len += iov.iov_len;
+            }
+
+            if (sk->type == SOCK_DGRAM && total_len > 1472) return (uint64_t)-EMSGSIZE;
+            if (sk->type == SOCK_STREAM && total_len > 65535) total_len = 65535;
+            if (sk->type != SOCK_DGRAM && sk->type != SOCK_STREAM) return (uint64_t)-EINVAL;
+
+            linear = (uint8_t *)kmalloc(total_len ? total_len : 1);
+            if (!linear) return (uint64_t)-ENOMEM;
+
+            for (uint64_t i = 0; i < msg.msg_iovlen && copied < total_len; i++) {
+                struct fry_iovec iov;
+                uint64_t chunk;
+                copyin(cur, msg.msg_iov + i * sizeof(iov), &iov, sizeof(iov));
+                chunk = iov.iov_len;
+                if (chunk > total_len - copied) chunk = total_len - copied;
+                if (chunk) {
+                    if (copyin(cur, iov.iov_base, linear + copied, chunk) != 0) {
+                        kfree(linear);
+                        return (uint64_t)-EFAULT;
+                    }
+                    copied += chunk;
+                }
+            }
+
+            if (msg.msg_name) {
+                struct fry_sockaddr_in daddr;
+                if (msg.msg_namelen < sizeof(daddr)) {
+                    kfree(linear);
+                    return (uint64_t)-EINVAL;
+                }
+                if (!user_buf_mapped(cur, msg.msg_name, sizeof(daddr))) {
+                    kfree(linear);
+                    return (uint64_t)-EFAULT;
+                }
+                if (copyin(cur, msg.msg_name, &daddr, sizeof(daddr)) != 0) {
+                    kfree(linear);
+                    return (uint64_t)-EFAULT;
+                }
+                if (daddr.sin_family != AF_INET) {
+                    kfree(linear);
+                    return (uint64_t)-EAFNOSUPPORT;
+                }
+                dst_ip = fry_ntohl(daddr.sin_addr);
+                dst_port = fry_ntohs(daddr.sin_port);
+            } else {
+                dst_ip = sk->remote_ip;
+                dst_port = sk->remote_port;
+            }
+
+            if (sk->type == SOCK_DGRAM) {
+                int r;
+                if (dst_ip == 0 || dst_port == 0) {
+                    kfree(linear);
+                    return (uint64_t)-EDESTADDRREQ;
+                }
+                sock_ensure_udp_handler();
+                if (sk->local_port == 0) sk->local_port = sock_ephemeral_port();
+                r = udp_send(dst_ip, dst_port, sk->local_port, linear, (uint16_t)total_len);
+                kfree(linear);
+                return r == 0 ? (uint64_t)total_len : (uint64_t)-EIO;
+            }
+
+            if (sk->state != SOCK_ST_CONNECTED || sk->tcp_handle < 0) {
+                kfree(linear);
+                return (uint64_t)-ENOTCONN;
+            }
+            int sent = tcp_send(sk->tcp_handle, linear, (uint16_t)total_len);
+            kfree(linear);
+            return sent < 0 ? (uint64_t)-EIO : (uint64_t)sent;
+        }
+
+        case SYS_RECVMSG: {
+            struct fry_msghdr msg;
+            struct fry_process_shared *shared;
+            struct fry_socket *sk;
+            uint64_t total_len = 0;
+            uint8_t *linear;
+            uint64_t got = 0;
+            uint64_t scattered = 0;
+            uint32_t flags = (uint32_t)a3;
+            int control_buffer_present;
+
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            if (!user_buf_writable(cur, a2, sizeof(msg))) return (uint64_t)-EFAULT;
+            if (copyin(cur, a2, &msg, sizeof(msg)) != 0) return (uint64_t)-EFAULT;
+            control_buffer_present = msg.msg_control && msg.msg_controllen;
+            if (msg.msg_iovlen > 1024) return (uint64_t)-EINVAL;
+            if (msg.msg_iovlen && !user_buf_mapped(cur, msg.msg_iov,
+                                                   msg.msg_iovlen * sizeof(struct fry_iovec)))
+                return (uint64_t)-EFAULT;
+
+            shared = proc_shared_state(cur);
+            int fd = (int)a1;
+            if (fd < 3 || fd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            if (shared->fd_kind[fd] != FD_SOCKET) return (uint64_t)-ENOTSOCK;
+            sk = (struct fry_socket *)shared->fd_ptrs[fd];
+            if (!sk || !sk->used) return (uint64_t)-EBADF;
+
+            for (uint64_t i = 0; i < msg.msg_iovlen; i++) {
+                struct fry_iovec iov;
+                if (copyin(cur, msg.msg_iov + i * sizeof(iov), &iov, sizeof(iov)) != 0)
+                    return (uint64_t)-EFAULT;
+                if (iov.iov_len && !user_buf_writable(cur, iov.iov_base, iov.iov_len))
+                    return (uint64_t)-EFAULT;
+                if (iov.iov_len > 0x7fffffffffffffffULL - total_len)
+                    return (uint64_t)-EINVAL;
+                total_len += iov.iov_len;
+            }
+
+            if (msg.msg_name && msg.msg_namelen < sizeof(struct fry_sockaddr_in))
+                return (uint64_t)-EINVAL;
+            if (msg.msg_name && !user_buf_writable(cur, msg.msg_name, sizeof(struct fry_sockaddr_in)))
+                return (uint64_t)-EFAULT;
+
+            if (sk->type == SOCK_STREAM && total_len == 0) {
+                msg.msg_controllen = 0;
+                msg.msg_flags = 0;
+                copyout(cur, &msg, a2, sizeof(msg));
+                return 0;
+            }
+
+            if (sk->type == SOCK_STREAM && total_len > 65535) total_len = 65535;
+            if (sk->type == SOCK_DGRAM && total_len > FRY_SOCK_UDP_PKTSZ) total_len = FRY_SOCK_UDP_PKTSZ;
+            linear = (uint8_t *)kmalloc(total_len ? total_len : 1);
+            if (!linear) return (uint64_t)-ENOMEM;
+
+            if (sk->type == SOCK_DGRAM) {
+                uint32_t fdflags = shared->fd_flags[fd];
+                int nonblock = (fdflags & O_NONBLOCK) || (flags & MSG_DONTWAIT);
+                net_poll();
+                if (sk->udp_rx_head == sk->udp_rx_tail) {
+                    if (nonblock) {
+                        kfree(linear);
+                        return (uint64_t)-EAGAIN;
+                    }
+                    sched_block_poll(cur->pid, UINT64_MAX);
+                    sched_yield();
+                    cur = proc_current();
+                    if (!cur) {
+                        kfree(linear);
+                        return (uint64_t)-ESRCH;
+                    }
+                    shared = proc_shared_state(cur);
+                    if (!shared || !shared->fd_ptrs[fd]) {
+                        kfree(linear);
+                        return (uint64_t)-EBADF;
+                    }
+                    sk = (struct fry_socket *)shared->fd_ptrs[fd];
+                    if (!sk || !sk->used) {
+                        kfree(linear);
+                        return (uint64_t)-EBADF;
+                    }
+                    net_poll();
+                    if (sk->udp_rx_head == sk->udp_rx_tail) {
+                        kfree(linear);
+                        return (uint64_t)-EAGAIN;
+                    }
+                }
+                struct fry_udp_pkt *pkt = &sk->udp_rxq[sk->udp_rx_tail];
+                got = pkt->len;
+                if (got > total_len) {
+                    got = total_len;
+                    msg.msg_flags = MSG_TRUNC;
+                } else {
+                    msg.msg_flags = 0;
+                }
+                for (uint64_t j = 0; j < got; j++) linear[j] = pkt->data[j];
+                if (msg.msg_name) {
+                    struct fry_sockaddr_in src;
+                    uint8_t *sp = (uint8_t *)&src;
+                    for (uint32_t j = 0; j < sizeof(src); j++) sp[j] = 0;
+                    src.sin_family = AF_INET;
+                    src.sin_port = fry_htons(pkt->src_port);
+                    src.sin_addr = fry_htonl(pkt->src_ip);
+                    copyout(cur, &src, msg.msg_name, sizeof(src));
+                    msg.msg_namelen = sizeof(src);
+                }
+                sk->udp_rx_tail = (sk->udp_rx_tail + 1) % FRY_SOCK_UDP_RXMAX;
+            } else if (sk->type == SOCK_STREAM) {
+                uint32_t fdflags = shared->fd_flags[fd];
+                int nonblock = (fdflags & O_NONBLOCK) || (flags & MSG_DONTWAIT);
+                int nr;
+                if (sk->state != SOCK_ST_CONNECTED || sk->tcp_handle < 0) {
+                    kfree(linear);
+                    return (uint64_t)-ENOTCONN;
+                }
+                net_poll();
+                nr = tcp_recv(sk->tcp_handle, linear, (uint32_t)total_len);
+                if (nr <= 0 && tcp_is_connected(sk->tcp_handle) && !nonblock) {
+                    sched_block_poll(cur->pid, UINT64_MAX);
+                    sched_yield();
+                    cur = proc_current();
+                    if (!cur) {
+                        kfree(linear);
+                        return (uint64_t)-ESRCH;
+                    }
+                    shared = proc_shared_state(cur);
+                    if (!shared || !shared->fd_ptrs[fd]) {
+                        kfree(linear);
+                        return (uint64_t)-EBADF;
+                    }
+                    sk = (struct fry_socket *)shared->fd_ptrs[fd];
+                    if (!sk || !sk->used || sk->tcp_handle < 0) {
+                        kfree(linear);
+                        return (uint64_t)-EBADF;
+                    }
+                    net_poll();
+                    nr = tcp_recv(sk->tcp_handle, linear, (uint32_t)total_len);
+                }
+                if (nr < 0) {
+                    kfree(linear);
+                    return nonblock ? (uint64_t)-EAGAIN : (uint64_t)-EIO;
+                }
+                if (nr == 0 && tcp_is_connected(sk->tcp_handle)) {
+                    kfree(linear);
+                    return nonblock ? (uint64_t)-EAGAIN : 0;
+                }
+                got = (uint64_t)nr;
+                msg.msg_flags = 0;
+                msg.msg_namelen = 0;
+            } else {
+                kfree(linear);
+                return (uint64_t)-EINVAL;
+            }
+
+            msg.msg_controllen = 0;
+            if (control_buffer_present) msg.msg_flags |= MSG_CTRUNC;
+            for (uint64_t i = 0; i < msg.msg_iovlen && scattered < got; i++) {
+                struct fry_iovec iov;
+                uint64_t chunk;
+                copyin(cur, msg.msg_iov + i * sizeof(iov), &iov, sizeof(iov));
+                chunk = iov.iov_len;
+                if (chunk > got - scattered) chunk = got - scattered;
+                if (chunk) {
+                    if (copyout(cur, linear + scattered, iov.iov_base, chunk) != 0) {
+                        kfree(linear);
+                        return (uint64_t)-EFAULT;
+                    }
+                    scattered += chunk;
+                }
+            }
+            copyout(cur, &msg, a2, sizeof(msg));
+            kfree(linear);
+            return got;
+        }
+
         case SYS_DNS_RESOLVE: {
             /*
              * SYS_DNS_RESOLVE(a1=hostname_ptr, a2=ip_out_ptr)
@@ -3644,13 +4918,23 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             int whence = (int)a3;
             if (fd < 3 || fd >= FRY_FD_MAX) return (uint64_t)-EBADF;
             struct fry_process_shared *shared = proc_shared_state(cur);
-            if (!shared || shared->fd_kind[fd] != FD_FILE || !shared->fd_ptrs[fd])
-                return (uint64_t)-EBADF;
-            if (whence != FRY_SEEK_SET && whence != FRY_SEEK_CUR && whence != FRY_SEEK_END)
-                return (uint64_t)-EINVAL;
-            int64_t result = vfs_seek((struct vfs_file *)shared->fd_ptrs[fd], offset, whence);
-            if (result < 0) return (uint64_t)-EINVAL;
-            return (uint64_t)result;
+            if (!shared || !shared->fd_ptrs[fd]) return (uint64_t)-EBADF;
+            uint8_t lkind = shared->fd_kind[fd];
+            if (lkind == FD_FILE) {
+                if (whence != FRY_SEEK_SET && whence != FRY_SEEK_CUR && whence != FRY_SEEK_END)
+                    return (uint64_t)-EINVAL;
+                int64_t result = vfs_seek((struct vfs_file *)shared->fd_ptrs[fd], offset, whence);
+                if (result < 0) return (uint64_t)-EINVAL;
+                return (uint64_t)result;
+            }
+            if (lkind == FD_MEMFD) {
+                struct memfd_cb *mf = (struct memfd_cb *)shared->fd_ptrs[fd];
+                if (!mf || !mf->used) return (uint64_t)-EBADF;
+                int64_t result = memfd_lseek(mf, offset, whence);
+                if (result < 0) return (uint64_t)(-result);
+                return (uint64_t)result;
+            }
+            return (uint64_t)-EBADF;
         }
 
         case 89: /* SYS_FTRUNCATE(fd, length) */ {
@@ -3659,11 +4943,21 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             uint64_t length = (uint64_t)a2;
             if (fd < 3 || fd >= FRY_FD_MAX) return (uint64_t)-EBADF;
             struct fry_process_shared *shared = proc_shared_state(cur);
-            if (!shared || shared->fd_kind[fd] != FD_FILE || !shared->fd_ptrs[fd])
-                return (uint64_t)-EBADF;
-            int rc = vfs_truncate((struct vfs_file *)shared->fd_ptrs[fd], length);
-            if (rc < 0) return (uint64_t)-EIO;
-            return 0;
+            if (!shared || !shared->fd_ptrs[fd]) return (uint64_t)-EBADF;
+            uint8_t tkind = shared->fd_kind[fd];
+            if (tkind == FD_FILE) {
+                int rc = vfs_truncate((struct vfs_file *)shared->fd_ptrs[fd], length);
+                if (rc < 0) return (uint64_t)-EIO;
+                return 0;
+            }
+            if (tkind == FD_MEMFD) {
+                struct memfd_cb *mf = (struct memfd_cb *)shared->fd_ptrs[fd];
+                if (!mf || !mf->used) return (uint64_t)-EBADF;
+                int rc = memfd_truncate(mf, length);
+                if (rc < 0) return (uint64_t)-ENOMEM;
+                return 0;
+            }
+            return (uint64_t)-EBADF;
         }
 
         case 90: /* SYS_RENAME(old_path, new_path) */ {
@@ -3683,10 +4977,19 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             int fd = (int)a1;
             if (fd < 3 || fd >= FRY_FD_MAX) return (uint64_t)-EBADF;
             struct fry_process_shared *shared = proc_shared_state(cur);
-            if (!shared || shared->fd_kind[fd] != FD_FILE || !shared->fd_ptrs[fd])
+            if (!shared || !shared->fd_ptrs[fd] || shared->fd_kind[fd] == FD_NONE)
                 return (uint64_t)-EBADF;
             if (!user_buf_writable(cur, a2, sizeof(struct vfs_stat)))
                 return (uint64_t)-EFAULT;
+            if (shared->fd_kind[fd] == FD_DIR) {
+                struct vfs_stat st;
+                if (!shared->fd_paths[fd][0]) return (uint64_t)-EBADF;
+                if (vfs_stat(shared->fd_paths[fd], &st) != 0) return (uint64_t)-ENOENT;
+                copyout(cur, &st, a2, sizeof(struct vfs_stat));
+                return 0;
+            }
+            if (shared->fd_kind[fd] != FD_FILE)
+                return (uint64_t)-EBADF;
             struct vfs_file *vf = (struct vfs_file *)shared->fd_ptrs[fd];
             struct vfs_stat st;
             st.size = vf->size;
@@ -3813,6 +5116,1395 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                 return (uint64_t)-EFAULT;
             return (uint64_t)hda_get_stream_info((void *)(uintptr_t)a1);
         }
+
+        /* ===== Chrome Port — POSIX Expansion (Phase 1/2) ===== */
+
+        case SYS_OPENAT: {
+            char raw_path[FRY_PATH_MAX];
+            char path[FRY_PATH_MAX];
+            struct fry_process_shared *shared;
+            int dirfd = (int)a1;
+            uint32_t flags = (uint32_t)a3;
+            struct vfs_file *f;
+            int fd;
+
+            if (copy_user_string(cur, a2, raw_path, sizeof(raw_path)) != 0) return (uint64_t)-EFAULT;
+            if (!cur) return (uint64_t)-ESRCH;
+            shared = proc_shared_state(cur);
+            if (!shared) return (uint64_t)-ESRCH;
+            int rpath = resolve_at_path(cur, dirfd, raw_path, path);
+            if (rpath < 0) return (uint64_t)rpath;
+
+            struct vfs_stat st;
+            if (vfs_stat(path, &st) == 0 && (st.attr & 0x10u)) {
+                if ((flags & FRY_O_ACCMODE) != O_RDONLY) return (uint64_t)-EISDIR;
+                fd = fd_alloc(cur);
+                if (fd < 0) return (uint64_t)-EMFILE;
+                fd_install(cur, fd, shared->fd_paths[fd], FD_DIR, flags & O_NONBLOCK);
+                int prc = install_fd_path(cur, fd, path);
+                if (prc < 0) return (uint64_t)prc;
+                return (uint64_t)fd;
+            }
+            if (flags & FRY_O_DIRECTORY) return (uint64_t)-ENOTDIR;
+
+            f = vfs_open(path);
+            if (!f && (flags & O_CREAT)) {
+                vfs_create(path, 1);  /* TOTFS_TYPE_FILE */
+                f = vfs_open(path);
+            }
+            if (!f) return (uint64_t)-ENOENT;
+
+            fd = fd_alloc(cur);
+            if (fd < 0) {
+                vfs_close(f);
+                return (uint64_t)-EMFILE;
+            }
+            fd_install(cur, fd, f, FD_FILE, flags & O_NONBLOCK);
+            int prc = install_fd_path(cur, fd, path);
+            if (prc < 0) {
+                vfs_close(f);
+                return (uint64_t)prc;
+            }
+            return (uint64_t)fd;
+        }
+
+        case SYS_READV: {
+            int fd = (int)a1;
+            uint64_t iov_user = a2;
+            int iovcnt;
+            uint64_t total_len = 0;
+            uint64_t done = 0;
+
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            if ((int64_t)a3 < 0 || a3 > 1024) return (uint64_t)-EINVAL;
+            iovcnt = (int)a3;
+            if (iovcnt == 0) return 0;
+            if (!user_buf_mapped(cur, iov_user, (uint64_t)iovcnt * sizeof(struct fry_iovec)))
+                return (uint64_t)-EFAULT;
+
+            for (int i = 0; i < iovcnt; i++) {
+                struct fry_iovec iov;
+                if (copyin(cur, iov_user + (uint64_t)i * sizeof(iov), &iov, sizeof(iov)) != 0)
+                    return (uint64_t)-EFAULT;
+                if (iov.iov_len > 0 && !user_buf_writable(cur, iov.iov_base, iov.iov_len))
+                    return (uint64_t)-EFAULT;
+                if (iov.iov_len > 0x7fffffffffffffffULL - total_len)
+                    return (uint64_t)-EINVAL;
+                total_len += iov.iov_len;
+            }
+
+            for (int i = 0; i < iovcnt; i++) {
+                struct fry_iovec iov;
+                uint64_t rc;
+                copyin(cur, iov_user + (uint64_t)i * sizeof(iov), &iov, sizeof(iov));
+                if (iov.iov_len == 0) continue;
+                rc = syscall_dispatch(SYS_READ, (uint64_t)fd, iov.iov_base, iov.iov_len, 0, 0);
+                if ((int64_t)rc < 0) return done ? done : rc;
+                done += rc;
+                if (rc < iov.iov_len) break;
+            }
+            return done;
+        }
+
+        case SYS_WRITEV: {
+            int fd = (int)a1;
+            uint64_t iov_user = a2;
+            int iovcnt;
+            uint64_t total_len = 0;
+            uint64_t done = 0;
+
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            if ((int64_t)a3 < 0 || a3 > 1024) return (uint64_t)-EINVAL;
+            iovcnt = (int)a3;
+            if (iovcnt == 0) return 0;
+            if (!user_buf_mapped(cur, iov_user, (uint64_t)iovcnt * sizeof(struct fry_iovec)))
+                return (uint64_t)-EFAULT;
+
+            for (int i = 0; i < iovcnt; i++) {
+                struct fry_iovec iov;
+                if (copyin(cur, iov_user + (uint64_t)i * sizeof(iov), &iov, sizeof(iov)) != 0)
+                    return (uint64_t)-EFAULT;
+                if (iov.iov_len > 0 && !user_buf_mapped(cur, iov.iov_base, iov.iov_len))
+                    return (uint64_t)-EFAULT;
+                if (iov.iov_len > 0x7fffffffffffffffULL - total_len)
+                    return (uint64_t)-EINVAL;
+                total_len += iov.iov_len;
+            }
+
+            for (int i = 0; i < iovcnt; i++) {
+                struct fry_iovec iov;
+                uint64_t rc;
+                copyin(cur, iov_user + (uint64_t)i * sizeof(iov), &iov, sizeof(iov));
+                if (iov.iov_len == 0) continue;
+                rc = syscall_dispatch(SYS_WRITE, (uint64_t)fd, iov.iov_base, iov.iov_len, 0, 0);
+                if ((int64_t)rc < 0) return done ? done : rc;
+                done += rc;
+                if (rc < iov.iov_len) break;
+            }
+            return done;
+        }
+
+        case 101: { /* SYS_EPOLL_CREATE(size) → fd */
+            if (!cur) return (uint64_t)-ESRCH;
+            (void)a1;
+            int fd = fd_alloc(cur);
+            if (fd < 0) return (uint64_t)-EMFILE;
+            struct epoll_cb *ep = (struct epoll_cb *)kmalloc(sizeof(struct epoll_cb));
+            if (!ep) return (uint64_t)-ENOMEM;
+            ep->count = 0;
+            ep->items = 0;
+            ep->lock = 0;
+            fd_install(cur, fd, ep, FD_EPOLL, 0);
+            return (uint64_t)fd;
+        }
+
+        case 102: { /* SYS_EPOLL_CTL(epfd, op, fd, event_ptr) → 0 */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            int epfd = (int)a1, op = (int)a2, target_fd = (int)a3;
+            if (epfd < 3 || (uint32_t)epfd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            struct fry_process_shared *shr = proc_shared_state(cur);
+            if (shr->fd_kind[epfd] != FD_EPOLL || !shr->fd_ptrs[epfd])
+                return (uint64_t)-EBADF;
+            struct epoll_cb *ep = (struct epoll_cb *)shr->fd_ptrs[epfd];
+            struct epoll_event ev;
+            if (a4 && copyin(cur, a4, &ev, sizeof(ev)) != 0)
+                return (uint64_t)-EFAULT;
+            while (__sync_lock_test_and_set(&ep->lock, 1)) {}
+            if (op == EPOLL_CTL_ADD) {
+                struct epoll_item *item = (struct epoll_item *)kmalloc(sizeof(struct epoll_item));
+                if (!item) { ep->lock = 0; return (uint64_t)-ENOMEM; }
+                item->fd = target_fd;
+                item->events = ev.events;
+                item->data = ev.data;
+                item->next = ep->items;
+                ep->items = item;
+                ep->count++;
+            } else if (op == EPOLL_CTL_DEL) {
+                struct epoll_item **pp = &ep->items;
+                while (*pp) {
+                    if ((*pp)->fd == target_fd) {
+                        struct epoll_item *tmp = *pp;
+                        *pp = tmp->next;
+                        kfree(tmp);
+                        ep->count--;
+                        break;
+                    }
+                    pp = &(*pp)->next;
+                }
+            } else if (op == EPOLL_CTL_MOD) {
+                struct epoll_item *item = ep->items;
+                while (item) {
+                    if (item->fd == target_fd) {
+                        item->events = ev.events;
+                        item->data = ev.data;
+                        break;
+                    }
+                    item = item->next;
+                }
+            }
+            ep->lock = 0;
+            return 0;
+        }
+
+        case 103: { /* SYS_EPOLL_WAIT(epfd, events, maxevents, timeout_ms) → count */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            int epfd = (int)a1, maxevents = (int)a3;
+            int64_t timeout = (int64_t)a4;
+            if (epfd < 3 || (uint32_t)epfd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            struct fry_process_shared *shr2 = proc_shared_state(cur);
+            if (shr2->fd_kind[epfd] != FD_EPOLL || !shr2->fd_ptrs[epfd])
+                return (uint64_t)-EBADF;
+            if (!user_buf_writable(cur, a2, (uint64_t)maxevents * sizeof(struct epoll_event)))
+                return (uint64_t)-EFAULT;
+            struct epoll_cb *ep = (struct epoll_cb *)shr2->fd_ptrs[epfd];
+            struct epoll_event results[64];
+            int n = 0;
+            uint64_t now_ms = hpet_read_counter() * 1000ULL / hpet_get_freq_hz();
+            uint64_t wake_ms = (timeout >= 0) ? now_ms + (uint64_t)timeout : UINT64_MAX;
+            while (n == 0) {
+                while (__sync_lock_test_and_set(&ep->lock, 1)) {}
+                struct epoll_item *item = ep->items;
+                while (item && n < maxevents && n < 64) {
+                    uint16_t rev = poll_check_fd(cur, item->fd,
+                        (uint16_t)(item->events & (FRY_POLLIN | FRY_POLLOUT | FRY_POLLERR)));
+                    if (rev) {
+                        results[n].events = rev;
+                        results[n].data = item->data;
+                        n++;
+                    }
+                    item = item->next;
+                }
+                ep->lock = 0;
+                if (n > 0) break;
+                uint64_t cur_ms = hpet_read_counter() * 1000ULL / hpet_get_freq_hz();
+                if (cur_ms >= wake_ms) break;
+                sched_block_poll(cur->pid, wake_ms);
+                sched_yield();
+                cur = proc_current();
+                if (!cur) return (uint64_t)-ESRCH;
+            }
+            if (n > 0)
+                copyout(cur, results, a2, (uint64_t)n * sizeof(struct epoll_event));
+            return (uint64_t)n;
+        }
+
+        case 104: { /* SYS_EVENTFD(initval, flags) → fd */
+            if (!cur) return (uint64_t)-ESRCH;
+            int fd = fd_alloc(cur);
+            if (fd < 0) return (uint64_t)-EMFILE;
+            struct eventfd_cb *ev = (struct eventfd_cb *)kmalloc(sizeof(struct eventfd_cb));
+            if (!ev) return (uint64_t)-ENOMEM;
+            uint64_t valid_flags = 0x1ULL | (uint64_t)O_NONBLOCK | (uint64_t)O_CLOEXEC;
+            if (a2 & ~valid_flags) return (uint64_t)-EINVAL;
+            ev->counter = (uint64_t)a1;
+            ev->semaphore = (a2 & 0x1) != 0;
+            ev->nonblock = (a2 & O_NONBLOCK) != 0;
+            ev->lock = 0;
+            fd_install(cur, fd, ev, FD_EVENTFD, (a2 & O_NONBLOCK) ? O_NONBLOCK : 0);
+            return (uint64_t)fd;
+        }
+
+        case SYS_FACCESSAT: {
+            char raw_path[FRY_PATH_MAX];
+            char path[FRY_PATH_MAX];
+            struct vfs_stat st;
+            int dirfd = (int)a1;
+            int mode = (int)a3;
+            uint32_t flags = (uint32_t)a4;
+
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            if (mode & ~(FRY_R_OK | FRY_W_OK | FRY_X_OK)) return (uint64_t)-EINVAL;
+            if (flags & ~(FRY_AT_EACCESS | FRY_AT_SYMLINK_NOFOLLOW | FRY_AT_EMPTY_PATH))
+                return (uint64_t)-EINVAL;
+            if (copy_user_string(cur, a2, raw_path, sizeof(raw_path)) != 0) return (uint64_t)-EFAULT;
+
+            if ((flags & FRY_AT_EMPTY_PATH) && raw_path[0] == '\0') {
+                if (dirfd < 0 || dirfd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+                struct fry_process_shared *shared = proc_shared_state(cur);
+                if (!shared || shared->fd_kind[dirfd] == FD_NONE || !shared->fd_ptrs[dirfd])
+                    return (uint64_t)-EBADF;
+                return 0;
+            }
+
+            int rpath = resolve_at_path(cur, dirfd, raw_path, path);
+            if (rpath < 0) return (uint64_t)rpath;
+            if (vfs_stat(path, &st) != 0) return (uint64_t)-ENOENT;
+
+            /*
+             * TaterTOS currently has no uid/gid permission enforcement, so
+             * an existing node is readable/writable/executable to callers.
+             */
+            (void)st;
+            return 0;
+        }
+
+        case SYS_READLINKAT: {
+            char raw_path[FRY_PATH_MAX];
+            char path[FRY_PATH_MAX];
+            struct vfs_stat st;
+            int dirfd = (int)a1;
+            uint64_t bufsiz = a4;
+
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            if (bufsiz == 0) return (uint64_t)-EINVAL;
+            if (!user_buf_writable(cur, a3, bufsiz)) return (uint64_t)-EFAULT;
+            if (copy_user_string(cur, a2, raw_path, sizeof(raw_path)) != 0) return (uint64_t)-EFAULT;
+            int rpath = resolve_at_path(cur, dirfd, raw_path, path);
+            if (rpath < 0) return (uint64_t)rpath;
+            if (vfs_stat(path, &st) != 0) return (uint64_t)-ENOENT;
+
+            /*
+             * No mounted TaterTOS filesystem exposes symbolic-link metadata
+             * yet. Return Linux-compatible EINVAL for existing non-symlinks
+             * rather than manufacturing a fake target.
+             */
+            (void)st;
+            return (uint64_t)-EINVAL;
+        }
+
+        case SYS_FSTATAT: {
+            char raw_path[FRY_PATH_MAX];
+            char path[FRY_PATH_MAX];
+            struct vfs_stat st;
+            int dirfd = (int)a1;
+            uint32_t flags = (uint32_t)a4;
+
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            if (!user_buf_writable(cur, a3, sizeof(struct vfs_stat))) return (uint64_t)-EFAULT;
+            if (flags & ~(FRY_AT_SYMLINK_NOFOLLOW | FRY_AT_NO_AUTOMOUNT | FRY_AT_EMPTY_PATH))
+                return (uint64_t)-EINVAL;
+            if (copy_user_string(cur, a2, raw_path, sizeof(raw_path)) != 0) return (uint64_t)-EFAULT;
+
+            if ((flags & FRY_AT_EMPTY_PATH) && raw_path[0] == '\0') {
+                if (dirfd < 3 || dirfd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+                struct fry_process_shared *shared = proc_shared_state(cur);
+                if (!shared || !shared->fd_ptrs[dirfd] || shared->fd_kind[dirfd] == FD_NONE)
+                    return (uint64_t)-EBADF;
+                if (shared->fd_kind[dirfd] == FD_DIR) {
+                    if (!shared->fd_paths[dirfd][0]) return (uint64_t)-EBADF;
+                    if (vfs_stat(shared->fd_paths[dirfd], &st) != 0) return (uint64_t)-ENOENT;
+                    copyout(cur, &st, a3, sizeof(st));
+                    return 0;
+                }
+                if (shared->fd_kind[dirfd] != FD_FILE) return (uint64_t)-EBADF;
+                struct vfs_file *vf = (struct vfs_file *)shared->fd_ptrs[dirfd];
+                st.size = vf->size;
+                st.attr = 0;
+                if (sizeof(struct fat32_file) <= sizeof(vf->private)) {
+                    struct fat32_file *ff = (struct fat32_file *)vf->private;
+                    if (ff->fs) st.attr = (uint32_t)ff->attr;
+                }
+                copyout(cur, &st, a3, sizeof(st));
+                return 0;
+            }
+
+            int rpath = resolve_at_path(cur, dirfd, raw_path, path);
+            if (rpath < 0) return (uint64_t)rpath;
+            if (vfs_stat(path, &st) != 0) return (uint64_t)-ENOENT;
+            copyout(cur, &st, a3, sizeof(st));
+            return 0;
+        }
+
+        case SYS_MKDIRAT: {
+            char raw_path[FRY_PATH_MAX];
+            char path[FRY_PATH_MAX];
+            int dirfd = (int)a1;
+
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            if (copy_user_string(cur, a2, raw_path, sizeof(raw_path)) != 0) return (uint64_t)-EFAULT;
+            int rpath = resolve_at_path(cur, dirfd, raw_path, path);
+            if (rpath < 0) return (uint64_t)rpath;
+
+            struct vfs_stat st;
+            if (vfs_stat(path, &st) == 0) return (uint64_t)-EEXIST;
+            int rc = vfs_mkdir(path);
+            return (rc < 0) ? (uint64_t)-EIO : 0;
+        }
+
+        case SYS_UNLINKAT: {
+            char raw_path[FRY_PATH_MAX];
+            char path[FRY_PATH_MAX];
+            int dirfd = (int)a1;
+            uint32_t flags = (uint32_t)a3;
+
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            if (flags & ~FRY_AT_REMOVEDIR) return (uint64_t)-EINVAL;
+            if (copy_user_string(cur, a2, raw_path, sizeof(raw_path)) != 0) return (uint64_t)-EFAULT;
+            int rpath = resolve_at_path(cur, dirfd, raw_path, path);
+            if (rpath < 0) return (uint64_t)rpath;
+
+            struct vfs_stat st;
+            if (vfs_stat(path, &st) != 0) return (uint64_t)-ENOENT;
+            if ((st.attr & 0x10u) && !(flags & FRY_AT_REMOVEDIR)) return (uint64_t)-EISDIR;
+            int rc = vfs_unlink(path);
+            return (rc < 0) ? (uint64_t)-EIO : 0;
+        }
+
+        case SYS_RENAMEAT: {
+            char old_raw[FRY_PATH_MAX];
+            char new_raw[FRY_PATH_MAX];
+            char old_path[FRY_PATH_MAX];
+            char new_path[FRY_PATH_MAX];
+            int olddirfd = (int)a1;
+            int newdirfd = (int)a3;
+
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            if (copy_user_string(cur, a2, old_raw, sizeof(old_raw)) != 0) return (uint64_t)-EFAULT;
+            if (copy_user_string(cur, a4, new_raw, sizeof(new_raw)) != 0) return (uint64_t)-EFAULT;
+            int orc = resolve_at_path(cur, olddirfd, old_raw, old_path);
+            if (orc < 0) return (uint64_t)orc;
+            int nrc = resolve_at_path(cur, newdirfd, new_raw, new_path);
+            if (nrc < 0) return (uint64_t)nrc;
+
+            struct vfs_stat st;
+            if (vfs_stat(old_path, &st) != 0) return (uint64_t)-ENOENT;
+            int rc = vfs_rename(old_path, new_path);
+            return (rc < 0) ? (uint64_t)-EIO : 0;
+        }
+
+        /* ================================================================
+         * Phase 8: getcwd/chdir cleanup, pipe2, dup3, socketpair
+         * ================================================================ */
+        case SYS_CHDIR: {
+            /*
+             * SYS_CHDIR(a1=path_ptr)
+             * Changes the process's current working directory.
+             * The provided path is resolved through the dirfd resolver using
+             * AT_FDCWD, then normalized and stored in shared->cwd.
+             * Returns 0 on success, -errno on failure.
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            char raw[FRY_PATH_MAX];
+            if (copy_user_string(cur, a1, raw, sizeof(raw)) != 0)
+                return (uint64_t)-EFAULT;
+
+            /* Resolve relative/absolute path through the dirfd resolver */
+            char resolved[FRY_PATH_MAX];
+            int rc = resolve_at_path(cur, FRY_AT_FDCWD, raw, resolved);
+            if (rc < 0) return (uint64_t)rc;
+
+            /* Verify the target is actually a directory */
+            struct vfs_stat st;
+            if (vfs_stat(resolved, &st) != 0) return (uint64_t)-ENOENT;
+            if (!(st.attr & 0x10)) return (uint64_t)-ENOTDIR;
+
+            /* Store normalized path */
+            uint32_t i;
+            for (i = 0; i < FRY_PATH_MAX - 1 && resolved[i]; i++)
+                shared->cwd[i] = resolved[i];
+            shared->cwd[i] = 0;
+            return 0;
+        }
+
+        case SYS_GETCWD: {
+            /*
+             * SYS_GETCWD(a1=user_buf_ptr, a2=buf_size)
+             * Copies the current working directory path to user buffer.
+             * Returns number of bytes copied (including NUL) on success,
+             * -errno on failure.
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            uint64_t sz = a2;
+            if (sz == 0) return (uint64_t)-EINVAL;
+            if (!user_buf_writable(cur, a1, sz)) return (uint64_t)-EFAULT;
+
+            uint32_t plen = 0;
+            while (plen < FRY_PATH_MAX && shared->cwd[plen]) plen++;
+            uint64_t copy = (plen + 1 < sz) ? plen + 1 : sz;
+            uint64_t i;
+            char *ubuf = (char *)(uintptr_t)a1;
+            for (i = 0; i < copy; i++)
+                ubuf[i] = (i < FRY_PATH_MAX) ? shared->cwd[i] : 0;
+            ubuf[copy - 1] = 0;
+            return (int64_t)plen;
+        }
+
+        case SYS_PIPE2: {
+            /*
+             * SYS_PIPE2(a1=user_int_array_ptr, a2=flags)
+             * Creates a pipe with flags (O_NONBLOCK, O_CLOEXEC).
+             * Writes [read_fd, write_fd] to user buffer.
+             * Returns 0 on success, -errno on failure.
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            if (!user_buf_writable(cur, a1, 2 * sizeof(int32_t))) return (uint64_t)-EFAULT;
+            uint32_t flags = (uint32_t)a2;
+
+            /* Only O_NONBLOCK and O_CLOEXEC are valid */
+            if (flags & ~(O_NONBLOCK | O_CLOEXEC)) return (uint64_t)-EINVAL;
+
+            int pidx = pipe_alloc();
+            if (pidx < 0) return (uint64_t)-ENFILE;
+            int rfd = fd_alloc(cur);
+            if (rfd < 0) { g_pipes[pidx].used = 0; return (uint64_t)-EMFILE; }
+            fd_install(cur, rfd, &g_pipes[pidx], FD_PIPE_READ, flags);
+            g_pipes[pidx].readers++;
+            int wfd = fd_alloc(cur);
+            if (wfd < 0) {
+                g_pipes[pidx].readers--;
+                fd_release(cur, rfd);
+                g_pipes[pidx].used = 0;
+                return (uint64_t)-EMFILE;
+            }
+            fd_install(cur, wfd, &g_pipes[pidx], FD_PIPE_WRITE, flags);
+            g_pipes[pidx].writers++;
+            int32_t *ufds = (int32_t *)(uintptr_t)a1;
+            ufds[0] = rfd;
+            ufds[1] = wfd;
+            return 0;
+        }
+
+        case SYS_DUP3: {
+            /*
+             * SYS_DUP3(a1=oldfd, a2=newfd, a3=flags)
+             * Like dup2 but accepts flags (only O_CLOEXEC).
+             * If oldfd == newfd, returns newfd without closing.
+             * Returns newfd on success, -errno on failure.
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            int oldfd = (int)a1;
+            int newfd = (int)a2;
+            uint32_t flags = (uint32_t)a3;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+
+            if (oldfd < 0 || oldfd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            if (newfd < 3 || newfd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            if (flags & ~(uint32_t)O_CLOEXEC) return (uint64_t)-EINVAL;
+
+            uint8_t okind = shared->fd_kind[oldfd];
+            void *optr = shared->fd_ptrs[oldfd];
+            if (okind == FD_NONE || !optr) return (uint64_t)-EBADF;
+
+            if (oldfd == newfd) {
+                /* dup3 with oldfd==newfd does not close the fd */
+                return (uint64_t)newfd;
+            }
+
+            /* Close newfd if open (same as dup2) */
+            if (shared->fd_kind[newfd] != FD_NONE && shared->fd_ptrs[newfd]) {
+                if (shared->fd_kind[newfd] == FD_FILE) {
+                    vfs_close((struct vfs_file *)shared->fd_ptrs[newfd]);
+                } else if (shared->fd_kind[newfd] == FD_PIPE_READ) {
+                    struct fry_pipe *pp = (struct fry_pipe *)shared->fd_ptrs[newfd];
+                    if (pp->readers > 0) pp->readers--;
+                    if (pp->readers == 0 && pp->writers == 0) { pp->used = 0; pp->head = 0; pp->tail = 0; }
+                } else if (shared->fd_kind[newfd] == FD_PIPE_WRITE) {
+                    struct fry_pipe *pp = (struct fry_pipe *)shared->fd_ptrs[newfd];
+                    if (pp->writers > 0) pp->writers--;
+                    if (pp->readers == 0 && pp->writers == 0) { pp->used = 0; pp->head = 0; pp->tail = 0; }
+                } else if (shared->fd_kind[newfd] == FD_SOCKET) {
+                    struct fry_socket *sk = (struct fry_socket *)shared->fd_ptrs[newfd];
+                    if (sk && sk->used) {
+                        if (sk->type == SOCK_STREAM) {
+                            if (sk->domain == 1 && sk->tcp_handle >= 0 && sk->tcp_handle < FRY_PIPE_MAX) {
+                                struct fry_pipe *pp = &g_pipes[sk->tcp_handle];
+                                if (pp->writers > 0) pp->writers--;
+                                if (pp->readers == 0 && pp->writers == 0) { pp->used = 0; pp->head = 0; pp->tail = 0; }
+                                pp = &g_pipes[sk->listen_handle];
+                                if (pp->readers > 0) pp->readers--;
+                                if (pp->readers == 0 && pp->writers == 0) { pp->used = 0; pp->head = 0; pp->tail = 0; }
+                            } else {
+                                if (sk->tcp_handle >= 0) tcp_close(sk->tcp_handle);
+                                if (sk->listen_handle >= 0) tcp_close(sk->listen_handle);
+                            }
+                        }
+                        sk->used = 0;
+                        sk->state = SOCK_ST_CLOSED;
+                        sk->tcp_handle = -1;
+                        sk->listen_handle = -1;
+                    }
+                } else if (shared->fd_kind[newfd] == FD_TIMERFD) {
+                    struct timerfd_cb *tm = (struct timerfd_cb *)shared->fd_ptrs[newfd];
+                    if (tm) { tm->used = 0; kfree(tm); }
+                } else if (shared->fd_kind[newfd] == FD_SIGNALFD) {
+                    struct signalfd_cb *sf = (struct signalfd_cb *)shared->fd_ptrs[newfd];
+                    if (sf) { sf->used = 0; kfree(sf); }
+                } else if (shared->fd_kind[newfd] == FD_INOTIFY) {
+                    struct inotify_cb *in = (struct inotify_cb *)shared->fd_ptrs[newfd];
+                    if (in) { in->used = 0; kfree(in); }
+                } else if (shared->fd_kind[newfd] == FD_MEMFD) {
+                    struct memfd_cb *mf = (struct memfd_cb *)shared->fd_ptrs[newfd];
+                    if (mf) { mf->used = 0; memfd_free_pages(mf); kfree(mf); }
+                }
+                fd_release(cur, newfd);
+            }
+
+            fd_install(cur, newfd, optr, okind, flags);
+            if (shared->fd_paths[oldfd][0]) {
+                int prc = fd_path_set(shared, newfd, shared->fd_paths[oldfd]);
+                if (prc < 0) {
+                    fd_release(cur, newfd);
+                    return (uint64_t)prc;
+                }
+                if (okind == FD_DIR) shared->fd_ptrs[newfd] = shared->fd_paths[newfd];
+            }
+            if (okind == FD_PIPE_READ) ((struct fry_pipe *)optr)->readers++;
+            else if (okind == FD_PIPE_WRITE) ((struct fry_pipe *)optr)->writers++;
+            return (uint64_t)newfd;
+        }
+
+        case SYS_SOCKETPAIR: {
+            /*
+             * SYS_SOCKETPAIR(a1=domain, a2=type, a3=protocol, a4=user_sv_array)
+             * Creates a pair of connected sockets (AF_UNIX only, SOCK_STREAM or SOCK_DGRAM).
+             * Writes [fd0, fd1] to user buffer.
+             * Returns 0 on success, -errno on failure.
+             *
+             * Implementation: a bidirectional pipe-like connection over shared buffers.
+             * Each end of the pair is a struct fry_socket that points to a shared
+             * ring buffer pair. For SOCK_STREAM, data written to one end is readable
+             * from the other. For SOCK_DGRAM, messages are preserved.
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            int sdomain = (int)a1;
+            int stype = (int)a2;
+            int sproto = (int)a3;
+            (void)sproto;
+
+            if (!user_buf_writable(cur, a4, sizeof(int32_t) * 2)) return (uint64_t)-EFAULT;
+
+            /* Only AF_UNIX (AF_LOCAL = 1) is supported for socketpair */
+            if (sdomain != 1) return (uint64_t)-EAFNOSUPPORT;
+            /* Only SOCK_STREAM and SOCK_DGRAM */
+            if (stype != SOCK_STREAM && stype != SOCK_DGRAM) return (uint64_t)-EINVAL;
+
+            /* Allocate two pipe buffers (one for each direction) */
+            int pidx_a = pipe_alloc();
+            if (pidx_a < 0) return (uint64_t)-ENFILE;
+            int pidx_b = pipe_alloc();
+            if (pidx_b < 0) {
+                g_pipes[pidx_a].used = 0;
+                return (uint64_t)-ENFILE;
+            }
+
+            /* Set pipe reader/writer counts for socketpair:
+             * Pipe A (pidx_a): socket 0 writes, socket 1 reads
+             * Pipe B (pidx_b): socket 1 writes, socket 0 reads
+             * Each pipe has 1 writer and 1 reader. */
+            g_pipes[pidx_a].writers = 1;
+            g_pipes[pidx_a].readers = 1;
+            g_pipes[pidx_b].writers = 1;
+            g_pipes[pidx_b].readers = 1;
+
+            /* Allocate two socket objects */
+            int sidx0 = -1, sidx1 = -1;
+            for (int i = 0; i < FRY_SOCK_MAX; i++) {
+                if (!g_sockets[i].used) { sidx0 = i; break; }
+            }
+            if (sidx0 < 0) {
+                g_pipes[pidx_a].used = 0;
+                g_pipes[pidx_b].used = 0;
+                return (uint64_t)-ENFILE;
+            }
+            for (int i = sidx0 + 1; i < FRY_SOCK_MAX; i++) {
+                if (!g_sockets[i].used) { sidx1 = i; break; }
+            }
+            if (sidx1 < 0) {
+                g_pipes[pidx_a].used = 0;
+                g_pipes[pidx_b].used = 0;
+                g_sockets[sidx0].used = 0;
+                return (uint64_t)-ENFILE;
+            }
+
+            /* Set up socket 0 */
+            struct fry_socket *sk0 = &g_sockets[sidx0];
+            sk0->used = 1;
+            sk0->domain = (uint8_t)sdomain;
+            sk0->type = (uint8_t)stype;
+            sk0->state = SOCK_ST_CONNECTED;
+            sk0->tcp_handle = pidx_a;  /* store pipe index A for outgoing writes */
+            sk0->listen_handle = pidx_b; /* store pipe index B for incoming reads */
+            sk0->local_port = 0;
+            sk0->remote_port = 0;
+            sk0->local_ip = 0;
+            sk0->remote_ip = 0;
+            sk0->so_rcvtimeo = 0;
+            sk0->so_sndtimeo = 0;
+            sk0->reuseaddr = 0;
+            sk0->udp_rx_head = 0;
+            sk0->udp_rx_tail = 0;
+
+            /* Set up socket 1 (reversed pipes) */
+            struct fry_socket *sk1 = &g_sockets[sidx1];
+            sk1->used = 1;
+            sk1->domain = (uint8_t)sdomain;
+            sk1->type = (uint8_t)stype;
+            sk1->state = SOCK_ST_CONNECTED;
+            sk1->tcp_handle = pidx_b;  /* writes go to pipe B */
+            sk1->listen_handle = pidx_a; /* reads come from pipe A */
+            sk1->local_port = 0;
+            sk1->remote_port = 0;
+            sk1->local_ip = 0;
+            sk1->remote_ip = 0;
+            sk1->so_rcvtimeo = 0;
+            sk1->so_sndtimeo = 0;
+            sk1->reuseaddr = 0;
+            sk1->udp_rx_head = 0;
+            sk1->udp_rx_tail = 0;
+
+            /*
+             * Allocate two distinct FD slots before installing either socket.
+             * Calling fd_alloc() twice here can return the same slot because
+             * fd_alloc() only observes already-installed descriptors.
+             */
+            int fd0 = -1;
+            int fd1 = -1;
+            for (int fd = 3; fd < FRY_FD_MAX; fd++) {
+                if (shared->fd_kind[fd] != FD_NONE || shared->fd_ptrs[fd]) continue;
+                if (fd0 < 0) fd0 = fd;
+                else { fd1 = fd; break; }
+            }
+            if (fd0 < 0 || fd1 < 0) {
+                sk0->used = 0; sk1->used = 0;
+                g_pipes[pidx_a].used = 0; g_pipes[pidx_b].used = 0;
+                return (uint64_t)-EMFILE;
+            }
+
+            fd_install(cur, fd0, sk0, FD_SOCKET, 0);
+            fd_install(cur, fd1, sk1, FD_SOCKET, 0);
+
+            int32_t *usv = (int32_t *)(uintptr_t)a4;
+            usv[0] = fd0;
+            usv[1] = fd1;
+            return 0;
+        }
+
+        /* ================================================================
+         * Phase 9: Chrome port — accept4, timerfd, signalfd, inotify
+         * ================================================================ */
+        case SYS_ACCEPT4: {
+            /*
+             * SYS_ACCEPT4(a1=fd, a2=sockaddr_out_ptr, a3=addrlen_ptr, a4=flags)
+             * Like accept() but applies SOCK_NONBLOCK and SOCK_CLOEXEC flags
+             * atomically on the new fd.
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            int afd = (int)a1;
+            uint32_t aflags = (uint32_t)a4;
+
+            /* Validate flags: only SOCK_NONBLOCK and SOCK_CLOEXEC */
+            if (aflags & ~(0x800u | 0x80000u)) return (uint64_t)-EINVAL;
+
+            /* Re-dispatch to the accept handler internally.
+             * We copy the argument layout and let accept do the work,
+             * then apply flags to the returned fd. */
+            /* Re-invoke the same logic as SYS_ACCEPT but we can't goto,
+             * so we inline the same accept logic with flag application. */
+            if (afd < 3 || afd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            if (shared->fd_kind[afd] != FD_SOCKET) return (uint64_t)-ENOTSOCK;
+            struct fry_socket *lsk = (struct fry_socket *)shared->fd_ptrs[afd];
+            if (!lsk || !lsk->used || lsk->state != SOCK_ST_LISTENING)
+                return (uint64_t)-EINVAL;
+
+            net_poll();
+            tcp_conn_t nc = tcp_accept(lsk->listen_handle);
+            if (nc < 0) {
+                uint32_t fflags = shared->fd_flags[afd];
+                if (fflags & O_NONBLOCK) return (uint64_t)-EAGAIN;
+                sched_block_poll(cur->pid, UINT64_MAX);
+                sched_yield();
+                cur = proc_current();
+                if (!cur) return (uint64_t)-ESRCH;
+                shared = proc_shared_state(cur);
+                if (!shared || !shared->fd_ptrs[afd]) return (uint64_t)-EBADF;
+                lsk = (struct fry_socket *)shared->fd_ptrs[afd];
+                if (!lsk || !lsk->used) return (uint64_t)-EBADF;
+                net_poll();
+                nc = tcp_accept(lsk->listen_handle);
+                if (nc < 0) return (uint64_t)-EAGAIN;
+            }
+
+            int nsi = sock_alloc();
+            if (nsi < 0) { tcp_close(nc); return (uint64_t)-ENFILE; }
+
+            int newfd = fd_alloc(cur);
+            if (newfd < 0) {
+                g_sockets[nsi].used = 0;
+                tcp_close(nc);
+                return (uint64_t)-EMFILE;
+            }
+
+            g_sockets[nsi].domain = AF_INET;
+            g_sockets[nsi].type = SOCK_STREAM;
+            g_sockets[nsi].state = SOCK_ST_CONNECTED;
+            g_sockets[nsi].tcp_handle = nc;
+            g_sockets[nsi].local_port = lsk->local_port;
+
+            /* Apply flags atomically at fd creation */
+            uint32_t fd_flags = 0;
+            if (aflags & 0x800u)   fd_flags |= O_NONBLOCK;   /* SOCK_NONBLOCK */
+            if (aflags & 0x80000u) fd_flags |= O_CLOEXEC;    /* SOCK_CLOEXEC */
+            fd_install(cur, newfd, &g_sockets[nsi], FD_SOCKET, fd_flags);
+
+            /* Fill in peer address if requested */
+            if (a2 && a3) {
+                struct fry_sockaddr_in peer;
+                uint8_t *p = (uint8_t *)&peer;
+                for (uint32_t j = 0; j < sizeof(peer); j++) p[j] = 0;
+                peer.sin_family = AF_INET;
+                if (user_buf_writable(cur, a2, sizeof(peer)))
+                    copyout(cur, &peer, a2, sizeof(peer));
+            }
+
+            return (uint64_t)newfd;
+        }
+
+        case SYS_TIMERFD_CREATE: {
+            /*
+             * SYS_TIMERFD_CREATE(a1=clockid, a2=flags)
+             * Creates a timerfd. clockid: FRY_CLOCK_MONOTONIC or FRY_CLOCK_REALTIME.
+             * flags: TFD_NONBLOCK (0x800) or TFD_CLOEXEC (0x80000).
+             * Returns fd on success, -errno on failure.
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            int clockid = (int)a1;
+            uint32_t flags = (uint32_t)a2;
+
+            if (clockid != 0 && clockid != 1)
+                return (uint64_t)-EINVAL;
+            if (flags & ~(0x800u | 0x80000u)) return (uint64_t)-EINVAL;
+
+            struct timerfd_cb *tm = (struct timerfd_cb *)kmalloc(sizeof(struct timerfd_cb));
+            if (!tm) return (uint64_t)-ENOMEM;
+
+            int fd = fd_alloc(cur);
+            if (fd < 0) {
+                kfree(tm);
+                return (uint64_t)-EMFILE;
+            }
+
+            tm->used = 1;
+            tm->clockid = clockid;
+            tm->it_value_ms = 0;
+            tm->it_interval_ms = 0;
+            tm->deadline_ms = 0;
+            tm->expirations = 0;
+            tm->nonblock = (flags & 0x800u) ? 1 : 0;
+
+            uint32_t fd_flags = 0;
+            if (flags & 0x800u)   fd_flags |= O_NONBLOCK;
+            if (flags & 0x80000u) fd_flags |= O_CLOEXEC;
+            fd_install(cur, fd, tm, FD_TIMERFD, fd_flags);
+            return (uint64_t)fd;
+        }
+
+        case SYS_TIMERFD_SETTIME: {
+            /*
+             * SYS_TIMERFD_SETTIME(a1=fd, a2=flags, a3=user_new_value, a4=user_old_value)
+             * Arms or disarms the timer.
+             * new_value: pointer to struct { uint64_t it_value_sec; uint64_t it_value_nsec;
+             *                             uint64_t it_interval_sec; uint64_t it_interval_nsec; }
+             * TFD_TIMER_ABSTIME in flags means it_value is absolute.
+             * old_value: optional output (can be 0).
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            int tfd = (int)a1;
+            uint32_t tflags = (uint32_t)a2;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+
+            if (tfd < 3 || tfd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            if (shared->fd_kind[tfd] != FD_TIMERFD) return (uint64_t)-EINVAL;
+            struct timerfd_cb *tm = (struct timerfd_cb *)shared->fd_ptrs[tfd];
+            if (!tm || !tm->used) return (uint64_t)-EBADF;
+
+            if (a4 != 0) {
+                /* Save old value first — use 64-bit inline struct layout */
+                /* We'll just store zero-old for simplicity; Chromium rarely uses old_value */
+                if (user_buf_writable(cur, a4, 32)) {
+                    uint64_t zero[4] = {0, 0, 0, 0};
+                    copyout(cur, zero, a4, 32);
+                }
+            }
+
+            if (a3 == 0) {
+                /* Disarm */
+                tm->it_value_ms = 0;
+                tm->deadline_ms = 0;
+                tm->expirations = 0;
+                return 0;
+            }
+
+            /* Read new timer spec from user space */
+            uint64_t new_val[4]; /* it_value_sec, it_value_nsec, it_interval_sec, it_interval_nsec */
+            if (!user_buf_mapped(cur, a3, 32)) return (uint64_t)-EFAULT;
+            if (copyin(cur, a3, new_val, 32) != 0) return (uint64_t)-EFAULT;
+
+            uint64_t it_value_sec = new_val[0];
+            uint64_t it_value_nsec = new_val[1];
+            uint64_t it_interval_sec = new_val[2];
+            uint64_t it_interval_nsec = new_val[3];
+
+            /* Convert to ms */
+            uint64_t new_it_value_ms = it_value_sec * 1000ULL + it_value_nsec / 1000000ULL;
+            uint64_t new_it_interval_ms = it_interval_sec * 1000ULL + it_interval_nsec / 1000000ULL;
+
+            tm->it_interval_ms = new_it_interval_ms;
+            tm->expirations = 0;
+
+            if (new_it_value_ms == 0) {
+                /* Disarm */
+                tm->it_value_ms = 0;
+                tm->deadline_ms = 0;
+                return 0;
+            }
+
+            /* Get current time in ms */
+            uint64_t freq = hpet_get_freq_hz();
+            uint64_t now_ms = (hpet_read_counter() * 1000ULL) / freq;
+
+            if (tflags & 0x1u) {
+                /* TFD_TIMER_ABSTIME — value is absolute */
+                tm->deadline_ms = new_it_value_ms;
+                if (tm->deadline_ms <= now_ms) {
+                    /* Already expired */
+                    tm->expirations = 1;
+                    if (tm->it_interval_ms > 0) {
+                        /* Schedule next periodic */
+                        tm->deadline_ms = now_ms + tm->it_interval_ms;
+                    }
+                }
+                tm->it_value_ms = (tm->deadline_ms > now_ms) ? (tm->deadline_ms - now_ms) : 0;
+            } else {
+                /* Relative timeout */
+                tm->it_value_ms = new_it_value_ms;
+                tm->deadline_ms = now_ms + new_it_value_ms;
+            }
+
+            return 0;
+        }
+
+        case SYS_TIMERFD_GETTIME: {
+            /*
+             * SYS_TIMERFD_GETTIME(a1=fd, a2=user_curr_value)
+             * Returns current timer settings (remaining time + interval).
+             * Output: { it_value_sec, it_value_nsec, it_interval_sec, it_interval_nsec }
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            int tfd = (int)a1;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+
+            if (tfd < 3 || tfd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            if (shared->fd_kind[tfd] != FD_TIMERFD) return (uint64_t)-EINVAL;
+            struct timerfd_cb *tm = (struct timerfd_cb *)shared->fd_ptrs[tfd];
+            if (!tm || !tm->used) return (uint64_t)-EBADF;
+            if (a2 == 0) return (uint64_t)-EFAULT;
+            if (!user_buf_writable(cur, a2, 32)) return (uint64_t)-EFAULT;
+
+            uint64_t freq = hpet_get_freq_hz();
+            uint64_t now_ms = (hpet_read_counter() * 1000ULL) / freq;
+            uint64_t remaining_ms = 0;
+            if (tm->it_value_ms > 0 && tm->deadline_ms > now_ms) {
+                remaining_ms = tm->deadline_ms - now_ms;
+            }
+
+            uint64_t out[4];
+            out[0] = remaining_ms / 1000ULL;          /* it_value_sec */
+            out[1] = (remaining_ms % 1000ULL) * 1000000ULL; /* it_value_nsec */
+            out[2] = tm->it_interval_ms / 1000ULL;    /* it_interval_sec */
+            out[3] = (tm->it_interval_ms % 1000ULL) * 1000000ULL; /* it_interval_nsec */
+
+            copyout(cur, out, a2, 32);
+            return 0;
+        }
+
+        case SYS_SIGNALFD: {
+            /*
+             * SYS_SIGNALFD(a1=fd, a2=user_mask_ptr (sigset_t), a3=flags)
+             * If fd == -1: create a new signalfd.
+             * If fd >= 0: modify existing signalfd's mask.
+             * flags: SFD_NONBLOCK (0x800) or SFD_CLOEXEC (0x80000).
+             * Returns fd on success, -errno on failure.
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            int sfd = (int)a1;
+            uint32_t sflags = (uint32_t)a3;
+
+            if (sflags & ~(0x800u | 0x80000u)) return (uint64_t)-EINVAL;
+
+            uint64_t mask = 0;
+            if (a2 != 0) {
+                if (!user_buf_mapped(cur, a2, 8)) return (uint64_t)-EFAULT;
+                if (copyin(cur, a2, &mask, 8) != 0) return (uint64_t)-EFAULT;
+            }
+
+            if (sfd == -1) {
+                /* Create new signalfd */
+                struct signalfd_cb *sf = (struct signalfd_cb *)kmalloc(sizeof(struct signalfd_cb));
+                if (!sf) return (uint64_t)-ENOMEM;
+
+                int nfd = fd_alloc(cur);
+                if (nfd < 0) {
+                    kfree(sf);
+                    return (uint64_t)-EMFILE;
+                }
+
+                sf->used = 1;
+                sf->mask = mask;
+                sf->nonblock = (sflags & 0x800u) ? 1 : 0;
+
+                uint32_t fd_flags = 0;
+                if (sflags & 0x800u)   fd_flags |= O_NONBLOCK;
+                if (sflags & 0x80000u) fd_flags |= O_CLOEXEC;
+                fd_install(cur, nfd, sf, FD_SIGNALFD, fd_flags);
+                return (uint64_t)nfd;
+            } else {
+                /* Modify existing signalfd mask */
+                if (sfd < 3 || sfd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+                if (shared->fd_kind[sfd] != FD_SIGNALFD) return (uint64_t)-EINVAL;
+                struct signalfd_cb *sf = (struct signalfd_cb *)shared->fd_ptrs[sfd];
+                if (!sf || !sf->used) return (uint64_t)-EBADF;
+                sf->mask = mask;
+                return (uint64_t)sfd;
+            }
+        }
+
+        case SYS_INOTIFY_INIT: {
+            /*
+             * SYS_INOTIFY_INIT(a1=flags)
+             * Creates an inotify instance.
+             * flags: IN_NONBLOCK (0x800) or IN_CLOEXEC (0x80000).
+             * Returns fd on success, -errno on failure.
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            uint32_t iflags = (uint32_t)a1;
+
+            if (iflags & ~(0x800u | 0x80000u)) return (uint64_t)-EINVAL;
+
+            struct inotify_cb *in = (struct inotify_cb *)kmalloc(sizeof(struct inotify_cb));
+            if (!in) return (uint64_t)-ENOMEM;
+
+            int fd = fd_alloc(cur);
+            if (fd < 0) {
+                kfree(in);
+                return (uint64_t)-EMFILE;
+            }
+
+            in->used = 1;
+            in->watch_count = 0;
+            in->next_wd = 1;
+            in->ev_head = 0;
+            in->ev_tail = 0;
+            in->nonblock = (iflags & 0x800u) ? 1 : 0;
+            for (int i = 0; i < INOTIFY_WATCH_MAX; i++) {
+                in->watches[i].used = 0;
+            }
+
+            uint32_t fd_flags = 0;
+            if (iflags & 0x800u)   fd_flags |= O_NONBLOCK;
+            if (iflags & 0x80000u) fd_flags |= O_CLOEXEC;
+            fd_install(cur, fd, in, FD_INOTIFY, fd_flags);
+            return (uint64_t)fd;
+        }
+
+        case SYS_INOTIFY_ADD_WATCH: {
+            /*
+             * SYS_INOTIFY_ADD_WATCH(a1=fd, a2=path_ptr, a3=mask)
+             * Adds a watch on a path.
+             * Returns watch descriptor (wd) on success, -errno on failure.
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            int ifd = (int)a1;
+            uint32_t imask = (uint32_t)a3;
+
+            if (ifd < 3 || ifd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            if (shared->fd_kind[ifd] != FD_INOTIFY) return (uint64_t)-EINVAL;
+            struct inotify_cb *in = (struct inotify_cb *)shared->fd_ptrs[ifd];
+            if (!in || !in->used) return (uint64_t)-EBADF;
+
+            char raw_path[FRY_PATH_MAX];
+            if (copy_user_string(cur, a2, raw_path, sizeof(raw_path)) != 0)
+                return (uint64_t)-EFAULT;
+
+            char resolved[FRY_PATH_MAX];
+            int rc = resolve_at_path(cur, FRY_AT_FDCWD, raw_path, resolved);
+            if (rc < 0) return (uint64_t)rc;
+
+            /* Check if path exists */
+            struct vfs_stat st;
+            if (vfs_stat(resolved, &st) != 0) return (uint64_t)-ENOENT;
+
+            /* Find an empty watch slot or reuse existing watch on same path */
+            int slot = -1;
+            for (int i = 0; i < INOTIFY_WATCH_MAX; i++) {
+                if (!in->watches[i].used) {
+                    if (slot < 0) slot = i;
+                } else {
+                    /* Check if this path is already watched */
+                    uint32_t j;
+                    for (j = 0; resolved[j] && in->watches[i].path[j]; j++) {
+                        if (resolved[j] != in->watches[i].path[j]) break;
+                    }
+                    if (resolved[j] == 0 && in->watches[i].path[j] == 0) {
+                        /* Same path — return existing wd */
+                        return (uint64_t)in->watches[i].wd;
+                    }
+                }
+            }
+
+            if (slot < 0) return (uint64_t)-ENOSPC;
+
+            /* Copy resolved path */
+            uint32_t pi;
+            for (pi = 0; pi < FRY_PATH_MAX - 1 && resolved[pi]; pi++)
+                in->watches[slot].path[pi] = resolved[pi];
+            in->watches[slot].path[pi] = 0;
+
+            in->watches[slot].mask = imask;
+            in->watches[slot].used = 1;
+            in->watches[slot].wd = in->next_wd++;
+            in->watch_count++;
+            return (uint64_t)in->watches[slot].wd;
+        }
+
+        case SYS_INOTIFY_RM_WATCH: {
+            /*
+             * SYS_INOTIFY_RM_WATCH(a1=fd, a2=wd)
+             * Removes a watch by watch descriptor.
+             * Returns 0 on success, -errno on failure.
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            int ifd = (int)a1;
+            int wd = (int)a2;
+
+            if (ifd < 3 || ifd >= FRY_FD_MAX) return (uint64_t)-EBADF;
+            if (shared->fd_kind[ifd] != FD_INOTIFY) return (uint64_t)-EINVAL;
+            struct inotify_cb *in = (struct inotify_cb *)shared->fd_ptrs[ifd];
+            if (!in || !in->used) return (uint64_t)-EBADF;
+
+            for (int i = 0; i < INOTIFY_WATCH_MAX; i++) {
+                if (in->watches[i].used && in->watches[i].wd == wd) {
+                    in->watches[i].used = 0;
+                    in->watch_count--;
+                    return 0;
+                }
+            }
+            return (uint64_t)-EINVAL;
+        }
+
+        case SYS_MEMFD_CREATE: {
+            /*
+             * SYS_MEMFD_CREATE(a1=name_ptr, a2=flags)
+             * Creates an anonymous memory-backed file descriptor.
+             * Returns fd on success, -errno on failure.
+             * flags: MFD_CLOEXEC (0x80000).
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            uint32_t mflags = (uint32_t)a2;
+
+            if (mflags & ~(0x80000u)) return (uint64_t)-EINVAL;
+
+            char name[32];
+            if (a1 != 0) {
+                if (copy_user_string(cur, a1, name, sizeof(name)) != 0)
+                    return (uint64_t)-EFAULT;
+            } else {
+                name[0] = 0;
+            }
+
+            struct memfd_cb *mf = (struct memfd_cb *)kmalloc(sizeof(struct memfd_cb));
+            if (!mf) return (uint64_t)-ENOMEM;
+            for (uint32_t z = 0; z < sizeof(struct memfd_cb); z++)
+                ((uint8_t *)mf)[z] = 0;
+
+            mf->used = 1;
+            mf->size = 0;
+            mf->capacity = 0;
+            mf->pos = 0;
+            mf->page_count = 0;
+            mf->pages = 0;
+            for (uint32_t i = 0; i < 32 && name[i]; i++)
+                mf->name[i] = name[i];
+            mf->name[31] = 0;
+
+            int fd = fd_alloc(cur);
+            if (fd < 0) {
+                kfree(mf);
+                return (uint64_t)-EMFILE;
+            }
+
+            uint32_t fd_flags = 0;
+            if (mflags & 0x80000u) fd_flags |= O_CLOEXEC;
+            fd_install(cur, fd, mf, FD_MEMFD, fd_flags);
+            return (uint64_t)fd;
+        }
+
+        case SYS_SENDFILE: {
+            /*
+             * SYS_SENDFILE(a1=out_fd, a2=in_fd, a3=offset_ptr, a4=count)
+             * Copies data from in_fd to out_fd without userspace buffer.
+             * If offset_ptr != 0, uses the pointed-to value as the starting
+             * offset in in_fd and updates it.
+             * Returns number of bytes transferred, -errno on failure.
+             */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            int out_fd = (int)a1;
+            int in_fd = (int)a2;
+            uint64_t count = (uint64_t)a4;
+
+            if (out_fd < 3 || out_fd >= FRY_FD_MAX || in_fd < 3 || in_fd >= FRY_FD_MAX)
+                return (uint64_t)-EBADF;
+            if (!shared->fd_ptrs[out_fd] || !shared->fd_ptrs[in_fd])
+                return (uint64_t)-EBADF;
+
+            uint8_t in_kind = shared->fd_kind[in_fd];
+            uint8_t out_kind = shared->fd_kind[out_fd];
+
+            /* Determine read offset */
+            uint64_t in_offset = UINT64_MAX; /* UINT64_MAX = use current pos */
+            if (a3 != 0) {
+                if (!user_buf_mapped(cur, a3, 8)) return (uint64_t)-EFAULT;
+                uint64_t off_val;
+                if (copyin(cur, a3, &off_val, 8) != 0) return (uint64_t)-EFAULT;
+                in_offset = off_val;
+            }
+
+            if (count == 0) return 0;
+            if (count > 1024 * 1024) count = 1024 * 1024; /* cap at 1MB per call */
+
+            /* Use a small kernel bounce buffer for the transfer */
+            uint8_t bounce[4096];
+            uint64_t total = 0;
+
+            while (total < count) {
+                uint64_t chunk = count - total;
+                if (chunk > sizeof(bounce)) chunk = sizeof(bounce);
+
+                /* Read from in_fd */
+                int64_t nread = 0;
+                if (in_kind == FD_MEMFD) {
+                    struct memfd_cb *mf = (struct memfd_cb *)shared->fd_ptrs[in_fd];
+                    if (in_offset != UINT64_MAX) {
+                        memfd_lseek(mf, (int64_t)in_offset, FRY_SEEK_SET);
+                    }
+                    nread = memfd_read(mf, bounce, chunk);
+                    if (in_offset != UINT64_MAX) {
+                        in_offset = (uint64_t)memfd_lseek(mf, 0, FRY_SEEK_CUR);
+                    }
+                } else if (in_kind == FD_FILE) {
+                    struct vfs_file *vf = (struct vfs_file *)shared->fd_ptrs[in_fd];
+                    if (in_offset != UINT64_MAX) {
+                        vfs_seek(vf, (int64_t)in_offset, FRY_SEEK_SET);
+                    }
+                    nread = vfs_read(vf, bounce, (uint32_t)chunk);
+                    if (in_offset != UINT64_MAX) {
+                        in_offset = (uint64_t)vfs_seek(vf, 0, FRY_SEEK_CUR);
+                    }
+                } else {
+                    return (uint64_t)-EBADF;
+                }
+
+                if (nread <= 0) break;
+
+                /* Write to out_fd */
+                int64_t nwritten = 0;
+                if (out_kind == FD_MEMFD) {
+                    struct memfd_cb *mf = (struct memfd_cb *)shared->fd_ptrs[out_fd];
+                    nwritten = memfd_write(mf, bounce, (uint64_t)nread);
+                } else if (out_kind == FD_FILE) {
+                    struct vfs_file *vf = (struct vfs_file *)shared->fd_ptrs[out_fd];
+                    nwritten = vfs_write(vf, bounce, (uint32_t)nread);
+                } else if (out_kind == FD_SOCKET) {
+                    struct fry_socket *sk = (struct fry_socket *)shared->fd_ptrs[out_fd];
+                    if (sk->type == SOCK_STREAM) {
+                        nwritten = tcp_send(sk->tcp_handle, bounce, (uint16_t)nread);
+                    } else {
+                        return (uint64_t)-EBADF;
+                    }
+                } else if (out_kind == FD_PIPE_WRITE) {
+                    struct fry_pipe *pp = (struct fry_pipe *)shared->fd_ptrs[out_fd];
+                    nwritten = pipe_write(pp, (const char *)bounce, (uint64_t)nread, shared->fd_flags[out_fd]);
+                } else {
+                    return (uint64_t)-EBADF;
+                }
+
+                if (nwritten <= 0) break;
+                total += (uint64_t)nwritten;
+
+                /* Update user offset */
+                if (a3 != 0 && in_offset != UINT64_MAX) {
+                    if (user_buf_writable(cur, a3, 8))
+                        copyout(cur, &in_offset, a3, 8);
+                }
+
+                if ((uint64_t)nwritten < (uint64_t)nread) break;
+            }
+
+            return (uint64_t)total;
+        }
+
+        /* --- Chrome/GN probe stubs (Phase 10) --- */
+        case SYS_UNAME: {
+            /* uname(buf) — fill struct utsname (5x65 byte fields) */
+            if (!cur || !user_buf_writable(cur, a1, 65*5))
+                return (uint64_t)-EFAULT;
+            uint8_t buf[65*5];
+            for (uint32_t i = 0; i < sizeof(buf); i++) buf[i] = 0;
+            /* sysname at +0 */
+            { const char *s = "TaterTOS"; uint32_t i = 0; while (s[i]) { buf[i] = (uint8_t)s[i]; i++; } }
+            /* nodename at +65 */
+            { const char *s = "taterbox"; uint32_t i = 0; while (s[i]) { buf[65+i] = (uint8_t)s[i]; i++; } }
+            /* release at +130 */
+            { const char *s = "1.0.0"; uint32_t i = 0; while (s[i]) { buf[130+i] = (uint8_t)s[i]; i++; } }
+            /* version at +195 */
+            { const char *s = "TaterTOS64v3 #1 SMP"; uint32_t i = 0; while (s[i]) { buf[195+i] = (uint8_t)s[i]; i++; } }
+            /* machine at +260 */
+            { const char *s = "x86_64"; uint32_t i = 0; while (s[i]) { buf[260+i] = (uint8_t)s[i]; i++; } }
+            copyout(cur, buf, a1, sizeof(buf));
+            return 0;
+        }
+        case SYS_SYSINFO: {
+            /* sysinfo(info) — provide uptime + memory + process count */
+            if (!cur || !user_buf_writable(cur, a1, 64))
+                return (uint64_t)-EFAULT;
+            uint64_t freq = hpet_get_freq_hz();
+            uint64_t uptime_ms = (freq > 0) ? ((hpet_read_counter() * 1000ULL) / freq) : 0;
+            uint8_t info[64];
+            for (uint32_t i = 0; i < sizeof(info); i++) info[i] = 0;
+            /* offset 0: int64_t uptime */
+            uint64_t uptime_sec = uptime_ms / 1000ULL;
+            info[0] = (uint8_t)(uptime_sec >> 0); info[1] = (uint8_t)(uptime_sec >> 8);
+            info[2] = (uint8_t)(uptime_sec >> 16); info[3] = (uint8_t)(uptime_sec >> 24);
+            info[4] = (uint8_t)(uptime_sec >> 32); info[5] = (uint8_t)(uptime_sec >> 40);
+            info[6] = (uint8_t)(uptime_sec >> 48); info[7] = (uint8_t)(uptime_sec >> 56);
+            /* offset 32: uint64_t totalram */
+            { uint64_t v = pmm_get_total_pages() * 4096ULL;
+              for (uint32_t i = 0; i < 8; i++) info[32+i] = (uint8_t)(v >> (i*8)); }
+            /* offset 40: uint64_t freeram */
+            { uint64_t v = (pmm_get_total_pages() - pmm_get_used_pages()) * 4096ULL;
+              for (uint32_t i = 0; i < 8; i++) info[40+i] = (uint8_t)(v >> (i*8)); }
+            /* offset 60: uint16_t procs */
+            { uint32_t pc = 0;
+              for (uint32_t i = 0; i < PROC_MAX; i++)
+                  if (procs[i].state != PROC_UNUSED && procs[i].state != PROC_DEAD) pc++;
+              uint16_t pv = (uint16_t)(pc > 0xFFFF ? 0xFFFF : pc);
+              info[60] = (uint8_t)(pv >> 0); info[61] = (uint8_t)(pv >> 8); }
+            copyout(cur, info, a1, sizeof(info));
+            return 0;
+        }
+        case SYS_GETRUSAGE: {
+            /* getrusage(who, usage) — return zeros */
+            if (!cur) return (uint64_t)-ESRCH;
+            int who = (int)a1;
+            if (who != 0) return (uint64_t)-EINVAL;
+            if (!user_buf_writable(cur, a2, 144))
+                return (uint64_t)-EFAULT;
+            uint8_t zeros[144];
+            for (uint32_t i = 0; i < sizeof(zeros); i++) zeros[i] = 0;
+            copyout(cur, zeros, a2, sizeof(zeros));
+            return 0;
+        }
+        case SYS_GETPRIORITY: {
+            int which = (int)a1;
+            if (which != 0) return (uint64_t)-EINVAL;
+            return 0;
+        }
+        case SYS_SETPRIORITY: {
+            int which = (int)a1;
+            if (which != 0) return (uint64_t)-EINVAL;
+            return 0;
+        }
+        case SYS_FSYNC:
+        case SYS_FDATASYNC: {
+            /* ramdisk is always synced */
+            if (!cur || !proc_shared_state(cur)) return (uint64_t)-ESRCH;
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            int fd = (int)a1;
+            if (fd < 3 || fd >= FRY_FD_MAX || !shared->fd_ptrs[fd])
+                return (uint64_t)-EBADF;
+            return 0;
+        }
+        case SYS_SCHED_GETAFFINITY: {
+            /* sched_getaffinity(pid, cpusetsize, mask) */
+            if (!cur) return (uint64_t)-ESRCH;
+            uint64_t cpusetsize = a2;
+            if (!user_buf_writable(cur, a3, cpusetsize))
+                return (uint64_t)-EFAULT;
+            uint32_t ncpu = smp_cpu_count();
+            if (ncpu == 0) ncpu = 1;
+            uint8_t mask_buf[128];
+            for (uint32_t i = 0; i < sizeof(mask_buf); i++) mask_buf[i] = 0;
+            for (uint32_t i = 0; i < ncpu && i < cpusetsize * 8 && i < sizeof(mask_buf)*8; i++)
+                mask_buf[i / 8] |= (uint8_t)(1u << (i % 8));
+            uint64_t copy_sz = cpusetsize < sizeof(mask_buf) ? cpusetsize : (uint64_t)sizeof(mask_buf);
+            copyout(cur, mask_buf, a3, copy_sz);
+            return (int64_t)copy_sz;
+        }
+        case SYS_SCHED_SETAFFINITY: {
+            return 0;
+        }
+        case SYS_MLOCK:
+        case SYS_MUNLOCK:
+        case SYS_SPLICE:
+        case SYS_TEE:
+            return (uint64_t)-ENOSYS;
 
         default:
             return (uint64_t)-ENOSYS;

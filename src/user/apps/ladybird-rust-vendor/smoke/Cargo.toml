@@ -1,0 +1,18 @@
+[package]
+name = "tatertos-rust-smoke"
+version = "0.0.1"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[profile.dev]
+panic = "abort"
+opt-level = 1
+
+[profile.release]
+panic = "abort"
+opt-level = 3
+lto = false
+codegen-units = 1

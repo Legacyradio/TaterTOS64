@@ -1,0 +1,13 @@
+// TaterTOS64v3 — minimal <ios> for freestanding C++.
+// Origin log: logs/fry868.txt
+
+#pragma once
+
+namespace std {
+
+class ios {
+public:
+    using fmtflags = int;
+};
+
+} // namespace std

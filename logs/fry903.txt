@@ -1,0 +1,37 @@
+Fry Log 903 - Chromium //base:base first compile — libc gap fixing
+Timestamp: 2026-05-07 11:00 CDT
+
+State: gn gen succeeds (2400 targets). First ninja compile started for //base:base.
+
+Problems fixed so far (TaterTOS libc additions):
+
+sys/utsname.h, sys/sysinfo.h, sys/mlock.h — created (already had headers)
+time.h — added mbstate_t, timespec_get, TIME_UTC, re-added #include <sys/types.h>
+string.h — added wmemcmp, wmemcpy, wmemmove, wmemset declarations
+wchar.h — created full header with all POSIX wchar_t functions
+stdio.h — added fgetpos, fsetpos, freopen, tmpfile, tmpnam, scanf, vscanf, fpos_t
+errno.h — added ENODEV, EPROTO, ETXTBSY, ENOTTY, ENOLINK
+
+Libc implementations:
+- string_ext.c: wmemcmp, wmemcpy, wmemmove, wmemset
+- time_ext.c: timespec_get
+- libc.c: strtoimax, strtoumax, wcstoimax, wcstoumax
+- stdio.c: scanf, vscanf, fgetpos, fsetpos, freopen, tmpfile, tmpnam
+
+Chromium source patches:
+- build/config/BUILDCONFIG.gn — is_tatertos + default toolchain + compiler config
+- build/toolchain/tatertos/BUILD.gn — gcc_toolchain(x64)
+- build/config/tatertos/BUILD.gn — compiler config with TaterTOS includes as -isystem
+- build/config/rust.gni — rust_abi_target for is_tatertos
+- build/rust/known-target-triples.txt — added x86_64-unknown-none
+- third_party/libxml/BUILD.gn — os_include=linux for is_tatertos
+- third_party/perfetto/include/perfetto/base/build_config.h — __tatertos__ block
+- third_party/abseil-cpp/absl/container/internal/hash_function_defaults.h — wstring guards
+- third_party/abseil-cpp/absl/strings/internal/str_format/arg.h — wstring_view guards
+- buildtools/third_party/libc++/__config_site — conditional _LIBCPP_HAS_NO_WIDE_CHARACTERS
+- BUILD.gn — replaced with minimal root (only //base:base)
+
+Next blocker: libc++ header ordering. TaterTOS -isystem paths must come AFTER
+gen/third_party/libc++/src/include so libc++ can find its own stdio.h/string.h/errno.h
+wrappers via #include_next. Need to adjust tatertos compiler config to add
+-isystem gen/... before -isystem TaterTOS/....

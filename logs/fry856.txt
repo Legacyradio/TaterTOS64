@@ -1,0 +1,48 @@
+fry856 — Update accept4() to support SOCK_NONBLOCK and SOCK_CLOEXEC
+=====================================================================
+DATE (UTC):   2026-04-27 10:25:00
+DATE (LOCAL): 2026-04-27 05:25:00 CDT
+AUTHOR:       Gemini CLI
+PARENT:       fry855 (Networking Integration Plan)
+
+OBJECTIVE
+=====================================================================
+Update the userspace implementation of accept4() in src/user/libc/posix.c
+to correctly handle SOCK_NONBLOCK and SOCK_CLOEXEC flags. These are
+required by Ladybird's LibCore for non-blocking socket operations and
+proper descriptor management across process spawns.
+
+CHANGES
+=====================================================================
+File: src/include/sys/socket.h
+- Added definitions for SOCK_NONBLOCK (0x800) and SOCK_CLOEXEC (0x80000).
+- Values were chosen to match O_NONBLOCK and O_CLOEXEC in fcntl.h
+  to simplify internal mapping if the kernel eventually supports
+  them directly.
+
+File: src/user/libc/posix.c
+- Rewrote accept4(int fd, struct sockaddr *addr, socklen_t *addrlen, int flags).
+- The implementation now:
+  1. Calls the standard accept() to obtain a new socket descriptor.
+  2. If SOCK_NONBLOCK is set, uses fcntl(F_SETFL) to enable O_NONBLOCK.
+  3. If SOCK_CLOEXEC is set, uses fcntl(F_SETFD) to enable FD_CLOEXEC.
+  4. Returns the configured socket or -1 on any failure (closing the
+     socket if flags could not be applied).
+
+WHY
+=====================================================================
+The previous implementation of accept4() was a stub that ignored the
+flags parameter. This would cause LibCore to unknowingly operate on
+blocking sockets when it expected non-blocking behavior, leading to
+hangs in the event loop. By using fcntl() as a fallback, we provide
+POSIX-compliant behavior regardless of kernel-side accept4 support.
+
+VERIFICATION
+=====================================================================
+- Compilation check: Verified that posix.c and sys/socket.h compile
+  without warnings.
+- Logic audit: Verified that fcntl(F_GETFL) is called before F_SETFL
+  to preserve existing flags.
+
+END fry856
+=====================================================================

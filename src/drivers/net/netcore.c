@@ -1281,6 +1281,41 @@ static void net_rx(const uint8_t *data, uint16_t len) {
     const uint8_t *payload = data + 14;
     uint16_t payload_len = len - 14;
 
+    /* Opportunistic ARP learning from incoming IP frames (RFC 826).
+     * QEMU SLIRP user-mode networking doesn't send ARP replies —
+     * it handles ARP internally. Learn the gateway MAC from the
+     * Ethernet source address of any incoming IP packet. */
+    if (ethertype == 0x0800 && payload_len >= 20) {
+        const uint8_t *src_mac = data + 6;  /* Ethernet source MAC */
+        uint32_t src_ip = n_be32(payload + 12);  /* IP source */
+        /* Check if this MAC is already cached */
+        int found = 0;
+        for (int i = 0; i < ARP_CACHE_SIZE; i++) {
+            if (arp_cache[i].valid && arp_cache[i].ip == src_ip) { found = 1; break; }
+        }
+        if (!found) {
+            /* Also learn the gateway MAC — the source MAC of routed packets
+             * is the gateway's MAC, not the remote host's */
+            uint32_t gw = g_net.gateway;
+            for (int i = 0; i < ARP_CACHE_SIZE; i++) {
+                if (arp_cache[i].valid && arp_cache[i].ip == gw) { found = 1; break; }
+            }
+            if (!found && gw != 0) {
+                for (int i = 0; i < ARP_CACHE_SIZE; i++) {
+                    if (!arp_cache[i].valid) {
+                        arp_cache[i].ip = gw;
+                        n_copy(arp_cache[i].mac, src_mac, 6);
+                        arp_cache[i].valid = 1;
+                        arp_cache[i].pending = 0;
+                        kprint_serial_only("ARP: learned gateway %u.%u.%u.%u from rx frame\n",
+                            (gw>>24)&0xFF, (gw>>16)&0xFF, (gw>>8)&0xFF, gw&0xFF);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     switch (ethertype) {
     case 0x0806: arp_process(payload, payload_len); break;
     case 0x0800: ip_process(payload, payload_len); break;

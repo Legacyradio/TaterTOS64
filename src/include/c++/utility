@@ -1,0 +1,193 @@
+// TaterTOS64v3 — minimal <utility> for freestanding C++.
+// Origin log: logs/fry831.txt
+// Surface: enough for std::move / std::forward / std::swap /
+//          std::exchange / std::declval / std::pair (basic).
+
+#pragma once
+
+// Libstdc++ guards to prevent host headers from redefining these.
+#ifndef _GLIBCXX_MOVE_H
+#define _GLIBCXX_MOVE_H
+#endif
+#ifndef _GLIBCXX_UTILITY
+#define _GLIBCXX_UTILITY
+#endif
+#ifndef _GLIBCXX_UTILITY_H
+#define _GLIBCXX_UTILITY_H
+#endif
+#ifndef _MOVE_H
+#define _MOVE_H 1
+#endif
+#ifndef _STL_PAIR_H
+#define _STL_PAIR_H 1
+#endif
+
+#include <stddef.h>
+#include <type_traits>
+#include <compare>
+
+namespace std {
+
+// remove_reference — single definition (utility is included before
+// type_traits in many TUs; type_traits's own definition guards on
+// _UTILITY_REMOVE_REFERENCE_DEFINED).
+#ifndef _UTILITY_REMOVE_REFERENCE_DEFINED
+#define _UTILITY_REMOVE_REFERENCE_DEFINED
+template<typename T> struct remove_reference        { using type = T; };
+template<typename T> struct remove_reference<T&>    { using type = T; };
+template<typename T> struct remove_reference<T&&>   { using type = T; };
+#endif
+template<typename T> using  remove_reference_t = typename remove_reference<T>::type;
+
+// is_lvalue_reference — helper for forward()'s static_assert.
+// Renamed to _utility variant to avoid clashing with type_traits's
+// is_lvalue_reference_<T&> partial form.
+template<typename T> struct _utility_is_lvalue_ref      { static constexpr bool value = false; };
+template<typename T> struct _utility_is_lvalue_ref<T&>  { static constexpr bool value = true;  };
+
+// std::move
+template<typename T>
+constexpr remove_reference_t<T>&& move(T&& t) noexcept {
+    return static_cast<remove_reference_t<T>&&>(t);
+}
+
+// std::forward — both lvalue and rvalue overloads required.
+template<typename T>
+constexpr T&& forward(remove_reference_t<T>& t) noexcept {
+    return static_cast<T&&>(t);
+}
+
+template<typename T>
+constexpr T&& forward(remove_reference_t<T>&& t) noexcept {
+    static_assert(!_utility_is_lvalue_ref<T>::value,
+                  "Cannot forward an rvalue as an lvalue.");
+    return static_cast<T&&>(t);
+}
+
+// std::exchange
+template<typename T, typename U = T>
+constexpr T exchange(T& obj, U&& new_value) noexcept {
+    T old = static_cast<T&&>(obj);
+    obj = static_cast<U&&>(new_value);
+    return old;
+}
+
+// Local decay equivalent — done inline rather than including
+// <type_traits> here (type_traits pulls iterator/cstdio/memory).
+namespace _utility_detail {
+    template<typename T> struct remove_extent_local      { using type = T; };
+    template<typename T> struct remove_extent_local<T[]> { using type = T; };
+    template<typename T, size_t N> struct remove_extent_local<T[N]> { using type = T; };
+
+    template<typename T> struct remove_const_local         { using type = T; };
+    template<typename T> struct remove_const_local<T const>{ using type = T; };
+    template<typename T> struct remove_volatile_local      { using type = T; };
+    template<typename T> struct remove_volatile_local<T volatile> { using type = T; };
+
+    template<typename T>
+    struct decay_local {
+        using U = typename remove_reference<T>::type;
+        using type = typename remove_volatile_local<
+            typename remove_const_local<
+                typename remove_extent_local<U>::type
+            >::type
+        >::type;
+    };
+}
+
+// Minimal std::pair — only the 2-template-arg form, default-constructible
+// where T1/T2 are. AK's HashMap key/value pairs use this shape.
+template<typename T1, typename T2>
+struct pair {
+    using first_type  = T1;
+    using second_type = T2;
+
+    T1 first;
+    T2 second;
+
+    constexpr pair() = default;
+    constexpr pair(T1 const& a, T2 const& b) : first(a), second(b) {}
+
+    template<typename U1, typename U2>
+    constexpr pair(U1&& a, U2&& b)
+        : first(static_cast<U1&&>(a)), second(static_cast<U2&&>(b)) {}
+
+    template<typename U1, typename U2>
+    constexpr pair(pair<U1, U2> const& other)
+        : first(other.first), second(other.second) {}
+
+    template<typename U1, typename U2>
+    constexpr pair(pair<U1, U2>&& other)
+        : first(static_cast<U1&&>(other.first)),
+          second(static_cast<U2&&>(other.second)) {}
+};
+
+// Deduction guide
+template<typename T1, typename T2>
+pair(T1, T2) -> pair<T1, T2>;
+
+// std::make_pair — uses decay (libstdc++ convention) so nullptr_t
+// gets converted to T*, arrays decay to pointers, etc.
+template<typename T1, typename T2>
+constexpr pair<typename _utility_detail::decay_local<T1>::type,
+               typename _utility_detail::decay_local<T2>::type>
+make_pair(T1&& a, T2&& b) {
+    using P1 = typename _utility_detail::decay_local<T1>::type;
+    using P2 = typename _utility_detail::decay_local<T2>::type;
+    return pair<P1, P2>(static_cast<T1&&>(a), static_cast<T2&&>(b));
+}
+
+// Libstdc++ internal shims used by its own headers.
+template<typename... B> struct __and_ : conjunction<B...> {};
+template<typename B>    struct __not_ : negation<B> {};
+template<bool B, typename T, typename F>
+using __conditional_t = conditional_t<B, T, F>;
+
+template<typename T> struct __is_tuple_like : false_type {};
+// std::pair is tuple-like per libstdc++ expectations.
+template<typename T1, typename T2> struct __is_tuple_like<pair<T1, T2>> : true_type {};
+
+// std::declval is defined canonically in <type_traits>. Removed
+// here to avoid ambiguous overloads.
+
+template<typename...> using void_t = void;
+template<typename...> using __void_t = void;
+
+// std::swap — minimal for non-array T. Arrays handled by AK if needed.
+template<typename T>
+constexpr void swap(T& a, T& b) noexcept {
+    T tmp = static_cast<T&&>(a);
+    a = static_cast<T&&>(b);
+    b = static_cast<T&&>(tmp);
+}
+
+// std::integer_sequence — used by some AK template metaprogramming.
+template<typename T, T... Ints>
+struct integer_sequence {
+    using value_type = T;
+    static constexpr size_t size() noexcept { return sizeof...(Ints); }
+};
+
+template<size_t... Ints>
+using index_sequence = integer_sequence<size_t, Ints...>;
+
+// Compiler-builtin pack expansion: Clang exposes __make_integer_seq;
+// GCC exposes __integer_pack. Match AK's StdLibExtraDetails.h
+// pattern so we work on either.
+#if __has_builtin(__make_integer_seq)
+template<typename T, T N>
+using make_integer_sequence = __make_integer_seq<integer_sequence, T, N>;
+
+template<size_t N>
+using make_index_sequence = __make_integer_seq<integer_sequence, size_t, N>;
+#elif __has_builtin(__integer_pack)
+template<typename T, T N>
+using make_integer_sequence = integer_sequence<T, __integer_pack(N)...>;
+
+template<size_t N>
+using make_index_sequence = integer_sequence<size_t, __integer_pack(N)...>;
+#else
+#  error "No compiler builtin for index_sequence pack expansion."
+#endif
+
+} // namespace std

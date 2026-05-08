@@ -51,11 +51,14 @@ static void shared_init(struct fry_process *p) {
     mem_zero(shared, sizeof(*shared));
     shared->owner_pid = p->pid;
     shared->refcount = 1;
+    shared->cwd[0] = '/';
+    shared->cwd[1] = 0;
     for (uint32_t f = 0; f < FRY_FD_MAX; f++) {
         shared->fd_table[f] = -1;
         shared->fd_ptrs[f] = 0;
         shared->fd_kind[f] = FD_NONE;
         shared->fd_flags[f] = 0;
+        shared->fd_paths[f][0] = 0;
     }
     shared->heap_start = 0x10000000000ULL;
     shared->heap_end = shared->heap_start;
@@ -233,6 +236,8 @@ static struct fry_process *proc_alloc(void) {
             procs[i].cpu = 0xFF;
             procs[i].wait_pid = 0;
             procs[i].wait_tid = 0;
+            procs[i].dumpable = 1;
+            procs[i].timer_slack_ns = 50000;
             return &procs[i];
         }
     }
@@ -296,6 +301,10 @@ struct fry_process *process_create_user_thread(struct fry_process *parent, uint6
     p->user_arg = arg;
     p->user_fs_base = 0;
     p->cpu = parent->cpu;
+    p->no_new_privs = parent->no_new_privs;
+    p->dumpable = parent->dumpable;
+    p->thp_disabled = parent->thp_disabled;
+    p->timer_slack_ns = parent->timer_slack_ns;
     copy_name(p->name, parent->name);
 
     if (alloc_kernel_stack(p) != 0) {
@@ -387,6 +396,7 @@ static void shared_release(struct fry_process *p) {
             shared->fd_table[f] = -1;
             shared->fd_kind[f] = FD_NONE;
             shared->fd_flags[f] = 0;
+            shared->fd_paths[f][0] = 0;
         }
     }
     shared->open_fds = 0;

@@ -1,0 +1,287 @@
+fry844 — Phase R-1: Cargo.lock crate classification.
+=====================================================================
+DATE (UTC):   2026-04-26 15:52:50
+DATE (LOCAL): 2026-04-26 10:52:50 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSOR:    fry843 (Rust integration audit + Phase R plan)
+TYPE:         Audit log — NO source code modified.
+
+PURPOSE
+=====================================================================
+Classify all 103 unique transitive crates in Ladybird's Cargo.lock
+into 4 buckets so Phase R-3+ patches know what to touch and what
+to leave alone.
+
+THE 103 CRATES
+=====================================================================
+
+Bucket A — BUILD-HOST ONLY (run on Linux during build; never
+                            cross-compiled for TaterTOS target).
+=====================================================================
+These crates execute on the build host (the Arch Linux machine
+running the Make + Cargo). They produce code-generation outputs
+(.S files, FFI .h files, etc.) that get committed/consumed by the
+TaterTOS target build. No TaterTOS support needed for any of these.
+
+  cbindgen             — generates C++ FFI headers from Rust source
+  clap                 — CLI parser used by AsmIntGen + cbindgen
+  clap_builder         — clap implementation
+  clap_lex             — clap implementation
+  anstream             — terminal coloring for clap
+  anstyle              — clap styling
+  anstyle-parse        — clap styling
+  anstyle-query        — clap styling
+  anstyle-wincon       — Windows console (clap, host-only, never on
+                         TaterTOS target since AsmIntGen runs on
+                         Linux host)
+  colorchoice          — clap styling
+  is_terminal_polyfill — clap host capability detect
+  strsim               — clap fuzzy match
+  proc-macro2          — proc-macro support (host)
+  quote                — proc-macro quoting (host)
+  syn                  — Rust syntax parser (used by proc-macros)
+  synstructure         — proc-macro derive helper
+  unicode-ident        — Rust identifier parser (proc-macro support)
+  unicode-xid          — Rust XID validation (proc-macro support)
+  prettyplease         — Rust source formatter
+  serde_derive         — proc-macro for serde
+  toml                 — TOML parser (cbindgen reads cbindgen.toml)
+  toml_datetime        — toml support
+  toml_parser          — toml support
+  toml_writer          — toml support
+  serde_spanned        — toml support
+  heck                 — string case conversion (cbindgen)
+  log                  — host logging
+  semver               — Rust version parser (cbindgen)
+  indexmap             — ordered map (used host-side by cbindgen)
+  hashbrown (0.15+0.16) — host map impl (transitive of indexmap)
+  equivalent           — hashbrown trait
+  foldhash             — hashbrown hasher
+  itoa                 — fast integer formatting (cbindgen)
+  serde / serde_core / serde_json — serialization (cbindgen)
+  fastrand             — small RNG (host random)
+  errno                — host errno bindings (used by tempfile)
+  tempfile             — host temp file (cbindgen output)
+  rustix               — host syscall layer (used by tempfile)
+  linux-raw-sys        — host raw syscall types (rustix dep)
+  cfg-if               — cfg helper (host + target)
+  bitflags             — bitfield types (host + target — see B)
+
+  Subtotal: ~40 crates HOST-ONLY.
+
+Bucket B — PURE RUST (no platform code; portable verbatim).
+=====================================================================
+These have NO target_os / target_arch / target_family cfg
+branches that affect what we ship for TaterTOS. Compile straight
+against TaterTOS target once core/alloc/std are up.
+
+  num-bigint           — arbitrary-precision integers (used by
+                         libjs_rust for BigInt)
+  num-integer          — integer math
+  num-traits           — number traits
+  autocfg              — build.rs cfg detection (build-time only,
+                         pure Rust)
+  ixdtf                — ISO-8601 / RFC-3339 date/time parser
+                         (libjs_rust Temporal)
+  calendrical_calculations — astronomical calendar math
+  icu_calendar         — ICU4X calendar
+  icu_calendar_data    — ICU calendar data tables
+  icu_collections      — ICU specialized collections
+  icu_locale           — locale identifier ops
+  icu_locale_core      — locale core
+  icu_locale_data      — locale data tables
+  icu_provider         — data provider abstraction
+  litemap              — small map for ICU
+  potential_utf        — potentially-invalid UTF helpers
+  tinystr              — small interned string
+  yoke                 — borrowed-data abstraction
+  yoke-derive          — derive macro for yoke
+  zerofrom             — zero-copy deserialisation
+  zerofrom-derive      — derive macro
+  zerotrie             — zero-copy trie
+  zerovec              — zero-copy vec
+  zerovec-derive       — derive macro
+  writeable            — formatted output trait
+  utf8_iter            — UTF-8 iteration
+  utf8parse            — UTF-8 byte parser
+  memchr               — byte searching (architecture-portable
+                         even with SIMD: provides scalar fallback)
+  displaydoc           — derive Display from doc comments
+  stable_deref_trait   — trait for deref pointers
+  yuv                  — YUV color conversion (libgfx_rust)
+  core_maths           — math.h-style functions in pure Rust
+  libm                 — IEEE-754 math in pure Rust (allows
+                         no-OS environments)
+  leb128fmt            — LEB128 integer encoding
+  id-arena             — arena allocator
+  bitflags             — bitfield types (no platform code)
+
+  Subtotal: ~36 crates PURE RUST.
+
+Bucket C — TARGET_OS GATED (need a TaterTOS branch).
+=====================================================================
+These have explicit #[cfg(target_os = "linux")] / "macos" /
+"windows" / "wasi" branches. We add #[cfg(target_os = "tatertos")]
+forks and ship a vendored copy under our control.
+
+  libc          — Rust's POSIX surface. Add tatertos branch
+                  pointing at TaterTOS's libc.h surface (we
+                  already shipped Chunks 1-2 with the equivalents).
+                  Effort: medium. ~200-500 LOC of typedef +
+                  function-decl mirrors.
+
+  getrandom     — entropy source. Single-function add: route to
+                  fry_getrandom (already wired through cxx_runtime
+                  for AK::Random in Chunk 2). Effort: small.
+                  ~30 LOC.
+
+  rustix        — POSIX syscall wrapper. Note: rustix is in
+                  Bucket A (host-only via tempfile). For TaterTOS
+                  target it's NOT linked. Skip.
+
+  r-efi         — UEFI helpers. Not used by TaterTOS userland.
+                  Skip on the target.
+
+  once_cell     — lazy initialisation. Has Linux/Win/macOS
+                  threading branches but a generic spinlock
+                  fallback exists; either pick fallback or add
+                  tatertos branch using fry_futex. Effort: small.
+
+  once_cell_polyfill — backport of once_cell from std. Same
+                       considerations.
+
+  anyhow        — error handling. Should be portable; check for
+                  std::backtrace deps that may need patching.
+
+  Subtotal: ~7 crates POSSIBLY NEED PATCHING.
+
+Bucket D — NEVER LINKED on TaterTOS target (Windows / WASI / Web /
+           UEFI specific). Cargo's cfg gates exclude them when
+           target != that platform. No work needed.
+=====================================================================
+  windows-link         — Windows-only
+  windows-sys          — Windows-only
+  wasip2               — WASI Preview 2
+  wasip3               — WASI Preview 3
+  wasm-encoder         — WebAssembly emit (host tool — actually
+                         Bucket A; here for clarity)
+  wasm-metadata        — WebAssembly metadata
+  wasmparser           — WebAssembly parser
+  wit-bindgen          — WIT (component model) bindgen
+  wit-bindgen-core     — WIT bindgen core
+  wit-bindgen-rust     — WIT bindgen Rust output
+  wit-bindgen-rust-macro — WIT bindgen proc-macro
+  wit-component        — WIT components
+  wit-parser           — WIT parser
+  winnow               — parser combinator (used by toml; host-
+                         only via cbindgen; here for completeness)
+  zmij                 — possibly transitive — investigate at
+                         cargo vendor time
+  once_cell_polyfill   — included in C above
+
+  Subtotal: ~14 crates NEVER LINKED on TaterTOS.
+
+Bucket E — LADYBIRD-LOCAL CRATES (the 6 in their own workspace).
+=====================================================================
+  bytecode_def         — pure Rust, host + target
+  asmintgen            — host-only Rust binary
+  libgfx_rust          — TARGET. Ladybird's lib.
+  libjs_rust           — TARGET. Ladybird's lib.
+  libregex_rust        — TARGET. Ladybird's lib.
+  libunicode_rust      — TARGET. Ladybird's lib.
+
+  Subtotal: 6 local crates.
+  4 link into TaterTOS executables; 2 are host tools / shared
+  helpers.
+
+CLASSIFICATION ROLLUP
+=====================================================================
+  Total in Cargo.lock                  103
+  Bucket A (host-only)                 ~40
+  Bucket B (pure Rust, portable)       ~36
+  Bucket C (need tatertos cfg branch)  ~7
+  Bucket D (other-OS, never linked)    ~14
+  Bucket E (Ladybird-local)            ~6
+
+  Crates we MUST touch source for:     ~7 (Bucket C)
+  Crates we vendor as-is:              ~36 + ~6 = 42
+  Crates that don't ship to TaterTOS:  ~40 + ~14 = 54
+
+ESTIMATE OF PER-CRATE PATCH SIZE (Bucket C)
+=====================================================================
+  libc          — 200-500 LOC of typedef + decl mirroring our
+                  libc.h. Mostly mechanical translation: each C
+                  function → `pub unsafe extern "C" fn name(...)`.
+                  Borrow Linux variant as the template.
+
+  getrandom     — 30 LOC. One function, one branch.
+
+  once_cell     — 50 LOC OR 0 LOC if we pick the spinlock
+                  fallback path. Decision deferred to fry851.
+
+  once_cell_polyfill — same as once_cell.
+
+  anyhow        — likely 0 LOC. Need to check.
+
+  rustix        — 0 LOC (host-only via tempfile).
+
+  r-efi         — 0 LOC (not on target).
+
+  Estimated total Bucket C patch effort: 300-700 LOC of Rust.
+  3-5 days of focused work.
+
+PHASE R DELIVERABLES (refined from fry843)
+=====================================================================
+
+  Phase R-2  Custom target spec
+             src/user/apps/ladybird-rust-vendor/x86_64-unknown-tatertos.json
+             ~50 LOC of JSON.
+
+  Phase R-3  cargo vendor — full Cargo.lock under
+             src/user/apps/ladybird-rust-vendor/vendor/.
+             ~150-200 MB of Rust source.
+
+  Phase R-4  rust-src + build-std bring-up.
+             Use stable rustc's `-Z build-std=core,alloc,std`
+             flag (gated on RUSTC_BOOTSTRAP=1 env var on stable).
+
+  Phase R-5  Bucket C patches (libc, getrandom, once_cell).
+             Vendored crate copies live in our tree; we maintain
+             the diff.
+
+  Phase R-6  std::sys::tatertos shim (the porting work).
+             Subdirectory by subdirectory: alloc, fs, io, net,
+             thread, sync, time, env, process, os, path, panic.
+             One fry log per subdirectory. ~10 fry logs.
+
+  Phase R-7  Build the 4 Ladybird Rust crates against TaterTOS
+             target. Output: 4 .a files. Phase R DONE.
+
+ESTIMATE — refined
+=====================================================================
+  Phase R-2 (target spec)         ~1 day
+  Phase R-3 (cargo vendor)        ~0.5 day
+  Phase R-4 (build-std)           ~2-3 days
+  Phase R-5 (Bucket C patches)    ~3-5 days
+  Phase R-6 (std::sys::tatertos)  ~10-15 days (the bulk)
+  Phase R-7 (Ladybird crate build) ~2-3 days
+
+  Total: ~19-28 days.
+
+NOT DONE (intentional — audit only)
+=====================================================================
+- No vendoring run.
+- No target spec written.
+- No source moved.
+
+NEXT
+=====================================================================
+fry845 — Phase R-2: write x86_64-unknown-tatertos.json target spec.
+        Compare against rustc's stock specs (extract via
+        `rustc --print target-spec-json` on a similar target —
+        `x86_64-unknown-linux-musl` is the closest analog given
+        we have a libc, threads, processes, etc.).
+
+END fry844
+=====================================================================

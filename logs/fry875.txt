@@ -1,0 +1,120 @@
+Ladybird Port Audit Report
+
+DATE (UTC):   2026-04-28 16:19:09 UTC
+DATE (LOCAL): 2026-04-28 11:19:09 CDT
+
+Scope:
+- Audit only. No implementation work was performed for this report.
+- Focused on the current Ladybird port state after fry874 steps 13-15.
+- Checked compliance with the emphasized rules: no shortcuts, no fake
+  implementations, step logging, no TaterSurf reactivation, and no QEMU
+  log usage.
+
+Rules Compliance:
+- Rule 1 / step-by-step: PASS with caveat. The work advanced one
+  blocker at a time: AsmInterpreter, then userland RTTI/dynamic_cast,
+  then RustIntegration wrapper/FFI boundary.
+- Rule 2 / no fake implementations: PASS for the audited changes.
+  AsmInterpreter was generated from upstream AsmIntGen inputs, not
+  disabled. __dynamic_cast was implemented as RTTI traversal, not a
+  return-source shortcut. RustIntegration used the real C++ wrapper and
+  generated RustFFI.h.
+- Rule 5 / log every completed step: PASS. fry874 contains separate
+  entries 13, 14, and 15 with timestamps, verification, blockers, and
+  why.
+- Rule 6 / include why for code changes: PASS. fry874 entries explain
+  why each code/build change was made.
+- Rule 11 / QEMU logs off limits: PASS. No QEMU logs were used. The
+  only mentions found are rule reminders in fry873/fry874.
+- TaterSurf exclusion: PASS with caveat. TaterSurf is not in the active
+  all target and the old tatersurf build target is absent, but old
+  TATERSURF_OBJS variables and deprecated TATERSURF_PLAN files remain
+  in-tree as inactive references.
+
+Audit Commands:
+- make libjs
+- make web_smoke > /tmp/tatertos_audit_web_smoke.log 2>&1
+- x86_64-elf-nm src/user/libc/cxx_runtime.o | rg '__dynamic_cast'
+- x86_64-elf-nm src/user/apps/ladybird/LibJS.a | rg
+  'AsmInterpreter|asm_interpreter_entry|RustIntegration|rust_compile_eval|rust_compile_function|rust_parse_program|rust_free_function_ast'
+- rg checks for TaterSurf references in Makefile/build_iso/logs/plans.
+- rg checks for QEMU references in recent logs.
+
+Verified Current State:
+- make libjs: PASS. It reports "Nothing to be done for 'libjs'", meaning
+  the current LibJS archive is up to date.
+- __dynamic_cast: PRESENT. cxx_runtime.o exports __dynamic_cast.
+- AsmInterpreter: PRESENT. LibJS.a contains AsmInterpreter::is_available,
+  AsmInterpreter::run, and asm_interpreter_entry.
+- RustIntegration C++ wrapper: PRESENT. LibJS.a defines the C++
+  JS::RustIntegration wrapper functions.
+- web_smoke: FAILS at link. This is expected at the current port stage.
+  The audit run produced 377 undefined-reference lines.
+
+Resolved Since The Previous Blocker Set:
+- The visible AsmInterpreter unresolveds are cleared.
+- The visible asm_interpreter_entry unresolved is cleared.
+- The visible __dynamic_cast unresolveds are cleared.
+- The previous missing C++ JS::RustIntegration wrapper symbols are
+  cleared; the failures moved to the raw Rust FFI exports.
+
+Remaining High-Priority Blockers:
+- Rust target/staticlib integration:
+  - Missing raw FFI exports include rust_compile_builtin_file,
+    rust_compile_function, rust_free_function_ast,
+    rust_compile_dynamic_function, rust_compile_eval,
+    rust_parsed_program_has_errors, rust_compile_parsed_module,
+    rust_parsed_program_take_errors, rust_free_parsed_program, and
+    rust_parse_program.
+  - Host liblibjs_rust.a exists from the probe, but is not acceptable
+    for direct TaterTOS linking because it pulls host/Linux Rust std
+    surface such as mmap64, pthread_* helpers, write/writev, and
+    pwrite/pwritev.
+- LibJS Intl/Temporal/Unicode:
+  - Current link still reports missing Intl constructors/prototypes,
+    Temporal constructors/constants/functions, Unicode normalization,
+    timezone, locale, and string category functions.
+- LibWeb module coverage:
+  - Current link still reports missing Window, BrowsingContext/EventLoop,
+    ShadowRoot/slotting, ParentNode, DOMException, CSS StyleScope/
+    CSSStyleSheet/StyleComputer, Selection, DOMURL, HTTP Cookie, and
+    related platform pieces.
+- LibGfx/Painting:
+  - Current link still reports missing ImmutableBitmap, GlyphRun, Filter,
+    and many Painting display-list dump/support functions.
+
+Risk Assessment:
+- Biggest current risk: Rust. The C++ side is now wired, but the Rust
+  archive must be built for a TaterTOS-compatible target or backed by a
+  deliberate TaterTOS runtime/libc surface. Using the host archive would
+  violate the no-shortcuts rule.
+- Second risk: ICU/Unicode/Intl/Temporal breadth. These are broad
+  runtime surfaces, not isolated missing functions.
+- Third risk: LibWeb/LibGfx breadth. web_smoke pulls substantial browser
+  platform behavior even for basic DOM construction.
+- __dynamic_cast risk: the implementation links and is structurally real,
+  but it has not been runtime-tested in a running Ladybird workload yet.
+  It should be treated as link-validated, not browser-validated.
+
+Next Required Steps:
+1. Define a TaterTOS Rust target strategy for LibJS Rust:
+   - preferred: freestanding/custom target with allocator and panic hooks,
+     plus only required libc/syscall glue;
+   - alternative: port the minimum Rust std syscall/thread/TLS surface
+     needed by the staticlib, if that proves smaller and correct.
+2. Only after Rust FFI exports link, continue with LibJS
+   Intl/Temporal/Unicode coverage.
+3. Continue LibWeb/LibGfx source manifest expansion and dependency porting
+   after the JS runtime blockers are reduced.
+4. Keep TaterSurf inactive unless the user explicitly changes the rule.
+5. Continue using web_smoke/link_smoke and object/archive inspection as
+   the validation path; do not use QEMU logs unless expressly approved.
+
+Conclusion:
+- We are past several hard linker/ABI blockers, but not past the hardest
+  porting work.
+- The current honest gate is Rust target integration, followed by
+  Intl/Temporal/Unicode and broad LibWeb/LibGfx completion.
+- No evidence from this audit indicates that the recent Ladybird work was
+  a fake shortcut; the remaining failures are real subsystem coverage
+  gaps.

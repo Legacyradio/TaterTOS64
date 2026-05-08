@@ -1,0 +1,19 @@
+#pragma once
+
+#include <math.h>
+
+namespace std {
+    using ::atan2;
+    using ::sqrt;
+    using ::abs;
+    using ::round;
+    using ::floor;
+    using ::ceil;
+    using ::fmod;
+    using ::pow;
+    using ::sin;
+    using ::cos;
+    using ::trunc;
+    using ::fabs;
+    using ::acosf;
+}

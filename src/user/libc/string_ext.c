@@ -369,11 +369,14 @@ char *strerror(int errnum) {
     }
 }
 
-void perror(const char *s) {
-    /* No thread-local errno yet; just print the prefix */
-    if (s && *s) {
-        printf("%s: (errno unavailable)\n", s);
-    }
+int strerror_r(int errnum, char *buf, size_t buflen) {
+    const char *msg = strerror(errnum);
+    if (!buf || buflen == 0) return -1;
+    size_t len = strlen(msg);
+    if (len >= buflen) len = buflen - 1;
+    memcpy(buf, msg, len);
+    buf[len] = '\0';
+    return 0;
 }
 
 /* -----------------------------------------------------------------------
@@ -458,6 +461,31 @@ size_t wcslen(const wchar_t *s) {
     if (!s) return 0;
     while (s[len] != 0) len++;
     return len;
+}
+
+int wmemcmp(const wchar_t *s1, const wchar_t *s2, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (s1[i] != s2[i]) return (s1[i] < s2[i]) ? -1 : 1;
+    }
+    return 0;
+}
+wchar_t *wmemcpy(wchar_t *d, const wchar_t *s, size_t n) {
+    for (size_t i = 0; i < n; i++) d[i] = s[i];
+    return d;
+}
+wchar_t *wmemmove(wchar_t *d, const wchar_t *s, size_t n) {
+    /* copy forward or backward depending on overlap */
+    if (d <= s || d >= s + n) {
+        for (size_t i = 0; i < n; i++) d[i] = s[i];
+    } else {
+        size_t i = n;
+        while (i > 0) { i--; d[i] = s[i]; }
+    }
+    return d;
+}
+wchar_t *wmemset(wchar_t *s, wchar_t c, size_t n) {
+    for (size_t i = 0; i < n; i++) s[i] = c;
+    return s;
 }
 
 static size_t utf8_decode_one(const char *s, size_t n, uint32_t *out) {

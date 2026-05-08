@@ -1,0 +1,49 @@
+Fry Log 906 - Chromium //base:base milestone complete
+Timestamp: 2026-05-07 15:30 CDT
+
+Status: Chromium //base:base C++ cross-compilation succeeds against
+TaterTOS libc. All 12 chrome_probe tests pass in QEMU verification.
+
+Summary of changes to Chromium source tree:
+
+Build system patches:
+- build/config/BUILDCONFIG.gn — is_tatertos, default toolchain, compiler config
+- build/toolchain/tatertos/BUILD.gn — gcc_toolchain(x64) for x86_64-elf cross-compiler
+- build/config/tatertos/BUILD.gn — compiler config, isystem paths
+- build/config/tatertos/sysroot.gni — empty (cross-compiler prefix handles sysroot)
+- build/config/rust.gni — is_tatertos case for rust_abi_target (x86_64-unknown-none)
+- build/toolchain/gcc_toolchain.gni — tatertos skips Rust tool definitions,
+  host build tools toolchain overrides current_os to host_os
+
+Third-party patches:
+- third_party/perfetto/include/perfetto/base/build_config.h — __tatertos__ OS block
+- third_party/perfetto/src/base/periodic_task.cc — -Wuninitialized fix
+- third_party/abseil-cpp/absl/container/internal/hash_function_defaults.h — wstring guards
+- third_party/abseil-cpp/absl/strings/internal/str_format/arg.h — wstring_view guards
+- third_party/libxml/BUILD.gn — os_include=linux for is_tatertos
+- third_party/libc++/__config_site — HAS_NO_WIDE_CHARACTERS, HAS_NO_LOCALIZATION, etc.
+- build/rust/BUILD.gn — cxx_cppdeps moved outside toolchain_has_rust guard
+
+TaterTOS libc additions (headers + implementations):
+- wchar.h, locale.h, link.h, elf.h, sys/cdefs.h, sys/syscall.h, bits/types/mbstate_t.h
+- time.h: mbstate_t, timespec_get, _POSIX_MONOTONIC_CLOCK
+- string.h: wmemcmp/wmemcpy/wmemmove/wmemset, strcoll/strxfrm, strerror_r
+- stdio.h: fgetpos/fsetpos, freopen, tmpfile, tmpnam, scanf/vscanf/vfscanf/vsscanf,
+  getc/putc (real funcs + undef macros), fpos_t, getc_unlocked/putc_unlocked
+- errno.h: ENODEV, EPROTO, ETXTBSY, ENOTTY, ENOLINK
+- stdlib.h: strtold, mblen, system, mkstemp, mkdtemp, quick_exit, at_quick_exit
+- math.h: All float and long-double variants, FP_* constants, float_t/double_t
+- pthread.h: pthread_attr_getstack, pthread_attr_getstacksize
+- unistd.h: pread
+- libc.c: strtoimax, strtoumax, wcstoimax, wcstoumax, exit_compat, _exit_compat,
+  atexit_compat
+
+QEMU verification:
+- chrome_probe: 12 passed, 0 failed
+- Smoketest: 15/15 passed
+
+Remaining open issues:
+- 5 Rust stdlib targets fail for x86_64-unknown-none triple (toolchain_has_rust
+  issue with .gni file caching across toolchain contexts)
+- //base:base link step not yet run (blocked by Rust failures in gn gen)
+- 361 unresolved libc symbols in test link (expected — normal libc linkage)

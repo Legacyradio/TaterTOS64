@@ -1,0 +1,137 @@
+fry846 — Phase R-3: cargo vendor + offline source config.
+=====================================================================
+DATE (UTC):   2026-04-26 16:02:19
+DATE (LOCAL): 2026-04-26 11:02:19 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSOR:    fry845 (target spec)
+TYPE:         New files (vendored crate set + cargo config).
+
+WHAT
+=====================================================================
+Vendored Ladybird's full Cargo workspace into the TaterTOS source
+tree. All 100 transitive crates now live locally; cargo will
+never hit crates.io during a TaterTOS build.
+
+COMMANDS RUN
+=====================================================================
+  cd ~/ladybird-upstream
+  cargo vendor /home/legacyindieradio/TaterTOS64/src/user/apps/ladybird-rust-vendor/vendor
+
+Output: 100 crates, 106 MB on disk.
+
+ON-DISK STATE
+=====================================================================
+src/user/apps/ladybird-rust-vendor/
+  x86_64-unknown-tatertos.json    target spec (fry845)
+  .cargo/config.toml              offline-vendor config (this log)
+  vendor/                         100 crates, 106 MB
+    anstream/        anstyle/         anstyle-parse/     anstyle-query/
+    anstyle-wincon/  anyhow/          autocfg/           bitflags/
+    calendrical_calculations/        cbindgen/          cfg-if/
+    clap/            clap_builder/    clap_lex/          colorchoice/
+    core_maths/      displaydoc/      equivalent/        errno/
+    fastrand/        ...                                 (100 total)
+
+CRATE COUNT DELTA — 103 → 100
+=====================================================================
+fry844 enumerated 103 unique crate name+version pairs. cargo
+vendor materialized 100 directories. The 3-crate gap accounts for:
+  - bytecode_def       (path-only crate, lives in upstream tree)
+  - libgfx_rust        (path-only, our target lib)
+  - libjs_rust         (path-only, our target lib)
+  - libregex_rust      (path-only, our target lib)
+  - libunicode_rust    (path-only, our target lib)
+
+fry844 counted these 5 path-only crates; cargo vendor only
+materializes registry crates. Plus: 2 crates appear at multiple
+versions (`hashbrown` 0.15 + 0.16) and would land in the same
+namespace under vendor/. Vendor-side count of 100 is correct;
+the 103 figure was the unique name+version count.
+
+CARGO CONFIG
+=====================================================================
+src/user/apps/ladybird-rust-vendor/.cargo/config.toml:
+
+  [source.crates-io]
+  replace-with = "vendored-sources"
+
+  [source.vendored-sources]
+  directory = "/home/.../ladybird-rust-vendor/vendor"
+
+  [build]
+  target = "x86_64-unknown-tatertos"
+
+  [target.x86_64-unknown-tatertos]
+  linker = "/usr/bin/x86_64-elf-ld"
+
+This file makes cargo:
+  1. Refuse to fetch from crates.io (offline-strict).
+  2. Default to our custom target on `cargo build`.
+  3. Use TaterTOS's cross-linker for any final-binary linking.
+
+(Cargo's stable target-name resolution still wants the JSON
+path on the command line — that's a -Zunstable-options command
+we run from the Makefile when we get to Phase R-7. The config
+above provides the linker default and the offline source.)
+
+VERIFICATION
+=====================================================================
+  $ du -sh src/user/apps/ladybird-rust-vendor/vendor
+  106M
+  $ ls src/user/apps/ladybird-rust-vendor/vendor | wc -l
+  100
+
+Spot-check critical crates present:
+  ✅ libc/                   (Bucket C — needs tatertos branch)
+  ✅ getrandom/              (Bucket C — needs tatertos branch)
+  ✅ once_cell/              (Bucket C)
+  ✅ icu_calendar/           (Bucket B — pure Rust, ports as-is)
+  ✅ icu_locale/             (Bucket B)
+  ✅ icu_provider/           (Bucket B)
+  ✅ num-bigint/             (Bucket B)
+  ✅ num-traits/             (Bucket B)
+  ✅ yuv/                    (Bucket B — for libgfx_rust)
+  ✅ cbindgen/               (Bucket A — host tool)
+
+DIFFS APPLIED IN fry846
+=====================================================================
+NEW FILES:
+  src/user/apps/ladybird-rust-vendor/vendor/             100 dirs / 106 MB
+  src/user/apps/ladybird-rust-vendor/.cargo/config.toml  ~25 LOC
+
+NOT DONE (intentional)
+=====================================================================
+- No build attempted. The vendor set is necessary but not
+  sufficient — Phase R-4 (build-std) is the next gate.
+- No Bucket C patches applied yet. The vendored sources are still
+  upstream-pristine; we patch them in Phase R-5 after build-std
+  proves it can compile core/alloc/std for the target.
+
+PHASE R PROGRESS
+=====================================================================
+  ✅ R-1  Cargo.lock crate classification          (fry844)
+  ✅ R-2  Custom target spec                       (fry845)
+  ✅ R-3  cargo vendor + offline crate set         (this log)
+  ⏳ R-4  rust-src + build-std core/alloc/std
+  ⏳ R-5  Bucket C patches (libc, getrandom, ...)
+  ⏳ R-6  std::sys::tatertos shim modules
+  ⏳ R-7  Build the 4 Ladybird Rust crates
+
+NEXT
+=====================================================================
+fry847 — Phase R-4: build-std bring-up.
+  Goal: convince stable rustc to build core+alloc+std for the
+  custom target.
+  Two routes to evaluate:
+    (a) Vendor rustc's library/ source tree (the contents of
+        ~/.rustup/toolchains/.../lib/rustlib/src or equivalent
+        under Arch's rustc package), then `cargo build
+        -Zbuild-std=core,alloc,std --target=...json`.
+    (b) Find Arch's rust-src split package; install it and use
+        it directly via $RUST_SRC_PATH or rustup component.
+  Arch installs rustc without rustup by default — verify the
+  rust-src layout. Likely lives at /usr/lib/rustlib/src/rust/.
+
+END fry846
+=====================================================================

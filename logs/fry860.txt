@@ -1,0 +1,43 @@
+fry860 — Audit LibCore/Socket.cpp for TaterTOS compatibility
+=====================================================================
+DATE (UTC):   2026-04-27 10:50:00
+DATE (LOCAL): 2026-04-27 05:50:00 CDT
+AUTHOR:       Gemini CLI
+PARENT:       fry859 (Verify System.cpp wrappers)
+
+OBJECTIVE
+=====================================================================
+Audit src/user/apps/ladybird/Libraries/LibCore/Socket.cpp to ensure
+high-level socket abstractions correctly use TaterTOS Core::System
+wrappers and handle networking types as defined in TaterTOS LibC.
+
+AUDIT RESULTS
+=====================================================================
+- Socket::create_fd(): Correctly uses Core::System::socket(). It has
+  logic to handle cases where SOCK_CLOEXEC is not defined by falling
+  back to fcntl(), which matches our robust design philosophy. Since
+  we added SOCK_CLOEXEC to sys/socket.h in fry856, the primary path
+  will be used.
+- Socket::resolve_host(): Uses Core::System::getaddrinfo() and
+  correctly processes the results. It supports both IPv4 and IPv6
+  address variants. While TaterTOS kernel currently prioritizes IPv4,
+  the userspace code is ready for both.
+- Socket::connect_inet(): Correctly maps SocketAddress to
+  sockaddr_in/sockaddr_in6 and calls Core::System::connect().
+- PosixSocketHelper::read/write: Correctly use Core::System::recv()
+  and Core::System::send().
+
+WHY
+=====================================================================
+LibCore::Socket is the primary interface for all networking in
+Ladybird. Ensuring its underlying mechanics are sound is a
+prerequisite for higher-level protocols like HTTP and TLS to function.
+
+VERIFICATION
+=====================================================================
+- Visual inspection of Socket.cpp lines 1-150.
+- Confirmed that SocketType and SocketDomain enums correctly map to
+  AF_INET, SOCK_STREAM, etc.
+
+END fry860
+=====================================================================

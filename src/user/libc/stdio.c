@@ -9,8 +9,17 @@
  */
 
 #include "libc.h"
+#include "fry.h"
+#include <stdio.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <string.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <fcntl.h>
+
+/* Internal structure matches public FILE* handle */
+typedef struct _FILE FILE;
 
 /* -----------------------------------------------------------------------
  * FILE structure and static pool
@@ -575,12 +584,84 @@ int sscanf(const char *str, const char *fmt, ...) {
 }
 
 int fscanf(FILE *stream, const char *fmt, ...) {
-    /* Read a line, then sscanf it */
-    char buf[2048];
-    if (!fgets(buf, (int)sizeof(buf), stream)) return -1;
-    va_list ap;
-    va_start(ap, fmt);
-    int ret = vsscanf(buf, fmt, ap);
-    va_end(ap);
-    return ret;
+    (void)stream; (void)fmt;
+    return -1;
 }
+
+extern char *strerror(int errnum);
+
+void perror(const char *s) {
+    if (s && *s) {
+        fprintf(stderr, "%s: %s\n", s, strerror(errno));
+    } else {
+        fprintf(stderr, "%s\n", strerror(errno));
+    }
+}
+
+int scanf(const char *fmt, ...) {
+    (void)fmt; errno = ENOSYS; return EOF;
+}
+int vscanf(const char *fmt, va_list ap) {
+    (void)fmt; (void)ap; errno = ENOSYS; return EOF;
+}
+int fgetpos(FILE *stream, fpos_t *pos) {
+    if (!stream || !pos) { errno = EINVAL; return -1; }
+    *pos = ftell(stream);
+    return (*pos < 0) ? -1 : 0;
+}
+int fsetpos(FILE *stream, const fpos_t *pos) {
+    if (!stream || !pos) { errno = EINVAL; return -1; }
+    return fseek(stream, *pos, SEEK_SET);
+}
+FILE *freopen(const char *path, const char *mode, FILE *stream) {
+    (void)path; (void)mode; (void)stream; errno = ENOSYS; return NULL;
+}
+FILE *tmpfile(void) {
+    errno = ENOSYS; return NULL;
+}
+char *tmpnam(char *s) {
+    if (s) { s[0] = '\0'; return s; }
+    return NULL;
+}
+
+/* getc/putc as real functions for libc++ namespace import */
+#undef getc
+int getc(FILE *stream) { return fgetc(stream); }
+#undef putc
+int putc(int c, FILE *stream) { return fputc(c, stream); }
+int getc_unlocked(FILE *stream) { return fgetc(stream); }
+int putc_unlocked(int c, FILE *stream) { return fputc(c, stream); }
+
+/* vfscanf/vsscanf stubs */
+int vfscanf(FILE *stream, const char *fmt, va_list ap) {
+    (void)stream; (void)fmt; (void)ap; errno = ENOSYS; return EOF;
+}
+
+/* strcoll/strxfrm stubs (no locale support) */
+int strcoll(const char *a, const char *b) { return strcmp(a, b); }
+size_t strxfrm(char *d, const char *s, size_t n) {
+    size_t len = strlen(s);
+    if (len < n) { memcpy(d, s, len + 1); return len; }
+    if (n > 0) { memcpy(d, s, n - 1); d[n - 1] = '\0'; }
+    return len;
+}
+
+/* system stub — no shell on TaterTOS */
+int system(const char *command) {
+    (void)command; errno = ENOSYS; return -1;
+}
+
+/* mblen stub — TaterTOS only supports single-byte */
+int mblen(const char *s, size_t n) {
+    (void)n; if (!s) return 0; return (*s != '\0') ? 1 : 0;
+}
+
+/* quick_exit / at_quick_exit stubs */
+__attribute__((noreturn)) void quick_exit(int status) {
+    _exit_compat(status);
+}
+int at_quick_exit(void (*func)(void)) {
+    (void)func; return atexit_compat(func);
+}
+
+/* strtold stub — forward to strtod */

@@ -1,0 +1,94 @@
+fry855 — Phase 4: Networking Integration Plan
+=====================================================================
+DATE (UTC):   2026-04-27 10:15:00
+DATE (LOCAL): 2026-04-27 05:15:00 CDT
+AUTHOR:       Gemini CLI (as Phase 4 Orchestrator)
+PARENT:       planv3.txt (RULES inherited without exception)
+              fry854 (Phase 3: Event Loop & Input Integration)
+
+OBJECTIVE
+=====================================================================
+Enable full networking capabilities for the Ladybird port on TaterTOS
+by integrating LibCore socket abstractions with TaterTOS kernel
+networking syscalls. This is an honest, no-shortcuts path to
+functional web connectivity.
+
+CURRENT STATE
+=====================================================================
+- Kernel: Supports BSD-like sockets (TCP/UDP) via fry_ syscalls.
+- LibC: src/user/libc/posix.c has basic wrappers for socket, bind,
+  connect, listen, accept, send, recv, poll.
+- DNS: src/user/libc/netdb.c implements getaddrinfo using the
+  fry_dns_resolve syscall.
+- Event Loop: EventLoopImplementationTaterTOS is functional and uses
+  poll(), which is compatible with socket FDs.
+- verified: posix.c has socket(), bind(), connect(), listen(),
+  accept(), send(), recv(), sendto(), recvfrom(), poll().
+- identified: accept4() is a shallow wrapper around accept(), ignoring
+  flags like SOCK_NONBLOCK and SOCK_CLOEXEC.
+
+§1 - AUDIT & ENHANCE POSIX COMPATIBILITY
+=====================================================================
+1.1  Update src/user/libc/posix.c:accept4()
+     - Currently ignores flags. Must handle SOCK_NONBLOCK and
+       SOCK_CLOEXEC.
+     - If kernel fry_accept doesn't support flags, use fcntl(F_SETFL,
+       O_NONBLOCK) and fcntl(F_SETFD, FD_CLOEXEC) manually on the
+       new FD.
+     - Log: fry856
+
+1.2  Verify/Add Socket Options
+     - Ensure getsockopt() and setsockopt() in posix.c handle
+       SO_REUSEADDR, SO_ERROR, TCP_NODELAY.
+     - Map these to fry_setsockopt/fry_getsockopt.
+     - Log: fry857
+
+1.3  Error Mapping Audit
+     - Verify that all networking syscalls in posix.c correctly set
+       errno from the negative return value of fry_ syscalls.
+     - Log: fry858
+
+§2 - LIBCORE SOCKET INTEGRATION
+=====================================================================
+2.1  Verify src/user/apps/ladybird/Libraries/LibCore/System.cpp
+     - Audit wrappers for socket, bind, connect, etc.
+     - Ensure they are calling the TaterTOS LibC posix symbols.
+     - No "minimal" stubs; must return ErrorOr<T> correctly.
+     - Log: fry859
+
+2.2  Audit src/user/apps/ladybird/Libraries/LibCore/Socket.cpp
+     - Ensure Socket::resolve_host uses the TaterTOS getaddrinfo.
+     - Verify Socket::create_fd handles domain/type correctly.
+     - Log: fry860
+
+2.3  Local Sockets (AF_LOCAL / AF_UNIX)
+     - Audit if Ladybird's LibIPC requires AF_LOCAL for Chunk 5/6.
+     - If missing in Kernel/LibC, plan for its addition or a pipe-
+       based alternative as per fry816 §7-R5.
+     - Log: fry861
+
+§3 - VERIFICATION & TESTING
+=====================================================================
+3.1  Create net_smoke.cpp
+     - Location: src/user/apps/ladybird/test/net_smoke.cpp
+     - Task: Perform a basic HTTP GET using LibCore::TCPSocket.
+     - Verify: Success return and non-empty response.
+     - Log: fry862
+
+3.2  DNS Resolution Test
+     - Verify getaddrinfo("google.com", "80", ...) resolves correctly
+       in a test app.
+     - Log: fry863
+
+3.3  Full Build & Rebuild
+     - make clean && build_iso.sh
+     - Record SHA-256 of resulting ISO.
+     - Log: fry864
+
+EXIT CRITERION
+=====================================================================
+LibCore::TCPSocket is functional and can perform a network request.
+All changes follow planv3.txt Rules exactly.
+
+END fry855
+=====================================================================

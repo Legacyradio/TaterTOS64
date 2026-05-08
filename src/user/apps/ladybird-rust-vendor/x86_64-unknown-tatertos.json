@@ -1,0 +1,52 @@
+{
+  "arch": "x86_64",
+  "cpu": "x86-64",
+  "data-layout": "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128",
+  "llvm-target": "x86_64-unknown-none-elf",
+
+  "os": "tatertos",
+  "env": "",
+  "vendor": "unknown",
+  "target-family": ["unix"],
+  "target-pointer-width": 64,
+  "target-c-int-width": 32,
+  "target-endian": "little",
+
+  "max-atomic-width": 64,
+  "has-thread-local": true,
+
+  "linker-flavor": "gnu-lld",
+  "linker": "rust-lld",
+
+  "executables": false,
+
+  "dynamic-linking": false,
+  "crt-static-default": true,
+  "crt-static-respected": true,
+  "static-position-independent-executables": false,
+  "position-independent-executables": false,
+  "plt-by-default": false,
+
+  "panic-strategy": "abort",
+
+  "disable-redzone": false,
+
+  "code-model": "small",
+  "relocation-model": "static",
+
+  "features": "+sse,+sse2",
+
+  "supports-xray": false,
+  "supports-stack-protector": false,
+
+  "stack-probes": {
+    "kind": "inline"
+  },
+
+  "metadata": {
+    "description": "TaterTOS64v3 (x86_64 freestanding, custom kernel + libc shim)",
+    "host_tools": false,
+    "std": true,
+    "tier": 3
+  }
+}

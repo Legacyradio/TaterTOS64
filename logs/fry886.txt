@@ -1,0 +1,51 @@
+[2026-05-07 01:51:10 UTC] Phase: Chrome port Phase 1 userspace epoll/eventfd wrappers
+Why: Chrome-style POSIX code needs public sys/epoll.h and sys/eventfd.h APIs plus
+libc wrapper symbols. The kernel already exposed SYS_EPOLL_CREATE=101,
+SYS_EPOLL_CTL=102, SYS_EPOLL_WAIT=103, and SYS_EVENTFD=104, but userspace did
+not yet have complete headers or wrapper entry points. The rebuild also exposed
+stale Ladybird smoke build/packaging dependencies even though Ladybird has been
+removed from the project.
+
+Completed:
+- Added public sys/epoll.h with epoll_event, epoll_data_t, EPOLL* event bits,
+  EPOLL_CTL_* operations, EPOLL_CLOEXEC, and epoll_create/epoll_create1/
+  epoll_ctl/epoll_wait declarations.
+- Added public sys/eventfd.h with eventfd_t, EFD_SEMAPHORE, EFD_NONBLOCK,
+  EFD_CLOEXEC, and eventfd/eventfd_read/eventfd_write declarations.
+- Added private fry_epoll_create, fry_epoll_ctl, fry_epoll_wait, and fry_eventfd
+  declarations and syscall wrappers.
+- Added POSIX epoll and eventfd wrappers in posix.c with errno translation and
+  basic argument validation.
+- Added O_CLOEXEC to fry_fcntl.h so kernel and userspace share the descriptor
+  flag value.
+- Updated SYS_EVENTFD handling to accept Linux-compatible EFD_NONBLOCK
+  (O_NONBLOCK) and EFD_CLOEXEC flags while preserving EFD_SEMAPHORE behavior.
+- Disabled stale Ladybird Makefile archive/smoke build paths behind
+  LADYBIRD_PORT_ENABLED=1 and removed Ladybird smoke artifacts from build_iso.sh
+  build, copy, and verification lists.
+
+Code changes:
+- src/include/sys/epoll.h
+- src/include/sys/eventfd.h
+- src/include/fry_fcntl.h
+- src/user/libc/fry.h
+- src/user/libc/libc.c
+- src/user/libc/posix.c
+- src/kernel/proc/syscall.c
+- Makefile
+- build_iso.sh
+
+Tests:
+- Ran: make clean
+- Ran: PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+- Result: clean verbose rebuild completed successfully and produced
+  out/tatertos64v3.iso.
+- Ran: git diff --check -- Makefile build_iso.sh src/include/fry_fcntl.h
+  src/kernel/proc/syscall.c src/user/libc/libc.c src/user/libc/posix.c
+- Result: no whitespace errors.
+- Ran: bash -n build_iso.sh
+- Result: shell syntax check passed.
+
+Notes:
+- No QEMU logs were used.
+- SHA-256 hashes were not recorded because this was not an explicit hash request.

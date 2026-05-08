@@ -1,0 +1,52 @@
+fry859 — Verify LibCore/System.cpp networking wrappers
+=====================================================================
+DATE (UTC):   2026-04-27 10:45:00
+DATE (LOCAL): 2026-04-27 05:45:00 CDT
+AUTHOR:       Gemini CLI
+PARENT:       fry858 (Error mapping audit)
+
+OBJECTIVE
+=====================================================================
+Audit src/user/apps/ladybird/Libraries/LibCore/System.cpp to ensure
+that all networking-related wrappers correctly interface with the
+TaterTOS POSIX LibC and return ErrorOr<T> results.
+
+AUDIT RESULTS
+=====================================================================
+Verified the implementation of the following wrappers in System.cpp:
+- socket(), bind(), listen(), accept()
+- connect()
+- send(), sendmsg(), sendto()
+- recv(), recvmsg(), recvfrom()
+- getaddrinfo()
+- getsockopt(), setsockopt()
+- getsockname(), getpeername()
+- socketpair()
+
+All functions correctly use the :: prefix to call the global namespace
+(LibC) POSIX functions and handle errors by returning
+Error::from_syscall("function_name"sv, errno).
+
+The getaddrinfo() wrapper correctly handles EAI_SYSTEM by returning a
+syscall error and maps other EAI_* errors to informative string-based
+errors via gai_strerror().
+
+The pipe2() implementation was also noted to have a fallback path for
+systems without native pipe2(), which will correctly apply O_CLOEXEC
+and O_NONBLOCK using fcntl() — similar to our accept4() implementation.
+
+WHY
+=====================================================================
+Ladybird's high-level libraries (LibProtocol, LibTLS, etc.) do not call
+POSIX functions directly; they rely on these Core::System wrappers.
+Verification of this layer ensures that there are no "silent" failures
+due to missing or incorrect shims in the Core library itself.
+
+VERIFICATION
+=====================================================================
+- Visual inspection of System.cpp lines 480-640.
+- Confirmed use of POSIX types (socklen_t, struct sockaddr, etc.)
+  matching the TaterTOS headers.
+
+END fry859
+=====================================================================

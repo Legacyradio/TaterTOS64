@@ -1,0 +1,70 @@
+TaterTOS64v3 Fry Log 889
+Timestamp: 2026-05-07 02:13:45 UTC
+
+Scope
+- Chrome Port Phase 2: add prctl and real madvise plumbing after sendmsg/recvmsg.
+- Also added missing POSIX mprotect wrapper because <sys/mman.h> already declared it.
+
+Rules Followed
+- Continued under planv3.txt requirements.
+- Used apply_patch for every source and log edit.
+- No QEMU logs read or written.
+- No SHA-256 hash generated because it was not explicitly requested.
+- Performed required clean rebuild with verbose ISO build command.
+
+Files Changed
+- src/include/sys/prctl.h
+- src/kernel/proc/process.h
+- src/kernel/proc/process.c
+- src/kernel/proc/syscall.c
+- src/user/libc/fry.h
+- src/user/libc/libc.c
+- src/user/libc/posix.c
+
+What Changed
+- Added public <sys/prctl.h> with Linux-compatible option numbers used by Chromium:
+  - PR_SET_NAME / PR_GET_NAME
+  - PR_SET_NO_NEW_PRIVS / PR_GET_NO_NEW_PRIVS
+  - PR_SET_DUMPABLE / PR_GET_DUMPABLE
+  - PR_SET_TIMERSLACK / PR_GET_TIMERSLACK
+  - PR_SET_THP_DISABLE / PR_GET_THP_DISABLE
+  - PR_SET_VMA / PR_SET_VMA_ANON_NAME
+  - PR_SET_PTRACER
+  - PR_SET_SECCOMP / PR_GET_SECCOMP
+- Added process fields for no_new_privs, dumpable, thp_disabled, and timer_slack_ns.
+- Added libc syscall numbers:
+  - SYS_PRCTL = 110
+  - SYS_MADVISE = 111
+- Added fry_prctl and fry_madvise syscall wrappers.
+- Added POSIX prctl(), madvise(), posix_madvise(), and mprotect() wrappers.
+- Added kernel SYS_PRCTL handler:
+  - supports process/thread name get/set
+  - supports no_new_privs state
+  - supports dumpable state
+  - supports timer slack state
+  - supports THP-disable compatibility state
+  - accepts PR_SET_PTRACER as a no-op because TaterTOS64v3 has no ptrace restriction model yet
+  - reports no active seccomp via PR_GET_SECCOMP
+  - rejects PR_SET_SECCOMP with ENOTSUP instead of faking sandbox enforcement
+  - validates PR_SET_VMA_ANON_NAME ranges and optional name strings, then treats it as metadata-only
+- Added kernel SYS_MADVISE handler:
+  - validates supported advice values
+  - validates page alignment
+  - validates mapped VM range coverage
+  - treats advice as non-binding hints for now
+- Fixed posix_madvise() semantics to return an errno value directly instead of -1 with errno.
+
+Why
+- Chromium probes prctl and madvise behavior heavily during process, sandbox, allocator, and VMA naming setup.
+- Providing real ABI entries prevents libc-only shortcuts and gives future ports consistent syscall behavior.
+- Rejecting PR_SET_SECCOMP honestly avoids claiming sandbox support that the kernel does not enforce.
+
+Verification
+- git diff --check -- src/include/sys/prctl.h src/kernel/proc/process.h src/kernel/proc/process.c src/user/libc/fry.h src/user/libc/libc.c src/user/libc/posix.c src/kernel/proc/syscall.c
+- make clean
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Result
+- Build completed successfully.
+- ISO produced at out/tatertos64v3.iso.
+- Existing unrelated warnings remain; no fatal build errors from prctl/madvise/mprotect work.

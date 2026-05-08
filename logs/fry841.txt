@@ -1,0 +1,129 @@
+fry841 — Smoke-test scaffolding + cxx_runtime + linker-error catalogue.
+         Smoke .fry not yet produced — runtime work catalogued for fry842.
+=====================================================================
+DATE (UTC):   2026-04-26 14:45:51
+DATE (LOCAL): 2026-04-26 09:45:51 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSOR:    fry840 (LibCore.a archived)
+
+WHAT
+=====================================================================
+1. Wrote src/user/apps/ladybird/test/ak_libcore_smoke.cpp:
+   - Calls AK::String::from_utf8 + AK::out("...{} ({})...").
+   - Exits 0 on success.
+
+2. Wrote src/user/libc/cxx_runtime.cpp (~140 LOC):
+   - Global operator new / delete (all standard signatures).
+   - C++17 aligned new / delete via posix_memalign.
+   - std::nothrow definition.
+   - __cxa_guard_acquire / __cxa_guard_release / __cxa_guard_abort
+     (Itanium C++ ABI thread-safe local-static initialisation).
+   - __cxa_atexit / __cxa_finalize / __dso_handle.
+   - __cxa_pure_virtual / __cxa_throw / __cxa_allocate_exception
+     etc. as abort() stubs.
+   - __gxx_personality_v0 no-op.
+
+3. Added Makefile rules:
+   - src/user/libc/cxx_runtime.o pattern rule using AK_CXXFLAGS.
+   - ak_libcore_smoke target linking AK.a + LibCore.a + cxx_runtime.o
+     + libc.o + setjmp.o → smoke.fry via frypack.
+
+4. Reverted -DFMT_HEADER_ONLY=1 from AK_CXXFLAGS:
+   The flag was added in fry837 to skip compiling format.cc.
+   But it pulls format-inl.h into AK's own TUs, which drags in
+   dragonbox bigint code that needs deeper libc++ shim work
+   than we have. The .a archive doesn't need symbol resolution
+   anyway; fmt's heavy machinery only matters at executable
+   link time, which is fry842's problem.
+
+5. Rebuilt AK.a + LibCore.a without FMT_HEADER_ONLY:
+   AK.a       1,759,244 bytes  sha 526d54d4cfa7d5ad...
+   LibCore.a    854,822 bytes  sha a33bfbd04e37a86d...
+
+6. Removed two duplicate-declval definitions (in <utility> and
+   <type_traits>) — only <type_traits> keeps the canonical one.
+
+7. Made numeric_limits<float/double/long double>::infinity /
+   quiet_NaN / signaling_NaN / denorm_min `constexpr` — fmt's
+   dragonbox bigint constants need it.
+
+LINKER ERRORS REMAINING (catalogued, not yet fixed)
+=====================================================================
+The smoke executable link-time identifies three categories of
+remaining work for fry842:
+
+A. C/C++ linkage mismatch on already-built AK objects
+   AK.a's kmalloc.o + simdutf.o reference malloc/free/calloc/
+   realloc/posix_memalign with C++-mangled signatures (their .o
+   was compiled with stdlib.h's NO-extern-"C" version from fry839).
+
+   Fix: re-add `extern "C"` wrap to stdlib.h (DONE in this log)
+   and force-rebuild AK.a + LibCore.a.
+
+B. fmt format-inl.h symbols
+   Format.o → __extendhfdf2 (libgcc helper for _Float16 → double)
+   StringConversions.o → fmt::detail::dragonbox::to_decimal<float/double>
+
+   Fix: provide a small fmt_runtime.cpp that compiles fmt's
+   format-inl.h once into a single TU, plus a libgcc_helpers.cpp
+   that defines __extendhfdf2 et al. as one-line builtin
+   conversions. Or compile fmt's src/format.cc directly with the
+   right shim flags (revisit the FMT_HEADER_ONLY trade-off
+   armed with our now-mature libc++ shim).
+
+C. (none in this log — all of A and B traced)
+
+CHUNK 2 STATUS
+=====================================================================
+Required:
+  ✅ AK.a builds clean.                      (fry837 / fry840)
+  ✅ LibCore.a builds clean.                 (fry840)
+  ✅ SHA-256 recorded for both.              (fry837 / fry840)
+  ⚠ Test program runs in QEMU — pending      (fry842 + fry843)
+
+Substantively, Chunk 2's foundation is shipped: 35/35 LibCore .cpp
++ 37/37 AK .cpp + simdutf TU all compile clean against TaterTOS's
+freestanding cross-toolchain with our libc++ shim, libc shim,
+POSIX header surface, and the engineered divergences logged in
+fry827–fry840.
+
+The smoke test ("does the .a actually link into a runnable binary
+end to end") is genuinely a gating criterion for declaring Chunk 2
+fully complete, but the work it requires is bounded and
+catalogued.
+
+DIFFS APPLIED IN fry841 (file inventory)
+=====================================================================
+NEW:
+  src/user/apps/ladybird/test/ak_libcore_smoke.cpp   smoke test
+  src/user/libc/cxx_runtime.cpp                      C++ runtime (~140 LOC)
+
+PATCHED:
+  Makefile                       smoke + cxx_runtime targets,
+                                 -DFMT_HEADER_ONLY=1 removed
+  src/include/c++/utility        removed duplicate declval
+  src/include/c++/limits         constexpr infinity/NaN/denorm_min
+  src/include/stdlib.h           re-added extern "C" wrap
+                                 (was removed in fry839; matches
+                                 the surgical extern "C" wrap on
+                                 libc.h from fry839)
+
+NOT DONE (intentional)
+=====================================================================
+- Force-rebuild AK.a + LibCore.a after the stdlib.h re-extern-C
+  edit.  Make's dependency tracking doesn't catch flag changes;
+  fry842 will `rm -f` the .o set and rebuild before re-running
+  the smoke link.
+- fmt_runtime.cpp + libgcc_helpers.cpp (fry842).
+- The smoke .fry itself.
+
+NEXT
+=====================================================================
+fry842 — Force-rebuild AK objects with re-extern-C stdlib.h, write
+        fmt_runtime.cpp (compiles format.cc-equivalent) and
+        libgcc_helpers.cpp (__extendhfdf2 etc.), link smoke.fry,
+        boot in QEMU, exit 0. Chunk 2 done.
+
+END fry841
+=====================================================================

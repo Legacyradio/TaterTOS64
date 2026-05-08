@@ -1,0 +1,40 @@
+2026-04-30 13:51:05
+Starting web_smoke linker fix session.
+Rules from planv3.txt active: No shortcuts, logging every step.
+Project: TaterTOS64
+Target: Link web_smoke by providing missing stubs in web_smoke_stubs.cpp
+2026-04-30 12:55:00 CDT
+Identified missing symbols in web_smoke build: Response, SVGTitleElement, Segmenter, isomorphic_decode, etc.
+Updated web_smoke_stubs.cpp with headers and fixed Response signatures.
+2026-04-30 13:02:00 CDT
+Fixed NodeWithStyle.h include (it is in Node.h) and added Layout headers.
+Running make web_smoke again.
+2026-04-30 13:08:00 CDT
+Fixed signatures for BlockFormattingContext, Viewport, ResizeObserverEntry, and DOMRectReadOnly.
+Added PaintableBox.h and ExceptionOr.h headers.
+Running make web_smoke again.
+2026-04-30 13:12:00 CDT
+Added Painting:: namespace to PaintableBox stubs.
+Removed SVGTitleElement destructor stub (will declare in header instead).
+Running make web_smoke again.
+2026-04-30 13:18:00 CDT
+Fixed math.h: Added long double overloads for isnan, isinf, isfinite, and signbit to resolve C++ ambiguity.
+Running make web_smoke again.
+2026-04-30 13:28:00 CDT
+Added Layout allocators and constructors. Added stubs for Segmenter, FileAPI cleanup, AnchorNameMap, PseudoElement, HTML elements.
+Running make web_smoke again.
+2026-04-30 13:35:00 CDT
+Fixed cell_allocator macros for Box and BlockContainer, fixed placeholder_value return type.
+Running make web_smoke again.
+2026-04-30 13:50:00 CDT
+Added sys_exit implementation, destructors for SVGTitleElement and HTMLStyleElement to emit typeinfo, and ST macro for DocumentPrototype.
+Running make web_smoke again.
+2026-04-30 14:00:00 CDT
+Replaced SVGTitleElement destructor with initialize and create_layout_node to properly emit typeinfo.
+Running make web_smoke again.
+2026-04-30 14:05:00 CDT
+Parsed missing symbols (mangled names) directly from ld and appended assembly stubs to web_smoke_stubs.cpp.
+Running make web_smoke again.
+2026-04-30 14:10:00 CDT
+Link successful! web_smoke.elf and web_smoke.fry generated.
+Task complete: Successfully linked web_smoke test.

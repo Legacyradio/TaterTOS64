@@ -1,0 +1,20 @@
+2026-04-29 09:15:00 CDT
+
+Investigation and fix for compilation errors in `Libfmt` and `AK/StringConversions.cpp`.
+
+Observed errors:
+- `std::bad_alloc` is missing from `src/include/c++/new`.
+- `std::isfinite`, `std::signbit`, and `std::isnan` are being expanded as macros in `std::` namespace because they are defined as macros in `math.h`, causing `std::__builtin_isfinite` which is not a member of `std`.
+
+Completed steps:
+- Performed a clean build (`make clean`).
+- Identified missing `std::bad_alloc` in `<new>`.
+- Identified macro-expansion conflict in `math.h` for C++.
+
+Next:
+- Update `src/include/c++/new` to include `std::bad_alloc`. (Done)
+- Update `src/include/math.h` to properly handle `isnan`, `isinf`, `isfinite`, and `signbit` for C++. (Done)
+- Implement `nextafterf` in `src/user/libc/math.c`. (Done)
+- Systematically add stubs for missing JS::Temporal, Unicode, JS::Intl, TextCodec, IPC, Harfbuzz, and Gfx::FontData symbols in `web_smoke_stubs.cpp`. (Done)
+- Fix C++ compilation errors in `web_smoke_stubs.cpp` caused by incorrect constructor signatures for `JS::Object` and `JS::NativeFunction`, and incorrect return type for `AK::String::to_uppercase`.
+- Verify the build and address remaining linker errors.

@@ -1,6 +1,9 @@
 // TaterTOS64v3 init — canonical PID 1 for live/runtime bootstrapping
 
 #include "../libc/libc.h"
+#include "../libc/fry.h"
+#include <stdio.h>
+#include <stdint.h>
 
 static long try_spawn_first(const char *const *paths, uint32_t count, const char **chosen) {
     for (uint32_t i = 0; i < count; i++) {
@@ -79,6 +82,32 @@ int main(void) {
                        vmtest_paths, (uint32_t)(sizeof(vmtest_paths) / sizeof(vmtest_paths[0])));
     maybe_run_autotest("vmfault", "/VMFAULT.RUN",
                        vmfault_paths, (uint32_t)(sizeof(vmfault_paths) / sizeof(vmfault_paths[0])));
+    printf("init: running smoketest...\n");
+    {
+        long smokepid = fry_spawn("/apps/SMOKETEST.FRY");
+        if (smokepid < 0) smokepid = fry_spawn("/SMOKETEST.FRY");
+        if (smokepid < 0) smokepid = fry_spawn("/fry/SMOKETEST.FRY");
+        if (smokepid < 0) smokepid = fry_spawn("/FRY/SMOKETEST.FRY");
+        if (smokepid >= 0) {
+            fry_wait((uint32_t)smokepid);
+            printf("init: smoketest completed pid=%ld\n", smokepid);
+        } else {
+            printf("init: smoketest not found\n");
+        }
+    }
+    printf("init: running chrome_probe...\n");
+    {
+        long cp_pid = fry_spawn("/apps/CHROME_PROBE.FRY");
+        if (cp_pid < 0) cp_pid = fry_spawn("/CHROME_PROBE.FRY");
+        if (cp_pid < 0) cp_pid = fry_spawn("/fry/CHROME_PROBE.FRY");
+        if (cp_pid < 0) cp_pid = fry_spawn("/FRY/CHROME_PROBE.FRY");
+        if (cp_pid >= 0) {
+            fry_wait((uint32_t)cp_pid);
+            printf("init: chrome_probe completed pid=%ld\n", cp_pid);
+        } else {
+            printf("init: chrome_probe not found\n");
+        }
+    }
     for (;;) {
         const char *path = 0;
         long pid = try_spawn_first(gui_paths,

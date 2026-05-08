@@ -1,0 +1,16 @@
+[2026-04-27 07:15] Starting Phase 3: Event Loop & Input Integration.
+[2026-04-27 07:15] Objective: Adapt LibCore::EventLoop to TaterTOS poll/signals and plumb system input.
+[2026-04-27 07:16] Investigating LibCore EventLoop abstraction in ladybird-upstream.
+[2026-04-27 07:45] Plan approved by user.
+[2026-04-27 07:55] Beginning Phase 1: Event Loop Backend implementation.
+[2026-04-27 08:00] Created src/user/apps/ladybird/Libraries/LibCore/EventLoopImplementationTaterTOS.h.
+[2026-04-27 08:05] Created src/user/apps/ladybird/Libraries/LibCore/EventLoopImplementationTaterTOS.cpp.
+[2026-04-27 08:18] Patched LibCore/EventLoopImplementation.cpp to use TaterTOS provider.
+[2026-04-27 08:22] Updated Makefile to build TaterTOS event loop implementation.
+[2026-04-27 08:40] Created LibCore/TaterTOSInputNotifier.h for system input bridging.
+[2026-04-27 08:45] Created LibCore/TaterTOSInputNotifier.cpp (minimal poll implementation).
+[2026-04-27 08:52] Created ladybird/test/event_smoke.cpp for heartbeat verification.
+[2026-04-27 09:32] Patched src/user/libc/cxx_runtime.cpp with __cxa_thread_atexit stub.
+[2026-04-27 09:50] Updated UCXXFLAGS in Makefile for C++23 and local system headers.
+[2026-04-27 09:35] Updated build_iso.sh to include EVENT_SMOKE.FRY.
+[2026-04-27 09:45] Verified symbols in event_smoke.elf via nm. Full build successful.

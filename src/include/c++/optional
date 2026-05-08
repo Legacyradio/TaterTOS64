@@ -1,0 +1,107 @@
+// TaterTOS64v3 — minimal <optional> for freestanding C++.
+// Surface: std::optional, std::nullopt.
+
+#pragma once
+
+#include <stddef.h>
+#include <utility>
+
+namespace std {
+
+struct nullopt_t {
+    explicit constexpr nullopt_t(int) {}
+};
+inline constexpr nullopt_t nullopt{0};
+
+template<typename T>
+class optional {
+    bool m_has_value = false;
+    alignas(T) char m_storage[sizeof(T)];
+
+public:
+    constexpr optional() = default;
+    constexpr optional(nullopt_t) {}
+    
+    constexpr optional(T const& value) : m_has_value(true) {
+        new (m_storage) T(value);
+    }
+    
+    constexpr optional(T&& value) : m_has_value(true) {
+        new (m_storage) T(static_cast<T&&>(value));
+    }
+
+    constexpr optional(optional const& other) {
+        if (other.m_has_value) {
+            m_has_value = true;
+            new (m_storage) T(*other);
+        }
+    }
+
+    constexpr optional(optional&& other) {
+        if (other.m_has_value) {
+            m_has_value = true;
+            new (m_storage) T(static_cast<T&&>(*other));
+        }
+    }
+
+    ~optional() {
+        if (m_has_value) {
+            reinterpret_cast<T*>(m_storage)->~T();
+        }
+    }
+
+    constexpr bool has_value() const { return m_has_value; }
+    constexpr explicit operator bool() const { return m_has_value; }
+
+    constexpr T& operator*() { return *reinterpret_cast<T*>(m_storage); }
+    constexpr T const& operator*() const { return *reinterpret_cast<T const*>(m_storage); }
+    
+    constexpr T* operator->() { return reinterpret_cast<T*>(m_storage); }
+    constexpr T const* operator->() const { return reinterpret_cast<T const*>(m_storage); }
+
+    constexpr T& value() {
+        return **this;
+    }
+
+    constexpr T const& value() const {
+        return **this;
+    }
+
+    template<typename U>
+    constexpr T value_or(U&& default_value) const {
+        return m_has_value ? **this : static_cast<T>(static_cast<U&&>(default_value));
+    }
+    
+    optional& operator=(nullopt_t) {
+        if (m_has_value) {
+            reinterpret_cast<T*>(m_storage)->~T();
+            m_has_value = false;
+        }
+        return *this;
+    }
+    
+    optional& operator=(optional const& other) {
+        if (this != &other) {
+            this->operator=(nullopt);
+            if (other.m_has_value) {
+                m_has_value = true;
+                new (m_storage) T(*other);
+            }
+        }
+        return *this;
+    }
+};
+
+template<typename T>
+constexpr bool operator==(optional<T> const& lhs, optional<T> const& rhs) {
+    if (lhs.has_value() != rhs.has_value()) return false;
+    if (!lhs.has_value()) return true;
+    return *lhs == *rhs;
+}
+
+template<typename T>
+constexpr bool operator!=(optional<T> const& lhs, optional<T> const& rhs) {
+    return !(lhs == rhs);
+}
+
+} // namespace std

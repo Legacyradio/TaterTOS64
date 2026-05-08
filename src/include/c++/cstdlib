@@ -1,0 +1,48 @@
+// TaterTOS64v3 — <cstdlib>. Wraps <stdlib.h>, re-exports into std::.
+// Origin log: logs/fry832.txt
+#pragma once
+#include <stdlib.h>
+
+namespace std {
+using ::malloc;
+using ::calloc;
+using ::realloc;
+using ::aligned_alloc;
+using ::posix_memalign;
+using ::memalign;
+using ::valloc;
+using ::pvalloc;
+using ::malloc_usable_size;
+using ::free;
+using ::atoi;
+using ::atol;
+using ::atoll;
+using ::atof;
+using ::strtol;
+using ::strtoll;
+using ::strtoul;
+using ::strtoull;
+using ::strtod;
+using ::strtof;
+using ::abs;
+using ::labs;
+using ::llabs;
+using ::qsort;
+using ::bsearch;
+using ::abort;
+using ::exit;
+using ::_Exit;
+using ::atexit;
+using ::getenv;
+using ::setenv;
+using ::unsetenv;
+using ::putenv;
+using ::rand;
+using ::srand;
+using ::div_t;
+using ::ldiv_t;
+using ::lldiv_t;
+using ::div;
+using ::ldiv;
+using ::lldiv;
+}

@@ -1,0 +1,100 @@
+// TaterTOS64v3 — minimal <iterator> for freestanding C++.
+// Origin log: logs/fry831.txt
+// Surface: iterator category tags + iterator_traits + a few helpers
+//          that AK uses in IntrusiveList / Iterator / RedBlackTree etc.
+
+#pragma once
+
+#include <stddef.h>
+#include <initializer_list>
+
+namespace std {
+
+// Iterator category tags — empty types used as compile-time markers.
+struct input_iterator_tag {};
+struct output_iterator_tag {};
+struct forward_iterator_tag       : public input_iterator_tag {};
+struct bidirectional_iterator_tag : public forward_iterator_tag {};
+struct random_access_iterator_tag : public bidirectional_iterator_tag {};
+struct contiguous_iterator_tag    : public random_access_iterator_tag {};
+
+// iterator_traits — C++17 form. SFINAE-friendly default + specialization
+// for raw pointers.
+template<typename It>
+struct iterator_traits {
+    using difference_type   = typename It::difference_type;
+    using value_type        = typename It::value_type;
+    using pointer           = typename It::pointer;
+    using reference         = typename It::reference;
+    using iterator_category = typename It::iterator_category;
+};
+
+template<typename T>
+struct iterator_traits<T*> {
+    using difference_type   = ptrdiff_t;
+    using value_type        = T;
+    using pointer           = T*;
+    using reference         = T&;
+    using iterator_category = random_access_iterator_tag;
+};
+
+template<typename T>
+struct iterator_traits<T const*> {
+    using difference_type   = ptrdiff_t;
+    using value_type        = T;
+    using pointer           = T const*;
+    using reference         = T const&;
+    using iterator_category = random_access_iterator_tag;
+};
+
+// distance — generic for InputIt; specialized for random-access via overload.
+template<typename It>
+constexpr ptrdiff_t distance(It first, It last) {
+    ptrdiff_t n = 0;
+    while (first != last) { ++first; ++n; }
+    return n;
+}
+
+// advance — generic.
+template<typename It, typename Distance>
+constexpr void advance(It& it, Distance n) {
+    while (n > 0) { ++it; --n; }
+    while (n < 0) { --it; ++n; }
+}
+
+// next / prev — convenience wrappers.
+template<typename It>
+constexpr It next(It it, ptrdiff_t n = 1) { advance(it, n); return it; }
+
+template<typename It>
+constexpr It prev(It it, ptrdiff_t n = 1) { advance(it, -n); return it; }
+
+template <class C> constexpr auto size(const C& c) -> decltype(c.size()) { return c.size(); }
+template <class T, size_t N> constexpr size_t size(const T (&)[N]) noexcept { return N; }
+template <class C> constexpr auto data(C& c) -> decltype(c.data()) { return c.data(); }
+template <class C> constexpr auto data(const C& c) -> decltype(c.data()) { return c.data(); }
+template <class T, size_t N> constexpr T* data(T (&array)[N]) noexcept { return array; }
+template <class E> constexpr const E* data(initializer_list<E> il) noexcept { return il.begin(); }
+
+template<typename It>
+class reverse_iterator {
+    It current;
+public:
+    constexpr explicit reverse_iterator(It x) : current(x) {}
+    constexpr It base() const { return current; }
+    constexpr reverse_iterator& operator++() { --current; return *this; }
+    constexpr reverse_iterator operator++(int) { auto tmp = *this; --current; return tmp; }
+    constexpr reverse_iterator& operator--() { ++current; return *this; }
+    constexpr reverse_iterator operator--(int) { auto tmp = *this; ++current; return tmp; }
+    constexpr auto& operator*() const { auto tmp = current; return *--tmp; }
+    constexpr auto operator->() const { auto tmp = current; --tmp; return &*tmp; }
+    constexpr bool operator==(const reverse_iterator& other) const { return current == other.current; }
+    constexpr bool operator!=(const reverse_iterator& other) const { return current != other.current; }
+};
+
+template<typename It>
+constexpr reverse_iterator<It> make_reverse_iterator(It i) {
+    return reverse_iterator<It>(i);
+}
+
+} // namespace std

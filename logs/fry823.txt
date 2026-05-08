@@ -1,0 +1,249 @@
+fry823 — LibUnicode/LibURL/LibTextCodec/LibRegex investigation +
+         the actual LibCore→sister-lib coupling (it's tiny)
+=====================================================================
+DATE (UTC):   2026-04-26 03:30:56
+DATE (LOCAL): 2026-04-25 22:30:56 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSORS:   logs/fry819.txt (rediff), logs/fry821.txt (manifest),
+              logs/fry822.txt (CMake authoritative + 2 surprises)
+TYPE:         Investigation log — NO source code changed.
+
+PURPOSE
+=====================================================================
+fry822 §S2 said LibUnicode/LibURL/LibTextCodec are mandatory link deps
+of LibCore. Read their CMakeLists to size the work. Result: the deps
+are real, but the actual coupling between LibCore and them is one
+file, one #include. Chunk 2 just got dramatically smaller.
+
+S1 RECORD
+=====================================================================
+Zack confirmed S1b on 2026-04-25:
+  AK/kmalloc.cpp will be patched to call TaterTOS libc malloc/free
+  directly. mimalloc is NOT vendored. Marked divergence from
+  upstream AK. (Reason: TaterTOS already has a working allocator;
+  layering mimalloc is map-following, not road-building.)
+
+==========================================================================
+SISTER LIB INVENTORIES (from CMakeLists)
+==========================================================================
+
+LibUnicode (~/ladybird-upstream/Libraries/LibUnicode/CMakeLists.txt):
+  Sources: 21 .cpp files (Calendar, Collator, CurrencyCode,
+           DateTimeFormat, DisplayNames, DurationFormat, ICU, IDNA,
+           ListFormat, Locale, Normalize, NumberFormat, PluralRules,
+           RelativeTimeFormat, Segmenter, String, TimeZone,
+           UnicodeKeywords, Utf16String, CharacterTypes, +
+           AdjustedEraCalendar + ChineseDangiCalendar)
+  Generated: ${CURRENT_LIB_GENERATED}
+  HARD LINK DEPS:
+    ICU::i18n, ICU::uc, ICU::data
+      → International Components for Unicode. ~30MB of source.
+        Portable C++. Could be vendored + cross-compiled, but
+        weeks of work.
+    libunicode_rust
+      → Rust crate at Libraries/LibUnicode/Rust/.
+        Contains Cargo.toml + build.rs + cbindgen.toml + src/.
+        TaterTOS has no Rust toolchain.
+
+LibURL (~/ladybird-upstream/Libraries/LibURL/CMakeLists.txt):
+  Sources: 5 top-level (Host, Origin, Parser, Site, URL)
+         + 10 in Pattern/ (Canonicalization, Component,
+           ConstructorStringParser, Init, Options, Part, Pattern,
+           PatternParser, String, Tokenizer)
+         + ${PUBLIC_SUFFIX_SOURCES} (from
+           Meta/CMake/public_suffix.cmake — codegen)
+  HARD LINK DEPS:
+    LibUnicode (transitively pulls ICU + Rust)
+    LibTextCodec
+    LibRegex (which itself pulls libregex_rust — another Rust crate
+              + LibUnicode)
+
+LibTextCodec (~/ladybird-upstream/Libraries/LibTextCodec/CMakeLists.txt):
+  Sources: 2 .cpp (Decoder, Encoder)
+  Generated: LookupTables.cpp via generate_encoding_indexes()
+             (codegen reads W3C charset spec data)
+  Link deps: NONE (no target_link_libraries line)
+  Verdict: smallest of the four; no transitive Rust/ICU.
+
+LibRegex (~/ladybird-upstream/Libraries/LibRegex/CMakeLists.txt):
+  Sources: 2 .cpp (ECMAScriptRegex, RustRegex)
+  HARD LINK DEPS:
+    LibUnicode
+    libregex_rust (Rust crate at Libraries/LibRegex/Rust/)
+
+THE RUST EVOLUTION
+=====================================================================
+Modern Ladybird (2026 main) has migrated chunks of LibUnicode and
+LibRegex to Rust crates with C++ FFI bindings. This is a recent
+upstream evolution. Building these on TaterTOS would require:
+  1. A Rust toolchain that targets x86_64-unknown-tatertos-gnu
+     (does not exist; building one is multi-month).
+  2. cbindgen to generate the C++ FFI headers.
+  3. Cargo + the Rust standard library ported to TaterTOS userland.
+
+This is not happening in Chunk 2. Possibly never. Two real long-term
+options for the Rust pieces:
+  - Pin Ladybird to a pre-Rust commit (probably late 2025 / early
+    2026) that predates the Rust adoption.
+  - Reimplement the Rust functionality natively in C++ for TaterTOS.
+
+Decision deferred to Chunk 4 (when LibWeb actually consumes Unicode
++ Regex). For Chunk 2, we sidestep entirely (see THE FINDING below).
+
+==========================================================================
+THE FINDING — LibCore's actual coupling to sister libs
+==========================================================================
+CMake says LibCore PRIVATE-links LibUnicode + LibURL + LibTextCodec.
+But what does LibCore's source code ACTUALLY reference from those
+libraries?
+
+Grep result over ~/ladybird-upstream/Libraries/LibCore/*.cpp:
+  Files that include any sister-lib header: 1
+    Libraries/LibCore/MimeData.cpp
+
+  Sister-lib headers actually included: 1
+    #include <LibURL/Parser.h>
+
+That's it. LibUnicode and LibTextCodec are PRIVATE link deps that no
+file in LibCore actually #includes or references at the source level.
+They're transitive deps pulled in by LibURL/Parser.h's own includes.
+
+Implication: if MimeData.cpp doesn't need LibURL, then LibCore.a
+doesn't need ANY of the three sister libs to compile or link.
+
+==========================================================================
+WHAT MimeData.cpp USES LibURL FOR
+==========================================================================
+Reading Libraries/LibCore/MimeData.cpp:
+  Single use site: URL parsing inside guess-mime-from-URL helpers.
+  This is browser-shaped functionality (extension-from-URL → MIME
+  type), not core LibCore functionality (which is event loops, file
+  I/O, sockets, processes).
+
+  When LibWeb in Chunk 4 lands, LibURL gets ported properly and
+  MimeData.cpp re-enables its URL path.
+
+==========================================================================
+THREE OPTIONS FOR CHUNK 2 (need Zack call)
+==========================================================================
+
+U1. CARVE OUT MimeData.cpp from Chunk 2's LibCore build.
+    LibCore.a builds without MimeData. Other LibCore consumers don't
+    need MIME guessing in Chunk 2 (LibWeb lands in Chunk 4 and brings
+    its own MIME machinery). LibUnicode/LibURL/LibTextCodec/LibRegex
+    are entirely deferred to Chunk 4.
+
+    Pros:
+      - Chunk 2 collapses to AK + LibCore (minus MimeData) + 3 vendored
+        header-only libs. Genuinely 2 libraries, not 5.
+      - No ICU. No Rust. No public_suffix codegen. No
+        libtextcodec_generators codegen.
+      - Chunk 2 exit criterion is small enough to actually hit.
+    Cons:
+      - LibCore diverges from upstream by 1 file. Marked divergence,
+        easy to upstream or revert later.
+    Recommendation: U1.
+
+U2. STUB MimeData.cpp's URL path with TaterTOS-native ts_url.h.
+    Patch MimeData.cpp's #include of LibURL/Parser.h with a thin
+    bridge that calls TaterTOS's existing ts_url.h (already in
+    src/user/apps/ — written for TaterSurf). Slightly bigger
+    divergence than U1 but keeps full LibCore functionality.
+
+    Pros:
+      - Full LibCore parity with upstream.
+    Cons:
+      - More divergence to maintain. ts_url.h's API doesn't match
+        LibURL's API; the bridge is real glue code.
+      - Not road-building, it's bridge-building.
+
+U3. PORT A SLIM LibURL FOR CHUNK 2.
+    Pull in LibURL but stub out its LibUnicode/LibTextCodec/LibRegex
+    transitive deps. LibURL/Parser.cpp uses LibUnicode for IDNA
+    (international domain names) — stub IDNA to ASCII-only for v1.
+    LibURL/Pattern/* uses LibRegex — drop the Pattern subdir entirely
+    (only used by URLPattern API, not vanilla URL parsing).
+
+    Pros:
+      - Real LibURL surface for downstream consumers.
+    Cons:
+      - More work in Chunk 2 (~15 LibURL files + IDNA stub).
+      - Pulls forward Chunk 4 work without the Chunk 4 framing.
+    Recommendation: NO. This is the "build the road" trap in reverse —
+    we'd end up half-porting LibURL twice, once now and once properly
+    in Chunk 4.
+
+==========================================================================
+LOCKED-IN CHUNK 2 SCOPE (assuming U1 confirmed)
+==========================================================================
+Compiled libraries:
+  AK.a       — 37 .cpp from upstream + Backtrace.h + Debug.h native
+  LibCore.a  — 36 .cpp (37 - MimeData.cpp)
+
+Vendored 3rd-party (header-only / single-source):
+  fmt
+  fast_float
+  simdutf
+
+Native TaterTOS engineering:
+  AK/Backtrace.h        — frame-pointer walker
+  AK/Debug.h            — channels off
+  AK/kmalloc.cpp patch  — replace mimalloc calls with libc malloc
+                          (S1b, confirmed)
+
+What's NOT in Chunk 2:
+  LibUnicode (deferred — ICU + Rust live here)
+  LibURL (deferred — pulls LibUnicode/TextCodec/Regex)
+  LibTextCodec (deferred — small, but no consumer in Chunk 2)
+  LibRegex (deferred — Rust)
+  mimalloc (skipped per S1b)
+  cpptrace (skipped, we generate our own backtrace)
+
+Chunk 2 link line:
+  -lAK -lLibCore -lfmt -lfast_float -lsimdutf
+  + TaterTOS libc.o + setjmp.o + pthread.o + posix.o + stdio.o + ...
+
+==========================================================================
+DECISIONS TABLE (running)
+==========================================================================
+  D1 supersede TATERSURF_*.md       — confirmed (fry817)
+  D2 -fno-exceptions + ErrorOr      — confirmed (fry817)
+  D3 cross-compiler libstdc++ as-is — confirmed (fry817)
+  D4 Phase 23 brought forward       — RESOLVED (fry818, already done)
+  D5 layout under src/user/apps/    — confirmed (fry817)
+  S1 mimalloc                       — S1b confirmed (fry822, this log)
+  S2 LibUnicode strategy            — RESOLVED via U1 (defer entire
+                                       LibUnicode/URL/TextCodec/Regex
+                                       chain to Chunk 4)
+  U1 carve out MimeData.cpp         — PENDING ZACK CONFIRM
+
+If U1 is confirmed, all decisions for Chunk 2 are locked. fry824
+begins the vendor drop and source copy.
+
+==========================================================================
+NEXT
+==========================================================================
+fry824 (only after U1 confirmed):
+  Vendor drop step 1 — fmt.
+  Create src/user/apps/ladybird-3rd/fmt/ with the upstream fmt
+  release tree, license file, and version pin recorded in the log.
+  Stop and explain. NO code changes outside that directory.
+
+fry825: Vendor drop step 2 — fast_float.
+fry826: Vendor drop step 3 — simdutf.
+fry827: Copy upstream AK/ files (37 .cpp + ~155 .h) into
+        src/user/apps/ladybird/AK/. Generate Backtrace.h + Debug.h.
+        Apply S1b patch to kmalloc.cpp. Stop after the copy + patch,
+        BEFORE adding a Makefile rule.
+fry828: Add Makefile target ak.a. First build attempt. Walk
+        whatever errors surface, ONE class at a time, each in its
+        own fry log.
+
+==========================================================================
+NO REBUILD THIS STEP
+==========================================================================
+No source modified. No build run.
+
+END fry823
+=====================================================================

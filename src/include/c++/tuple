@@ -1,0 +1,117 @@
+// TaterTOS64v3 — minimal <tuple> for freestanding C++.
+// Origin log: logs/fry837.txt
+//
+// Surface scoped to simdutf's actual use: 3-element tuple,
+// std::make_tuple, std::get<N>(t). AK has its own AK::Tuple; this
+// shim exists only for upstream compat.
+//
+// Implementation: simple recursive struct (libstdc++/libc++ pattern,
+// minus all the conditional-noexcept / SFINAE refinements).
+
+#pragma once
+
+#include <stddef.h>
+#include <utility>      // std::move, std::forward, std::pair
+
+namespace std {
+
+namespace _tuple_detail {
+    // Recursive tuple — head + rest.
+    template<size_t I, typename T>
+    struct tuple_leaf {
+        T value;
+        constexpr tuple_leaf() = default;
+        constexpr tuple_leaf(T const& v) : value(v) {}
+        constexpr tuple_leaf(T&& v) : value(static_cast<T&&>(v)) {}
+    };
+}
+
+template<typename... Ts>
+struct tuple;
+
+template<>
+struct tuple<> {};
+
+template<typename T, typename... Rest>
+struct tuple<T, Rest...> : _tuple_detail::tuple_leaf<sizeof...(Rest), T>, tuple<Rest...> {
+    using head_type = T;
+    using tail_type = tuple<Rest...>;
+
+    constexpr tuple() = default;
+
+    constexpr tuple(T const& head, Rest const&... tail)
+        : _tuple_detail::tuple_leaf<sizeof...(Rest), T>(head),
+          tuple<Rest...>(tail...) {}
+
+    template<typename U, typename... URest>
+    constexpr tuple(U&& head, URest&&... tail)
+        : _tuple_detail::tuple_leaf<sizeof...(Rest), T>(static_cast<U&&>(head)),
+          tuple<Rest...>(static_cast<URest&&>(tail)...) {}
+};
+
+// tuple_element<N, tuple<...>> = type at index N.
+template<size_t I, typename T> struct tuple_element;
+
+template<typename Head, typename... Rest>
+struct tuple_element<0, tuple<Head, Rest...>> {
+    using type = Head;
+};
+
+template<size_t I, typename Head, typename... Rest>
+struct tuple_element<I, tuple<Head, Rest...>>
+    : tuple_element<I - 1, tuple<Rest...>> {};
+
+template<size_t I, typename T>
+using tuple_element_t = typename tuple_element<I, T>::type;
+
+// get<N>(tuple) — return reference to the N'th element.
+namespace _tuple_detail {
+    template<size_t I, typename T>
+    constexpr T& get_leaf_ref(tuple_leaf<I, T>& leaf) noexcept { return leaf.value; }
+
+    template<size_t I, typename T>
+    constexpr T const& get_leaf_ref(tuple_leaf<I, T> const& leaf) noexcept { return leaf.value; }
+}
+
+template<size_t I, typename... Ts>
+constexpr tuple_element_t<I, tuple<Ts...>>&
+get(tuple<Ts...>& t) noexcept {
+    constexpr size_t leaf_index = sizeof...(Ts) - 1 - I;
+    using leaf_type = _tuple_detail::tuple_leaf<leaf_index, tuple_element_t<I, tuple<Ts...>>>;
+    return _tuple_detail::get_leaf_ref<leaf_index>(static_cast<leaf_type&>(t));
+}
+
+template<size_t I, typename... Ts>
+constexpr tuple_element_t<I, tuple<Ts...>> const&
+get(tuple<Ts...> const& t) noexcept {
+    constexpr size_t leaf_index = sizeof...(Ts) - 1 - I;
+    using leaf_type = _tuple_detail::tuple_leaf<leaf_index, tuple_element_t<I, tuple<Ts...>>>;
+    return _tuple_detail::get_leaf_ref<leaf_index>(static_cast<leaf_type const&>(t));
+}
+
+// make_tuple — deduce types, forward args.
+template<typename... Ts>
+constexpr tuple<typename remove_reference<Ts>::type...> make_tuple(Ts&&... args) {
+    return tuple<typename remove_reference<Ts>::type...>(static_cast<Ts&&>(args)...);
+}
+
+// ignore — placeholder object that discards any assigned value.
+#ifndef _GLIBCXX_UTILITY
+struct ignore_t {
+    template<typename T>
+    constexpr ignore_t const& operator=(T const&) const noexcept { return *this; }
+};
+inline constexpr ignore_t ignore;
+#endif
+
+// tuple_size.
+template<typename T> struct tuple_size;
+template<typename... Ts>
+struct tuple_size<tuple<Ts...>> {
+    static constexpr size_t value = sizeof...(Ts);
+};
+#ifndef _GLIBCXX_UTILITY
+template<typename T> inline constexpr size_t tuple_size_v = tuple_size<T>::value;
+#endif
+
+} // namespace std

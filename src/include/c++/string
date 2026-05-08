@@ -1,0 +1,485 @@
+// TaterTOS64v3 — minimal <string> for freestanding C++.
+// Origin log: logs/fry833.txt
+//
+// MINIMAL std::string for upstream code that declares it in
+// signatures we never call. AK uses its own AK::String (richer than
+// std::string anyway). simdutf's headers reference std::string in
+// debug-name / kernel-listing surface that AK does not invoke.
+//
+// This implementation is real (it allocates, copies, frees), but
+// scoped to the surface AK transitively references through simdutf
+// headers:
+//   default ctor
+//   ctor(const char*)
+//   ctor(const char*, size_t)
+//   copy ctor / copy-assign
+//   move ctor / move-assign
+//   dtor
+//   c_str() / data() / size() / length() / empty()
+//   operator== / operator!=
+//
+// Methods we deliberately DO NOT provide (yet): operator+/+=, append,
+// substr, find, replace, insert, erase, iterators, reserve, clear,
+// resize, push_back, allocator-aware ctors, char_traits-paramterized
+// templates, std::basic_string. Each future addition will be logged.
+
+#pragma once
+
+#include <stddef.h>
+#include <stdlib.h>     // malloc, free
+#include <string.h>     // strlen, memcpy, memcmp
+#include <string_view>  // libstdc++/libc++ both pull string_view through
+                        // <string> transitively. simdutf/error.h relies on
+                        // that pattern. Match it.
+#include <memory>       // libstdc++ pulls allocator_traits via <string>.
+                        // fmt's format.h uses std::allocator_traits at
+                        // global scope and doesn't include <memory>
+                        // itself — it expects the transitive path.
+#include <utility>      // libstdc++ pulls std::move / std::forward via
+                        // <string>. fmt depends on the transitive path.
+#include <exception>    // simdjson expects <string> to transitively include <exception>
+#include <cctype>       // simdjson expects <string> to transitively include <cctype>
+
+namespace std {
+
+// char_traits — minimal surface. Generic (template) plus enough
+// inline methods that fmt's format-inl.h compiles. AK has its own
+// AK::CharTraits; this is for upstream compat only.
+template<typename CharT>
+struct char_traits {
+    using char_type  = CharT;
+    using int_type   = int;
+    using off_type   = long;
+    using pos_type   = long;
+    using state_type = int;
+
+    static constexpr void assign(CharT& a, CharT const& b) noexcept { a = b; }
+    static constexpr bool eq(CharT a, CharT b) noexcept { return a == b; }
+    static constexpr bool lt(CharT a, CharT b) noexcept { return a < b; }
+
+    static int compare(CharT const* a, CharT const* b, size_t n) {
+        for (size_t i = 0; i < n; ++i) {
+            if (a[i] < b[i]) return -1;
+            if (a[i] > b[i]) return 1;
+        }
+        return 0;
+    }
+    static size_t length(CharT const* s) {
+        size_t n = 0; while (s[n] != CharT(0)) ++n; return n;
+    }
+    static CharT const* find(CharT const* s, size_t n, CharT const& c) {
+        for (size_t i = 0; i < n; ++i) if (s[i] == c) return s + i;
+        return nullptr;
+    }
+    static CharT* move(CharT* dst, CharT const* src, size_t n) {
+        if (dst < src) {
+            for (size_t i = 0; i < n; ++i) dst[i] = src[i];
+        } else {
+            for (size_t i = n; i > 0; --i) dst[i-1] = src[i-1];
+        }
+        return dst;
+    }
+    static CharT* copy(CharT* dst, CharT const* src, size_t n) {
+        for (size_t i = 0; i < n; ++i) dst[i] = src[i];
+        return dst;
+    }
+    static CharT* assign(CharT* dst, size_t n, CharT c) {
+        for (size_t i = 0; i < n; ++i) dst[i] = c;
+        return dst;
+    }
+    static constexpr int_type to_int_type(CharT c) noexcept { return static_cast<int_type>(c); }
+    static constexpr CharT to_char_type(int_type c) noexcept { return static_cast<CharT>(c); }
+    static constexpr int_type eof() noexcept { return static_cast<int_type>(-1); }
+    static constexpr bool eq_int_type(int_type a, int_type b) noexcept { return a == b; }
+    static constexpr int_type not_eof(int_type c) noexcept {
+        return eq_int_type(c, eof()) ? 0 : c;
+    }
+};
+
+// Default allocator — empty type. AK and fmt both supply their own
+// allocators; we only need the type to exist.
+template<typename T>
+struct allocator_default {
+    using value_type = T;
+    constexpr allocator_default() noexcept = default;
+    template<typename U>
+    constexpr allocator_default(allocator_default<U> const&) noexcept {}
+};
+
+// basic_string — TaterTOS minimal C++ string template.
+//
+// Surface scoped to what AK / fmt / simdutf actually parse: ctors,
+// dtor, copy/move, c_str/data/size/length/empty, operator==.
+//
+// Storage is dynamic (malloc/free), no SBO. Real implementation —
+// not a stub — but intentionally narrow. AK never instantiates
+// non-char specializations, so we only use this for `string` (the
+// alias below).
+template<typename CharT,
+         typename Traits    = char_traits<CharT>,
+         typename Allocator = allocator_default<CharT>>
+class basic_string {
+public:
+    using traits_type    = Traits;
+    using value_type     = CharT;
+    using allocator_type = Allocator;
+    using size_type      = size_t;
+    using difference_type = long;
+    using char_type      = CharT;
+    using reference      = CharT&;
+    using const_reference = CharT const&;
+    using pointer        = CharT*;
+    using const_pointer  = CharT const*;
+    using iterator       = CharT*;
+    using const_iterator = CharT const*;
+
+    static constexpr size_type npos = static_cast<size_type>(-1);
+
+    basic_string() noexcept : m_data(nullptr), m_size(0), m_cap(0) {}
+
+    basic_string(CharT const* s)
+        : m_data(nullptr), m_size(0), m_cap(0)
+    {
+        if (s) {
+            size_type n = 0;
+            while (s[n] != CharT(0)) ++n;
+            m_size = n;
+            allocate_and_copy(s, m_size);
+        }
+    }
+
+    basic_string(CharT const* s, size_type len)
+        : m_data(nullptr), m_size(0), m_cap(0)
+    {
+        if (s && len > 0) {
+            m_size = len;
+            allocate_and_copy(s, m_size);
+        }
+    }
+
+    template<typename InputIt>
+    basic_string(InputIt first, InputIt last)
+        : m_data(nullptr), m_size(0), m_cap(0)
+    {
+        if (first != last) {
+            m_size = last - first;
+            allocate_and_copy(&*first, m_size);
+        }
+    }
+
+    basic_string(basic_string const& other)
+        : m_data(nullptr), m_size(0), m_cap(0)
+    {
+        if (other.m_size > 0) {
+            m_size = other.m_size;
+            allocate_and_copy(other.m_data, m_size);
+        }
+    }
+
+    basic_string(basic_string&& other) noexcept
+        : m_data(other.m_data), m_size(other.m_size), m_cap(other.m_cap)
+    {
+        other.m_data = nullptr;
+        other.m_size = 0;
+        other.m_cap  = 0;
+    }
+
+    basic_string(basic_string_view<CharT> const& sv)
+        : m_data(nullptr), m_size(sv.size()), m_cap(0)
+    {
+        if (m_size > 0) {
+            allocate_and_copy(sv.data(), m_size);
+        }
+    }
+
+    ~basic_string() { ::free(m_data); }
+
+    basic_string& operator=(basic_string const& other) {
+        if (this != &other) {
+            ::free(m_data);
+            m_data = nullptr;
+            m_size = 0;
+            m_cap  = 0;
+            if (other.m_size > 0) {
+                m_size = other.m_size;
+                allocate_and_copy(other.m_data, m_size);
+            }
+        }
+        return *this;
+    }
+
+    basic_string& operator=(basic_string&& other) noexcept {
+        if (this != &other) {
+            ::free(m_data);
+            m_data = other.m_data;
+            m_size = other.m_size;
+            m_cap  = other.m_cap;
+            other.m_data = nullptr;
+            other.m_size = 0;
+            other.m_cap  = 0;
+        }
+        return *this;
+    }
+
+    CharT const* c_str() const noexcept { return m_data ? m_data : empty_str(); }
+    CharT const* data() const noexcept  { return m_data ? m_data : empty_str(); }
+    CharT*       data() noexcept        { return m_data; }
+    size_type    size() const noexcept   { return m_size; }
+    size_type    length() const noexcept { return m_size; }
+    size_type    capacity() const noexcept { return m_cap; }
+    bool         empty() const noexcept  { return m_size == 0; }
+
+    // resize — needed by fmt's container_buffer<basic_string>.
+    void resize(size_type new_size) {
+        if (new_size + 1 > m_cap) {
+            size_type new_cap = new_size + 1;
+            CharT* new_data = static_cast<CharT*>(::malloc(new_cap * sizeof(CharT)));
+            if (!new_data) return;
+            for (size_type i = 0; i < m_size && i < new_size; ++i)
+                new_data[i] = m_data[i];
+            ::free(m_data);
+            m_data = new_data;
+            m_cap = new_cap;
+        }
+        // Pad with NUL if growing.
+        for (size_type i = m_size; i < new_size; ++i)
+            m_data[i] = CharT(0);
+        m_size = new_size;
+        if (m_data) m_data[m_size] = CharT(0);
+    }
+
+    void resize(size_type new_size, CharT ch) {
+        size_type old_size = m_size;
+        resize(new_size);
+        for (size_type i = old_size; i < new_size; ++i)
+            m_data[i] = ch;
+    }
+
+    void reserve(size_type cap) {
+        if (cap + 1 > m_cap) {
+            CharT* new_data = static_cast<CharT*>(::malloc((cap + 1) * sizeof(CharT)));
+            if (!new_data) return;
+            for (size_type i = 0; i < m_size; ++i) new_data[i] = m_data[i];
+            new_data[m_size] = CharT(0);
+            ::free(m_data);
+            m_data = new_data;
+            m_cap = cap + 1;
+        }
+    }
+
+    void clear() noexcept {
+        m_size = 0;
+        if (m_data) m_data[0] = CharT(0);
+    }
+
+    // assign — fmt's digit_grouping calls thousands_sep_.assign(1, ch).
+    basic_string& assign(size_type count, CharT ch) {
+        resize(count);
+        for (size_type i = 0; i < count; ++i) m_data[i] = ch;
+        return *this;
+    }
+    basic_string& assign(CharT const* s, size_type count) {
+        resize(count);
+        for (size_type i = 0; i < count; ++i) m_data[i] = s[i];
+        return *this;
+    }
+    basic_string& assign(CharT const* s) {
+        size_type n = 0;
+        while (s[n] != CharT(0)) ++n;
+        return assign(s, n);
+    }
+
+    // append / operator+= / push_back — basic mutating ops.
+    basic_string& append(CharT const* s, size_type count) {
+        size_type old = m_size;
+        resize(m_size + count);
+        for (size_type i = 0; i < count; ++i) m_data[old + i] = s[i];
+        return *this;
+    }
+    basic_string& append(CharT const* s) {
+        size_type n = 0; while (s[n] != CharT(0)) ++n;
+        return append(s, n);
+    }
+    basic_string& append(basic_string const& other) {
+        return append(other.m_data, other.m_size);
+    }
+    basic_string& append(size_type count, CharT ch) {
+        size_type old = m_size;
+        resize(m_size + count);
+        for (size_type i = 0; i < count; ++i) m_data[old + i] = ch;
+        return *this;
+    }
+
+    basic_string& operator+=(CharT ch) { return append(1, ch); }
+    basic_string& operator+=(CharT const* s) { return append(s); }
+    basic_string& operator+=(basic_string const& other) { return append(other); }
+
+    void push_back(CharT ch) { append(1, ch); }
+
+    // max_size — fmt expects this on basic_string.
+    constexpr size_type max_size() const noexcept {
+        return static_cast<size_type>(-1) / sizeof(CharT) - 1;
+    }
+
+    // Iterators — pointer-based.
+    iterator       begin()        noexcept { return m_data; }
+    const_iterator begin() const  noexcept { return m_data; }
+    const_iterator cbegin() const noexcept { return m_data; }
+    iterator       end()          noexcept { return m_data + m_size; }
+    const_iterator end()   const  noexcept { return m_data + m_size; }
+    const_iterator cend()  const  noexcept { return m_data + m_size; }
+
+    CharT const& back() const noexcept { return m_data[m_size - 1]; }
+    CharT&       back()       noexcept { return m_data[m_size - 1]; }
+    CharT const& front() const noexcept { return m_data[0]; }
+    CharT&       front()       noexcept { return m_data[0]; }
+
+    CharT const& operator[](size_type i) const noexcept { return m_data[i]; }
+    CharT&       operator[](size_type i) noexcept       { return m_data[i]; }
+
+    bool operator==(basic_string const& other) const noexcept {
+        if (m_size != other.m_size) return false;
+        if (m_size == 0) return true;
+        for (size_type i = 0; i < m_size; ++i)
+            if (m_data[i] != other.m_data[i]) return false;
+        return true;
+    }
+    bool operator!=(basic_string const& other) const noexcept { return !(*this == other); }
+
+    bool operator==(CharT const* s) const noexcept {
+        if (!s) return m_size == 0;
+        size_type i = 0;
+        while (i < m_size && s[i] != CharT(0)) {
+            if (m_data[i] != s[i]) return false;
+            ++i;
+        }
+        return i == m_size && s[i] == CharT(0);
+    }
+
+    basic_string operator+(basic_string const& other) const {
+        basic_string res = *this;
+        res.append(other);
+        return res;
+    }
+
+    basic_string operator+(CharT const* s) const {
+        basic_string res = *this;
+        res.append(s);
+        return res;
+    }
+
+    operator basic_string_view<CharT>() const noexcept {
+        return basic_string_view<CharT>(m_data, m_size);
+    }
+
+    basic_string& replace(size_type pos, size_type count, CharT const* s) {
+        // Minimal implementation for simdjson: only supports replacing with a string of the same or different length.
+        // For simplicity, we create a new string and move it.
+        basic_string res;
+        res.reserve(m_size - count + strlen(s));
+        res.append(m_data, pos);
+        res.append(s);
+        res.append(m_data + pos + count, m_size - (pos + count));
+        *this = move(res);
+        return *this;
+    }
+
+    size_type find(CharT c, size_type pos = 0) const noexcept {
+        for (size_type i = pos; i < m_size; ++i) {
+            if (m_data[i] == c) return i;
+        }
+        return npos;
+    }
+
+private:
+    static CharT const* empty_str() noexcept {
+        static CharT const s[1] = {};
+        return s;
+    }
+
+    void allocate_and_copy(CharT const* s, size_type n) {
+        // +1 for terminator.
+        m_cap = n + 1;
+        m_data = static_cast<CharT*>(::malloc(m_cap * sizeof(CharT)));
+        if (m_data) {
+            for (size_type i = 0; i < n; ++i) m_data[i] = s[i];
+            m_data[n] = CharT(0);
+        } else {
+            m_cap = 0;
+            m_size = 0;
+        }
+    }
+
+    CharT*    m_data;
+    size_type m_size;
+    size_type m_cap;
+};
+
+// Standard aliases.
+using string    = basic_string<char>;
+using u8string  = basic_string<char>;     // simplified — TaterTOS has
+                                           // no separate char8_t type
+using u16string = basic_string<char16_t>;
+using u32string = basic_string<char32_t>;
+using wstring   = basic_string<wchar_t>;
+
+template<typename CharT, typename Traits, typename Allocator>
+inline basic_string<CharT, Traits, Allocator> operator+(CharT const* lhs,
+                                                       basic_string<CharT, Traits, Allocator> const& rhs) {
+    basic_string<CharT, Traits, Allocator> res(lhs);
+    res.append(rhs);
+    return res;
+}
+
+template<typename CharT, typename Traits, typename Allocator>
+inline bool operator==(CharT const* lhs,
+                       basic_string<CharT, Traits, Allocator> const& rhs) noexcept {
+    return rhs == lhs;
+}
+
+template<typename CharT, typename Traits, typename Allocator>
+inline bool operator!=(CharT const* lhs,
+                       basic_string<CharT, Traits, Allocator> const& rhs) noexcept {
+    return !(rhs == lhs);
+}
+
+inline string to_string(int val) {
+    char buf[12];
+    int i = 10;
+    bool neg = false;
+    if (val < 0) { neg = true; val = -val; }
+    buf[11] = '\0';
+    if (val == 0) buf[i--] = '0';
+    while (val > 0) {
+        buf[i--] = (val % 10) + '0';
+        val /= 10;
+    }
+    if (neg) buf[i--] = '-';
+    return string(&buf[i + 1]);
+}
+
+inline string to_string(unsigned int val) {
+    char buf[12];
+    int i = 10;
+    buf[11] = '\0';
+    if (val == 0) buf[i--] = '0';
+    while (val > 0) {
+        buf[i--] = (val % 10) + '0';
+        val /= 10;
+    }
+    return string(&buf[i + 1]);
+}
+
+inline string to_string(size_t val) {
+    char buf[22];
+    int i = 20;
+    buf[21] = '\0';
+    if (val == 0) buf[i--] = '0';
+    while (val > 0) {
+        buf[i--] = (val % 10) + '0';
+        val /= 10;
+    }
+    return string(&buf[i + 1]);
+}
+
+} // namespace std

@@ -10,8 +10,16 @@
 
 typedef unsigned long jmp_buf[8];
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int setjmp(jmp_buf env);
 void longjmp(jmp_buf env, int val) __attribute__((noreturn));
+
+#ifdef __cplusplus
+}
+#endif
 
 /* POSIX aliases (no signal mask save/restore on TaterTOS) */
 #define sigsetjmp(env, savesigs)   setjmp(env)

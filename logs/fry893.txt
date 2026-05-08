@@ -1,0 +1,67 @@
+2026-05-06 23:46:53 CDT
+
+TaterTOS64v3 Chrome Port — accept4, timerfd, signalfd, inotify
+
+Completed work:
+
+Kernel — new FD types:
+- Added FD_TIMERFD=8, FD_SIGNALFD=9, FD_INOTIFY=10 to enum fry_fd_kind in process.h.
+- Added struct timerfd_cb (it_value_ms, it_interval_ms, deadline_ms, expirations, clockid, nonblock, used).
+- Added struct signalfd_cb (mask, nonblock, used).
+- Added struct inotify_cb (watches[16], watch_count, next_wd, events[32], ev_head/ev_tail, nonblock, used).
+- Added struct inotify_watch and struct inotify_event_buf types.
+- Added #defines: INOTIFY_WATCH_MAX=16, INOTIFY_EVENT_MAX=32, INOTIFY_NAME_MAX=128.
+
+Kernel — new syscall handlers (SYS_ACCEPT4=122 through SYS_INOTIFY_RM_WATCH=129):
+- SYS_ACCEPT4: Inlines the accept logic with atomic flag application. Accepts SOCK_NONBLOCK (0x800) and SOCK_CLOEXEC (0x80000) flags, applies them via fd_install() at creation time.
+- SYS_TIMERFD_CREATE: Allocates struct timerfd_cb via kmalloc, validates clockid (0=REALTIME, 1=MONOTONIC) and flags.
+- SYS_TIMERFD_SETTIME: Reads 4x uint64_t user struct (it_value_sec/nsec, it_interval_sec/nsec), converts to ms, handles TFD_TIMER_ABSTIME (flags & 0x1). Uses HPET counter for current time reference.
+- SYS_TIMERFD_GETTIME: Computes remaining time from deadline - now, returns to user as {sec, nsec, sec, nsec}.
+- SYS_SIGNALFD: Takes fd=-1 for create, fd>=0 for modify. Passes mask (sigset_t as uint64_t) from user. Flags: SFD_NONBLOCK, SFD_CLOEXEC.
+- SYS_INOTIFY_INIT: Allocates inotify_cb, initializes empty watch/event rings.
+- SYS_INOTIFY_ADD_WATCH: Resolves path via dirfd resolver, checks path exists, finds or creates watch slot. Duplicate paths return existing wd.
+- SYS_INOTIFY_RM_WATCH: Finds watch by wd and marks unused.
+
+Kernel — poll/read/close integration:
+- poll_check_fd: Added FD_TIMERFD (readable if expirations>0), FD_SIGNALFD (always readable — no async signals), FD_INOTIFY (readable if events queued).
+- SYS_READ: Added FD_TIMERFD (checks deadline, counts expirations, returns uint64_t expiration count), FD_INOTIFY (dequeues inotify_event_buf, writes bin-compatible inotify_event struct).
+- SYS_CLOSE: Added kfree cleanup for timerfd, signalfd, inotify.
+- dup2/dup3 close-newfd blocks: Added cleanup for all 3 new FD types.
+
+Kernel — enum additions:
+  SYS_ACCEPT4          = 122
+  SYS_TIMERFD_CREATE   = 123
+  SYS_TIMERFD_SETTIME  = 124
+  SYS_TIMERFD_GETTIME  = 125
+  SYS_SIGNALFD         = 126
+  SYS_INOTIFY_INIT     = 127
+  SYS_INOTIFY_ADD_WATCH = 128
+  SYS_INOTIFY_RM_WATCH = 129
+
+New public headers:
+- src/include/sys/timerfd.h: struct itimerspec, TFD_NONBLOCK, TFD_CLOEXEC, TFD_TIMER_ABSTIME. Declares timerfd_create/settime/gettime.
+- src/include/sys/signalfd.h: struct signalfd_siginfo (Linux-compatible 128-byte layout), SFD_NONBLOCK, SFD_CLOEXEC. Declares signalfd().
+- src/include/sys/inotify.h: struct inotify_event, all IN_* event masks (ACCESS, MODIFY, ATTRIB, CLOSE_WRITE, CLOSE_NOWRITE, OPEN, MOVED_FROM, MOVED_TO, CREATE, DELETE, DELETE_SELF, MOVE_SELF, etc.), IN_CLOEXEC, IN_NONBLOCK. Declares inotify_init/inotify_init1/inotify_add_watch/inotify_rm_watch.
+
+Libc additions:
+- Added syscall enum values in libc.c (122-129).
+- Added fry_accept4, fry_timerfd_create, fry_timerfd_settime, fry_timerfd_gettime, fry_signalfd, fry_inotify_init, fry_inotify_add_watch, fry_inotify_rm_watch in libc.c.
+- Declared all 8 in fry.h.
+- Added POSIX wrappers in posix.c: accept4 (kernel-backed, replaces old fcntl-based version), timerfd_create, timerfd_settime, timerfd_gettime, signalfd, inotify_init, inotify_init1, inotify_add_watch, inotify_rm_watch.
+- Added includes for sys/timerfd.h, sys/signalfd.h, sys/inotify.h in posix.c.
+- Removed the previous userspace-only accept4 implementation (fcntl fallback).
+
+Why:
+- Chromium's build system and GN require accept4 for socket-level SOCK_NONBLOCK/SOCK_CLOEXEC support.
+- Chromium's MessagePump uses timerfd for timer-based event sources.
+- Chromium uses signalfd for signal handling in the event loop (SIGCHLD, SIGTERM).
+- Chromium and build tools use inotify for file watching.
+
+Verification:
+- git diff --check: clean.
+- make clean + build_iso.sh: passed clean.
+- Only pre-existing EFI loader warnings (gop_mask_size, gop_mask_pos unused).
+- ISO at out/tatertos64v3.iso.
+
+Next recommended slice: Now that the OS-shim layer has timerfd/signalfd/inotify, the
+next Chromium-facing targets are: sendfile, splice/tee, and memfd_create.

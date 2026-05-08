@@ -1,0 +1,287 @@
+fry847 — Phase R-4: build-std bring-up (core+alloc) for x86_64-unknown-tatertos.
+=====================================================================
+DATE (UTC):   2026-04-26 16:38 UTC
+DATE (LOCAL): 2026-04-26 11:38 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSOR:    fry846 (cargo vendor + offline source config)
+TYPE:         New files (smoke crate, sysroot vendor merge) + cargo
+              config update + first successful Rust artifact for the
+              custom TaterTOS target.
+
+WHAT
+=====================================================================
+Stable rustc 1.95.0 successfully compiled core + alloc + compiler-
+builtins + a no_std smoke crate FROM SOURCE for the
+x86_64-unknown-tatertos custom target. The pipeline produced
+libtatertos_rust_smoke.a (639 KB, valid ar archive, 3 object members,
+exports tater_rust_smoke + memcpy/memset shims from compiler-builtins).
+
+This is the FIRST native Rust artifact ever built for TaterTOS64v3.
+It does NOT prove std works (std is the R-6 wall), but it does prove:
+  - The custom target spec parses through rustc on every code path.
+  - Stable rustc (no rustup) can drive build-std with RUSTC_BOOTSTRAP=1.
+  - The vendored crate set is sufficient for sysroot deps.
+  - rust-lld targets the freestanding ELF correctly via our linker
+    setting (/usr/bin/x86_64-elf-ld is referenced but lld actually
+    handles the rlib link; cross-ld will be invoked when we link
+    the .a into a TaterTOS .fry binary).
+
+THIRD-PARTY DEPENDENCY: rust-src ARCH PACKAGE
+=====================================================================
+Installed: extra/rust-src 1:1.95.0-1 (atomic version match with rustc)
+On disk:   /usr/lib/rustlib/src/rust/library/
+
+Why install vs. keep-our-extracted-tarball:
+  - Cargo's `-Zbuild-std` looks at $(rustc --print sysroot)/lib/
+    rustlib/src/rust/library/ by default. With Arch's rust-src
+    package, that path is populated automatically.
+  - Pacman ATOMICALLY version-locks rust-src to the same release
+    as rustc. If Arch ever bumps rust to 1.96, both packages move
+    together. Our in-tree extract would silently become a
+    version-mismatch trap.
+  - One supported source-of-truth is better than two copies that
+    can drift.
+
+Removed: src/user/apps/ladybird-rust-vendor/rust-src/ (the 51 MB
+fry846-extracted tarball subtree). The Arch package supersedes it.
+
+VENDOR EXTENSION — SYSROOT DEPS
+=====================================================================
+fry846's `cargo vendor` covered Ladybird's 100 transitive crates only.
+sysroot's library/Cargo.lock has its own ~50 transitive deps that
+build-std needs:
+  rustc-literal-escaper, rand, hashbrown, libc, memchr, foldhash,
+  miniz_oxide, gimli, addr2line, object, hermit-abi, dlmalloc,
+  unwinding, fortanix-sgx-abi, moto-rt, vex-sdk, wit-bindgen, wasi,
+  windows-* (8 platform-specific crates we'll never link), etc.
+
+First build attempt failed with:
+  error: no matching package named `rustc-literal-escaper` found
+  required by package `proc_macro v0.0.0`
+
+Resolution:
+  1. Copied /usr/lib/rustlib/src/rust/library/ to /tmp/rust-sysroot-
+     build/library/ (writable workspace).
+  2. From there: `RUSTC_BOOTSTRAP=1 cargo vendor /tmp/sysroot_vendor`.
+     RUSTC_BOOTSTRAP=1 was needed because library/Cargo.toml uses
+     `cargo-features = ["profile-rustflags"]` — nightly-only on
+     stable cargo without the bootstrap escape.
+  3. Walked /tmp/sysroot_vendor/ and merged into our existing
+     vendor/:
+       - 31 brand-new crates copied into vendor/<name>/
+       - 9 crates also exist in Ladybird's set; copied as
+         vendor/<name>-<version>/ (cargo's multi-version naming
+         pattern, matching the existing hashbrown-0.15.5 case)
+
+Final vendor count: 100 → 140 entries (~106 MB → ~115 MB).
+
+Version-overlap matrix (Ladybird vs sysroot lockfile):
+  cfg-if         1.0.4  vs 1.0.4    (identical, suffixed copy redundant)
+  foldhash       0.1.5  vs 0.2.0    (real mismatch — both kept)
+  hashbrown      0.16.1 vs 0.16.1   (identical, suffixed copy redundant)
+  libc           0.2.183 vs 0.2.178 (real mismatch — both kept)
+  memchr         2.8.0  vs 2.7.6    (real mismatch — both kept)
+  r-efi          6.0.0  vs 5.3.0    (real mismatch — both kept)
+  windows-link   0.2.1  vs 0.2.1    (identical, suffixed copy redundant)
+  windows-sys    0.61.2 vs 0.60.2   (real mismatch — both kept)
+  wit-bindgen    0.51.0 vs 0.45.1   (real mismatch — both kept)
+
+Three identical-version copies are harmless (cargo selects by
+name+version, ignores duplicate dirs) but cosmetically ugly. They
+could be cleaned in a follow-up; not load-bearing.
+
+CARGO CONFIG CHANGES (.cargo/config.toml)
+=====================================================================
+Added two stanzas to src/user/apps/ladybird-rust-vendor/.cargo/config.toml:
+
+  [build]
+  target = "x86_64-unknown-tatertos"
+  rustflags = ["-Zunstable-options"]    ← NEW, fry847
+
+  [unstable]                            ← NEW, fry847
+  build-std = ["core", "alloc"]
+
+The rustflags = ["-Zunstable-options"] line is REQUIRED. Without it,
+rustc rejects the custom JSON target with:
+  error: error loading target specification: custom targets are
+  unstable and require `-Zunstable-options`
+
+Cargo's --target=<json> path triggers this in rustc-the-binary
+on its host info probe; cargo passing the JSON alone is not enough.
+
+The [unstable] block is parsed by stable cargo only with
+RUSTC_BOOTSTRAP=1 in env. We invoke as:
+
+  RUSTC_BOOTSTRAP=1 \
+  RUST_TARGET_PATH=/home/legacyindieradio/TaterTOS64/src/user/apps/ladybird-rust-vendor \
+    cargo build --release
+
+(RUST_TARGET_PATH lets the [build] target setting reference the
+custom target by bare name "x86_64-unknown-tatertos" rather than
+a JSON path — cargo searches RUST_TARGET_PATH for <name>.json.)
+
+SMOKE CRATE
+=====================================================================
+NEW: src/user/apps/ladybird-rust-vendor/smoke/Cargo.toml (~10 LOC)
+NEW: src/user/apps/ladybird-rust-vendor/smoke/src/lib.rs  (~20 LOC)
+
+  #![no_std]
+  #[panic_handler] fn panic(_: &PanicInfo) -> ! { loop {} }
+  #[unsafe(no_mangle)]
+  pub extern "C" fn tater_rust_smoke(x: u64) -> u64 {
+      x.wrapping_mul(3).wrapping_add(7)
+  }
+
+(`#[unsafe(no_mangle)]` is the new edition 2024 syntax. Plain
+`#[no_mangle]` warns; `unsafe(no_mangle)` is the canonical form.)
+
+profile sets `panic = "abort"` matching our target spec's
+`"panic-strategy": "abort"`. No unwinder linked, no eh_personality
+needed.
+
+Cargo.toml uses [lib] crate-type = ["staticlib"] so the output
+is a self-contained .a that the C++ link line can ingest like any
+other libfoo.a.
+
+ITERATION ERRORS HIT IN R-4 BRING-UP
+=====================================================================
+E1. cargo vendor: missing rustc-literal-escaper
+    → Resolved by extending vendor/ with sysroot's transitive set.
+
+E2. rustc: "custom targets are unstable and require
+    `-Zunstable-options`"
+    → Added rustflags = ["-Zunstable-options"] to [build].
+
+E3. rustc compiling core: panic_immediate_abort is now a real
+    panic strategy (not a feature). Build-std-features removed.
+    → Removed `build-std-features = ["panic_immediate_abort"]`
+    from [unstable]. Plain `panic = "abort"` in smoke/Cargo.toml is
+    sufficient. immediate-abort would shave a few KB but is not
+    needed for bring-up. Can revisit when we measure R-7 binary size.
+
+E4. /tmp/rust-sysroot-build/library/Cargo.toml: profile-rustflags
+    nightly feature
+    → RUSTC_BOOTSTRAP=1 escape hatch (already needed for [unstable]
+    in our config). Same flag, both invocations.
+
+E5. (Self-inflicted) `rm -rf rust-src/` while CWD was inside
+    rust-src/. pwd-getcwd error. Recovered by `cd` to the parent.
+    Note for future: the SessionStart briefing dropped me into
+    rust-src/ as CWD; deleting it from elsewhere would have been
+    safer. Trivial recovery, but a lesson.
+
+VERIFICATION ARTIFACTS
+=====================================================================
+$ RUSTC_BOOTSTRAP=1 RUST_TARGET_PATH=$VENDOR_DIR cargo build --release
+  Compiling core v0.0.0 (/usr/lib/rustlib/src/rust/library/core)
+  Compiling compiler_builtins v0.1.160
+  Compiling alloc v0.0.0
+  Compiling tatertos-rust-smoke v0.0.1
+   Finished `release` profile [optimized] target(s) in 1m 56s
+
+$ ls smoke/target/x86_64-unknown-tatertos/release/libtatertos_rust_smoke.a
+  -rw-r--r-- 1 legacyindieradio legacyindieradio 639228 Apr 26 11:38
+
+$ file libtatertos_rust_smoke.a
+  current ar archive
+
+$ x86_64-elf-nm --defined-only libtatertos_rust_smoke.a | grep tater_rust_smoke
+  0000000000000000 T tater_rust_smoke
+
+$ x86_64-elf-ar t libtatertos_rust_smoke.a | wc -l
+  3
+$ x86_64-elf-ar t libtatertos_rust_smoke.a
+  tatertos_rust_smoke-cce1ddbb8f5c36fe.tatertos_rust_smoke.c1b2485f74d98f1d-cgu.0.rcgu.o
+  core-5c1e5715f5c3807d.core.39ee31aa256ef2f8-cgu.0.rcgu.o
+  compiler_builtins-c7e693c4bbc6f61e.compiler_builtins.d814da94a1d4bd26-cgu.0.rcgu.o
+
+All three objects are ELF64 little-endian, x86_64.
+
+The compiler_builtins object provides memcpy, memset, memmove, memcmp
+(and the dragonbox/floats/integer-ops set) — these satisfy LLVM's
+mem-intrinsic emissions even if the C++ side doesn't link libgcc.
+
+DIFFS APPLIED IN fry847
+=====================================================================
+NEW FILES:
+  src/user/apps/ladybird-rust-vendor/smoke/Cargo.toml         (~12 LOC)
+  src/user/apps/ladybird-rust-vendor/smoke/src/lib.rs         (~20 LOC)
+  src/user/apps/ladybird-rust-vendor/vendor/<31 new crates>   (~25 MB)
+  src/user/apps/ladybird-rust-vendor/vendor/<9 suffixed dirs> (~3 MB)
+
+MODIFIED:
+  src/user/apps/ladybird-rust-vendor/.cargo/config.toml
+    + rustflags = ["-Zunstable-options"]
+    + [unstable] build-std = ["core", "alloc"]
+
+REMOVED:
+  src/user/apps/ladybird-rust-vendor/rust-src/                (51 MB)
+    Superseded by /usr/lib/rustlib/src/rust/library/ from the
+    Arch rust-src 1:1.95.0-1 package.
+
+GENERATED (not committed; reproduce-able):
+  smoke/target/x86_64-unknown-tatertos/release/
+    libtatertos_rust_smoke.a                                  (639 KB)
+    + dep .rmeta files for core, alloc, compiler_builtins
+
+OPERATIONAL: SUDO PATH
+=====================================================================
+Installing rust-src required sudo. Initial attempt with `sudo -n`
+failed (no TTY) and I asked Zack to run `! sudo pacman -S rust-src`
+manually. Zack flagged this as friction — the password is documented
+in memory (reference_github_accounts.md): `echo "0420" | sudo -S
+<command>` is the established pattern for non-interactive sudo here.
+
+Zack ran the install himself. Saved feedback memory
+(feedback_use_stored_sudo.md) capturing the trigger pattern; I made
+no promises about future-proofing — Zack noted he'd had the same
+fight a week ago with another agent. The memory is one mitigation,
+not a guarantee.
+
+NOT DONE (intentional)
+=====================================================================
+- std NOT built. core+alloc only. Compiling std requires the
+  std::sys::tatertos shim modules (R-6) and target_os = "tatertos"
+  branches in libc/getrandom/once_cell/anyhow (R-5). std is a deep
+  surface (~30k LOC of fs/io/net/process/thread/sync); brought up
+  carefully, not in this log.
+- No actual link of libtatertos_rust_smoke.a into a .fry binary.
+  The link gate is R-7. A C++ test that calls tater_rust_smoke()
+  through the .a would prove ABI compatibility today, but that's
+  scope for the next log if we want.
+- Bucket C patches not applied. The vendored libc / getrandom /
+  once_cell crates are pristine upstream. R-5 is where we add
+  target_os = "tatertos" arms.
+
+PHASE R PROGRESS
+=====================================================================
+  ✅ R-1  Cargo.lock crate classification          (fry844)
+  ✅ R-2  Custom target spec                       (fry845)
+  ✅ R-3  cargo vendor + offline crate set         (fry846)
+  ✅ R-4  rust-src + build-std core/alloc          (this log)
+  ⏳ R-5  Bucket C patches (libc, getrandom, ...)
+  ⏳ R-6  std::sys::tatertos shim modules
+  ⏳ R-7  Build the 4 Ladybird Rust crates
+
+NEXT
+=====================================================================
+fry848 — Phase R-5 prep: enumerate exact target_os = "tatertos" sites
+needed in the Bucket C crates. For each of:
+    libc 0.2.{178, 183}, getrandom, once_cell, anyhow
+  walk the source, grep for `target_os = "linux"|"freebsd"|"macos"`,
+  identify which arm we copy into a new `target_os = "tatertos"`
+  branch, and capture the patch as a .patch file under
+  src/user/apps/ladybird-rust-vendor/patches/<crate>-<version>.patch.
+
+Estimated R-5 effort: 2-4 days. The Bucket C set is small (5-7
+crates) and the patches are mostly mechanical (mirror an existing
+unix arm with our target_os).
+
+Decision deferred: whether to bring up `std` BEFORE R-7. The four
+Ladybird Rust crates use std (HashMap, Vec, String, threads). So
+Phase R-6 (std::sys::tatertos shims) is a hard prereq for R-7.
+That's the longest single chunk of Phase R, ~10-15 days.
+
+END fry847
+=====================================================================

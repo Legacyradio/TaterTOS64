@@ -20,8 +20,12 @@ void __assert_fail(const char *expr, const char *file,
 
 #endif /* NDEBUG */
 
-/* C11 static_assert support */
-#ifndef static_assert
+/* C11 static_assert support — C-only. In C++ static_assert is a
+ * keyword and must NOT be macro-defined. (Hit at fry835: fast_float
+ * tripped on `_Static_assert was not declared` because the macro
+ * leaked into C++ TUs that included assert.h transitively.)
+ */
+#if !defined(__cplusplus) && !defined(static_assert)
 #define static_assert _Static_assert
 #endif
 

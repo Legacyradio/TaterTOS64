@@ -1,0 +1,43 @@
+TaterTOS Fry Log 876
+Timestamp: 2026-04-28 15:05:38 CDT
+
+Scope:
+- Continued Ladybird port after fry875 audit.
+- Followed the stressed rules: no shortcuts, no fake implementations, log the work, and do not use QEMU logs.
+- TaterSurf remains out of the active plan and was not restored or touched.
+
+Rust Target Probe Results:
+- Checked local Rust toolchain:
+  - rustc 1.95.0
+  - host target: x86_64-unknown-linux-gnu
+  - rustup is not installed
+  - Rust source is available under /usr/lib/rustlib/src/rust/library
+- Tried freestanding Rust target probes for LibJS Rust:
+  - x86_64-unknown-none failed because the target/core was not installed by default.
+  - x86_64-unknown-linux-none failed for the same missing core path.
+  - RUSTC_BOOTSTRAP=1 with -Z build-std=core,alloc progressed further but failed because the current LibJS Rust dependency graph still expects std in places such as num-traits/default features.
+  - RUSTC_BOOTSTRAP=1 with -Z build-std=std for x86_64-unknown-linux-none failed inside the libc crate; linux-none is not a clean drop-in path here.
+  - RUSTC_BOOTSTRAP=1 with -Z build-std=std for x86_64-unknown-linux-gnu succeeded, but the archive still pulls host/Linux std/backtrace/syscall surface.
+
+Host Rust Archive Link Probe:
+- The existing host-built liblibjs_rust.a does provide the raw JS Rust FFI exports.
+- It is not acceptable as the final TaterTOS solution because linking it pulls host/Linux runtime symbols such as:
+  - syscall
+  - open64/fstat64/stat64/lseek64/mmap64
+  - writev/pwritev
+  - dl_iterate_phdr
+  - pthread_* helpers
+  - getenv
+  - __xpg_strerror_r
+- Adding catch-all fake syscall/libc stubs would violate the no-shortcuts rule, so I did not wire the host archive into the active Makefile as a final port step.
+
+Current Decision:
+- Rust is still a real blocker, not a solved blocker.
+- The honest paths are:
+  1. Build a real TaterTOS-compatible Rust target/runtime surface.
+  2. Reduce/port the LibJS Rust dependency graph toward a no_std/core+alloc-compatible build, if feasible.
+  3. Add only deliberate libc/syscall compatibility functions where TaterTOS actually supports the behavior.
+
+Next Work Direction:
+- Continue reducing non-Rust linker blockers by expanding real Ladybird source coverage in LibWeb/LibGfx/LibUnicode.
+- Do not add fake Rust syscall wrappers just to make the link green.

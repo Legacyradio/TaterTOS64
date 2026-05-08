@@ -1,6 +1,7 @@
 // netmgr.fry — TaterWin WiFi network manager
 
 #include "../libc/libc.h"
+#include "../libc/fry.h"
 #include "../libc/gfx.h"
 #include "../libc/taterwin.h"
 

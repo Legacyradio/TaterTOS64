@@ -1,0 +1,37 @@
+2026-04-28 16:58:34 CDT
+
+Continued the Ladybird port under the active rules:
+- No TaterSurf reactivation or rebuild.
+- No QEMU logs used.
+- No fake generated data or stub substitutions.
+- Logged every completed step and code change here.
+
+Completed:
+- Added a real LibHTTP archive target to the Makefile and linked LibHTTP.a into link_smoke/web_smoke.
+- Built LibHTTP.a successfully from real LibHTTP sources.
+- Added a LibTextCodec archive target to the Makefile, but did not link it into the active smoke targets because both Decoder.cpp and Encoder.cpp require the missing generated LibTextCodec/LookupTables.h. I did not fabricate a lookup table.
+- Expanded the LibWeb manifest with real DOM, HTML, HTML parser, CSS parser, CSS style value, Animations, Fetch, IntersectionObserver, Platform, HighResolutionTime, ViewTransition, Editing, and root Namespace coverage.
+- Forced a full expanded LibWeb rebuild because the archive timestamp initially hid the new manifest coverage.
+- Fixed a real libc declaration gap: src/user/libc/math.c already implemented llround(), but src/include/math.h did not declare it. Added llround/llroundf declarations and added the matching llroundf implementation so libc remains internally consistent.
+- Fixed an incomplete ported Ladybird header: ColorInterpolationMethodStyleValue.h did not match its .cpp or call sites. Restored the real class surface for the typed color-space variant, create(), default_color_interpolation_method(), serialize(), equality, and stored member.
+
+Validation:
+- make libweb: PASS after the expanded manifest and the two real compile fixes above.
+- make web_smoke: FAIL at link. Log captured at /tmp/tatertos64_web_smoke_fry878.log.
+- Current unresolved-reference count: 2691.
+
+Important interpretation:
+- The unresolved count rose from the prior 1861 because LibWeb now links substantially more real code, including Fetch/HTTP, Animations, CSS style values, and ViewTransition. That exposes deeper missing dependencies instead of hiding them behind an underfilled archive. This is expected from expanding coverage and is not a reason to remove real sources.
+
+Current major linker blocker groups:
+- LibJS Rust parser/compiler FFI: rust_parse_program, rust_compile_*, rust_free_*.
+- LibJS Intl/Temporal/Unicode: JS::Intl formatting, JS::Temporal helpers, Unicode locale/time-zone APIs.
+- LibTextCodec: TextCodec::isomorphic_encode/decode now required through LibHTTP; active LibTextCodec remains blocked by generated LookupTables.h.
+- LibGfx color pipeline and Skia path pieces: color conversion functions, PathImplSkia, ShareableBitmap.
+- IPC/AK support gaps: IPC::MessageBuffer::append_data and AK::String::to_lowercase surfaced in the current link.
+
+Next required steps:
+- Add the missing real LibGfx color conversion / ShareableBitmap / PathImplSkia coverage or decide if Skia-backed pieces need a real non-Skia TaterTOS implementation path.
+- Resolve the LibTextCodec generated LookupTables.h source-generation problem instead of stubbing the table.
+- Continue expanding/adding real LibUnicode + Intl + Temporal coverage, with care around ICU/data requirements.
+- Resolve or deliberately port the LibJS Rust FFI layer; do not stub parser/compiler entry points.

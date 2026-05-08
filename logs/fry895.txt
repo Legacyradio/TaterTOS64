@@ -1,0 +1,68 @@
+2026-05-07 01:33:00 CDT
+
+TaterTOS64v3 Chrome Port — memfd_create and sendfile (continued from fry893)
+Also: built smoketest.c — automated smoke test for all recent syscalls
+
+Completed work:
+
+memfd_create (kernel + libc):
+- Added FD_MEMFD=11 to enum fry_fd_kind.
+- Added struct memfd_cb (size, capacity, pos, page_count, pages[], used, name[32]).
+- Added memfd helpers: memfd_grow (PMM page allocation), memfd_free_pages,
+  memfd_read, memfd_write, memfd_lseek, memfd_truncate, vm_map_memfd_region.
+- Added SYS_MEMFD_CREATE (syscall 130): allocates memfd_cb, installs as FD_MEMFD.
+- SYS_READ/SYS_WRITE/SYS_LSEEK/SYS_FTRUNCATE all dispatch FD_MEMFD.
+- SYS_MMAP detects FD_MEMFD and maps pages directly into user address space.
+- SYS_CLOSE + dup2/dup3 blocks: memfd cleanup (free pages + kfree).
+- poll_check_fd: memfd always readable/writable.
+- fry_memfd_create + memfd_create() POSIX wrapper.
+- Header: src/include/sys/memfd.h with MFD_CLOEXEC flag.
+
+sendfile (kernel + libc):
+- Added SYS_SENDFILE (syscall 131): copies between fds via kernel bounce buffer.
+- Supports: in=FD_MEMFD|FD_FILE, out=FD_MEMFD|FD_FILE|FD_SOCKET|FD_PIPE_WRITE.
+- Handles explicit offset (seeks + reports updated offset to user).
+- 1MB per-call cap, 4KB bounce buffer.
+- fry_sendfile + sendfile() POSIX wrapper.
+- Header: src/include/sys/sendfile.h.
+
+pipe2/dup3 declarations:
+- Added pipe2() and dup3() declarations to src/include/unistd.h
+  (fixes missing declarations that broke compilation of third-party code).
+
+Smoke test (src/user/apps/smoketest.c):
+- Runs 17 tests covering: pipe2 (3), dup3 (2), socketpair (1),
+  getcwd (1), chdir (1), accept4 (1), timerfd (1), signalfd (1),
+  inotify (1), memfd_create/basic/truncate (3), sendfile (1).
+- Integrated into Makefile as `smoketest` target, shipped on ISO.
+- Each test prints PASS/FAIL with test name.
+
+Kernel + libc enum unified: SYS_ACCEPT4=122 through SYS_SENDFILE=131.
+
+Why:
+- memfd_create: required by Chromium for base::SharedMemory, ELF loading,
+  Mojo shared buffers. Cannot be emulated in userspace.
+- sendfile: used by Chromium download manager / cache layer.
+  Userspace emulation exists but kernel implementation avoids copying.
+- smoketest: need runtime verification that new syscalls actually work
+  end-to-end instead of just compiling.
+- pipe2/dup3 declarations: missing from unistd.h broke compilation.
+
+Verification:
+- smoketest.c compiles and links to smoketest.fry.
+- Full ISO build (build_iso.sh): all 137 files packaged clean.
+- QEMU boot test: OS boots, smoke test binary loads but ELF open fails
+  (-101 ELF_LOAD_ERR_OPEN) because SMOKETEST.FRY is not in the EFI
+  boot loader's hardcoded packed-ramdisk file list (29 files).
+
+Pending:
+- To run smoketest at boot: add SMOKETEST.FRY to the EFI loader's
+  fry_paths[] and fry_names[] arrays in src/boot/efi_loader.c.
+  Requires incrementing FRY_FILE_COUNT from 29 to 30.
+- Alternative: build the smoketest into init or kernel selftest.
+
+Test results (manual review):
+- Smoketest binary compiles and links correctly.
+- Timerfd/signalfd/inotify/memfd/sendfile wrappers all produce
+  correct-sized output.
+- System boots and GUI launches normally.

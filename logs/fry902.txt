@@ -1,0 +1,28 @@
+Fry Log 902 - Chromium GN generation for TaterTOS (first milestone)
+Timestamp: 2026-05-07 11:30 CDT
+
+Milestone: gn gen out/tatertos succeeds — 2400 targets from 471 files.
+
+Chromium checkout:
+- Path: /home/legacyindieradio/chromium-tatertos/src/
+- Pinned commit: bbac87806289b0b55d10bddc66b3155b68dcaab5 (no-history, --nohooks)
+- Fetch method: fetch --nohooks --no-history chromium (depot_tools)
+
+Changes made to Chromium source:
+- BUILDCONFIG.gn: Added is_tatertos variable, default toolchain for target_os="tatertos",
+  default compiler config include for //build/config/tatertos:compiler
+- BUILD.gn: Replaced with minimal root that only depends on //base:base
+  (stub groups for chrome, content)
+- build/toolchain/tatertos/BUILD.gn: gcc_toolchain using x86_64-elf-gcc/g++
+- build/config/tatertos/BUILD.gn: Compiler config (freestanding flags, TaterTOS defines)
+- build/config/tatertos/sysroot.gni: Empty (cross-compiler prefix handles sysroot)
+- build/config/rust.gni: Added is_tatertos case for rust_abi_target
+- build/rust/known-target-triples.txt: Added x86_64-unknown-none
+- third_party/libxml/BUILD.gn: Added is_tatertos to os_include=linux case
+- build/util/LASTCHANGE.committime: Created dummy (0) since --nohooks skipped generation
+
+GN args used:
+target_os="tatertos" target_cpu="x64" is_debug=false is_clang=false symbol_level=0
+
+Next step: compile //base:base with ninja.
+Expected first failure: missing TaterTOS libc symbols (printf, etc referenced by //base).

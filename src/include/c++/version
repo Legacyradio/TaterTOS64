@@ -1,0 +1,45 @@
+// TaterTOS64v3 — minimal <version> for freestanding C++.
+// Origin log: logs/fry833.txt
+//
+// <version> is the C++20 library feature-test header. Standard libs
+// define a __cpp_lib_* macro for every feature they implement. Our
+// shim implements a tiny subset (move, forward, construct_at,
+// strong_ordering, etc.); we declare exactly the feature macros that
+// reflect what we ship.
+//
+// Conservative posture: define only the macros for features that
+// our libc++ shim genuinely provides. Code that conditionally uses
+// other stdlib features will see the macro as undefined and fall
+// back. Each addition logged.
+
+#pragma once
+
+// We provide std::strong_ordering / weak_ordering / partial_ordering.
+#define __cpp_lib_three_way_comparison         201907L
+
+// We provide std::construct_at and std::destroy_at.
+#define __cpp_lib_constexpr_dynamic_alloc      201907L
+
+// We provide std::is_constant_evaluated equivalent (compiler builtin).
+#define __cpp_lib_is_constant_evaluated        201811L
+
+// std::byte in <cstddef>.
+#define __cpp_lib_byte                         201603L
+
+// std::integer_sequence in <utility>.
+#define __cpp_lib_integer_sequence             201304L
+
+// std::exchange in <utility>.
+#define __cpp_lib_exchange_function            201304L
+
+// We deliberately do NOT define:
+//   __cpp_lib_format            (no std::format)
+//   __cpp_lib_optional          (we have AK::Optional, not std::optional)
+//   __cpp_lib_span              (we have AK::Span, not std::span)
+//   __cpp_lib_ranges            (no <ranges>)
+//   __cpp_lib_concepts          (no <concepts>)
+//   __cpp_lib_filesystem        (no <filesystem>)
+//   __cpp_lib_string_view       (we have AK::StringView, not std::string_view)
+//   __cpp_lib_jthread           (no std::jthread)
+//
+// Code that gates on these will avoid the unavailable paths.

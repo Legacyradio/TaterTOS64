@@ -1,0 +1,87 @@
+[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;042;160t[2J[001;001H[2J[001;001H[8;056;240t[2J[001;001HBdsDxe: loading Boot0002 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+BdsDxe: starting Boot0002 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+
+TATER EFI: start
+TATER EFI: build 2026-03-04-dell-nvme-scan
+TATER EFI: LI ok
+TATER EFI: SFS ok
+TATER EFI: volume ok
+TATER EFI: kernel ok
+TATER EFI: kbuf=0x000000007DE13000 ksz=0x000000000024F0A8
+TATER EFI: elf loaded
+TATER EFI: entry resolved
+TATER EFI: GOP ok
+TATER EFI: ramdisk built
+TATER EFI: handoff mmap size
+TATER EFI: handoff mmap alloc
+TATER EFI: handoff mapbuf=0x000000007D982000 entry=0x00000000020000AB
+TATER EFI: handoff ExitBS
+RrrcCxSsEeLlNVMe: controller not found
+B:NET
+I219: not found on PCI bus
+E1000: not found (scanned 6 PCI devs)
+NET:NONIC
+selftest: running
+selftest: 77 passed, 0 failed
+K_AP_SCHED cpu=1
+init: pid=3
+init: running smoketest...
+ACPI: ECDT not found (len=0)
+ACPI: P2SB unhide failed via CF8, using SBREG_BAR_DEFAULT 0xfd000000
+ACPI: espi_clear_errors[0]: LPC mode (not eSPI), skip
+ACPI: EC all candidates failed, EC not available
+ACPI: eSPI PID cand=0x72 CFG_VAL=00000000 invalid
+ACPI: eSPI PID cand=0xc7 CFG_VAL=00000000 invalid
+ACPI: eSPI PID cand=0x6e CFG_VAL=00000000 invalid
+SPAWN_OK path=/apps/SMOKETEST.FRY pid=8 parent=3
+
+===================================
+  TaterTOS64v3 syscall smoke test
+===================================
+
+  pipe2(O_NONBLOCK)                ... PASS
+  pipe2(O_CLOEXEC)                 ... PASS
+  pipe2(invalid flags)             ... PASS
+  dup3(O_CLOEXEC)                  ... PASS
+  dup3(oldfd==newfd)               ... PASS
+  socketpair(AF_UNIX, SOCK_STREAM) ... PASS
+  getcwd()                         ... PASS
+  chdir('/') + getcwd()            ... PASS
+  accept4(EBADF behavior)          ... PASS
+  timerfd_create + settime + gettime ... PASS
+  signalfd()                       ... PASS
+  inotify_init + add_watch + rm_watch ... PASS
+  memfd_create() + write + read    ... PASS
+  memfd_create() + ftruncate + lseek ... PASS
+  sendfile(memfd->memfd)           ... PASS
+
+Results: 15 passed, 0 failed
+===================================
+!EXC vec=000000000000000E err=0000000000000014 RIP=0000000000000000 CS=000000000000002B RF=0000000000010206 CR2=0000000000000000 CR3=00000000023E7000
+USER FAULT: pid=8 tid=8 vec=14 err=0x14 rip=0x0 cr2=0x0
+  PTE CHAIN va=0x0 cr3=0x7b800000 pml4[0]=0x7b802027
+init: smoketest completed pid=8
+init: running chrome_probe...
+SPAWN_OK path=/apps/CHROME_PROBE.FRY pid=9 parent=3
+Chrome/GN compatibility probe for TaterTOS64v3
+
+  uname()                              ... sysname=TaterTOS nodename=taterbox release=1.0.0 version=TaterTOS64v3 #1 SMP machine=x86_64 PASS
+  sysinfo()                            ... uptime=0 procs=0 PASS
+  getrusage(SELF)                      ... utime=0.000000 PASS
+  getpriority(PRIO_PROCESS)            ... prio=0 PASS
+  fsync() on pipe                      ... PASS
+  fdatasync() on pipe                  ... PASS
+  sched_getaffinity()                  ... cpus=2 PASS
+  pthread_barrier_init/wait/destroy    ... PASS
+  pthread_spin_init/lock/unlock/destroy ... PASS
+  splice() link check                  ... PASS
+  tee() link check                     ... PASS
+  mlock/munlock()                      ... VM COMMIT OK: pid=9 va=0x100000000000 pa=0x7c61c000 cr3=0x7c088000 pte=0x8000000000000006 pages=1
+PASS
+
+--- chrome_probe: 12 passed, 0 failed ---
+!EXC vec=000000000000000E err=0000000000000014 RIP=0000000000000000 CS=000000000000002B RF=0000000000010202 CR2=0000000000000000 CR3=00000000023E7000
+USER FAULT: pid=9 tid=9 vec=14 err=0x14 rip=0x0 cr2=0x0
+  PTE CHAIN va=0x0 cr3=0x7c088000 pml4[0]=0x7c08a027
+init: chrome_probe completed pid=9
+SPAWN_OK path=/system/GUI.FRY pid=10 parent=3

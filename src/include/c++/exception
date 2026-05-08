@@ -1,0 +1,14 @@
+// TaterTOS64v3 — minimal <exception> for freestanding C++.
+// Origin log: logs/fry868.txt
+
+#pragma once
+
+namespace std {
+
+struct exception {
+    exception() noexcept {}
+    virtual ~exception() {}
+    virtual char const* what() const noexcept { return "std::exception"; }
+};
+
+} // namespace std

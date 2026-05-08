@@ -1,0 +1,113 @@
+fry873 - Ladybird Port Shortcut Audit
+=====================================================================
+DATE (UTC):   2026-04-28 11:12:28 UTC
+DATE (LOCAL): 2026-04-28 06:12:28 CDT
+AUTHOR:       Codex
+PARENT:       fry872 (LibWeb + LibJS + LibGC Link Smoke Test)
+
+OBJECTIVE
+=====================================================================
+Audit the recent Ladybird/TaterSurf port work for rule violations
+without using QEMU logs.
+
+RULES PRIORITIZED
+=====================================================================
+1) Follow the plan step by step. No shortcuts or cut corners.
+2) No "minimal" implementations; do thorough, functional work.
+5) Log every completed step here with timestamps.
+6) If code changes, include why.
+11) QEMU logs are off limits unless expressly stated otherwise.
+
+CONFIRMED AUDIT FINDINGS
+=====================================================================
+1. link_smoke.cpp is not a real engine smoke test.
+   It includes LibJS/Runtime/VM.h and LibWeb/Bindings/Intrinsics.h,
+   then returns 0. This proves only archive linkage, not LibGC, JS VM,
+   DOM creation, HTML parsing, layout, painting, or event integration.
+
+2. LibGfx TaterTOS backend contains shortcuts.
+   PainterTaterTOS ignores transforms, clipping, source rectangles,
+   scaling, global alpha, filters, compositing, and all path rendering.
+   Bitmap alpha conversion is a TaterTOS no-op stub.
+
+3. LibRegex contains hidden functional gaps.
+   lre_check_stack_overflow() always returns no overflow, named capture
+   group extraction is skipped, unicode_sets is not mapped, and
+   is_single_non_bmp_literal() is stubbed false.
+
+4. TaterTOS input integration drops events.
+   TaterTOSInputNotifier drains keyboard and mouse syscalls and discards
+   the events instead of posting real Core input events.
+
+5. TaterSurf removal is approved by Zack.
+   Do not restore tatersurf into Makefile/build_iso.sh. If preservation
+   is needed, keep only a local/reference copy outside the active build
+   path. Current active work should continue without TaterSurf.
+
+6. GUI regression requires separate repair.
+   src/user/gui/gui.c was reduced from the full TaterWin GUI manager to
+   a placeholder loop. This needs restoration in a dedicated step, not
+   buried inside the Ladybird link-smoke work.
+
+EXECUTION
+=====================================================================
+DATE (UTC):   2026-04-28 11:12:28 UTC
+DATE (LOCAL): 2026-04-28 06:12:28 CDT
+
+1. Created fry873.txt.
+
+Why:
+The latest port milestone claimed successful LibWeb/LibJS/LibGC link
+smoke, but audit found multiple hidden shortcuts. A dedicated log is
+required before remediation continues.
+
+2. Corrected audit scope after Zack clarified TaterSurf is out.
+
+DATE (UTC):   2026-04-28 11:14:17 UTC
+DATE (LOCAL): 2026-04-28 06:14:23 CDT
+
+Why:
+The first fry873 draft incorrectly treated TaterSurf removal as a
+build-continuity regression. Zack clarified that TaterSurf must not go
+back into the active build path; only a local/reference copy is allowed
+if needed.
+
+3. Recorded Ladybird path forward after audit.
+
+DATE (UTC):   2026-04-28 11:16:10 UTC
+DATE (LOCAL): 2026-04-28 06:16:10 CDT
+
+Current Ladybird status:
+- Ladybird is the active browser path.
+- Current work has library/archive linkage, not a functional browser.
+- No real Ladybird/TaterWin browser app entrypoint exists yet.
+- No meaningful web_smoke exists yet.
+
+Required next steps:
+1. fry874: Replace empty link smoke with real web_smoke.
+   The test must initialize LibGC/LibJS/LibWeb enough to create a
+   document, parse static HTML, and verify actual DOM state.
+
+2. Remediate fake or partial subsystems exposed by fry873.
+   Priority areas are LibRegex correctness, PainterTaterTOS drawing
+   semantics, bitmap alpha conversion, and TaterTOS input event posting.
+
+3. Restore/repair the active TaterWin GUI manager regression.
+   Ladybird needs a real working window server. Current gui.c is a
+   placeholder and must not be treated as sufficient.
+
+4. Add a Ladybird app shell.
+   The target should be a TaterWin .fry app that can open a window,
+   run the event loop, and render a static page before network loading.
+
+5. Wire network loading only after static render works.
+   net_smoke proves socket/DNS plumbing only; it does not prove page
+   loading through LibWeb/LibRequests.
+
+6. Add JS DOM mutation smoke.
+   Inline script must mutate DOM, invalidate layout/render state, and
+   show the updated result.
+
+Why:
+The next phase must force real browser functionality to compile and run
+instead of allowing archive linkage to hide missing subsystems.

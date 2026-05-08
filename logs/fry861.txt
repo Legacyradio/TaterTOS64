@@ -1,0 +1,51 @@
+fry861 — Audit AF_LOCAL (Unix Domain Sockets) support
+=====================================================================
+DATE (UTC):   2026-04-27 10:55:00
+DATE (LOCAL): 2026-04-27 05:55:00 CDT
+AUTHOR:       Gemini CLI
+PARENT:       fry860 (Audit Socket.cpp)
+
+OBJECTIVE
+=====================================================================
+Evaluate the requirement for AF_LOCAL (Unix Domain Sockets) in Ladybird
+and audit the TaterTOS kernel for its support.
+
+AUDIT RESULTS
+=====================================================================
+- Requirement: Ladybird's LibCore (LocalServer, LocalSocket) and LibIPC
+  rely heavily on AF_LOCAL for high-performance, secure inter-process
+  communication between the chrome, renderer, and service processes.
+- Kernel Audit: Inspection of src/kernel/proc/syscall.c confirms that
+  the fry_socket syscall currently only supports AF_INET. Attempts to
+  create an AF_LOCAL socket will return -EAFNOSUPPORT.
+- LibC Audit: sys/socket.h defines AF_UNIX/AF_LOCAL, and posix.c has
+  wrappers, but they are gated by the kernel's domain check.
+
+PATH FORWARD
+=====================================================================
+As per the high-level plan (fry816 §7-R5), full multiprocess IPC is
+slated for Chunk 5/6. Adding AF_LOCAL to the kernel is a significant
+task involving:
+1. New socket backend for memory-backed stream/datagram buffers.
+2. VFS integration for socket files (bind() to a path).
+3. Connect/Accept logic for local peer discovery.
+
+For Phase 4 (Networking), we will focus on AF_INET (TCP/UDP) to enable
+web connectivity. Ladybird can be run in a single-process mode or
+with minimal IPC stubs for initial network smoke testing. AF_LOCAL
+implementation is deferred to the IPC phase to maintain Phase 4's
+focus on networking.
+
+WHY
+=====================================================================
+Adding a full AF_LOCAL implementation now would significantly expand
+the scope of Phase 4 and delay network verification. Since the goal of
+this phase is "functional web connectivity," TCP/IP is the priority.
+
+VERIFICATION
+=====================================================================
+- Confirmed -EAFNOSUPPORT in syscall.c for domain != AF_INET.
+- Verified Ladybird's LocalServer usage of AF_LOCAL.
+
+END fry861
+=====================================================================

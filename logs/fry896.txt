@@ -1,0 +1,34 @@
+Fry Log 896 - EFI ramdisk dynamic filesystem scanner
+Timestamp: 2026-05-07 07:20:34 CDT
+
+Scope:
+- Replaced the hardcoded EFI ramdisk payload table in src/boot/efi_loader.c.
+- Removed the 29-file static CHAR16 path matrix, path variant loop, static fry_names[] table, and TRY_LOAD_FRY macro.
+- Added a dynamic EFI filesystem scanner backed by EFI_FILE_PROTOCOL directory iteration and existing read_file().
+
+Implementation:
+- Added EFI_FILE_DIRECTORY attribute support for directory detection.
+- Added dynamic ramdisk scan storage using EFI AllocatePool growth instead of hardcoded loader-side file counts.
+- Added recursive scanning helpers for root, apps, system, icons, firmware, and fonts.
+- Added suffix matching for .FRY, .TOT, .TXT, .ICON, .ucode, .ttf, and .RUN names with case-insensitive extension handling.
+- Added duplicate suppression by normalized Unix-style ramdisk path.
+- Preserved the existing ramdisk ABI: ramdisk_header magic/count, ramdisk_entry name[32]/offset/size, followed by file data.
+- Preserved primary-filesystem-first behavior, then scans all EFI_SIMPLE_FILE_SYSTEM_PROTOCOL handles and de-duplicates results.
+- Preserved NVMe-only fallback by leaving handoff->ramdisk_base and handoff->ramdisk_size at zero when no files are found.
+- Kept loader logging routed through existing efi_serial_puts/efi_puts paths.
+
+Why:
+- The old loader code embedded file inventory and directory guesses in a large static block.
+- Chrome-port work needs payload discovery to follow the actual EFI filesystem layout instead of manual table maintenance.
+- Dynamic scanning eliminates the hardcoded path-variant maintenance burden while keeping the kernel-visible ramdisk format stable.
+
+Verification:
+- git diff --check -- src/boot/efi_loader.c: PASS
+- rg for old static loader symbols FRY_FILE_COUNT, FRY_PATH_VARIANTS, TRY_LOAD_FRY: no remaining matches.
+- make clean: PASS
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh: PASS
+- ISO output verified by build script: /home/legacyindieradio/TaterTOS64/out/tatertos64v3.iso
+
+Notes:
+- Build emitted existing warnings unrelated to this change, including unused GOP mask helpers in efi_loader.c and existing user/kernel warnings.
+- QEMU was not run.

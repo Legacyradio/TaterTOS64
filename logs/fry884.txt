@@ -1,0 +1,21 @@
+[2026-05-06 20:00:00 UTC] Phase: Implement epoll, pipe, eventfd, getaddrinfo for Chrome port
+Why: Ladybird removed. These are the first four syscalls Chromium's build system hits
+when trying to compile for a new POSIX-like target. Without these, GN/Ninja can't even
+configure the build.
+
+Changes:
+- Added SYS_EPOLL_CREATE=101, SYS_EPOLL_CTL=102, SYS_EPOLL_WAIT=103
+- Added SYS_PIPE=104, SYS_PIPE2=105
+- Added SYS_EVENTFD=106
+- Added SYS_GETADDRINFO=107
+- Added libc wrappers (fry_*) + posix wrappers for all four
+- Added sys/epoll.h, sys/eventfd.h headers
+
+Implementation notes:
+- epoll: Simple poll-based implementation. Chrome creates epoll fds and uses
+  epoll_ctl to register fds, then epoll_wait to block. Backed by a linked list
+  of epoll_item structs per epoll fd. EPOLLIN/EPOLLOUT/EPOLLERR supported.
+- pipe: Creates two fds (read + write) backed by a 64KB kernel ring buffer.
+- eventfd: Creates an eventfd fd with 8-byte counter. Supports EFD_SEMAPHORE.
+- getaddrinfo: Userspace implementation using the existing SYS_DNS_RESOLVE.
+  Handles IPv4 only. Not a kernel syscall — purely userspace.

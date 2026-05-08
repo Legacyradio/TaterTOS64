@@ -1,0 +1,124 @@
+// TaterTOS64v3 — minimal <compare> for freestanding C++.
+// Origin log: logs/fry832.txt
+// Surface: enough for AK's = default'ed operator<=> (spaceship).
+//
+// AK uses defaulted three-way comparison in IntrusiveList, Iterator,
+// IPv4/v6Address, etc. The compiler implicitly produces values of
+// std::strong_ordering / std::partial_ordering / std::weak_ordering
+// for these. The standard requires the bodies to be tagged with the
+// language-magic _Cmp_cat enums the compiler recognizes.
+//
+// This implementation matches the layout libstdc++/libc++ use so the
+// compiler's built-in spaceship lowering produces the right values.
+
+#pragma once
+
+namespace std {
+
+namespace __detail {
+    enum class _Ord  : signed char { equivalent = 0, less = -1, greater = 1 };
+    enum class _Ncmp : signed char { unordered = 2 };
+}
+
+// strong_ordering ----------------------------------------------------
+class strong_ordering {
+    signed char _v;
+    constexpr explicit strong_ordering(__detail::_Ord v) noexcept
+        : _v(static_cast<signed char>(v)) {}
+
+public:
+    static const strong_ordering less;
+    static const strong_ordering equal;
+    static const strong_ordering equivalent;
+    static const strong_ordering greater;
+
+    // Comparison against the literal 0 (the standard idiom).
+    friend constexpr bool operator==(strong_ordering v, int) noexcept { return v._v == 0; }
+    friend constexpr bool operator< (strong_ordering v, int) noexcept { return v._v <  0; }
+    friend constexpr bool operator<=(strong_ordering v, int) noexcept { return v._v <= 0; }
+    friend constexpr bool operator> (strong_ordering v, int) noexcept { return v._v >  0; }
+    friend constexpr bool operator>=(strong_ordering v, int) noexcept { return v._v >= 0; }
+    friend constexpr bool operator==(int, strong_ordering v) noexcept { return v._v == 0; }
+    friend constexpr bool operator< (int, strong_ordering v) noexcept { return v._v >  0; }
+    friend constexpr bool operator<=(int, strong_ordering v) noexcept { return v._v >= 0; }
+    friend constexpr bool operator> (int, strong_ordering v) noexcept { return v._v <  0; }
+    friend constexpr bool operator>=(int, strong_ordering v) noexcept { return v._v <= 0; }
+
+    friend constexpr strong_ordering operator<=>(strong_ordering v, int) noexcept { return v; }
+};
+inline constexpr strong_ordering strong_ordering::less       { __detail::_Ord::less };
+inline constexpr strong_ordering strong_ordering::equal      { __detail::_Ord::equivalent };
+inline constexpr strong_ordering strong_ordering::equivalent { __detail::_Ord::equivalent };
+inline constexpr strong_ordering strong_ordering::greater    { __detail::_Ord::greater };
+
+// weak_ordering -----------------------------------------------------
+class weak_ordering {
+    signed char _v;
+    constexpr explicit weak_ordering(__detail::_Ord v) noexcept
+        : _v(static_cast<signed char>(v)) {}
+
+public:
+    static const weak_ordering less;
+    static const weak_ordering equivalent;
+    static const weak_ordering greater;
+
+    constexpr operator strong_ordering() const noexcept {
+        return _v < 0 ? strong_ordering::less
+             : _v > 0 ? strong_ordering::greater
+                      : strong_ordering::equivalent;
+    }
+
+    friend constexpr bool operator==(weak_ordering v, int) noexcept { return v._v == 0; }
+    friend constexpr bool operator< (weak_ordering v, int) noexcept { return v._v <  0; }
+    friend constexpr bool operator<=(weak_ordering v, int) noexcept { return v._v <= 0; }
+    friend constexpr bool operator> (weak_ordering v, int) noexcept { return v._v >  0; }
+    friend constexpr bool operator>=(weak_ordering v, int) noexcept { return v._v >= 0; }
+    friend constexpr bool operator==(int, weak_ordering v) noexcept { return v._v == 0; }
+    friend constexpr bool operator< (int, weak_ordering v) noexcept { return v._v >  0; }
+    friend constexpr bool operator<=(int, weak_ordering v) noexcept { return v._v >= 0; }
+    friend constexpr bool operator> (int, weak_ordering v) noexcept { return v._v <  0; }
+    friend constexpr bool operator>=(int, weak_ordering v) noexcept { return v._v <= 0; }
+
+    friend constexpr weak_ordering operator<=>(weak_ordering v, int) noexcept { return v; }
+};
+inline constexpr weak_ordering weak_ordering::less       { __detail::_Ord::less };
+inline constexpr weak_ordering weak_ordering::equivalent { __detail::_Ord::equivalent };
+inline constexpr weak_ordering weak_ordering::greater    { __detail::_Ord::greater };
+
+// partial_ordering --------------------------------------------------
+class partial_ordering {
+    signed char _v;
+    constexpr explicit partial_ordering(__detail::_Ord v) noexcept
+        : _v(static_cast<signed char>(v)) {}
+    constexpr explicit partial_ordering(__detail::_Ncmp v) noexcept
+        : _v(static_cast<signed char>(v)) {}
+
+public:
+    static const partial_ordering less;
+    static const partial_ordering equivalent;
+    static const partial_ordering greater;
+    static const partial_ordering unordered;
+
+    friend constexpr bool operator==(partial_ordering v, int) noexcept { return v._v == 0; }
+    friend constexpr bool operator< (partial_ordering v, int) noexcept { return v._v == static_cast<signed char>(__detail::_Ord::less); }
+    friend constexpr bool operator<=(partial_ordering v, int) noexcept { return v._v == static_cast<signed char>(__detail::_Ord::less)       || v._v == 0; }
+    friend constexpr bool operator> (partial_ordering v, int) noexcept { return v._v == static_cast<signed char>(__detail::_Ord::greater); }
+    friend constexpr bool operator>=(partial_ordering v, int) noexcept { return v._v == static_cast<signed char>(__detail::_Ord::greater)    || v._v == 0; }
+
+    friend constexpr partial_ordering operator<=>(partial_ordering v, int) noexcept { return v; }
+};
+inline constexpr partial_ordering partial_ordering::less       { __detail::_Ord::less };
+inline constexpr partial_ordering partial_ordering::equivalent { __detail::_Ord::equivalent };
+inline constexpr partial_ordering partial_ordering::greater    { __detail::_Ord::greater };
+inline constexpr partial_ordering partial_ordering::unordered  { __detail::_Ncmp::unordered };
+
+// Common comparison-category helpers (rarely-used but cheap to provide).
+template<class... Ts>
+struct common_comparison_category {
+    using type = strong_ordering;
+};
+
+template<class... Ts>
+using common_comparison_category_t = typename common_comparison_category<Ts...>::type;
+
+} // namespace std

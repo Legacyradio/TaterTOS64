@@ -1,797 +1,359 @@
 /*
- * posix.c — POSIX compatibility shims for NSPR/NSS porting
+ * posix.c — POSIX compatibility layer for TaterTOS userspace
  *
- * Phase 8: Signal stubs, directory streams, environment helpers,
- * process control, file access checks, and miscellaneous POSIX
- * functions that browsers and their dependencies expect.
- *
- * All implementations are original TaterTOS code.
+ * This file provides standard POSIX function symbols (open, socket, etc.)
+ * by wrapping the underlying TaterTOS fry_ syscalls.
  */
 
-#include "libc.h"
 #include <stdint.h>
+#include <stdarg.h>
+#include <errno.h>
 
-typedef unsigned int tcflag_t;
-typedef unsigned char cc_t;
-typedef unsigned int speed_t;
-typedef unsigned long compat_rlim_t;
+/* Public POSIX headers */
+#include <time.h>
+#include <sys/time.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <sys/mman.h>
+#include <sys/prctl.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <sys/timerfd.h>
+#include <sys/signalfd.h>
+#include <sys/inotify.h>
+#include <sys/memfd.h>
+#include <sys/sendfile.h>
+#include <sys/uio.h>
+#include <sys/utsname.h>
+#include <sys/sysinfo.h>
+#include <sys/resource.h>
+#include <sys/mlock.h>
+#include <sched.h>
+#include <poll.h>
+#include <signal.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <fry_limits.h>
 
-#define TATER_TERMIOS_NCCS 32
-
-struct termios {
-    tcflag_t c_iflag;
-    tcflag_t c_oflag;
-    tcflag_t c_cflag;
-    tcflag_t c_lflag;
-    cc_t c_line;
-    cc_t c_cc[TATER_TERMIOS_NCCS];
-    speed_t c_ispeed;
-    speed_t c_ospeed;
-};
-
-enum {
-    TATER_VINTR = 0,
-    TATER_VQUIT = 1,
-    TATER_VERASE = 2,
-    TATER_VKILL = 3,
-    TATER_VEOF = 4,
-    TATER_VTIME = 5,
-    TATER_VMIN = 6
-};
-
-#define TATER_ECHO   0x0008u
-#define TATER_ICANON 0x0002u
-#define TATER_WNOHANG 1
-#define TATER_EXEC_PATH_MAX 512
-
-#define RLIM_INFINITY (~(compat_rlim_t)0)
-
-#define RLIMIT_STACK  3
-#define RLIMIT_NOFILE 7
-
-#define RUSAGE_SELF      0
-#define RUSAGE_CHILDREN -1
-#define RUSAGE_THREAD    1
-
-struct timeval {
-    int64_t tv_sec;
-    int64_t tv_usec;
-};
-
-struct rlimit {
-    compat_rlim_t rlim_cur;
-    compat_rlim_t rlim_max;
-};
-
-struct rusage {
-    struct timeval ru_utime;
-    struct timeval ru_stime;
-    long ru_maxrss;
-    long ru_ixrss;
-    long ru_idrss;
-    long ru_isrss;
-    long ru_minflt;
-    long ru_majflt;
-    long ru_nswap;
-    long ru_inblock;
-    long ru_oublock;
-    long ru_msgsnd;
-    long ru_msgrcv;
-    long ru_nsignals;
-    long ru_nvcsw;
-    long ru_nivcsw;
-};
+/* Private TaterTOS ABI */
+#include "libc.h"
+#include "fry.h"
 
 /* -----------------------------------------------------------------------
- * errno — thread-local errno
- * We use a TLS slot for per-thread errno. Falls back to a global if
- * TLS is not yet initialized.
+ * Error Handling Helper
  * ----------------------------------------------------------------------- */
 
-static int g_errno_fallback = 0;
-static fry_tls_key_t g_errno_key;
-static int g_errno_key_inited = 0;
-
-static int compat_fail_errno(int err) {
-    *__errno_location() = err;
+static long posix_error(long rc) {
+    if (rc >= 0) return rc;
+    errno = (int)(-rc);
     return -1;
 }
 
-static int compat_fail_sys(long rc) {
-    if (rc >= 0) return 0;
-    return compat_fail_errno((int)(-rc));
+static int posix_error_int(long rc) {
+    return (int)posix_error(rc);
 }
 
-static uint32_t compat_count_vec(char *const vec[], uint32_t max_items) {
-    uint32_t count = 0;
-
-    if (!vec) return 0;
-    while (count < max_items && vec[count]) count++;
-    return count;
-}
-
-static void compat_fill_rlimit(int resource, struct rlimit *rlim) {
-    if (!rlim) return;
-
-    rlim->rlim_cur = RLIM_INFINITY;
-    rlim->rlim_max = RLIM_INFINITY;
-
-    switch (resource) {
-    case RLIMIT_NOFILE:
-        rlim->rlim_cur = 256;
-        rlim->rlim_max = 256;
-        break;
-    case RLIMIT_STACK:
-        rlim->rlim_cur = 8u * 1024u * 1024u;
-        rlim->rlim_max = 8u * 1024u * 1024u;
-        break;
-    default:
-        break;
-    }
-}
-
-static void compat_fill_rusage(struct rusage *usage) {
-    if (!usage) return;
-    memset(usage, 0, sizeof(*usage));
-}
-
-static void errno_init_key(void) {
-    if (!g_errno_key_inited) {
-        if (fry_tls_key_create(&g_errno_key) == 0) {
-            g_errno_key_inited = 1;
-        }
-    }
-}
-
-int *__errno_location(void) {
-    errno_init_key();
-    if (g_errno_key_inited) {
-        int *p = (int *)fry_tls_get(g_errno_key);
-        if (!p) {
-            p = (int *)malloc(sizeof(int));
-            if (p) {
-                *p = 0;
-                fry_tls_set(g_errno_key, p);
-                return p;
-            }
-        }
-        if (p) return p;
-    }
-    return &g_errno_fallback;
+static void posix_stat_from_fry(struct stat *st, const struct fry_stat *fst) {
+    memset(st, 0, sizeof(*st));
+    st->st_size = (off_t)fst->size;
+    st->st_mode = (mode_t)((fst->attr & 0x10u) ? (S_IFDIR | 0755) : (S_IFREG | 0644));
+    st->st_nlink = (fst->attr & 0x10u) ? 2 : 1;
+    st->st_blksize = 4096;
+    st->st_blocks = (blkcnt_t)((fst->size + 511u) / 512u);
 }
 
 /* -----------------------------------------------------------------------
- * Signal stubs — NSPR uses signal() and sigaction() for SIGPIPE etc.
- * TaterTOS doesn't have signals yet, so we stub them safely.
+ * POSIX Wrappers
  * ----------------------------------------------------------------------- */
 
-typedef void (*sighandler_t)(int);
-
-#define SIG_DFL ((sighandler_t)0)
-#define SIG_IGN ((sighandler_t)1)
-#define SIG_ERR ((sighandler_t)-1)
-
-#define SIGPIPE   13
-#define SIGCHLD   17
-#define SIGALRM   14
-#define SIGUSR1   10
-#define SIGUSR2   12
-#define SIGHUP     1
-#define SIGINT     2
-#define SIGTERM   15
-#define NSIG      32
-
-static sighandler_t g_signal_handlers[NSIG];
-
-sighandler_t signal(int sig, sighandler_t handler) {
-    if (sig < 0 || sig >= NSIG) return SIG_ERR;
-    sighandler_t old = g_signal_handlers[sig];
-    g_signal_handlers[sig] = handler;
-    return old;
-}
-
-/* Minimal sigset_t and sigaction for compilation */
-typedef uint32_t sigset_t_compat;
-
-struct sigaction_compat {
-    sighandler_t sa_handler;
-    uint32_t     sa_flags;
-    sigset_t_compat sa_mask;
-};
-
-int sigaction_compat(int sig, const struct sigaction_compat *act,
-                     struct sigaction_compat *oldact) {
-    if (sig < 0 || sig >= NSIG) return -1;
-    if (oldact) {
-        oldact->sa_handler = g_signal_handlers[sig];
-        oldact->sa_flags = 0;
-        oldact->sa_mask = 0;
+int open(const char *path, int flags, ...) {
+    if (flags & O_CREAT) {
+        va_list ap;
+        va_start(ap, flags);
+        (void)va_arg(ap, mode_t);
+        va_end(ap);
     }
-    if (act) {
-        g_signal_handlers[sig] = act->sa_handler;
-    }
-    return 0;
+    return posix_error_int(fry_open(path, flags));
 }
 
-int sigemptyset_compat(sigset_t_compat *set) { if (set) *set = 0; return 0; }
-int sigfillset_compat(sigset_t_compat *set) { if (set) *set = 0xFFFFFFFF; return 0; }
-int sigaddset_compat(sigset_t_compat *set, int sig) {
-    if (!set || sig < 0 || sig >= NSIG) return -1;
-    *set |= (1u << sig);
-    return 0;
-}
-int sigdelset_compat(sigset_t_compat *set, int sig) {
-    if (!set || sig < 0 || sig >= NSIG) return -1;
-    *set &= ~(1u << sig);
-    return 0;
-}
-int sigismember_compat(const sigset_t_compat *set, int sig) {
-    if (!set || sig < 0 || sig >= NSIG) return 0;
-    return (*set & (1u << sig)) ? 1 : 0;
-}
-int sigprocmask_compat(int how, const sigset_t_compat *set, sigset_t_compat *oldset) {
-    (void)how; (void)set;
-    if (oldset) *oldset = 0;
-    return 0;
+int close(int fd) {
+    return posix_error_int(fry_close(fd));
 }
 
-int raise_compat(int sig) {
-    if (sig < 0 || sig >= NSIG) return -1;
-    sighandler_t h = g_signal_handlers[sig];
-    if (h && h != SIG_DFL && h != SIG_IGN) h(sig);
-    return 0;
+ssize_t read(int fd, void *buf, size_t count) {
+    return (ssize_t)posix_error(fry_read(fd, buf, count));
 }
 
-int kill_compat(int pid, int sig) {
-    (void)pid; (void)sig;
-    return 0; /* stub */
+ssize_t write(int fd, const void *buf, size_t count) {
+    return (ssize_t)posix_error(fry_write(fd, buf, count));
 }
 
-/* -----------------------------------------------------------------------
- * Directory streams — opendir / readdir / closedir
- * ----------------------------------------------------------------------- */
-
-#define DIR_BUF_SIZE 4096
-
-struct _DIR {
-    char   path[256];
-    uint8_t buf[DIR_BUF_SIZE];
-    size_t  buf_len;
-    size_t  buf_pos;
-    int     done;
-};
-
-DIR *opendir(const char *path) {
-    if (!path) return 0;
-
-    DIR *d = (DIR *)calloc(1, sizeof(DIR));
-    if (!d) return 0;
-
-    strncpy(d->path, path, sizeof(d->path) - 1);
-
-    /* Read directory entries into buffer */
-    long rc = fry_readdir_ex(path, d->buf, DIR_BUF_SIZE);
-    if (rc < 0) {
-        free(d);
-        return 0;
-    }
-    d->buf_len = (size_t)rc;
-    d->buf_pos = 0;
-    d->done = 0;
-    return d;
-}
-
-static struct dirent_compat g_dirent_result;
-
-struct dirent_compat *readdir_compat(DIR *dirp) {
-    if (!dirp || dirp->done) return 0;
-
-    while (dirp->buf_pos < dirp->buf_len) {
-        struct fry_dirent *fde = (struct fry_dirent *)(dirp->buf + dirp->buf_pos);
-        if (fde->rec_len == 0) { dirp->done = 1; return 0; }
-
-        dirp->buf_pos += fde->rec_len;
-
-        /* Convert to dirent_compat */
-        g_dirent_result.d_ino = 1; /* fake inode */
-        g_dirent_result.d_type = (fde->attr & 0x10) ? DT_DIR : DT_REG;
-
-        size_t namelen = fde->name_len;
-        if (namelen > 255) namelen = 255;
-        memcpy(g_dirent_result.d_name, fde->name, namelen);
-        g_dirent_result.d_name[namelen] = '\0';
-
-        return &g_dirent_result;
-    }
-
-    dirp->done = 1;
-    return 0;
-}
-
-int closedir(DIR *dirp) {
-    if (!dirp) return -1;
-    free(dirp);
-    return 0;
-}
-
-/* -----------------------------------------------------------------------
- * File system helpers
- * ----------------------------------------------------------------------- */
-
-char *getcwd(char *buf, size_t size) {
-    /* TaterTOS has no per-process cwd yet; return "/" */
-    if (!buf) {
-        buf = (char *)malloc(size > 0 ? size : 2);
-        if (!buf) return 0;
-    }
-    if (size < 2) return 0;
-    buf[0] = '/';
-    buf[1] = '\0';
-    return buf;
-}
-
-int chdir(const char *path) {
-    /* No per-process cwd support yet — always succeeds for "/" */
-    if (!path) return -1;
-    if (path[0] == '/' && path[1] == '\0') return 0;
-    *__errno_location() = ENOSYS;
-    return -1;
-}
-
-int access(const char *path, int mode) {
-    (void)mode;
-    if (!path) return -1;
-    struct fry_stat st;
-    long rc = fry_stat(path, &st);
-    return (rc < 0) ? -1 : 0;
-}
-
-int unlink(const char *path) {
-    return (fry_unlink(path) < 0) ? -1 : 0;
-}
-
-int rmdir(const char *path) {
-    return (fry_unlink(path) < 0) ? -1 : 0;
-}
-
-int mkdir_compat(const char *path, uint32_t mode) {
-    (void)mode;
-    return (fry_mkdir(path) < 0) ? -1 : 0;
-}
-
-int stat_compat(const char *path, struct fry_stat *st) {
-    return (fry_stat(path, st) < 0) ? -1 : 0;
-}
-
-int fstat_compat(int fd, struct fry_stat *st) {
-    return (fry_fstat(fd, st) < 0) ? -1 : 0;
-}
-
-int lstat_compat(const char *path, struct fry_stat *st) {
-    /* No symlinks in TaterTOS — same as stat */
-    return stat_compat(path, st);
-}
-
-/* -----------------------------------------------------------------------
- * Process control
- * ----------------------------------------------------------------------- */
-
-int getpid_compat(void) {
-    return (int)fry_getpid();
-}
-
-int getppid_compat(void) {
-    return 1; /* init is always parent for now */
-}
-
-int getuid_compat(void) { return 0; }
-int geteuid_compat(void) { return 0; }
-int getgid_compat(void) { return 0; }
-int getegid_compat(void) { return 0; }
-
-pid_t fork(void) {
-    errno = ENOSYS;
-    return -1;
-}
-
-int execve(const char *path, char *const argv[], char *const envp[]) {
-    const char *default_argv[2];
-    const char **spawn_argv = (const char **)argv;
-    const char **spawn_envp = (const char **)envp;
-    uint32_t argc;
-    uint32_t envc;
-    long child_pid;
-
-    if (!path || !path[0]) {
-        errno = ENOENT;
-        return -1;
-    }
-
-    if (!spawn_argv || !spawn_argv[0]) {
-        default_argv[0] = path;
-        default_argv[1] = 0;
-        spawn_argv = default_argv;
-    }
-
-    argc = compat_count_vec((char *const *)spawn_argv, FRY_ARGV_MAX);
-    envc = compat_count_vec((char *const *)spawn_envp, FRY_ENV_MAX);
-    child_pid = fry_spawn_args(path, spawn_argv, argc, spawn_envp, envc);
-    if (child_pid < 0) return compat_fail_sys(child_pid);
-
-    /*
-     * TaterTOS does not have a true exec-replace syscall yet. Best-effort
-     * compatibility: run the requested image as a child, wait for it to
-     * finish, then terminate the current process so exec* never returns
-     * on success.
-     */
-    if (fry_wait((uint32_t)child_pid) < 0) {
-        fry_exit(127);
-        for (;;) {}
-    }
-    fry_exit(0);
-    for (;;) {}
-}
-
-int execv(const char *path, char *const argv[]) {
-    return execve(path, argv, 0);
-}
-
-int execvp(const char *file, char *const argv[]) {
-    const char *path_env;
-    const char *cursor;
-    struct fry_stat st;
-    char candidate[TATER_EXEC_PATH_MAX];
-
-    if (!file || !file[0]) {
-        errno = ENOENT;
-        return -1;
-    }
-
-    if (strchr(file, '/')) return execve(file, argv, 0);
-
-    path_env = getenv_compat("PATH");
-    if (!path_env || !path_env[0]) path_env = "/bin:/usr/bin:/apps:/system/bin";
-
-    cursor = path_env;
-    while (*cursor) {
-        const char *entry = cursor;
-        size_t entry_len = 0;
-        size_t file_len = strlen(file);
-
-        while (cursor[entry_len] && cursor[entry_len] != ':') entry_len++;
-
-        if (entry_len == 0) {
-            candidate[0] = '.';
-            candidate[1] = '/';
-            if (file_len + 3 > sizeof(candidate)) return compat_fail_errno(ENOENT);
-            memcpy(candidate + 2, file, file_len + 1);
-        } else {
-            if (entry_len + 1 + file_len + 1 > sizeof(candidate)) {
-                cursor += entry_len;
-                if (*cursor == ':') cursor++;
-                continue;
-            }
-            memcpy(candidate, entry, entry_len);
-            candidate[entry_len] = '/';
-            memcpy(candidate + entry_len + 1, file, file_len + 1);
-        }
-
-        if (fry_stat(candidate, &st) >= 0) return execve(candidate, argv, 0);
-
-        cursor += entry_len;
-        if (*cursor == ':') cursor++;
-    }
-
-    errno = ENOENT;
-    return -1;
-}
-
-pid_t waitpid(pid_t pid, int *status, int options) {
-    long rc;
-
-    if (pid <= 0) {
-        errno = ECHILD;
-        return -1;
-    }
-    if (options & ~TATER_WNOHANG) {
+ssize_t readv(int fd, const struct iovec *iov, int iovcnt) {
+    if (iovcnt < 0 || (!iov && iovcnt > 0)) {
         errno = EINVAL;
         return -1;
     }
-    if (options & TATER_WNOHANG) {
-        errno = ENOSYS;
+    return (ssize_t)posix_error(fry_readv(fd, (const struct fry_iovec *)iov, iovcnt));
+}
+
+ssize_t writev(int fd, const struct iovec *iov, int iovcnt) {
+    if (iovcnt < 0 || (!iov && iovcnt > 0)) {
+        errno = EINVAL;
+        return -1;
+    }
+    return (ssize_t)posix_error(fry_writev(fd, (const struct fry_iovec *)iov, iovcnt));
+}
+
+off_t lseek(int fd, off_t offset, int whence) {
+    return (off_t)posix_error(fry_lseek(fd, (int64_t)offset, whence));
+}
+
+int fcntl(int fd, int cmd, ...) {
+    va_list ap;
+    va_start(ap, cmd);
+    long arg = va_arg(ap, long);
+    va_end(ap);
+    return posix_error_int(fry_fcntl(fd, cmd, arg));
+}
+
+int ioctl(int fd, unsigned long request, ...) {
+    va_list ap;
+    va_start(ap, request);
+    long arg = va_arg(ap, long);
+    va_end(ap);
+    return posix_error_int(fry_ioctl(fd, (uint32_t)request, arg));
+}
+
+int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
+    uint64_t t = (timeout < 0) ? (uint64_t)-1 : (uint64_t)timeout;
+    return posix_error_int(fry_poll((struct fry_pollfd *)fds, (uint32_t)nfds, t));
+}
+
+int epoll_create(int size) {
+    if (size <= 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return posix_error_int(fry_epoll_create(size));
+}
+
+int epoll_create1(int flags) {
+    if (flags & ~EPOLL_CLOEXEC) {
+        errno = EINVAL;
+        return -1;
+    }
+    return posix_error_int(fry_epoll_create(1));
+}
+
+int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
+    if ((op == EPOLL_CTL_ADD || op == EPOLL_CTL_MOD) && !event) {
+        errno = EINVAL;
+        return -1;
+    }
+    return posix_error_int(fry_epoll_ctl(epfd, op, fd, event));
+}
+
+int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout) {
+    if (!events || maxevents <= 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return posix_error_int(fry_epoll_wait(epfd, events, maxevents, timeout));
+}
+
+int eventfd(unsigned int initval, int flags) {
+    if (flags & ~(EFD_SEMAPHORE | EFD_NONBLOCK | EFD_CLOEXEC)) {
+        errno = EINVAL;
+        return -1;
+    }
+    return posix_error_int(fry_eventfd(initval, flags));
+}
+
+int eventfd_read(int fd, eventfd_t *value) {
+    if (!value) {
+        errno = EINVAL;
+        return -1;
+    }
+    return (read(fd, value, sizeof(*value)) == (ssize_t)sizeof(*value)) ? 0 : -1;
+}
+
+int eventfd_write(int fd, eventfd_t value) {
+    return (write(fd, &value, sizeof(value)) == (ssize_t)sizeof(value)) ? 0 : -1;
+}
+
+int socket(int domain, int type, int protocol) {
+    return posix_error_int(fry_socket(domain, type, protocol));
+}
+
+int bind(int fd, const struct sockaddr *addr, socklen_t addrlen) {
+    return posix_error_int(fry_bind(fd, (const struct fry_sockaddr_in *)addr, (uint32_t)addrlen));
+}
+
+int listen(int fd, int backlog) {
+    return posix_error_int(fry_listen(fd, backlog));
+}
+
+int accept(int fd, struct sockaddr *addr, socklen_t *addrlen) {
+    return posix_error_int(fry_accept(fd, (struct fry_sockaddr_in *)addr, (uint32_t *)addrlen));
+}
+
+int connect(int fd, const struct sockaddr *addr, socklen_t addrlen) {
+    return posix_error_int(fry_connect(fd, (const struct fry_sockaddr_in *)addr, (uint32_t)addrlen));
+}
+
+ssize_t send(int fd, const void *buf, size_t len, int flags) {
+    return (ssize_t)posix_error(fry_send(fd, buf, len, flags));
+}
+
+ssize_t recv(int fd, void *buf, size_t len, int flags) {
+    return (ssize_t)posix_error(fry_recv(fd, buf, len, flags));
+}
+
+ssize_t sendto(int fd, const void *buf, size_t len, int flags,
+               const struct sockaddr *dest_addr, socklen_t addrlen) {
+    return (ssize_t)posix_error(fry_sendto(fd, buf, len, flags, (const struct fry_sockaddr_in *)dest_addr, (uint32_t)addrlen));
+}
+
+ssize_t recvfrom(int fd, void *buf, size_t len, int flags,
+                 struct sockaddr *src_addr, socklen_t *addrlen) {
+    return (ssize_t)posix_error(fry_recvfrom(fd, buf, len, flags, (struct fry_sockaddr_in *)src_addr, (uint32_t *)addrlen));
+}
+
+ssize_t sendmsg(int fd, const struct msghdr *msg, int flags) {
+    if (!msg) {
+        errno = EINVAL;
+        return -1;
+    }
+    return (ssize_t)posix_error(fry_sendmsg(fd, (const struct fry_msghdr *)msg, flags));
+}
+
+ssize_t recvmsg(int fd, struct msghdr *msg, int flags) {
+    if (!msg) {
+        errno = EINVAL;
+        return -1;
+    }
+    return (ssize_t)posix_error(fry_recvmsg(fd, (struct fry_msghdr *)msg, flags));
+}
+
+int getsockopt(int fd, int level, int optname, void *optval, socklen_t *optlen) {
+    return posix_error_int(fry_getsockopt(fd, level, optname, optval, (uint32_t *)optlen));
+}
+
+int setsockopt(int fd, int level, int optname, const void *optval, socklen_t optlen) {
+    return posix_error_int(fry_setsockopt(fd, level, optname, optval, (uint32_t)optlen));
+}
+
+int getsockname(int fd, struct sockaddr *addr, socklen_t *addrlen) {
+    return posix_error_int(fry_getsockname(fd, (struct fry_sockaddr_in *)addr, (uint32_t *)addrlen));
+}
+
+int getpeername(int fd, struct sockaddr *addr, socklen_t *addrlen) {
+    return posix_error_int(fry_getpeername(fd, (struct fry_sockaddr_in *)addr, (uint32_t *)addrlen));
+}
+
+int stat(const char *path, struct stat *st) {
+    struct fry_stat fst;
+    long rc = fry_stat(path, &fst);
+    if (rc < 0) return posix_error_int(rc);
+    posix_stat_from_fry(st, &fst);
+    return 0;
+}
+
+int fstat(int fd, struct stat *st) {
+    struct fry_stat fst;
+    long rc = fry_fstat(fd, &fst);
+    if (rc < 0) return posix_error_int(rc);
+    posix_stat_from_fry(st, &fst);
+    return 0;
+}
+
+int lstat(const char *path, struct stat *st) {
+    return stat(path, st);
+}
+
+int fstatat(int dirfd, const char *path, struct stat *statbuf, int flags) {
+    struct fry_stat fst;
+    long rc = fry_fstatat(dirfd, path, &fst, flags);
+    if (rc < 0) return posix_error_int(rc);
+    posix_stat_from_fry(statbuf, &fst);
+    return 0;
+}
+
+int statvfs(const char *path, struct statvfs *buf) {
+    if (!path || !buf) {
+        errno = EINVAL;
         return -1;
     }
 
-    rc = fry_wait((uint32_t)pid);
-    if (rc < 0) return compat_fail_sys(rc);
-    if (status) *status = 0;
-    return pid;
-}
+    struct stat st;
+    if (stat(path, &st) != 0)
+        return -1;
 
-pid_t wait(int *status) {
-    if (status) *status = 0;
-    errno = ENOSYS;
-    return -1;
-}
-
-__attribute__((noreturn))
-void _exit_compat(int status) {
-    fry_exit(status);
-    for (;;) {}
-}
-
-__attribute__((noreturn))
-void abort_compat(void) {
-    printf("abort() called\n");
-    fry_exit(134);
-    for (;;) {}
-}
-
-/* atexit — up to 32 handlers */
-#define ATEXIT_MAX 32
-static void (*g_atexit_fns[ATEXIT_MAX])(void);
-static int g_atexit_count = 0;
-
-int atexit_compat(void (*func)(void)) {
-    if (!func || g_atexit_count >= ATEXIT_MAX) return -1;
-    g_atexit_fns[g_atexit_count++] = func;
-    return 0;
-}
-
-void exit_compat(int status) {
-    /* Run atexit handlers in reverse order */
-    for (int i = g_atexit_count - 1; i >= 0; i--) {
-        if (g_atexit_fns[i]) g_atexit_fns[i]();
+    memset(buf, 0, sizeof(*buf));
+    buf->f_bsize = 4096;
+    buf->f_frsize = 4096;
+    buf->f_namemax = 255;
+    if (st.st_size > 0) {
+        fsblkcnt_t blocks = (fsblkcnt_t)((st.st_size + 4095) / 4096);
+        buf->f_blocks = blocks;
+        buf->f_bfree = blocks;
+        buf->f_bavail = blocks;
     }
-    fry_exit(status);
-    for (;;) {}
-}
-
-/* -----------------------------------------------------------------------
- * Environment helpers — backed by fry_getenv syscall
- * ----------------------------------------------------------------------- */
-
-char *getenv_compat(const char *name) {
-    static char env_buf[256];
-    if (!name) return 0;
-    long rc = fry_getenv(name, env_buf, sizeof(env_buf));
-    if (rc < 0) return 0;
-    return env_buf;
-}
-
-int setenv_compat(const char *name, const char *value, int overwrite) {
-    (void)name; (void)value; (void)overwrite;
-    return 0; /* stub — no persistent env yet */
-}
-
-int unsetenv_compat(const char *name) {
-    (void)name;
-    return 0; /* stub */
-}
-
-int putenv_compat(char *string) {
-    (void)string;
-    return 0; /* stub */
-}
-
-/* -----------------------------------------------------------------------
- * Miscellaneous POSIX
- * ----------------------------------------------------------------------- */
-
-unsigned int sleep_compat(unsigned int seconds) {
-    fry_sleep((uint64_t)seconds * 1000);
     return 0;
 }
 
-int usleep_compat(unsigned int usec) {
-    uint64_t ms = usec / 1000;
-    if (ms == 0 && usec > 0) ms = 1;
-    fry_sleep(ms);
-    return 0;
-}
-
-/* sysconf — return sensible defaults for commonly queried values */
-long sysconf_compat(int name) {
-    switch (name) {
-    case 30: /* _SC_PAGESIZE / _SC_PAGE_SIZE */
-        return 4096;
-    case 84: /* _SC_NPROCESSORS_ONLN */
-        return 1;
-    case 11: /* _SC_OPEN_MAX */
-        return 64;
-    case  2: /* _SC_CLK_TCK */
-        return 1000;
-    default:
+int fstatvfs(int fd, struct statvfs *buf) {
+    if (!buf) {
+        errno = EINVAL;
         return -1;
     }
-}
 
-/* getpagesize */
-int getpagesize_compat(void) {
-    return 4096;
-}
+    struct stat st;
+    if (fstat(fd, &st) != 0)
+        return -1;
 
-/* pipe — wrapper */
-int pipe_compat(int pipefd[2]) {
-    return (fry_pipe(pipefd) < 0) ? -1 : 0;
-}
-
-/* dup / dup2 wrappers */
-int dup_compat(int oldfd) {
-    long rc = fry_dup(oldfd);
-    return (rc < 0) ? -1 : (int)rc;
-}
-
-int dup2_compat(int oldfd, int newfd) {
-    long rc = fry_dup2(oldfd, newfd);
-    return (rc < 0) ? -1 : (int)rc;
-}
-
-/* close / read / write POSIX-style */
-int close_compat(int fd) {
-    return (fry_close(fd) < 0) ? -1 : 0;
-}
-
-long read_compat(int fd, void *buf, size_t count) {
-    return fry_read(fd, buf, count);
-}
-
-long write_compat(int fd, const void *buf, size_t count) {
-    return fry_write(fd, buf, count);
-}
-
-long lseek_compat(int fd, long offset, int whence) {
-    return fry_lseek(fd, (int64_t)offset, whence);
-}
-
-int open_compat(const char *path, int flags) {
-    long rc = fry_open(path, flags);
-    return (rc < 0) ? -1 : (int)rc;
-}
-
-/* fcntl wrapper */
-int fcntl_compat(int fd, int cmd, long arg) {
-    return (int)fry_fcntl(fd, cmd, arg);
-}
-
-/* mmap / munmap / mprotect POSIX-style wrappers */
-void *mmap_compat(void *addr, size_t length, int prot, int flags, int fd, long offset) {
-    (void)offset; /* TaterTOS mmap doesn't support offset yet */
-    if (fd >= 0) {
-        return fry_mmap_fd(addr, length, (uint32_t)prot, (uint32_t)flags, fd);
+    memset(buf, 0, sizeof(*buf));
+    buf->f_bsize = 4096;
+    buf->f_frsize = 4096;
+    buf->f_namemax = 255;
+    if (st.st_size > 0) {
+        fsblkcnt_t blocks = (fsblkcnt_t)((st.st_size + 4095) / 4096);
+        buf->f_blocks = blocks;
+        buf->f_bfree = blocks;
+        buf->f_bavail = blocks;
     }
-    return fry_mmap(addr, length, (uint32_t)prot, (uint32_t)flags);
-}
-
-int munmap_compat(void *addr, size_t length) {
-    return (fry_munmap(addr, length) < 0) ? -1 : 0;
-}
-
-int mprotect_compat(void *addr, size_t length, int prot) {
-    return (fry_mprotect(addr, length, (uint32_t)prot) < 0) ? -1 : 0;
-}
-
-int msync(void *addr, size_t length, int flags) {
-    (void)addr;
-    (void)length;
-    (void)flags;
     return 0;
+}
+
+void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset) {
+    void *p = fry_mmap(addr, length, (uint32_t)prot, (uint32_t)flags, fd, (int64_t)offset);
+    if (FRY_IS_ERR(p)) {
+        errno = FRY_PTR_ERR(p);
+        return MAP_FAILED;
+    }
+    return p;
+}
+
+int munmap(void *addr, size_t length) {
+    return posix_error_int(fry_munmap(addr, length));
+}
+
+int mprotect(void *addr, size_t length, int prot) {
+    return posix_error_int(fry_mprotect(addr, length, (uint32_t)prot));
 }
 
 int madvise(void *addr, size_t length, int advice) {
-    (void)addr;
-    (void)length;
-    (void)advice;
-    return 0;
+    return posix_error_int(fry_madvise(addr, length, advice));
 }
 
 int posix_madvise(void *addr, size_t length, int advice) {
-    return madvise(addr, length, advice);
-}
-
-int getrlimit(int resource, struct rlimit *rlim) {
-    if (!rlim) {
-        errno = EINVAL;
-        return -1;
-    }
-    compat_fill_rlimit(resource, rlim);
-    return 0;
-}
-
-int setrlimit(int resource, const struct rlimit *rlim) {
-    (void)resource;
-    (void)rlim;
-    return 0;
-}
-
-int getrusage(int who, struct rusage *usage) {
-    switch (who) {
-    case RUSAGE_SELF:
-    case RUSAGE_CHILDREN:
-    case RUSAGE_THREAD:
-        break;
-    default:
-        errno = EINVAL;
-        return -1;
-    }
-
-    if (!usage) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    compat_fill_rusage(usage);
-    return 0;
-}
-
-/* poll wrapper */
-int poll_compat(struct fry_pollfd *fds, uint32_t nfds, int timeout) {
-    return (int)fry_poll(fds, nfds, (timeout < 0) ? (uint64_t)-1 : (uint64_t)timeout);
-}
-
-/* gethostname */
-int gethostname_compat(char *name, size_t len) {
-    if (!name || len == 0) return -1;
-    strncpy(name, "tatertos", len - 1);
-    name[len - 1] = '\0';
-    return 0;
-}
-
-int isatty(int fd) {
-    return (fd >= 0 && fd <= 2) ? 1 : 0;
-}
-
-int tcgetattr(int fd, struct termios *termios_p) {
-    if (fd < 0 || !termios_p) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    memset(termios_p, 0, sizeof(*termios_p));
-    termios_p->c_lflag = TATER_ECHO | TATER_ICANON;
-    termios_p->c_cc[TATER_VINTR] = 3;
-    termios_p->c_cc[TATER_VQUIT] = 28;
-    termios_p->c_cc[TATER_VERASE] = 127;
-    termios_p->c_cc[TATER_VKILL] = 21;
-    termios_p->c_cc[TATER_VEOF] = 4;
-    termios_p->c_cc[TATER_VMIN] = 1;
-    termios_p->c_cc[TATER_VTIME] = 0;
-    return 0;
-}
-
-int tcsetattr(int fd, int optional_actions, const struct termios *termios_p) {
-    (void)optional_actions;
-    if (fd < 0 || !termios_p) {
-        errno = EINVAL;
-        return -1;
-    }
-    return 0;
-}
-
-speed_t cfgetispeed(const struct termios *termios_p) {
-    return termios_p ? termios_p->c_ispeed : 0;
-}
-
-speed_t cfgetospeed(const struct termios *termios_p) {
-    return termios_p ? termios_p->c_ospeed : 0;
-}
-
-int cfsetispeed(struct termios *termios_p, speed_t speed) {
-    if (!termios_p) {
-        errno = EINVAL;
-        return -1;
-    }
-    termios_p->c_ispeed = speed;
-    return 0;
-}
-
-int cfsetospeed(struct termios *termios_p, speed_t speed) {
-    if (!termios_p) {
-        errno = EINVAL;
-        return -1;
-    }
-    termios_p->c_ospeed = speed;
-    return 0;
+    if (advice < MADV_NORMAL || advice > MADV_DONTNEED) return EINVAL;
+    long rc = fry_madvise(addr, length, advice);
+    return (rc < 0) ? (int)-rc : 0;
 }
 
 int prctl(int option, ...) {
@@ -802,44 +364,453 @@ int prctl(int option, ...) {
     unsigned long arg5 = 0;
 
     va_start(ap, option);
-    arg2 = va_arg(ap, unsigned long);
-    arg3 = va_arg(ap, unsigned long);
-    arg4 = va_arg(ap, unsigned long);
-    arg5 = va_arg(ap, unsigned long);
+    switch (option) {
+        case PR_SET_NAME:
+        case PR_GET_NAME:
+        case PR_SET_DUMPABLE:
+        case PR_SET_NO_NEW_PRIVS:
+        case PR_SET_TIMERSLACK:
+        case PR_SET_THP_DISABLE:
+        case PR_SET_PTRACER:
+        case PR_SET_PDEATHSIG:
+        case PR_GET_PDEATHSIG:
+            arg2 = va_arg(ap, unsigned long);
+            break;
+        case PR_SET_VMA:
+            arg2 = va_arg(ap, unsigned long);
+            arg3 = va_arg(ap, unsigned long);
+            arg4 = va_arg(ap, unsigned long);
+            arg5 = va_arg(ap, unsigned long);
+            break;
+        default:
+            break;
+    }
     va_end(ap);
 
-    (void)arg3;
-    (void)arg4;
-    (void)arg5;
+    return posix_error_int(fry_prctl(option, arg2, arg3, arg4, arg5));
+}
 
-    switch (option) {
-        case 1:  /* PR_SET_PDEATHSIG */
-        case 4:  /* PR_SET_DUMPABLE */
-        case 15: /* PR_SET_NAME */
-        case 22: /* PR_SET_SECCOMP */
-        case 38: /* PR_SET_NO_NEW_PRIVS */
-        case 0x59616d61: /* PR_SET_PTRACER */
-        case 0x53564d41: /* PR_SET_VMA */
-            return 0;
-        case 2:  /* PR_GET_PDEATHSIG */
-            if ((int *)arg2) {
-                *(int *)arg2 = 0;
-                return 0;
-            }
-            errno = EINVAL;
-            return -1;
-        case 3: /* PR_GET_DUMPABLE */
-        case 21: /* PR_GET_SECCOMP */
-            return 0;
-        case 16: /* PR_GET_NAME */
-            if ((char *)arg2) {
-                strncpy((char *)arg2, "tatertos", 16);
-                ((char *)arg2)[15] = '\0';
-                return 0;
-            }
-            errno = EINVAL;
-            return -1;
-        default:
-            return 0;
+int sigaction(int sig, const struct sigaction *act, struct sigaction *oldact) {
+    return posix_error_int(fry_sigaction(sig, (const struct fry_sigaction *)act, (struct fry_sigaction *)oldact));
+}
+
+int kill(pid_t pid, int sig) {
+    return posix_error_int(fry_kill((int)pid, sig));
+}
+
+int mkdir(const char *path, mode_t mode) {
+    return mkdirat(AT_FDCWD, path, mode);
+}
+
+int mkdirat(int dirfd, const char *path, mode_t mode) {
+    if (!path) {
+        errno = EINVAL;
+        return -1;
     }
+    return posix_error_int(fry_mkdirat(dirfd, path, (uint32_t)mode));
+}
+
+int rename(const char *oldpath, const char *newpath) {
+    return renameat(AT_FDCWD, oldpath, AT_FDCWD, newpath);
+}
+
+int renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath) {
+    if (!oldpath || !newpath) {
+        errno = EINVAL;
+        return -1;
+    }
+    return posix_error_int(fry_renameat(olddirfd, oldpath, newdirfd, newpath));
+}
+
+int unlink(const char *path) {
+    return unlinkat(AT_FDCWD, path, 0);
+}
+
+int unlinkat(int dirfd, const char *path, int flags) {
+    if (!path || (flags & ~AT_REMOVEDIR)) {
+        errno = EINVAL;
+        return -1;
+    }
+    return posix_error_int(fry_unlinkat(dirfd, path, flags));
+}
+
+int rmdir(const char *path) {
+    return unlinkat(AT_FDCWD, path, AT_REMOVEDIR);
+}
+
+int access(const char *path, int mode) {
+    return faccessat(AT_FDCWD, path, mode, 0);
+}
+
+int faccessat(int dirfd, const char *path, int mode, int flags) {
+    if (!path || (mode & ~(R_OK | W_OK | X_OK))) {
+        errno = EINVAL;
+        return -1;
+    }
+    return posix_error_int(fry_faccessat(dirfd, path, mode, flags));
+}
+
+int isatty(int fd) {
+    return (fd >= 0 && fd <= 2);
+}
+
+int usleep(unsigned int usec) {
+    fry_sleep(usec / 1000);
+    return 0;
+}
+
+unsigned int sleep(unsigned int seconds) {
+    fry_sleep((uint64_t)seconds * 1000);
+    return 0;
+}
+
+long sysconf(int name) {
+    if (name == 30) return 4096; /* _SC_PAGESIZE */
+    if (name == 84) return 1;    /* _SC_NPROCESSORS_ONLN */
+    return -1;
+}
+
+int dup(int oldfd) {
+    return posix_error_int(fry_dup(oldfd));
+}
+
+int dup2(int oldfd, int newfd) {
+    return posix_error_int(fry_dup2(oldfd, newfd));
+}
+
+int pipe(int pipefd[2]) {
+    return posix_error_int(fry_pipe(pipefd));
+}
+
+int pipe2(int pipefd[2], int flags) {
+    return posix_error_int(fry_pipe2(pipefd, flags));
+}
+
+int dup3(int oldfd, int newfd, int flags) {
+    return posix_error_int(fry_dup3(oldfd, newfd, flags));
+}
+
+int accept4(int fd, struct sockaddr *addr, socklen_t *addrlen, int flags) {
+    return posix_error_int(fry_accept4(fd, addr, addrlen, flags));
+}
+
+int timerfd_create(int clockid, int flags) {
+    return posix_error_int(fry_timerfd_create(clockid, flags));
+}
+
+int timerfd_settime(int fd, int flags, const struct itimerspec *new_value,
+                    struct itimerspec *old_value) {
+    return posix_error_int(fry_timerfd_settime(fd, flags, new_value, old_value));
+}
+
+int timerfd_gettime(int fd, struct itimerspec *curr_value) {
+    return posix_error_int(fry_timerfd_gettime(fd, curr_value));
+}
+
+int signalfd(int fd, const sigset_t *mask, int flags) {
+    return posix_error_int(fry_signalfd(fd, (const uint64_t *)mask, flags));
+}
+
+int inotify_init(void) {
+    return posix_error_int(fry_inotify_init(0));
+}
+
+int inotify_init1(int flags) {
+    return posix_error_int(fry_inotify_init(flags));
+}
+
+int inotify_add_watch(int fd, const char *pathname, uint32_t mask) {
+    return posix_error_int(fry_inotify_add_watch(fd, pathname, mask));
+}
+
+int inotify_rm_watch(int fd, int wd) {
+    return posix_error_int(fry_inotify_rm_watch(fd, wd));
+}
+
+int memfd_create(const char *name, unsigned int flags) {
+    return posix_error_int(fry_memfd_create(name, flags));
+}
+
+ssize_t sendfile(int out_fd, int in_fd, off_t *offset, size_t count) {
+    return (ssize_t)posix_error(fry_sendfile(out_fd, in_fd, offset, count));
+}
+
+pid_t getpid(void) {
+    return (pid_t)fry_getpid();
+}
+
+char *getcwd(char *buf, size_t size) {
+    long ret = fry_getcwd(buf, size);
+    if (ret < 0) { errno = (int)-ret; return NULL; }
+    return buf;
+}
+
+int chdir(const char *path) {
+    return posix_error_int(fry_chdir(path));
+}
+
+char *realpath(const char *path, char *resolved_path) {
+    if (!path || !*path) {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    char scratch[FRY_PATH_MAX];
+    if (path[0] == '/') {
+        strncpy(scratch, path, sizeof(scratch) - 1);
+        scratch[sizeof(scratch) - 1] = '\0';
+    } else {
+        char cwd[FRY_PATH_MAX];
+        if (!getcwd(cwd, sizeof(cwd)))
+            return NULL;
+        int written = snprintf(scratch, sizeof(scratch), "%s/%s", cwd, path);
+        if (written < 0 || (size_t)written >= sizeof(scratch)) {
+            errno = ENAMETOOLONG;
+            return NULL;
+        }
+    }
+
+    char normalized[FRY_PATH_MAX];
+    size_t out = 0;
+    normalized[out++] = '/';
+
+    char *cursor = scratch;
+    while (*cursor == '/')
+        ++cursor;
+
+    while (*cursor) {
+        char *segment = cursor;
+        while (*cursor && *cursor != '/')
+            ++cursor;
+        size_t len = (size_t)(cursor - segment);
+
+        if (len == 1 && segment[0] == '.') {
+            /* Skip current-directory segments. */
+        } else if (len == 2 && segment[0] == '.' && segment[1] == '.') {
+            if (out > 1) {
+                --out;
+                while (out > 1 && normalized[out - 1] != '/')
+                    --out;
+            }
+        } else if (len > 0) {
+            if (out > 1) {
+                if (out + 1 >= sizeof(normalized)) {
+                    errno = ENAMETOOLONG;
+                    return NULL;
+                }
+                normalized[out++] = '/';
+            }
+            if (out + len >= sizeof(normalized)) {
+                errno = ENAMETOOLONG;
+                return NULL;
+            }
+            memcpy(&normalized[out], segment, len);
+            out += len;
+        }
+
+        while (*cursor == '/')
+            ++cursor;
+    }
+
+    normalized[out] = '\0';
+
+    struct stat st;
+    if (stat(normalized, &st) != 0)
+        return NULL;
+
+    char *result = resolved_path ? resolved_path : (char *)malloc(out + 1);
+    if (!result) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    memcpy(result, normalized, out + 1);
+    return result;
+}
+
+int shutdown(int fd, int how) {
+    return posix_error_int(fry_shutdown_sock(fd, how));
+}
+
+void (*signal(int sig, void (*func)(int)))(int) {
+    (void)sig; (void)func;
+    return 0;
+}
+
+int openat(int dirfd, const char *pathname, int flags, ...) {
+    if (flags & O_CREAT) {
+        va_list ap;
+        va_start(ap, flags);
+        (void)va_arg(ap, mode_t);
+        va_end(ap);
+    }
+    return posix_error_int(fry_openat(dirfd, pathname, flags));
+}
+
+int waitpid(pid_t pid, int *status, int options) {
+    (void)pid; (void)status; (void)options;
+    return -1;
+}
+
+int chmod(const char *path, mode_t mode) {
+    (void)path; (void)mode;
+    return 0;
+}
+
+int fchmod(int fd, mode_t mode) {
+    (void)fd; (void)mode;
+    return 0;
+}
+
+int fchown(int fd, uid_t owner, gid_t group) {
+    (void)fd; (void)owner; (void)group;
+    return 0;
+}
+
+int lchown(const char *path, uid_t owner, gid_t group) {
+    (void)path; (void)owner; (void)group;
+    return 0;
+}
+
+int link(const char *oldpath, const char *newpath) {
+    (void)oldpath; (void)newpath;
+    return -1;
+}
+
+int symlink(const char *target, const char *linkpath) {
+    (void)target; (void)linkpath;
+    return -1;
+}
+
+ssize_t readlink(const char *pathname, char *buf, size_t bufsiz) {
+    return readlinkat(AT_FDCWD, pathname, buf, bufsiz);
+}
+
+ssize_t readlinkat(int dirfd, const char *pathname, char *buf, size_t bufsiz) {
+    if (!pathname || !buf || bufsiz == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return (ssize_t)posix_error(fry_readlinkat(dirfd, pathname, buf, bufsiz));
+}
+
+int mkstemp(char *template) {
+    (void)template;
+    return -1;
+}
+
+/* strtold stub */
+long double strtold(const char *nptr, char **endptr) {
+    (void)nptr; (void)endptr; return 0.0;
+}
+
+int utimensat(int dirfd, const char *pathname, const struct timespec times[2], int flags) {
+    (void)dirfd; (void)pathname; (void)times; (void)flags;
+    return 0;
+}
+
+int socketpair(int domain, int type, int protocol, int sv[2]) {
+    return posix_error_int(fry_socketpair(domain, type, protocol, sv));
+}
+
+int getrlimit(int resource, struct rlimit *rlim) {
+    (void)resource; (void)rlim;
+    return -1;
+}
+
+int setrlimit(int resource, const struct rlimit *rlim) {
+    (void)resource; (void)rlim;
+    return -1;
+}
+
+/* -----------------------------------------------------------------------
+ * Chrome/GN probe wrappers (Phase 10)
+ * ----------------------------------------------------------------------- */
+int uname(struct utsname *buf) {
+    return posix_error_int(fry_uname(buf));
+}
+int sysinfo(struct sysinfo *info) {
+    return posix_error_int(fry_sysinfo(info));
+}
+int getrusage(int who, struct rusage *usage) {
+    return posix_error_int(fry_getrusage(who, usage));
+}
+int getpriority(int which, id_t who) {
+    long rc = fry_getpriority(which, (int)who);
+    if (rc < 0) { errno = (int)(-rc); return -1; }
+    return (int)rc;
+}
+int setpriority(int which, id_t who, int prio) {
+    return posix_error_int(fry_setpriority(which, (int)who, prio));
+}
+int fsync(int fd) {
+    return posix_error_int(fry_fsync(fd));
+}
+int fdatasync(int fd) {
+    return posix_error_int(fry_fdatasync(fd));
+}
+int sched_getaffinity(pid_t pid, size_t cpusetsize, cpu_set_t *mask) {
+    return posix_error_int(fry_sched_getaffinity((int)pid, cpusetsize, mask));
+}
+int sched_setaffinity(pid_t pid, size_t cpusetsize, const cpu_set_t *mask) {
+    return posix_error_int(fry_sched_setaffinity((int)pid, cpusetsize, (void*)mask));
+}
+int mlock(const void *addr, size_t len) {
+    return posix_error_int(fry_mlock(addr, len));
+}
+int munlock(const void *addr, size_t len) {
+    return posix_error_int(fry_munlock(addr, len));
+}
+int mlockall(int flags) {
+    (void)flags; errno = ENOSYS; return -1;
+}
+int munlockall(void) {
+    errno = ENOSYS; return -1;
+}
+ssize_t splice(int fd_in, int64_t *off_in, int fd_out, int64_t *off_out, size_t len, unsigned int flags) {
+    return (ssize_t)posix_error(fry_splice(fd_in, off_in, fd_out, off_out, len, flags));
+}
+ssize_t tee(int fd_in, int fd_out, size_t len, unsigned int flags) {
+    return (ssize_t)posix_error(fry_tee(fd_in, fd_out, len, flags));
+}
+
+int posix_spawn(pid_t *pid, const char *path, const void *file_actions, const void *attrp, char *const argv[], char *const envp[]) {
+    (void)pid; (void)path; (void)file_actions; (void)attrp; (void)argv; (void)envp;
+    return -1;
+}
+
+int posix_spawnp(pid_t *pid, const char *file, const void *file_actions, const void *attrp, char *const argv[], char *const envp[]) {
+    (void)pid; (void)file; (void)file_actions; (void)attrp; (void)argv; (void)envp;
+    return -1;
+}
+
+int tcgetattr(int fd, void *termios_p) {
+    (void)fd; (void)termios_p;
+    return -1;
+}
+
+int tcsetattr(int fd, int optional_actions, const void *termios_p) {
+    (void)fd; (void)optional_actions; (void)termios_p;
+    return -1;
+}
+
+/* -----------------------------------------------------------------------
+ * Compat symbols needed by existing binary-only apps (linked against libc.o)
+ * ----------------------------------------------------------------------- */
+
+int close_compat(int fd) { return close(fd); }
+ssize_t read_compat(int fd, void *buf, size_t count) { return read(fd, buf, count); }
+ssize_t write_compat(int fd, const void *buf, size_t count) { return write(fd, buf, count); }
+off_t lseek_compat(int fd, off_t offset, int whence) { return lseek(fd, offset, whence); }
+int dup_compat(int oldfd) { return dup(oldfd); }
+int dup2_compat(int oldfd, int newfd) { return dup2(oldfd, newfd); }
+int pipe_compat(int pipefd[2]) { return pipe(pipefd); }
+int usleep_compat(unsigned int usec) { return usleep(usec); }
+int getpid_compat(void) { return (int)getpid(); }
+
+int symlink_compat(const char *target, const char *linkpath) { return symlink(target, linkpath); }
+ssize_t readlink_compat(const char *path, char *buf, size_t sz) { return readlink(path, buf, sz); }
+long sysconf_compat(int name) { return sysconf(name); }
+
+char *getcwd_compat(char *buf, size_t size) {
+    return getcwd(buf, size);
 }

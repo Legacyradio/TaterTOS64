@@ -1,0 +1,51 @@
+Fry Log 904 - Chromium //base:base C++ compile SUCCESS
+Timestamp: 2026-05-07 13:50 CDT
+
+Milestone: chromium-tatertos ninja -C out/tatertos base:base reaches
+2331/2336 targets for the tatertos cross-toolchain. All C++ compilation
+succeeds. Remaining 5 targets are Rust stdlib compilation failures
+(unrelated — Rust std needs custom allocator for x86_64-unknown-none).
+
+gn gen still succeeds: 2400 targets from 471 files.
+
+Summary of all libc gaps filled (across fry903 + fry904):
+
+Headers created:
+- sys/utsname.h, sys/sysinfo.h, sys/mlock.h
+- wchar.h (full POSIX surface)
+- locale.h (struct lconv, setlocale, localeconv)
+- link.h (ElfW macro for partition_alloc)
+- elf.h (Elf64_* types for partition_alloc)
+- sys/cdefs.h (__THROW stub)
+- sys/syscall.h (empty stub)
+- bits/types/mbstate_t.h (forwarding to time.h)
+
+Headers patched:
+- time.h: mbstate_t, timespec_get, TIME_UTC, _POSIX_MONOTONIC_CLOCK
+- string.h: wmemcmp/wmemcpy/wmemmove/wmemset, strcoll/strxfrm, strerror_r
+- stdio.h: fgetpos/fsetpos, freopen, tmpfile, tmpnam, scanf/vscanf/vfscanf/vsscanf, getc/putc, fpos_t, getc_unlocked/putc_unlocked
+- errno.h: ENODEV, EPROTO, ETXTBSY, ENOTTY, ENOLINK
+- stdlib.h: strtold, mblen, system, mkstemp, mkdtemp, quick_exit, at_quick_exit
+- math.h: All f (float) and l (long double) variants, FP_* constants, float_t/double_t
+- pthread.h: pthread_attr_getstack, pthread_attr_getstacksize
+- unistd.h: pread
+
+Chromium source patches:
+- build/config/BUILDCONFIG.gn: is_tatertos, toolchain, compiler config
+- build/toolchain/tatertos/BUILD.gn: gcc_toolchain(x64)
+- build/config/tatertos/BUILD.gn: compiler config (isystem after libc++)
+- build/config/rust.gni: rust_abi_target for is_tatertos
+- build/rust/known-target-triples.txt: x86_64-unknown-none
+- third_party/libxml/BUILD.gn: os_include=linux
+- third_party/perfetto/include/perfetto/base/build_config.h: __tatertos__ block
+- third_party/perfetto/src/base/periodic_task.cc: -Wuninitialized fix
+- third_party/abseil-cpp/absl/container/internal/hash_function_defaults.h: wstring guards
+- third_party/abseil-cpp/absl/strings/internal/str_format/arg.h: wstring_view guards
+- buildtools/third_party/libc++/__config_site: conditional _LIBCPP_HAS_NO_WIDE_CHARACTERS, HAS_NO_LOCALIZATION, etc.
+- BUILD.gn: minimal root with only //base:base
+- partition_alloc build_config.h: PA_IS_TATERTOS → PA_IS_POSIX
+- partition_alloc stack_trace_posix.cc: enum ternary fixes, pread
+- partition_alloc platform_thread_posix.cc: reinterpret_cast→static_cast
+
+Next step: Fix Rust stdlib for tatertos target, or disable Rust std for
+this toolchain and link pure C++ for //base:base.

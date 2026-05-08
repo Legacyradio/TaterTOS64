@@ -1,0 +1,75 @@
+fry820 — Cleanup: remove empty shim/ + 3rd/ dirs created in error
+=====================================================================
+DATE (UTC):   2026-04-26 03:11:02
+DATE (LOCAL): 2026-04-25 22:11:02 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSOR:    logs/fry819.txt (full rediff; shim/ approach abandoned)
+TYPE:         Tree cleanup — NO source code changed.
+
+WHAT
+=====================================================================
+Removed three empty directories created earlier in this session
+under the (now-abandoned) shim-layer approach:
+
+  src/user/apps/ladybird/shim/sys/    (empty)
+  src/user/apps/ladybird/shim/        (empty)
+  src/user/apps/ladybird/3rd/         (empty)
+
+KEPT:
+  src/user/apps/ladybird/             (empty; reserved for upstream
+                                       AK/ + Libraries/ drop in fry824)
+
+WHY
+=====================================================================
+fry819's rediff established that TaterTOS already has a comprehensive
+userland libc (pthread.c, posix.c, libc.c, stdio.c, netdb.c,
+string_ext.c, time_ext.c, math.c, setjmp.S — 7,416 LOC total). The
+parallel shim layer proposed in fry816 §4 is therefore unnecessary
+and was deleted from the plan.
+
+These three empty directories were created earlier in this session
+(via `mkdir -p src/user/apps/ladybird/shim/sys src/user/apps/ladybird/3rd`)
+under the now-abandoned shim-layer approach. They have to be removed
+before Chunk 2 begins so the on-disk tree matches the plan written
+in fry819.
+
+The third-party deps (fmt, fast_float, simdutf) will live as siblings
+of the existing vendored libs at:
+  src/user/apps/ladybird-3rd/fmt/
+  src/user/apps/ladybird-3rd/fast_float/
+  src/user/apps/ladybird-3rd/simdutf/
+That directory will be created in fry823 when the vendor drop happens,
+not now. Pre-creating empty dirs is exactly the kind of "follow the
+map" gesture we just abandoned.
+
+COMMANDS RUN
+=====================================================================
+  rmdir src/user/apps/ladybird/shim/sys
+  rmdir src/user/apps/ladybird/shim
+  rmdir src/user/apps/ladybird/3rd
+
+VERIFICATION
+=====================================================================
+  $ ls -la src/user/apps/ladybird/
+  total 0
+  drwxr-xr-x 1 legacyindieradio legacyindieradio   0 Apr 25 22:10 .
+  drwxr-xr-x 1 legacyindieradio legacyindieradio 938 Apr 25 21:14 ..
+
+Empty. As intended.
+
+NO REBUILD THIS STEP
+=====================================================================
+No source files modified. No build run. No SHA-256 to record
+(planv3 Rule 16 — only on user-requested rebuilds).
+
+NEXT
+=====================================================================
+fry821 — Investigation: produce the definitive AK + Libraries/LibCore
+        file manifest from ~/ladybird-upstream/. Separate "include in
+        TaterTOS build" vs "exclude (Windows/macOS-only)". Output:
+        a flat list of files we will copy in fry824.
+        NO CODE.
+
+END fry820
+=====================================================================

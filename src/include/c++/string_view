@@ -1,0 +1,122 @@
+// TaterTOS64v3 — minimal <string_view> for freestanding C++.
+// Origin log: logs/fry834.txt
+//
+// AK has its own AK::StringView (much richer than std::string_view).
+// This shim exists only so simdutf headers parse — simdutf uses
+// std::string_view in 3 debug helpers (error_to_string, to_string)
+// that AK never invokes.
+//
+// std::string_view is fundamentally just {const char*, size_t}, so
+// the real implementation is small.
+
+#pragma once
+
+#include <stddef.h>
+#include <string.h>     // strlen, memcmp
+
+namespace std {
+
+// Forward declare char_traits from string.h if possible, or just define it here.
+// Since we want to keep it simple, we use char_traits<CharT> as default.
+template<typename CharT> struct char_traits;
+
+template<typename CharT, typename Traits = char_traits<CharT>>
+class basic_string_view {
+public:
+    using value_type = CharT;
+    using size_type  = size_t;
+    using char_type  = CharT;
+    using const_pointer = CharT const*;
+    using const_reference = CharT const&;
+    static constexpr size_type npos = static_cast<size_type>(-1);
+
+    constexpr basic_string_view() noexcept : m_data(nullptr), m_size(0) {}
+
+    constexpr basic_string_view(CharT const* s, size_type len) noexcept
+        : m_data(s), m_size(len) {}
+
+    basic_string_view(CharT const* s) noexcept
+        : m_data(s), m_size(0) {
+        if (s) {
+            while (s[m_size] != CharT(0)) ++m_size;
+        }
+    }
+
+    constexpr basic_string_view(basic_string_view const&) noexcept = default;
+    constexpr basic_string_view& operator=(basic_string_view const&) noexcept = default;
+
+    constexpr CharT const* data() const noexcept   { return m_data; }
+    constexpr size_type    size() const noexcept    { return m_size; }
+    constexpr size_type    length() const noexcept  { return m_size; }
+    constexpr bool         empty() const noexcept   { return m_size == 0; }
+
+    constexpr CharT operator[](size_type idx) const noexcept { return m_data[idx]; }
+    constexpr CharT front() const noexcept { return m_data[0]; }
+    constexpr CharT back()  const noexcept { return m_data[m_size - 1]; }
+
+    bool operator==(basic_string_view other) const noexcept {
+        if (m_size != other.m_size) return false;
+        for (size_type i = 0; i < m_size; ++i)
+            if (m_data[i] != other.m_data[i]) return false;
+        return true;
+    }
+    bool operator!=(basic_string_view other) const noexcept { return !(*this == other); }
+
+    constexpr basic_string_view substr(size_type pos = 0, size_type count = npos) const noexcept {
+        if (pos > m_size) pos = m_size;
+        size_type rcount = (count > m_size - pos) ? (m_size - pos) : count;
+        return basic_string_view(m_data + pos, rcount);
+    }
+
+    constexpr void remove_prefix(size_type n) noexcept {
+        if (n > m_size) n = m_size;
+        m_data += n;
+        m_size -= n;
+    }
+
+    constexpr void remove_suffix(size_type n) noexcept {
+        if (n > m_size) n = m_size;
+        m_size -= n;
+    }
+
+    constexpr size_type find(CharT c, size_type pos = 0) const noexcept {
+        for (size_type i = pos; i < m_size; ++i) {
+            if (m_data[i] == c) return i;
+        }
+        return npos;
+    }
+
+    constexpr const_pointer begin() const noexcept { return m_data; }
+    constexpr const_pointer end()   const noexcept { return m_data + m_size; }
+
+    size_type find_first_not_of(CharT const* s, size_type pos = 0) const noexcept {
+        for (size_type i = pos; i < m_size; ++i) {
+            bool found = false;
+            for (size_type j = 0; s[j]; ++j) if (m_data[i] == s[j]) { found = true; break; }
+            if (!found) return i;
+        }
+        return npos;
+    }
+
+    size_type find_last_not_of(CharT const* s, size_type pos = npos) const noexcept {
+        if (m_size == 0) return npos;
+        size_type start = (pos >= m_size) ? m_size - 1 : pos;
+        for (size_type i = start + 1; i > 0; --i) {
+            bool found = false;
+            for (size_type j = 0; s[j]; ++j) if (m_data[i - 1] == s[j]) { found = true; break; }
+            if (!found) return i - 1;
+        }
+        return npos;
+    }
+
+private:
+    CharT const* m_data;
+    size_type    m_size;
+};
+
+using string_view    = basic_string_view<char>;
+using u16string_view = basic_string_view<char16_t>;
+using u32string_view = basic_string_view<char32_t>;
+using wstring_view   = basic_string_view<wchar_t>;
+
+} // namespace std

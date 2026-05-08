@@ -35,6 +35,8 @@
 
 /* send/recv flags */
 #define MSG_DONTWAIT  0x40
+#define MSG_TRUNC     0x20
+#define MSG_CTRUNC    0x08
 
 /* sockaddr_in — IPv4 socket address (matches POSIX layout) */
 struct fry_sockaddr_in {

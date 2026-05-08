@@ -96,7 +96,7 @@ prepare_autotest_markers
 
 # Build kernel and user apps
 make -C "$ROOT_DIR" clean
-make -C "$ROOT_DIR" kernel init shell gui sysinfo uptime ps fileman netmgr vmtest vmfault abitest thtest evloop tatersurf
+make -C "$ROOT_DIR" kernel init shell gui sysinfo uptime ps fileman netmgr vmtest vmfault abitest thtest smoketest evloop chrome_probe
 
 # Create FAT32 image for userspace files
 rm -f "$FS_IMG"
@@ -131,8 +131,9 @@ if command -v mcopy >/dev/null 2>&1; then
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/vmtest.fry" ::/apps/VMTEST.FRY || true
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/vmfault.fry" ::/apps/VMFAULT.FRY || true
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/thtest.fry" ::/apps/THTEST.FRY || true
+  mcopy -o -i "$FS_IMG" "$ROOT_DIR/smoketest.fry" ::/apps/SMOKETEST.FRY || true
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/evloop.fry" ::/apps/EVLOOP.FRY || true
-  mcopy -o -i "$FS_IMG" "$ROOT_DIR/tatersurf.fry" ::/apps/TATERSURF.FRY || true
+  mcopy -o -i "$FS_IMG" "$ROOT_DIR/chrome_probe.fry" ::/apps/CHROME_PROBE.FRY || true
   mmd -i "$FS_IMG" ::/fonts 2>/dev/null || true
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/DejaVuSans.ttf" ::/fonts/DEJAVU.TTF 2>/dev/null || true
 
@@ -153,8 +154,8 @@ if command -v mcopy >/dev/null 2>&1; then
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/vmtest.fry" ::/VMTEST.FRY || true
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/vmfault.fry" ::/VMFAULT.FRY || true
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/thtest.fry" ::/THTEST.FRY || true
+  mcopy -o -i "$FS_IMG" "$ROOT_DIR/smoketest.fry" ::/SMOKETEST.FRY || true
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/evloop.fry" ::/EVLOOP.FRY || true
-  mcopy -o -i "$FS_IMG" "$ROOT_DIR/tatersurf.fry" ::/TATERSURF.FRY || true
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/DejaVuSans.ttf" ::/DEJAVU.TTF 2>/dev/null || true
 
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/vmtest_fixture.txt" ::/VMTEST.TXT || true
@@ -205,7 +206,7 @@ if [ -f "$ROOT_DIR/init.fry" ]; then
   "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
     "$ROOT_DIR/init.fry" "/INIT.FRY"
 fi
-for fry in gui sysinfo uptime ps fileman netmgr vmtest vmfault thtest tatersurf; do
+for fry in gui sysinfo uptime ps fileman netmgr vmtest vmfault thtest; do
   FRY_UPPER=$(echo "$fry" | tr 'a-z' 'A-Z')
   if [ -f "$ROOT_DIR/${fry}.fry" ]; then
     "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
@@ -281,8 +282,10 @@ if command -v mmd >/dev/null 2>&1 && command -v mcopy >/dev/null 2>&1; then
   mcopy -o -i "$EFI_IMG" "$ROOT_DIR/vmtest.fry"  ::/apps/VMTEST.FRY   || true
   mcopy -o -i "$EFI_IMG" "$ROOT_DIR/vmfault.fry" ::/apps/VMFAULT.FRY  || true
   mcopy -o -i "$EFI_IMG" "$ROOT_DIR/thtest.fry"  ::/apps/THTEST.FRY   || true
+  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/smoketest.fry" ::/apps/SMOKETEST.FRY || true
   mcopy -o -i "$EFI_IMG" "$ROOT_DIR/evloop.fry"  ::/apps/EVLOOP.FRY   || true
-  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/tatersurf.fry" ::/apps/TATERSURF.FRY || true
+  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/chrome_probe.fry" ::/apps/CHROME_PROBE.FRY || true
+
   mmd -i "$EFI_IMG" ::/fonts 2>/dev/null || true
   mcopy -o -i "$EFI_IMG" "$ROOT_DIR/DejaVuSans.ttf" ::/fonts/DEJAVU.TTF 2>/dev/null || true
 
@@ -318,8 +321,9 @@ if command -v mmd >/dev/null 2>&1 && command -v mcopy >/dev/null 2>&1; then
     mcopy -o -i "$EFI_IMG" "$ROOT_DIR/vmtest.fry"  "$mcopy_dir/VMTEST.FRY"  || true
     mcopy -o -i "$EFI_IMG" "$ROOT_DIR/vmfault.fry" "$mcopy_dir/VMFAULT.FRY" || true
     mcopy -o -i "$EFI_IMG" "$ROOT_DIR/thtest.fry"  "$mcopy_dir/THTEST.FRY"  || true
+    mcopy -o -i "$EFI_IMG" "$ROOT_DIR/smoketest.fry" "$mcopy_dir/SMOKETEST.FRY" || true
     mcopy -o -i "$EFI_IMG" "$ROOT_DIR/evloop.fry"  "$mcopy_dir/EVLOOP.FRY"  || true
-    mcopy -o -i "$EFI_IMG" "$ROOT_DIR/tatersurf.fry" "$mcopy_dir/TATERSURF.FRY" || true
+    mcopy -o -i "$EFI_IMG" "$ROOT_DIR/chrome_probe.fry" "$mcopy_dir/CHROME_PROBE.FRY" || true
 
   done
   copy_wifi_fw_mtools "$EFI_IMG"
@@ -351,8 +355,9 @@ cp "$ROOT_DIR/netmgr.fry"  "$ISO_DIR/apps/NETMGR.FRY"
 cp "$ROOT_DIR/vmtest.fry"  "$ISO_DIR/apps/VMTEST.FRY"
 cp "$ROOT_DIR/vmfault.fry" "$ISO_DIR/apps/VMFAULT.FRY"
 cp "$ROOT_DIR/thtest.fry"  "$ISO_DIR/apps/THTEST.FRY"
+cp "$ROOT_DIR/smoketest.fry" "$ISO_DIR/apps/SMOKETEST.FRY"
 cp "$ROOT_DIR/evloop.fry"  "$ISO_DIR/apps/EVLOOP.FRY"
-cp "$ROOT_DIR/tatersurf.fry" "$ISO_DIR/apps/TATERSURF.FRY"
+cp "$ROOT_DIR/chrome_probe.fry" "$ISO_DIR/apps/CHROME_PROBE.FRY"
 
 # Fonts
 mkdir -p "$ISO_DIR/fonts"
@@ -389,8 +394,9 @@ for dir in "${iso_app_dirs[@]}"; do
   cp "$ROOT_DIR/vmtest.fry"  "$target_dir/VMTEST.FRY"
   cp "$ROOT_DIR/vmfault.fry" "$target_dir/VMFAULT.FRY"
   cp "$ROOT_DIR/thtest.fry"  "$target_dir/THTEST.FRY"
+  cp "$ROOT_DIR/smoketest.fry" "$target_dir/SMOKETEST.FRY"
   cp "$ROOT_DIR/evloop.fry"  "$target_dir/EVLOOP.FRY"
-  cp "$ROOT_DIR/tatersurf.fry" "$target_dir/TATERSURF.FRY"
+  cp "$ROOT_DIR/chrome_probe.fry" "$target_dir/CHROME_PROBE.FRY"
 
   copy_wifi_fw_dir "$target_dir"
 done

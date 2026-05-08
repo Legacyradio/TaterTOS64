@@ -1,0 +1,205 @@
+fry828 — Add Makefile rule for AK.a; first build attempt; Error #1 captured.
+=====================================================================
+DATE (UTC):   2026-04-26 03:52:54
+DATE (LOCAL): 2026-04-25 22:52:54 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSORS:   fry821 (manifest), fry822 (CMake authoritative),
+              fry823 (decisions), fry824/825/826 (vendor drops),
+              fry827 (AK source copy + Backtrace.h/Debug.h render
+                      + S1b kmalloc patch)
+TYPE:         Makefile addition + first build attempt + first
+              compile-error class captured. Build did NOT succeed.
+              No further code changes in this log per discipline.
+
+WHAT THIS LOG DID
+=====================================================================
+1. Read existing Makefile. Confirmed:
+   - CXX = $(TOOLBIN)/x86_64-elf-g++ (gcc 15.2.0 from AUR cross)
+   - UCXXFLAGS uses -nostdinc++ -std=c++11 — incompatible with AK
+   - Existing C++ apps (OpenH264) use UCXXFLAGS + their own shim.
+2. Added a Chunk 2 section to the Makefile (end of file, before any
+   future targets). New variables:
+   - LADYBIRD_DIR, LADYBIRD_3RD, AK_DIR, AR
+   - AK_CXXFLAGS — distinct from UCXXFLAGS:
+       * -std=gnu++23 (AK uses concepts, deducing-this, <=>, etc.)
+       * NO -nostdinc++ (AK relies on libstdc++ template glue per
+         D3 option A)
+       * -fno-exceptions -fno-rtti (D2 confirmed)
+       * -DAK_OS_TATERTOS=1 (triggers S1b kmalloc patch)
+       * -I include paths for libc, ladybird, fmt, fast_float, simdutf
+   - AK_CPP_NAMES — 37 file basenames per fry822 authoritative list
+   - AK_OBJS — derived list including fmt's format.cc and simdutf's
+     amalgamated TU
+3. Added pattern rules for AK .cpp -> .o, fmt format.cc -> .o,
+   simdutf.cpp -> .o, plus an `ar rcs $(AK_DIR)/AK.a` link rule.
+4. Added .PHONY: ak as a convenience target.
+5. Updated `clean:` to also remove AK_OBJS + AK.a.
+6. Ran first build:
+     PATH="/opt/cross/bin:..." make ak
+
+ERROR #1 (compile error class — STOP point)
+=====================================================================
+File:   src/user/apps/ladybird/AK/Platform.h
+Line:   279
+Code:   #        include <unistd.h>
+                          ^~~~~~~~~~
+Error:  fatal error: unistd.h: No such file or directory
+
+Triggering chain (reading top-down):
+  Assertions.cpp #include <AK/Format.h>
+    -> CheckedFormatString.h
+      -> AllOf.h
+        -> Concepts.h
+          -> Forward.h
+            -> SinglyLinkedListSizePolicy.h
+              -> Types.h
+                -> Platform.h LINE 279
+
+Context (Platform.h lines 274-283):
+  #ifndef AK_OS_SERENITY
+  #    ifdef AK_OS_WINDOWS
+  // FIXME: No idea where to get this, but it's 4096 anyway :^)
+  #        define PAGE_SIZE 4096
+  #    else
+  #        include <unistd.h>          <-- error here
+  #        undef PAGE_SIZE
+  #        define PAGE_SIZE sysconf(_SC_PAGESIZE)
+  #    endif
+  #endif
+
+What AK uses unistd.h for here: just sysconf(_SC_PAGESIZE) to set
+the AK::PAGE_SIZE macro. That's the one symbol on this code path.
+
+WHY THIS HAPPENED
+=====================================================================
+TaterTOS's userland libc has the POSIX surface (posix.c, libc.c)
+but does NOT expose a top-level `<unistd.h>` header in src/include/.
+The functions are reachable via #include <libc.h> instead.
+
+This was pre-flagged in fry821 §"OUTSTANDING UNKNOWNS" #5:
+  "LibCore/Process.cpp uses posix_spawn / spawn_h: TaterTOS libc.h
+   doesn't expose [these] directly. May need a thin wrapper..."
+unistd.h falls in the same class.
+
+FIX OPTIONS (need Zack call before fry829 implements one)
+=====================================================================
+F1. Engineer a real src/include/unistd.h that forwards to libc.h.
+    This is the road-building move per the TaterLabs ethos. Every
+    TaterTOS app that ports POSIX-flavored code (Ladybird now,
+    others later) can rely on the standard <unistd.h> path.
+    Content: minimal POSIX-correct unistd.h declarations forwarded
+    to TaterTOS's existing fry_* / posix_* primitives. Real code,
+    not a stub. ~50-100 lines to start; grows as later AK/LibCore
+    files demand more symbols (each addition logged).
+
+    Sister headers we'll likely need on the same path:
+      <fcntl.h>     (open flags — partly in fry_fcntl.h already)
+      <sys/stat.h>  (struct stat — fry_stat exists, no header)
+      <sys/mman.h>  (mmap — fry_mmap exists, no header)
+      <dirent.h>    (closedir/opendir/readdir — posix.c has them)
+      <pthread.h>   (pthread.c implements; no header — yet)
+      <sys/socket.h><netinet/in.h><arpa/inet.h>
+                    (fry_socket.h has TaterTOS-native types; need
+                     POSIX-named aliases for ports)
+
+    These would be new files under src/include/ created one-at-a-time
+    in their own fry logs as AK/LibCore demands each.
+
+F2. Patch AK/Platform.h's PAGE_SIZE block to use a TaterTOS-native
+    constant.  TaterTOS pagesize is 4096 (verified in
+    src/include/fry_limits.h or similar). Replace lines 274-283
+    with a TaterTOS-aware branch:
+       #elif defined(AK_OS_TATERTOS)
+       #    define PAGE_SIZE 4096
+    Smaller patch, but kicks the can down the road — AK/LibCore have
+    many other unistd.h consumers. Each will hit the same wall.
+
+    NOT recommended. We'd just be writing a one-off patch per call
+    site. F1 fixes the entire class.
+
+F3. Hybrid: F1 + F2 together. Engineer src/include/unistd.h with
+    just the symbols AK actually uses on this code path (sysconf,
+    _SC_PAGESIZE), AND add an AK_OS_TATERTOS branch in Platform.h
+    that bypasses the runtime sysconf call with a compile-time 4096
+    (since TaterTOS pagesize is fixed and known at compile time —
+    micro-optimization avoiding a sysconf call).
+
+    This is the pro version. Real header, real implementation, and
+    a well-marked targeted bypass at the AK level for the one place
+    where compile-time knowledge beats runtime knowledge.
+
+    Recommendation: F3.
+
+PRO RECOMMENDATION DETAIL — F3 implementation outline
+=====================================================================
+fry829 (proposed):
+  Step 1: create src/include/unistd.h with the POSIX surface AK
+          actually needs. Initial content:
+            - typedef ssize_t, off_t, pid_t, uid_t, gid_t (forward
+              from src/include/fry_types.h)
+            - declare: read, write, close, lseek, getpid, sysconf
+            - declare _SC_PAGESIZE constant
+            - sysconf returns 4096 for _SC_PAGESIZE on TaterTOS
+            - each declaration forwards to fry_* / posix.c's *_compat
+              symbol via a thin static-inline wrapper
+          Real file. Not a stub.
+
+  Step 2: in src/user/libc/posix.c (or new src/user/libc/unistd.c)
+          implement sysconf() if not already there. Verify against
+          existing posix.c at line 594 (sysconf_compat already
+          exists per fry819 inventory).
+
+  Step 3: edit AK/Platform.h to bypass the runtime sysconf for
+          TaterTOS:
+            #elif defined(AK_OS_TATERTOS)
+            #    define PAGE_SIZE 4096u
+          Marked divergence with comment pointing at fry829.
+
+  Step 4: rerun `make ak`. Capture the NEXT error class (which
+          will be a different missing header or symbol, not the
+          same unistd.h problem).
+
+DIFFS APPLIED IN fry828 (this log)
+=====================================================================
+ONE file modified: Makefile (added the Chunk 2 / AK section,
+appended ~70 lines, plus 1-line addition to clean:).
+
+  Before: 391 lines
+  After:  ~462 lines (verify on disk)
+
+NO source code modified outside Makefile.
+NO new files created (other than the build-attempt object that
+failed: src/user/apps/ladybird/AK/Assertions.o — does not exist
+because the compile failed).
+
+LSP DIAGNOSTICS NOTE (carried from fry827)
+=====================================================================
+Clang LSP still reports the kmalloc.cpp warnings about kmalloc.h
+and mimalloc.h. As fry827 documented, these are LSP analyzing in
+isolation without the build flags. The actual build (above) gets
+past kmalloc.cpp (didn't even get there — failed earlier on
+Assertions.cpp -> Format.h chain).
+
+NOT DONE (intentional — discipline)
+=====================================================================
+- No fix attempted yet for Error #1.
+- No additional .cpp files attempted (the build halted on file 1
+  of 37; that's fine — first error class captured).
+- No second build attempt with hacks.
+- No SHA-256 of any artifact (build did not produce any).
+- LibCore source NOT yet copied (still scheduled for fry830).
+
+DECISIONS NEEDED FROM ZACK
+=====================================================================
+F1 vs F2 vs F3. Recommendation: F3 (pro version).
+Approve F3 and fry829 begins step 1 (create src/include/unistd.h).
+
+NEXT (after F-decision)
+=====================================================================
+fry829 — Engineer src/include/unistd.h (the F3 implementation),
+        plus the one-line AK/Platform.h bypass for PAGE_SIZE.
+        Rerun `make ak`. Capture next error class. STOP.
+
+END fry828
+=====================================================================

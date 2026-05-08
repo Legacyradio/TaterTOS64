@@ -1,0 +1,63 @@
+// TaterTOS64v3 — minimal <stdexcept> for freestanding C++.
+// Origin log: logs/fry835.txt
+//
+// We build with -fno-exceptions; these classes are referenced by
+// upstream code (fmt, etc.) at parse time but never instantiated.
+
+#pragma once
+
+#include <exception>
+#include <string>
+
+namespace std {
+
+class logic_error : public exception {
+public:
+    explicit logic_error(string const&) noexcept {}
+    explicit logic_error(char const*) noexcept {}
+    char const* what() const noexcept override { return "logic_error"; }
+};
+
+class runtime_error : public exception {
+public:
+    explicit runtime_error(string const&) noexcept {}
+    explicit runtime_error(char const*) noexcept {}
+    char const* what() const noexcept override { return "runtime_error"; }
+};
+
+class domain_error : public logic_error {
+public:
+    using logic_error::logic_error;
+};
+
+class invalid_argument : public logic_error {
+public:
+    using logic_error::logic_error;
+};
+
+class length_error : public logic_error {
+public:
+    using logic_error::logic_error;
+};
+
+class out_of_range : public logic_error {
+public:
+    using logic_error::logic_error;
+};
+
+class range_error : public runtime_error {
+public:
+    using runtime_error::runtime_error;
+};
+
+class overflow_error : public runtime_error {
+public:
+    using runtime_error::runtime_error;
+};
+
+class underflow_error : public runtime_error {
+public:
+    using runtime_error::runtime_error;
+};
+
+} // namespace std

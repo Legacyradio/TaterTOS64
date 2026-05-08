@@ -11,6 +11,7 @@
  */
 
 #include "../libc/libc.h"
+#include "../libc/fry.h"
 #include "../libc/gfx.h"
 #include "../libc/taterwin.h"
 #include "ts_url.h"

@@ -14,6 +14,7 @@
 #define TS_CSS_H
 
 #include <stddef.h>
+#include <stdio.h>
 #include <stdint.h>
 
 /* ================================================================== */

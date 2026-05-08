@@ -1,0 +1,140 @@
+fry866 - Phase 5: Host IDL Generation Pipeline and Node.o
+=====================================================================
+DATE (UTC):   2026-04-28 02:39:16 UTC
+DATE (LOCAL): 2026-04-27 21:39:20 CDT
+AUTHOR:       Codex
+PARENT:       fry865 (Engine Sync & Math Hardening)
+
+OBJECTIVE
+=====================================================================
+Replace manual generated-header stubs with real Ladybird generator
+outputs and compile:
+
+  src/user/apps/ladybird/Libraries/LibWeb/DOM/Node.cpp
+
+using the TaterTOS cross compiler and native LibGC surface.
+
+PLANV3 RULES FOLLOWED
+=====================================================================
+- No manual binding stubs were created.
+- Host-side generator tools were built from upstream source first.
+- Generated artifacts were produced by upstream generators.
+- Changes were logged with the reason for each code edit.
+- No QEMU logs were used.
+
+HOST TOOLCHAIN
+=====================================================================
+The upstream Host_Tools preset expected a missing vcpkg checkout under
+ladybird-upstream/Build/vcpkg, so a local host-tools CMake build was
+configured directly:
+
+  cmake -S /home/legacyindieradio/ladybird-upstream \
+        -B /home/legacyindieradio/ladybird-upstream/Build/tatertos-host-tools \
+        -G Ninja \
+        -DCMAKE_MAKE_PROGRAM=/usr/bin/ninja \
+        -DLAGOM_TOOLS_ONLY=ON \
+        -DINSTALL_LAGOM_TOOLS=ON \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DENABLE_GUI_TARGETS=OFF \
+        -DENABLE_LAGOM_CCACHE=OFF \
+        -DENABLE_NETWORK_DOWNLOADS=OFF \
+        -DENABLE_INSTALL_HEADERS=OFF \
+        -DLADYBIRD_ENABLE_CPPTRACE=OFF \
+        -DTATERTOS_LADYBIRD_3RD=/home/legacyindieradio/TaterTOS64/src/user/apps/ladybird-3rd
+
+Host tools built:
+
+  cmake --build /home/legacyindieradio/ladybird-upstream/Build/tatertos-host-tools \
+        --target BindingsGenerator GenerateWindowOrWorkerInterfaces GenerateNamedCharacterReferences -j 4
+
+This built host-compatible AK, LibCore, LibFileSystem, LibIDL, LibMain,
+and the required generator binaries.
+
+UPSTREAM HOST-BUILD ADJUSTMENTS
+=====================================================================
+Changed files in ladybird-upstream:
+
+  Meta/CMake/check_for_dependencies.cmake
+  Libraries/CMakeLists.txt
+  Libraries/LibCore/CMakeLists.txt
+  AK/CMakeLists.txt
+  AK/kmalloc.cpp
+  AK/Backtrace.h (removed stale source-tree generated-header shadow)
+
+Why:
+- The local upstream checkout did not have vcpkg or mimalloc package
+  config files available.
+- LAGOM_TOOLS_ONLY only needs host generator dependencies, not the GUI,
+  media, URL, Unicode, or browser runtime dependency set.
+- AK was configured to use the system allocator for host tools only.
+  TaterTOS target code and ABI were not changed.
+- The source-tree AK/Backtrace.h was a stale generated-header shadow and
+  blocked the real CMake-generated header.
+
+GENERATED ARTIFACTS
+=====================================================================
+Generated into:
+
+  /home/legacyindieradio/ladybird-upstream/Build/tatertos-generated
+
+Artifacts produced:
+- LibJS/Bytecode/Op.h
+- LibJS/Bytecode/Op.cpp
+- LibJS/Bytecode/OpCodes.h
+- LibWeb CSS generated headers/implementations/IDL support files.
+- LibWeb HTML named character reference files.
+- LibWeb exposed-interface files:
+  IntrinsicDefinitions, WindowExposedInterfaces,
+  DedicatedWorkerExposedInterfaces, SharedWorkerExposedInterfaces.
+- LibWeb binding headers/implementations from upstream IDL.
+
+Integration copied these real generated files into:
+
+  src/user/apps/ladybird/Libraries/LibJS/Bytecode
+  src/user/apps/ladybird/Libraries/LibWeb/Bindings
+  src/user/apps/ladybird/Libraries/LibWeb/CSS
+  src/user/apps/ladybird/Libraries/LibWeb/HTML
+
+The final LibWeb/Bindings directory contains 1,164 source files:
+1,144 generated binding files plus 20 real upstream source binding files,
+including PlatformObject.h, MainThreadVM.*, Serializable.h, Transferable.h,
+Intrinsics.*, and constructor helpers.
+
+SOURCE CORRECTIONS DURING COMPILE
+=====================================================================
+Copied real upstream source files into the TaterTOS tree:
+
+  Libraries/LibWeb/Bindings/*
+  Libraries/LibWeb/DOM/PseudoElement.h
+
+Why:
+- Serializable.h, MainThreadVM.*, AgentType.h, Transferable.h, and other
+  Bindings source files are real upstream source files, not generated
+  artifacts.
+- TaterTOS had real binding source files stranded under Bindings_synced.
+- DOM/PseudoElement.h was still a manual stub and conflicted with the
+  real generated CSS/PseudoElement.h enum.
+
+VERIFICATION
+=====================================================================
+Command:
+
+  make src/user/apps/ladybird/Libraries/LibWeb/DOM/Node.o
+
+Result:
+
+  SUCCESS
+
+Output object:
+
+  src/user/apps/ladybird/Libraries/LibWeb/DOM/Node.o
+
+Notes:
+- The Makefile still emits a duplicate LibJS.a target warning:
+  Makefile:739 overrides Makefile:581.
+- The compile emits existing AK warnings, including literal suffix and
+  offsetof warnings, but no fatal errors.
+
+END fry866
+=====================================================================

@@ -1,0 +1,81 @@
+// TaterTOS64v3 — minimal <cctype> for freestanding C++.
+// Origin log: logs/fry868.txt
+
+#pragma once
+
+namespace std {
+
+inline int isalpha(int ch) noexcept {
+    return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
+}
+
+inline int isspace(int ch) noexcept {
+    return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\v' || ch == '\f' || ch == '\r';
+}
+
+inline int isdigit(int ch) noexcept {
+    return ch >= '0' && ch <= '9';
+}
+
+inline int isalnum(int ch) noexcept {
+    return isalpha(ch) || isdigit(ch);
+}
+
+inline int isupper(int ch) noexcept {
+    return ch >= 'A' && ch <= 'Z';
+}
+
+inline int islower(int ch) noexcept {
+    return ch >= 'a' && ch <= 'z';
+}
+
+inline int isprint(int ch) noexcept {
+    return ch >= 0x20 && ch <= 0x7e;
+}
+
+inline int isgraph(int ch) noexcept {
+    return ch >= 0x21 && ch <= 0x7e;
+}
+
+inline int iscntrl(int ch) noexcept {
+    return (ch >= 0x00 && ch <= 0x1f) || ch == 0x7f;
+}
+
+inline int ispunct(int ch) noexcept {
+    return isgraph(ch) && !isalnum(ch);
+}
+
+inline int isxdigit(int ch) noexcept {
+    return isdigit(ch) || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
+}
+
+inline int isblank(int ch) noexcept {
+    return ch == ' ' || ch == '\t';
+}
+
+inline int toupper(int ch) noexcept {
+    return islower(ch) ? (ch - 'a' + 'A') : ch;
+}
+
+inline int tolower(int ch) noexcept {
+    return isupper(ch) ? (ch - 'A' + 'a') : ch;
+}
+
+} // namespace std
+
+#ifndef TATER_NO_GLOBAL_CCTYPE
+using std::isalpha;
+using std::isspace;
+using std::isdigit;
+using std::isalnum;
+using std::isupper;
+using std::islower;
+using std::isprint;
+using std::isgraph;
+using std::iscntrl;
+using std::ispunct;
+using std::isxdigit;
+using std::isblank;
+using std::toupper;
+using std::tolower;
+#endif

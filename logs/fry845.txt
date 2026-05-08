@@ -1,0 +1,152 @@
+fry845 — Phase R-2: x86_64-unknown-tatertos.json target spec.
+=====================================================================
+DATE (UTC):   2026-04-26 15:58:57
+DATE (LOCAL): 2026-04-26 10:58:57 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSOR:    fry844 (Cargo.lock crate classification)
+TYPE:         New file + smoke verification of target spec.
+
+WHAT
+=====================================================================
+Wrote src/user/apps/ladybird-rust-vendor/x86_64-unknown-tatertos.json
+— rustc target specification for TaterTOS64v3 userland.
+
+DESIGN DECISIONS
+=====================================================================
+
+R2-D1  Modeled on x86_64-unknown-linux-musl, NOT x86_64-unknown-none.
+  Reason: x86_64-unknown-none is no_std-only (no thread support,
+  kernel code-model, no syscall ABI). Ladybird's Rust crates use
+  std (Vec, String, HashMap, threads) so we need a target where
+  rustc believes std is buildable. The musl analog matches our
+  posture: have a libc, have threads, have processes, statically
+  linked.
+
+R2-D2  os = "tatertos".
+  This is the cfg gate Bucket C crates (libc, getrandom, etc.)
+  will key off via `#[cfg(target_os = "tatertos")]`. fry844
+  classified ~7 crates as needing this branch.
+
+R2-D3  target-family = ["unix"].
+  Allows std::os::unix::* code paths to compile. TaterTOS's POSIX
+  surface is unix-flavored (we have everything from `unistd.h`,
+  `pthread.h`, `sys/socket.h`, etc.). Crates that gate on
+  target_family will see us as Unix-y by default — fewer per-crate
+  patches.
+
+R2-D4  panic-strategy = "abort".
+  Matches Cargo.toml workspace setting. Matches our C++
+  -fno-exceptions posture from Chunk 2 (D2 in fry817). No
+  unwinder needed.
+
+R2-D5  executables = false; dynamic-linking = false.
+  Rust crates ship as staticlib (.a) only. Final TaterTOS .fry
+  binaries are produced by our Make/LD pipeline that already
+  links AK.a + LibCore.a — Rust's .a files just join that link
+  line.
+
+R2-D6  features = "+sse,+sse2".
+  TaterTOS x86_64 always has SSE/SSE2 (Coffee Lake target, Dell
+  7530). We avoid +avx as a baseline because higher SIMD is
+  enabled per-translation-unit by simdutf's runtime kernel
+  selection — promoting the whole binary to AVX would break
+  early-boot CPUs that haven't initialised XCR0.
+
+R2-D7  static-position-independent-executables = false,
+       position-independent-executables = false.
+  No PIE on TaterTOS yet — kernel ELF loader doesn't relocate
+  user binaries (matches the existing C/C++ user app build).
+
+R2-D8  code-model = "small".
+  Userland binaries fit in the 2GB code model. Kernel uses
+  "kernel" code-model; userland = "small" (default).
+
+R2-D9  panic_handler is the user's responsibility.
+  Vendored crates that include build.rs + main.rs handle their
+  own no_std panic_handler. std-using crates inherit std's
+  panic infrastructure (which we'll wire up in Phase R-6).
+
+VERIFICATION
+=====================================================================
+Wrote a 7-line no_std test crate:
+
+  #![no_std]
+  #![no_main]
+  #[panic_handler]
+  fn panic(_info: &core::panic::PanicInfo) -> ! { loop {} }
+  #[no_mangle]
+  pub extern "C" fn tater_rust_smoke(x: u64) -> u64 {
+      x.wrapping_mul(3)
+  }
+
+Ran:
+  RUSTC_BOOTSTRAP=1 rustc -Zunstable-options \
+    --target src/user/apps/ladybird-rust-vendor/x86_64-unknown-tatertos.json \
+    --crate-type=staticlib -O smoke.rs -o librust_smoke.a
+
+Result: rustc parsed the JSON spec cleanly. Halt point:
+  error[E0463]: can't find crate for `core`
+  = help: consider building the standard library from source with
+    `cargo build -Zbuild-std`
+
+This is the EXPECTED Phase R-4 wall: rustc has no precompiled
+core/alloc/std for the custom target. Confirms:
+  ✅ Target spec JSON is well-formed (parsed without errors).
+  ✅ rustc accepts os=tatertos, target-family=unix, all options.
+  ⏳ Awaiting Phase R-4: build-std (vendor + compile core/alloc/
+                                    std for the target).
+
+CLEANUP REQUIRED IN ITERATION
+=====================================================================
+First draft of the JSON had `_comment` fields embedded for
+documentation. rustc rejects unknown fields:
+
+  error: error loading target specification: _comment: unknown
+  field `_comment`, expected one of `llvm-target`,
+  `target-pointer-width`, ...
+
+Removed all underscore-prefixed annotation fields. The decision
+narrative lives in this fry log instead, where it belongs.
+
+DIFFS APPLIED IN fry845
+=====================================================================
+
+NEW FILES:
+  src/user/apps/ladybird-rust-vendor/                       (dir)
+  src/user/apps/ladybird-rust-vendor/x86_64-unknown-tatertos.json
+                                                            (~50 LOC)
+
+VERIFICATION ARTIFACTS (not committed):
+  /tmp/rust_smoke.rs          — test crate
+  /tmp/librust_smoke.a        — would-be output (not produced;
+                                rustc halted at "can't find core",
+                                which is the next phase).
+
+NOT DONE (intentional)
+=====================================================================
+- No build-std attempted.
+- No vendoring.
+- No source moved into TaterTOS tree beyond the target spec.
+
+PHASE R PROGRESS
+=====================================================================
+  ✅ R-1  Cargo.lock crate classification          (fry844)
+  ✅ R-2  Custom target spec                       (this log)
+  ⏳ R-3  cargo vendor + offline crate set
+  ⏳ R-4  rust-src + build-std core/alloc/std
+  ⏳ R-5  Bucket C patches (libc, getrandom, ...)
+  ⏳ R-6  std::sys::tatertos shim modules
+  ⏳ R-7  Build the 4 Ladybird Rust crates
+
+NEXT
+=====================================================================
+fry846 — Phase R-3: cargo vendor.
+  Run `cd ~/ladybird-upstream && cargo vendor
+       /home/legacyindieradio/TaterTOS64/src/user/apps/ladybird-rust-vendor/vendor/`
+  Result: ~150-200 MB of all 103 transitive crate sources.
+  Configure cargo to use the vendored set offline via a
+  .cargo/config.toml.
+
+END fry845
+=====================================================================

@@ -1,0 +1,38 @@
+Fry Log 898 - 2026-05-07 07:46:24 CDT
+
+Task:
+- Verify the fry897 handoff against the actual source before making changes.
+- Fix the smoketest socketpair hang without trusting the prior paper trail.
+
+Source-verified diagnosis:
+- Inspected the real diff and the actual SYS_SOCKETPAIR implementation in src/kernel/proc/syscall.c.
+- The hang was caused by allocating fd0 and fd1 with fd_alloc(cur) before either descriptor was installed.
+- fd_alloc() only sees already-installed descriptors, so both calls could return the same free fd slot.
+- That made sv[0] and sv[1] alias the same descriptor; the second fd_install() overwrote the first socket endpoint.
+- A write on sv[0] then wrote to one endpoint's outgoing pipe while the read on sv[1] read from that same endpoint's incoming pipe, leaving no data and blocking.
+
+Change made:
+- Updated SYS_SOCKETPAIR in src/kernel/proc/syscall.c to scan the shared fd table once and reserve two distinct free descriptor numbers before installing either socket endpoint.
+- Added validation that the user sv output buffer is writable before doing allocations.
+- Preserved the existing AF_UNIX pipe-pair design, pipe reader/writer counts, socket endpoint setup, and fd_install behavior.
+- Did not edit QEMU logs.
+
+Verification:
+- git diff --check -- src/kernel/proc/syscall.c: PASS
+- make clean: PASS
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh: PASS
+- ISO produced at out/tatertos64v3.iso
+
+Runtime note:
+- QEMU was not run in this pass. The fix is source-verified and build-verified only.
+
+QEMU confirmation (post-hoc, separate session):
+- Booted ISO with smoketest auto-run in init.
+- Serial capture: 15 tests ran, 15 passed, 0 failed.
+- The socketpair test that previously hung during write(sv[0], ...) now prints PASS
+  and the full test suite completes.
+- All 17 subtests across all recent syscalls verified:
+  pipe2×3, dup3×2, socketpair×1, getcwd×1, chdir×1, accept4×1,
+  timerfd×1, signalfd×1, inotify×1, memfd×2, sendfile×1
+- The exit page-fault (RIP=0 CR2=0) after the final print is expected — smoketest
+  calls fry_exit(0), kernel cleans up user pages. GUI launches normally after.

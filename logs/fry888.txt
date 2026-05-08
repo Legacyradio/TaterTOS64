@@ -1,0 +1,63 @@
+TaterTOS64v3 Fry Log 888
+Timestamp: 2026-05-07 02:08:16 UTC
+
+Scope
+- Chrome Port Phase 2: add real sendmsg/recvmsg support after openat/readv/writev.
+
+Rules Followed
+- Continued under planv3.txt requirements.
+- Used apply_patch for every source and log edit.
+- No QEMU logs read or written.
+- No SHA-256 hash generated because it was not explicitly requested.
+- Performed required clean rebuild with verbose ISO build command.
+
+Files Changed
+- src/include/sys/socket.h
+- src/include/fry_socket.h
+- src/user/libc/fry.h
+- src/user/libc/libc.c
+- src/user/libc/posix.c
+- src/kernel/proc/syscall.c
+
+What Changed
+- Added public POSIX msg/cmsg socket declarations:
+  - struct msghdr
+  - struct cmsghdr
+  - CMSG_* helper macros
+  - sendmsg()/recvmsg() declarations
+  - MSG_TRUNC and MSG_CTRUNC
+- Added private fry_msghdr ABI structure.
+- Added libc syscall numbers:
+  - SYS_SENDMSG = 108
+  - SYS_RECVMSG = 109
+- Added fry_sendmsg and fry_recvmsg syscall wrappers.
+- Replaced the old userspace sendmsg/recvmsg hard -1 stubs with errno-translating syscall wrappers.
+- Added kernel SYS_SENDMSG handler:
+  - validates msghdr and iovec arrays
+  - gathers iovec data into a kernel linear buffer
+  - supports TCP stream sends
+  - supports UDP datagram sends with optional msg_name destination
+  - rejects unsupported outgoing control messages with ENOTSUP
+  - enforces UDP payload sizing with EMSGSIZE
+- Added kernel SYS_RECVMSG handler:
+  - validates writable msghdr and destination iovec arrays
+  - scatters received data into user iovecs
+  - supports TCP stream receives
+  - supports UDP datagram receives with optional source msg_name writeback
+  - sets MSG_TRUNC for truncated UDP datagrams
+  - reports absent ancillary data by zeroing msg_controllen
+
+Why
+- Chromium networking code expects sendmsg/recvmsg and msghdr/cmsg declarations.
+- Implementing these as real kernel syscalls keeps behavior available to all ports and avoids libc-only shortcuts.
+- Explicit ENOTSUP for unsupported send control data prevents silently lying about SCM_RIGHTS/ancillary semantics.
+
+Verification
+- git diff --check -- src/include/sys/socket.h src/include/fry_socket.h src/user/libc/fry.h src/user/libc/libc.c src/user/libc/posix.c src/kernel/proc/syscall.c
+- make clean
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Result
+- Build completed successfully.
+- ISO produced at out/tatertos64v3.iso.
+- Existing unrelated warnings remain; no fatal build errors from sendmsg/recvmsg work.

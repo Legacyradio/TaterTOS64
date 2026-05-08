@@ -1,0 +1,48 @@
+2026-04-28 15:21:38 CDT
+
+Ladybird port continuation audit.
+
+Rules followed:
+- Continued step-by-step from the prior Ladybird audit.
+- Did not add fake/minimal implementations.
+- Logged code changes and validation results here before continuing further.
+- Did not inspect or use QEMU logs.
+- Did not restore, rebuild, or reactivate TaterSurf.
+
+Completed work:
+- Expanded the real LibWeb build manifest in Makefile beyond the prior narrow DOM/Bindings subset.
+- Added real LibWeb DOM, HTML, EventLoop, CustomElements, CSS, Painting, WebIDL, DOMURL, Selection, and selected Bindings source files to LibWeb.a.
+- Added a generic nested LibWeb compile rule so real source files under LibWeb subdirectories can be compiled without one-off rules.
+- Removed LibWeb/HTML/RenderingThread.cpp from the active manifest after a real compile failure on missing Skia header core/SkCanvas.h.
+- Removed LibWeb/Bindings/IntrinsicDefinitions.cpp from the active manifest after it included missing generated/worker-era headers such as LibWeb/HTML/SharedWorkerGlobalScope.h.
+- Removed LibWeb/Bindings/WindowProxy.o from the active Bindings manifest because this tree has WindowProxy under HTML, not a generated Bindings/WindowProxy.cpp.
+
+Code changes and why:
+- src/user/apps/ladybird/Libraries/LibWeb/Painting/DisplayListCommand.cpp
+  - Changed PaintConicGradient::dump() to stop reading conic_gradient_data.start_angle.
+  - Reason: this vendored snapshot's ConicGradientData only contains interpolation_method; the start_angle field is not present. No replacement value was invented.
+- src/user/apps/ladybird/Libraries/LibWeb/DOMURL/URLSearchParams.cpp
+  - Converted encoder_for() Optional<Encoder&> usage to pass encoder.ptr() into URL::Parser::percent_encode_after_encoding().
+  - Reason: this snapshot's Parser API expects TextCodec::Encoder*, while URLSearchParams.cpp was dereferencing the optional reference.
+- Makefile
+  - Expanded LibWeb source coverage and removed stale/nonexistent generated binding objects from the active build.
+  - Reason: build real available source instead of stubbing missing symbols or compiling generated files that do not match this source tree.
+
+Validation:
+- make libweb: PASS
+  - Result: src/user/apps/ladybird/LibWeb.a archives successfully with the expanded real source set.
+- make web_smoke: FAIL at link
+  - Captured temporary linker output: /tmp/tatertos64_web_smoke_fry877.log
+  - Current undefined-reference count: 1861.
+
+Current blocker categories from web_smoke:
+- Remaining LibWeb feature libraries not yet in the manifest: HTML parser/document lifecycle, settings objects, fetch, platform timers, animations, view transitions, intersection observer, editing, CSS parser/style value support, tag/namespace generated names, and HTTP cookie/header support.
+- Gfx/Skia-related pieces still unresolved: Gfx::ImmutableBitmap, Gfx::GlyphRun, Gfx::Filter, and color conversion functions. Prior probes showed ImmutableBitmap.cpp, Filter.cpp, and TextLayout.cpp require Skia headers.
+- Web bindings intrinsic generation remains unresolved: create_web_prototype_and_constructor specializations require either a matching generated IntrinsicDefinitions.cpp for this exact tree or broader real binding coverage.
+- LibJS blockers remain: Rust raw FFI exports, Intl, Temporal, Unicode/case/normalization, Proxy, and related runtime support.
+
+Important notes:
+- The unresolved count increased because more real LibWeb object files are now linked and therefore expose more real dependencies.
+- This is not a shortcut regression: LibWeb now builds as a real archive, but web_smoke now reveals the next dependency layer.
+- No host Rust archive was added as a final solution.
+- No fake syscall/libc/Web/Gfx stubs were added.

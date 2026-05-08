@@ -1,0 +1,15 @@
+// TaterTOS64v3 — empty <iostream> stub.
+// Origin log: logs/fry837.txt
+//
+// AK does not use std::cin/std::cout/std::cerr — it has its own
+// I/O via libc fprintf/printf to stdin/stdout/stderr (declared in
+// <stdio.h>). Some upstream code (simdutf/src/scalar/base64.h:8)
+// includes <iostream> but does not actually reference any stream
+// symbols. An empty header satisfies the include directive.
+//
+// If a future port actually USES std::cout etc., this will fail
+// at link time and we'll engineer a real implementation. That
+// failure is preferable to silently shimming something that
+// doesn't actually print anywhere.
+
+#pragma once

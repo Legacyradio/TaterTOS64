@@ -1,0 +1,20 @@
+// TaterTOS64v3 — <climits>. Wraps <limits.h> (compiler-builtin).
+// Origin log: logs/fry832.txt + fry836.txt
+#pragma once
+#include <limits.h>
+
+/*
+ * The cross-compiler's freestanding <limits.h> only provides the
+ * pre-C99 macros (CHAR_/SCHAR_/SHRT_/INT_/LONG_*). C99 added the
+ * long-long flavors. Define them here using compiler builtins so
+ * <climits> always provides the full C99 set.
+ */
+#ifndef LLONG_MAX
+#  define LLONG_MAX  __LONG_LONG_MAX__
+#endif
+#ifndef LLONG_MIN
+#  define LLONG_MIN  (-LLONG_MAX - 1LL)
+#endif
+#ifndef ULLONG_MAX
+#  define ULLONG_MAX (LLONG_MAX * 2ULL + 1ULL)
+#endif

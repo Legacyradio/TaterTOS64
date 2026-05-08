@@ -1,0 +1,19 @@
+[2026-05-07 01:44:53 UTC] Phase: planv3 rules acknowledgement
+Why: User explicitly requested strict adherence to planv3.txt for TaterTOS64v3,
+with no shortcuts, no cut corners, professional work only, and logging every step.
+
+Completed:
+- Located and read TaterTOS64/planv3.txt.
+- Confirmed the binding RULES section at the top of the plan.
+- Confirmed future work must proceed step-by-step, use apply_patch for edits,
+  log each completed step in its own logs/fryN.txt, include a "why" for code
+  changes, keep branding as TaterTOS64v3, preserve UEFI-only boot assumptions,
+  use clean + verbose rebuilds by default, avoid QEMU logs unless expressly
+  authorized, keep fixes hardware-agnostic, and only record SHA-256 hashes after
+  user-requested rebuilds or explicit hash requests.
+
+Code changes:
+- None.
+
+Tests:
+- Not run. This was a rules/context acknowledgement step only.

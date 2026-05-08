@@ -1,0 +1,54 @@
+Fry Log 908 - Chromium Rust stdlib blocker / Rust target bringup
+Timestamp: 2026-05-07 17:30 CDT
+Author: Hermes Agent
+
+Chromium revision: bbac87806289b0b55b10bddc66b3155b68dcaab5
+Checkout: /home/legacyindieradio/chromium-tatertos/src/
+Build dir: out/tatertos
+
+Rust host toolchain (build scripts / proc macros):
+  /home/legacyindieradio/chromium-tatertos/src/third_party/rust-toolchain/bin/rustc
+  rustc 1.96.0-dev (4c4205163abcbd08948b3efab796c543ba1ea687-2-llvmorg-23-init-10931-g20b6ec66 chromium)
+
+System Rust (not used by Chromium build):
+  rustc 1.95.0 (Arch Linux)
+
+Current GN config maps tatertos to:
+  rust_abi_target = "x86_64-unknown-none"
+  (build/config/rust.gni, build/rust/known-target-triples.txt)
+
+Blocker:
+  Rust targets (alloc_error_handler_impl_ffi, scoped_refptr, callback, etc.)
+  compile for x86_64-unknown-none via rustc. The Chromium Rust toolchain has
+  no prebuilt stdlib for this target. The build-std-from-source path tries
+  to compile Rust std but fails because x86_64-unknown-none has no OS
+  support (errno, thread_local, fill_bytes, etc.)
+
+Previous state (before hard reset):
+  - 2331/2336 C++ targets compile for tatertos toolchain
+  - 5 Rust stdlib targets fail
+  - 12/12 chrome_probe tests pass in QEMU
+  - Host build tools toolchain works (small_ctor, proc_macro2, etc.)
+
+Plan — Option 3: Proper Rust target bringup for TaterTOS
+
+Step 1: Define a real TaterTOS Rust target triple.
+  - Target JSON (target-spec): x86_64-unknown-tatertos.json
+  - Built on top of x86_64-unknown-none but with sufficient OS primitives
+    (allocator, panic_abort, minimal TLS, errno) for Chromium's Rust surface.
+
+Step 2: Build a real Rust sysroot for that target.
+  - Build core, compiler_builtins, alloc for x86_64-unknown-none initially
+    (these don't need OS primitives).
+  - Then add minimal std support layer for Chromium's needs.
+
+Step 3: Wire Chromium GN to use the real TaterTOS Rust target/sysroot.
+  - Update rust_abi_target in build/config/rust.gni
+  - Point rust_sysroot to the built sysroot
+  - Set use_chromium_rust_toolchain = false (we're custom now)
+
+Step 4: Iterate on missing OS primitives.
+  - First missing Rust std primitive after core+alloc: TBD
+  - Each missing primitive maps to a TaterTOS libc gap.
+
+Approach recorded in reference doc.

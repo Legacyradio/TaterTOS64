@@ -1,0 +1,61 @@
+// TaterTOS64v3 — minimal <array> for freestanding C++.
+// Origin log: logs/fry837.txt
+//
+// std::array<T, N> — fixed-size aggregate. simdutf uses it for
+// base64 lookup tables. Real implementation; no SBO, no allocation.
+
+#pragma once
+
+#include <stddef.h>
+
+namespace std {
+
+template<typename T, size_t N>
+struct array {
+    using value_type      = T;
+    using size_type       = size_t;
+    using difference_type = long;
+    using reference       = T&;
+    using const_reference = T const&;
+    using pointer         = T*;
+    using const_pointer   = T const*;
+    using iterator        = T*;
+    using const_iterator  = T const*;
+
+    T _data[N ? N : 1];
+
+    constexpr T& operator[](size_type i)             noexcept { return _data[i]; }
+    constexpr T const& operator[](size_type i) const noexcept { return _data[i]; }
+
+    constexpr T& at(size_type i)                     noexcept { return _data[i]; }
+    constexpr T const& at(size_type i)         const noexcept { return _data[i]; }
+
+    constexpr T*       data()       noexcept { return _data; }
+    constexpr T const* data() const noexcept { return _data; }
+
+    constexpr T&       front()       noexcept { return _data[0]; }
+    constexpr T const& front() const noexcept { return _data[0]; }
+    constexpr T&       back()        noexcept { return _data[N - 1]; }
+    constexpr T const& back()  const noexcept { return _data[N - 1]; }
+
+    constexpr iterator       begin()        noexcept { return _data; }
+    constexpr const_iterator begin() const  noexcept { return _data; }
+    constexpr const_iterator cbegin() const noexcept { return _data; }
+    constexpr iterator       end()          noexcept { return _data + N; }
+    constexpr const_iterator end() const    noexcept { return _data + N; }
+    constexpr const_iterator cend() const   noexcept { return _data + N; }
+
+    constexpr size_type size()  const noexcept { return N; }
+    constexpr bool      empty() const noexcept { return N == 0; }
+    constexpr size_type max_size() const noexcept { return N; }
+
+    constexpr void fill(T const& value) noexcept {
+        for (size_type i = 0; i < N; ++i) _data[i] = value;
+    }
+};
+
+// CTAD deduction guide.
+template<typename T, typename... U>
+array(T, U...) -> array<T, 1 + sizeof...(U)>;
+
+} // namespace std

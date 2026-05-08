@@ -1,0 +1,163 @@
+fry850 — Browser port rule-repair plan and execution log
+=====================================================================
+DATE (UTC):   2026-04-26 17:26:21 UTC
+DATE (LOCAL): 2026-04-26 12:26:21 CDT
+AUTHOR:       Codex
+PARENT:       planv3.txt
+PRECURSOR:    fry849
+TYPE:         Rule-repair plan. Execution entries appended below.
+
+WHY THIS LOG EXISTS
+=====================================================================
+User agreed the next logical move is to fix rule violations before
+continuing browser/Ladybird feature work, and explicitly requested
+logging of everything meaningful done during the repair pass.
+
+BOUNDARIES
+=====================================================================
+This pass is not browser feature work. It will not advance Ladybird,
+TaterSurf, Rust, LibJS, LibWeb, or TaterWin functionality.
+
+No build, no QEMU, no QEMU logs, no SHA-256 verification.
+
+Allowed actions:
+  1. Remove generated build outputs from browser-related trees so source
+     state is reviewable.
+  2. Remove root-level generated smoke/browser binaries that can be
+     rebuilt.
+  3. Re-check git status and artifact inventory after cleanup.
+  4. Append every completed cleanup step to this log.
+
+Not allowed in this pass:
+  - Reverting tracked user/Claude source changes.
+  - Editing Ladybird source, libc headers, Makefile, Rust target config,
+    or vendored crate source.
+  - Deleting vendored source packages or license files.
+  - Pruning Windows/Linux Rust vendor packages yet, because cargo-vendor
+    checksum/source graph needs its own plan.
+
+PLAN
+=====================================================================
+P1. Record pre-clean artifact inventory.
+P2. Remove generated C/C++ browser artifacts:
+    src/user/apps/ladybird/**/*.o
+    src/user/apps/ladybird/**/*.a
+    src/user/apps/ladybird-3rd/**/*.o
+P3. Remove generated Rust build outputs only:
+    src/user/apps/ladybird-rust-vendor/smoke/target/
+    Do not touch vendor/ source or vendor binary package contents yet.
+P4. Remove root-level generated binaries:
+    ak_libcore_smoke.elf
+    ak_libcore_smoke.fry
+    tatersurf.elf
+    tatersurf.fry
+P5. Re-run artifact inventory and git status.
+P6. Stop and report. Do not start next repair area without a new plan.
+
+EXECUTION LOG
+=====================================================================
+[2026-04-26 17:26 UTC / 12:26 CDT] P1 complete — pre-clean artifact
+inventory recorded.
+
+Findings:
+  - C/C++ generated artifacts under src/user/apps/ladybird and
+    src/user/apps/ladybird-3rd:
+      1 simdutf object
+      AK.a
+      LibCore.a
+      37 AK object files
+      35 LibCore object files
+      1 smoke-test object
+  - Rust smoke target contains 176 generated files.
+  - Root generated binaries present:
+      ak_libcore_smoke.elf 121312 bytes
+      ak_libcore_smoke.fry 121328 bytes
+      tatersurf.elf        2515656 bytes
+      tatersurf.fry        2515672 bytes
+  - Browser-tree generated/binary artifact count before cleanup: 144.
+
+Why: establishes the exact generated-output state before any deletion,
+so the repair pass is auditable and bounded.
+
+[2026-04-26 17:27 UTC / 12:27 CDT] P2 complete — removed generated
+C/C++ browser outputs only.
+
+Command:
+  find src/user/apps/ladybird src/user/apps/ladybird-3rd -type f \
+    \( -name '*.o' -o -name '*.a' \) -delete
+
+Verification:
+  find src/user/apps/ladybird src/user/apps/ladybird-3rd -type f \
+    \( -name '*.o' -o -name '*.a' \) | wc -l
+  Result: 0
+
+Why: AK.a, LibCore.a, simdutf.o, AK/LibCore .o files, and the smoke
+test .o were generated build products mixed into the untracked source
+tree. Removing them makes the source/vendor state reviewable without
+discarding source code.
+
+[2026-04-26 17:28 UTC / 12:28 CDT] P3 complete — removed Rust smoke
+build output only.
+
+Command:
+  rm -rf src/user/apps/ladybird-rust-vendor/smoke/target
+
+Verification:
+  test ! -e src/user/apps/ladybird-rust-vendor/smoke/target
+  Result: 0
+
+Remaining smoke source files:
+  src/user/apps/ladybird-rust-vendor/smoke/Cargo.lock
+  src/user/apps/ladybird-rust-vendor/smoke/Cargo.toml
+  src/user/apps/ladybird-rust-vendor/smoke/src/lib.rs
+
+Why: smoke/target was generated Cargo output. Removing it repairs the
+source/build-output separation without touching vendored Rust source or
+Cargo checksum state.
+
+[2026-04-26 17:29 UTC / 12:29 CDT] P4 complete — removed root-level
+generated browser/smoke binaries.
+
+Command:
+  rm -f ak_libcore_smoke.elf ak_libcore_smoke.fry tatersurf.elf tatersurf.fry
+
+Verification:
+  find . -maxdepth 1 -type f \( -name 'ak_libcore_smoke.*' -o -name 'tatersurf.*' \)
+  Result: no files
+
+Why: these .elf/.fry files were generated build outputs in the repo
+root. Removing them does not remove source; they can be rebuilt by the
+documented Makefile targets when a rebuild is explicitly requested.
+
+[2026-04-26 17:30 UTC / 12:30 CDT] P5 complete — post-clean inventory
+recorded.
+
+Generated-looking artifacts remaining under browser trees:
+  src/user/apps/ladybird-rust-vendor/vendor/windows_aarch64_gnullvm/lib/libwindows.0.53.0.a
+  src/user/apps/ladybird-rust-vendor/vendor/windows_i686_gnu/lib/libwindows.0.53.0.a
+  src/user/apps/ladybird-rust-vendor/vendor/windows_i686_gnullvm/lib/libwindows.0.53.0.a
+  src/user/apps/ladybird-rust-vendor/vendor/windows_x86_64_gnu/lib/libwindows.0.53.0.a
+  src/user/apps/ladybird-rust-vendor/vendor/windows_x86_64_gnullvm/lib/libwindows.0.53.0.a
+  src/user/apps/ladybird-rust-vendor/vendor/wit-bindgen-0.45.1/src/rt/libwit_bindgen_cabi.a
+  src/user/apps/ladybird-rust-vendor/vendor/wit-bindgen-0.45.1/src/rt/wit_bindgen_cabi.o
+  src/user/apps/ladybird-rust-vendor/vendor/wit-bindgen-0.45.1/src/rt/wit_bindgen_cabi_realloc.o
+  src/user/apps/ladybird-rust-vendor/vendor/wit-bindgen-0.45.1/src/rt/wit_bindgen_cabi_wasip3.o
+  src/user/apps/ladybird-rust-vendor/vendor/wit-bindgen/src/rt/libwit_bindgen_cabi.a
+  src/user/apps/ladybird-rust-vendor/vendor/wit-bindgen/src/rt/wit_bindgen_cabi_realloc.o
+  src/user/apps/ladybird-rust-vendor/vendor/wit-bindgen/src/rt/wit_bindgen_cabi_wasip3.o
+
+These were NOT removed in this pass because they are inside cargo-vendor
+package source trees. Removing them may break cargo checksum integrity.
+They require a separate Rust-vendor cleanup plan.
+
+Post-clean sizes:
+  src/user/apps/ladybird              2.2M
+  src/user/apps/ladybird-3rd          14M
+  src/user/apps/ladybird-rust-vendor  196M
+
+Post-clean browser-tree file count:
+  10300
+
+git status remains dirty, as expected, because source/vendor/log files
+are still untracked or modified. The repaired part is source/build-output
+separation for generated artifacts we can safely regenerate.

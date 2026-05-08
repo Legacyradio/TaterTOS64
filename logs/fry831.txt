@@ -1,0 +1,133 @@
+fry831 — D3-option-B: minimal libc++ vendor. Build #4. Error #4
+         captured: stdlib.h not found.
+=====================================================================
+DATE (UTC):   2026-04-26 04:06:14
+DATE (LOCAL): 2026-04-25 23:06:14 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSORS:   fry827, fry828, fry829, fry830
+TYPE:         8 new headers + Makefile flag + 4th build attempt.
+
+WHAT THIS LOG DID
+=====================================================================
+
+DIFFS — 8 NEW FILES + 1 MAKEFILE EDIT
+=====================================================================
+Created src/include/c++/ directory. Bare-name files (no .h ext)
+matching C++ stdlib convention.
+
+  src/include/c++/initializer_list   — std::initializer_list<T>
+                                       (~50 LOC)
+  src/include/c++/new                — std::nothrow_t, std::nothrow,
+                                       std::align_val_t, placement
+                                       new + paired delete declarations
+                                       (~45 LOC)
+  src/include/c++/utility            — std::move, std::forward,
+                                       std::declval, std::swap,
+                                       std::exchange, std::pair,
+                                       std::make_pair, std::integer_sequence,
+                                       std::index_sequence,
+                                       std::make_index_sequence
+                                       (~95 LOC)
+  src/include/c++/memory             — std::addressof,
+                                       std::construct_at,
+                                       std::destroy_at
+                                       (~30 LOC)
+  src/include/c++/iterator           — iterator category tags
+                                       (input_iterator_tag,
+                                       random_access_iterator_tag, etc.),
+                                       iterator_traits + ptr specializations,
+                                       distance, advance, next, prev
+                                       (~70 LOC)
+  src/include/c++/cstddef            — std::size_t, std::ptrdiff_t,
+                                       std::nullptr_t, std::max_align_t,
+                                       std::byte
+                                       (~25 LOC)
+  src/include/c++/cmath              — std::fabs/copysign/signbit
+                                       + sin/cos/tan/sqrt/pow/exp/log/etc.
+                                       (forwarders to TaterTOS <math.h>)
+                                       (~50 LOC)
+  src/include/c++/system_error       — std::errc enum class
+                                       (subset of POSIX errno values)
+                                       (~50 LOC)
+
+Total ~415 LOC across 8 files. All template/inline; zero link surface.
+
+Makefile edit: AK_CXXFLAGS gained `-isystem src/include/c++` (placed
+before the -I flags so the C++ stdlib path is treated as system
+includes — suppresses -Wall/-Wextra warnings on the shim itself
+even though the shim shouldn't generate any).
+
+ENGINEERING NOTES (per file)
+=====================================================================
+- initializer_list: matches the libstdc++/libc++ ABI exactly (private
+  ctor with const T* + size_t in that order — the compiler constructs
+  initializer_list directly from braced-init-lists via this layout).
+- new: declares the global operator new/delete signatures AK's
+  kmalloc.cpp implements. Placement new is inline. nothrow_t has the
+  required `extern` declaration; the actual `nothrow` instance is
+  defined in AK/kmalloc.cpp under the AK_OS_SERENITY block in
+  upstream — verify in fry832 that AK_OS_TATERTOS path also defines it
+  (likely needed addition).
+- utility: uses __make_integer_seq builtin (gcc/clang both ship it).
+- memory: uses __builtin_addressof — no operator& dance needed.
+- iterator: iterator_traits with raw pointer specialization is
+  sufficient for AK's IntrusiveList / RedBlackTree / Iterator.h.
+- cstddef: max_align_t = long double (16-byte align on x86_64).
+- cmath: forwards to libm symbols already in src/user/libc/math.c.
+- system_error: only enum class errc — no error_code/error_category
+  machinery (AK doesn't use those).
+
+BUILD #4 RESULT
+=====================================================================
+  Past Error #1 (unistd.h). Cleared in fry829.
+  Past Error #2 (sys/types.h). Cleared in fry830.
+  Past Error #3 (memory). Cleared in this log.
+
+  Failed at Error #4:
+
+  src/user/apps/ladybird/AK/kmalloc.h:13:10:
+  fatal error: stdlib.h: No such file or directory
+
+  Compile chain reached:
+    Assertions.cpp -> Format.h -> CheckedFormatString.h
+    -> AllOf.h -> Find.h -> Optional.h -> kmalloc.h
+
+  The build advanced through 7 levels of header resolution that
+  previously failed — confirms the libc++ shim works.
+
+PROGRESS
+=====================================================================
+Build successfully resolved every header in the C++ stdlib chain
+AK uses (initializer_list, new, utility, memory, iterator, cstddef,
+cmath, system_error — although it hasn't reached cmath/system_error
+yet, since the build stopped earlier).
+
+The new error #4 (stdlib.h) is the same class as unistd.h and
+sys/types.h — TaterTOS userland has the symbols (malloc, free, etc.
+in src/user/libc/libc.h) but no top-level <stdlib.h> header.
+
+WHY — same class as Error #1 (unistd.h) and Error #2 (sys/types.h)
+=====================================================================
+TaterTOS lacks a <stdlib.h> top-level header. AK/kmalloc.h:13
+attempts the canonical POSIX include for malloc/free declarations.
+
+FIX FOR fry832 (next log)
+=====================================================================
+Engineer src/include/stdlib.h. Forward to libc.h's existing
+malloc/calloc/realloc/free/aligned_alloc/posix_memalign + supporting
+declarations.
+
+NOT DONE (intentional — discipline)
+=====================================================================
+- No fix for Error #4 attempted yet.
+- libstdc++ shim is the move; explain (this log) follows.
+- Build still fails at Assertions.cpp (file 1 of 37).
+
+NEXT
+=====================================================================
+fry832 — Engineer src/include/stdlib.h. Build #5. Capture Error #5.
+        Stop.
+
+END fry831
+=====================================================================

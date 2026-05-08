@@ -8,21 +8,13 @@
  */
 
 #include "libc.h"
+#include <math.h>
+#include <fenv.h>
 #include <stdint.h>
 
 /* -----------------------------------------------------------------------
  * Constants
  * ----------------------------------------------------------------------- */
-
-#define M_PI        3.14159265358979323846
-#define M_PI_2      1.57079632679489661923
-#define M_E         2.71828182845904523536
-#define M_LN2       0.69314718055994530942
-#define M_LN10      2.30258509299404568402
-#define M_LOG2E     1.44269504088896340736
-#define M_LOG10E    0.43429448190325182765
-#define M_SQRT2     1.41421356237309504880
-#define M_SQRT1_2   0.70710678118654752440
 
 static const double DBL_HUGE = 1e308;
 const fenv_t __fenv_dfl_env = { FE_TONEAREST, 0u };
@@ -163,7 +155,9 @@ double round(double x) {
 float roundf(float x) { return (float)round((double)x); }
 
 long lround(double x) { return (long)round(x); }
+long lroundf(float x) { return (long)round((double)x); }
 long long llround(double x) { return (long long)round(x); }
+long long llroundf(float x) { return (long long)round((double)x); }
 
 long lrint(double x) { return (long)round(x); }
 long long llrint(double x) { return (long long)round(x); }
@@ -181,6 +175,21 @@ double nextafter(double x, double y) {
     if ((x < y) == (x > 0.0)) ux.u++;
     else ux.u--;
     return ux.d;
+}
+
+float nextafterf(float x, float y) {
+    union { float f; uint32_t u; } ux, uy;
+    ux.f = x; uy.f = y;
+    if (__builtin_isnan(x) || __builtin_isnan(y)) return x + y;
+    if (ux.u == uy.u) return y;
+    if (x == 0.0f) {
+        ux.u = 1;
+        if (__builtin_signbit(y)) ux.u |= ((uint32_t)1 << 31);
+        return ux.f;
+    }
+    if ((x < y) == (x > 0.0f)) ux.u++;
+    else ux.u--;
+    return ux.f;
 }
 
 double trunc(double x) {
@@ -239,6 +248,8 @@ double cbrt(double x) {
     }
     return neg ? -g : g;
 }
+
+float cbrtf(float x) { return (float)cbrt((double)x); }
 
 double hypot(double x, double y) {
     return sqrt(x * x + y * y);
@@ -502,6 +513,13 @@ double acos(double x) {
 }
 
 float acosf(float x) { return (float)acos((double)x); }
+void sincosf(float x, float *s, float *c) {
+    *s = sinf(x);
+    *c = cosf(x);
+}
+
+double fma(double x, double y, double z) { return x * y + z; }
+float fmaf(float x, float y, float z) { return x * y + z; }
 
 /* -----------------------------------------------------------------------
  * Hyperbolic: sinh, cosh, tanh
@@ -524,7 +542,6 @@ double tanh(double x) {
     return (e2x - 1.0) / (e2x + 1.0);
 }
 
-/* Inverse hyperbolic functions */
 double acosh(double x) {
     if (x < 1.0) return __builtin_nan("");
     return log(x + sqrt(x * x - 1.0));

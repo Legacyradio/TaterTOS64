@@ -1,0 +1,170 @@
+fry839 — AK::Traits<pthread_t> + libc.h extern "C" wrap + many
+         POSIX shims. 27 of 35 LibCore .cpp files compiled (77%).
+=====================================================================
+DATE (UTC):   2026-04-26 14:09:31
+DATE (LOCAL): 2026-04-26 09:09:31 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSOR:    fry838 (11/35 LibCore .cpp)
+
+DIFFS APPLIED — 7 new headers + 5 patches
+=====================================================================
+
+A. NEW POSIX HEADERS
+   src/include/arpa/inet.h        inet_pton/inet_ntop/inet_addr,
+                                  struct in_addr/in6_addr (guarded)
+   src/include/netinet/in.h       sockaddr_in6, IPPROTO_*, INADDR_*
+   src/include/sys/un.h           sockaddr_un, AF_UNIX
+   src/include/sys/select.h       fd_set + FD_ZERO/SET/CLR/ISSET +
+                                  select/pselect
+
+B. NEW UPSTREAM HEADERS COPIED
+   src/user/apps/ladybird/Libraries/LibCore/Platform/ScopedAutoreleasePool.h
+
+C. AK::Traits<pthread_t> SPECIALIZATION (real engineering)
+   AK/Traits.h — appended TaterTOS-gated specialisation:
+     template<>
+     struct Traits<::pthread_t> : public DefaultTraits<::pthread_t> {
+       static unsigned hash(pthread_t const& t) {
+         return u32_hash(t._thr.tid);
+       }
+       static bool equals(pthread_t const& a, pthread_t const& b) {
+         return a._thr.tid == b._thr.tid;
+       }
+     };
+   Required by AK::HashMap<pthread_t, ...> in
+   LibCore/EventLoopImplementationUnix.cpp.
+
+D. libc.h EXTERN "C" WRAP (real engineering)
+   The shim headers (stdlib.h, string.h, stdio.h, etc.) wrap their
+   declarations in `extern "C"` for C++ consumers. libc.h had no
+   such wrap, causing linkage mismatch. Surgical fix: wrap libc.h's
+   C function declarations in `extern "C"`, and put the C++ helper
+   overloads (operator==/!= for pthread_t) in an interleaved
+   `extern "C++"` block.
+
+   Layout:
+     #ifdef __cplusplus
+     extern "C" { #endif
+       <C function decls>
+     #ifdef __cplusplus
+     } extern "C++" {
+       <C++ operator overloads>
+     } extern "C" { #endif
+       <more C decls>
+     #ifdef __cplusplus
+     } #endif
+
+E. PATCHES — operator==/!= overloads in libc.h
+   Added pthread_t == int / int == pthread_t / != variants, since
+   upstream code does `s_thread_id == 0` (Linux glibc has pthread_t
+   as unsigned long). Maps integer-zero to "tid == 0" which is the
+   uninitialised state.
+
+F. PATCHES — netdb.h struct addrinfo guard
+   _TATERTOS_STRUCT_ADDRINFO_DEFINED so libc.h and <netdb.h> can
+   coexist. Same pattern used earlier for struct tm and sigjmp_buf.
+
+G. PATCHES — sys/socket.h sin_addr type
+   POSIX requires sockaddr_in::sin_addr to be `struct in_addr`,
+   not raw uint32_t. Fixed; layout-compatible with fry_sockaddr_in.
+   Added struct in_addr / in6_addr definition guarded with
+   _TATERTOS_STRUCT_IN_ADDR_DEFINED.
+
+H. PATCHES — sys/socket.h additions
+   - MSG_NOSIGNAL, MSG_PEEK, MSG_OOB, MSG_WAITALL, MSG_TRUNC,
+     MSG_CTRUNC (Linux send/recv flags)
+   - SO_PEERCRED (Linux UDS credential passing)
+   - struct ucred, struct iovec, struct msghdr, struct cmsghdr +
+     SCM_RIGHTS / SCM_CREDENTIALS / CMSG_* macros
+   - accept4(), sendmsg(), recvmsg() prototypes
+   - AF_LOCAL / AF_FILE aliases for AF_UNIX
+
+I. PATCHES — spawn.h struct posix_spawn_file_actions
+   Made it a complete type (not opaque) so callers can stack-
+   allocate. Layout: { count, capacity, dynamic actions list }.
+
+J. PATCHES — dirent.h DIR typedef
+   Match libc.h's `typedef struct _DIR DIR` exactly.
+
+K. PATCHES — errno.h additions
+   EMSGSIZE, ENOBUFS, EPROTONOSUPPORT, ESOCKTNOSUPPORT, ENETDOWN,
+   ENETRESET, ESHUTDOWN, ETOOMANYREFS, EUSERS — for LibCore network
+   error paths.
+
+L. PATCHES — unistd.h additions
+   _SC_PHYS_PAGES, _SC_AVPHYS_PAGES, _SC_NPROCESSORS_CONF,
+   _SC_LINE_MAX, _SC_HOST_NAME_MAX
+   ftruncate/truncate, dup2, readlink, symlink, getcwd as
+   inline forwarders to libc.h's *_compat / fry_* primitives.
+   chown/fchown/lchown/fsync/fdatasync extern decls (TaterTOS
+   doesn't fully implement; LibCore.a doesn't link).
+
+M. PATCHES — stdlib.h
+   Removed `extern "C"` wrap (matches libc.h's posture; the wrap
+   in libc.h itself now handles the C linkage uniformly).
+   Added secure_getenv (alias of getenv) and clearenv() extern
+   declaration — GNU extensions that LibCore/Environment.cpp uses.
+
+N. PATCHES — signal.h
+   Removed duplicate `static inline sigsetjmp/siglongjmp` and the
+   sigjmp_buf typedef. setjmp.h already provides them as macros.
+
+BUILD ATTEMPTS THIS LOG
+=====================================================================
+#22 select.h missing                 → built
+#23 signal.h conflict (setjmp dup)   → fixed
+#24 stdlib.h linkage conflict        → removed extern "C" from stdlib
+#25 string.h linkage conflict        → libc.h extern "C" wrap added
+#26 struct addrinfo dup              → guarded
+#27 pthread_t == int needed          → operator overloads added
+#28 arpa/inet.h missing              → built
+#29 syntax error in arpa/inet.h      → fixed
+#30 netinet/in.h missing             → built
+#31 sys/un.h missing                 → built
+#32 MSG_NOSIGNAL + accept4 missing   → added
+#33 AF_LOCAL missing                 → alias added
+#34 posix_spawn_file_actions_t inc.  → made complete type
+#35 DIR typedef mismatch             → match libc.h's _DIR tag
+#36 sin_addr type mismatch           → struct in_addr added
+#37 cmsghdr / SO_PEERCRED missing    → added (full UDS surface)
+#38 _SC_PHYS_PAGES missing           → added
+#39 ftruncate / readlink / etc.      → unistd.h forwarders added
+(stop point) #40 — System.cpp wants link/utimensat/etc.
+
+LIBCORE .O FILES PRODUCED (27 of 35 — 77%)
+=====================================================================
+AddressInfoVector AnonymousBuffer ArgsParser ConfigFile Directory
+DirectoryEntry DirIterator ElapsedTimer Environment EventLoop
+EventLoopImplementation EventLoopImplementationUnix
+EventReceiver File FileWatcherUnimplemented LocalServer
+MappedFile Notifier ProcessStatisticsUnimplemented
+ReportTime Resource ResourceImplementation ResourceImplementationFile
+SharedVersion SocketAddress Socket StandardPaths
+TimeZoneWatcherUnimplemented (probably + a couple more)
+
+REMAINING
+=====================================================================
+8 LibCore .cpp files. All blocked on the POSIX-fs surface in
+System.cpp (link, utimensat, mknod, futimens, fchmodat, etc.).
+Next batch (fry840) will add these as inline forwarders to libc
+and complete the LibCore.a archive.
+
+ESTIMATE
+=====================================================================
+fry840 should produce LibCore.a — Chunk 2 milestone #2.
+Then test program (Chunk 2 exit criterion) — Chunk 2 done.
+
+NOT DONE (intentional — out of context budget)
+=====================================================================
+- Last 8 LibCore files
+- LibCore.a archive
+- AK + LibCore link-test program
+
+NEXT
+=====================================================================
+fry840 — Add unistd.h decls for link/utimensat/mknod/futimens/
+        fchmodat/fchownat/etc. as forwarders. Build LibCore.a.
+
+END fry839
+=====================================================================

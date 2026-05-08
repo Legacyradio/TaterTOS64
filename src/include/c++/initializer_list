@@ -1,0 +1,48 @@
+// TaterTOS64v3 — minimal <initializer_list> for freestanding C++.
+// Origin log: logs/fry831.txt
+// Surface: enough for AK's std::initializer_list<T> usage.
+//
+// Per [support.initlist] the compiler is allowed to construct
+// initializer_list objects directly given that the class layout is
+// {const T* begin, size_t size}. We match exactly.
+
+#pragma once
+
+#include <stddef.h>
+
+namespace std {
+
+template<typename T>
+class initializer_list {
+public:
+    using value_type      = T;
+    using reference       = T const&;
+    using const_reference = T const&;
+    using size_type       = size_t;
+    using iterator        = T const*;
+    using const_iterator  = T const*;
+
+    constexpr initializer_list() noexcept : m_begin(nullptr), m_size(0) {}
+
+    constexpr size_type   size()  const noexcept { return m_size; }
+    constexpr T const*    begin() const noexcept { return m_begin; }
+    constexpr T const*    end()   const noexcept { return m_begin + m_size; }
+
+private:
+    // The compiler constructs initializer_list directly through this
+    // private ctor for braced-init-lists. Ordering and types must
+    // match exactly.
+    constexpr initializer_list(T const* b, size_type sz) noexcept
+        : m_begin(b), m_size(sz) {}
+
+    T const*  m_begin;
+    size_type m_size;
+};
+
+template<typename T>
+constexpr T const* begin(initializer_list<T> il) noexcept { return il.begin(); }
+
+template<typename T>
+constexpr T const* end(initializer_list<T> il) noexcept { return il.end(); }
+
+} // namespace std

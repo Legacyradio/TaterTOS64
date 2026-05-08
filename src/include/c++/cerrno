@@ -1,0 +1,4 @@
+// TaterTOS64v3 — <cerrno>. Wraps <errno.h> (already in src/include/).
+// Origin log: logs/fry832.txt
+#pragma once
+#include <errno.h>

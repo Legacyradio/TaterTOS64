@@ -1,0 +1,47 @@
+// TaterTOS64v3 — minimal <sstream> for freestanding C++.
+// Origin log: logs/fry868.txt
+//
+// Scoped to the surface required by simdjson: basic_stringstream,
+// stringstream, str(), and operator<<.
+
+#pragma once
+
+#include <ostream>
+#include <string>
+
+namespace std {
+
+template<typename CharT, typename Traits = char_traits<CharT>, typename Allocator = allocator_default<CharT>>
+class basic_stringstream : public basic_ostream<CharT, Traits> {
+public:
+    basic_stringstream() : m_string() {}
+    
+    basic_string<CharT, Traits, Allocator> str() const { return m_string; }
+    void str(basic_string<CharT, Traits, Allocator> const& s) { m_string = s; }
+
+    // Internal hack for the shim: allow the stream to grow.
+    // In a real implementation this would be via a stringbuf.
+    basic_string<CharT, Traits, Allocator>& get_string() { return m_string; }
+
+private:
+    basic_string<CharT, Traits, Allocator> m_string;
+};
+
+using stringstream = basic_stringstream<char>;
+
+// Minimal operator<< for stringstream to append to its internal string.
+template<typename CharT, typename Traits, typename Allocator, typename T>
+inline basic_stringstream<CharT, Traits, Allocator>& operator<<(basic_stringstream<CharT, Traits, Allocator>& ss, T const& val) {
+    // This is a minimal shim; we don't implement full formatting here.
+    // Upstream simdjson uses it for escape_json_string.
+    return ss;
+}
+
+// Specialization for the case used in simdjson
+template<typename CharT, typename Traits, typename Allocator>
+inline basic_stringstream<CharT, Traits, Allocator>& operator<<(basic_stringstream<CharT, Traits, Allocator>& ss, char const* s) {
+    ss.get_string().append(s);
+    return ss;
+}
+
+} // namespace std

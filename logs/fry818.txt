@@ -1,0 +1,196 @@
+fry818 — Investigation: Phase 23 thread/futex already implemented;
+         Chunk 2a deleted from fry816 plan; Chunk 2 re-baselined.
+=====================================================================
+DATE (UTC):   2026-04-26 02:42:59
+DATE (LOCAL): 2026-04-25 21:42:59 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSORS:   logs/fry816.txt (original Ladybird port plan)
+              logs/fry817.txt (TATERSURF_*.md supersession)
+TYPE:         Investigation log — NO source code changed.
+
+WHY THIS LOG EXISTS
+=====================================================================
+fry816 §2 asserted: "TaterTOS today is one-thread-per-process. Phase 23
+thread syscalls (SYS_THREAD_CREATE/EXIT/JOIN at 70/71/72) are unbuilt."
+That assertion was wrong. Before writing any code that depends on it
+being right, I performed targeted reads of the kernel and verified
+actual state. This log records the verification and corrects the plan.
+Per planv3 Rules 1, 2 and Zack's standing instruction "stop and explain
+with every move," investigation precedes code.
+
+EVIDENCE — concrete read locations
+=====================================================================
+File: src/kernel/proc/process.h
+  Line 130: uint32_t tgid;            (thread-group id, already present)
+  Line 131: uint32_t wait_tid;        (join target, already present)
+  Line 148: uint64_t wait_futex_key;  (futex wait key, already present)
+  Line 141: struct fry_process_shared *shared;  (per-tgroup shared state)
+  Line 163: process_create_user_thread() declared
+  Line 169: process_exit_group() declared
+  Line 170: process_thread_exit() declared
+  Line 171: process_thread_join() declared
+
+File: src/kernel/proc/process.c
+  Line 283: process_create_user_thread() IMPLEMENTED.
+            - Allocates a sibling fry_process slot.
+            - Copies parent->cr3 (line 291) → no PML4 swap on intra-
+              group context switch.
+            - Copies parent->tgid (line 292) → same thread group.
+            - Copies parent->shared pointer (line 293) → same fd table,
+              same VM regions, same heap, same outbuf/inbuf.
+            - Increments shared->refcount (line 307) (saturates at
+              0xFFFFFFFFU).
+            - alloc_kernel_stack + setup_initial_stack performed.
+  Line 458: process_exit_group() IMPLEMENTED.
+            - Marks all procs with matching tgid for exit (line 462).
+            - Frees non-leader siblings first (line 466-468), then
+              leader (line 470). Correct teardown order.
+  Line 473: process_thread_exit() IMPLEMENTED.
+            - Refuses to act on the group leader (line 477,
+              "procs[i].pid == procs[i].tgid" → -EINVAL). Correct.
+            - Transitions through PROC_ZOMBIE (line 484) before
+              PROC_DEAD so joiners never observe a transient state
+              and misreport ESRCH (comment at line 481-482 makes the
+              invariant explicit). Correct.
+            - Calls wake_joiners() (line 485) to release blocked
+              sibling joiners.
+  Line 631: process_thread_join() IMPLEMENTED.
+            - Validates target is a non-leader sibling in the same
+              tgid (line 644). Correct.
+            - On PROC_ZOMBIE, reads exit_code and proc_free's the
+              slot (lines 647-651). Correct.
+            - Otherwise blocks via wait_tid + sched_block + sched_yield
+              loop (lines 652-661).
+  Line 324: wake_joiners() IMPLEMENTED — scans procs[] for
+            PROC_WAITING + matching wait_tid, clears wait_tid, calls
+            sched_wake. Correct.
+
+File: src/kernel/proc/syscall.c
+  Line 856: SYS_THREAD_CREATE = 64
+  Line 857: SYS_THREAD_EXIT   = 65
+  Line 858: SYS_THREAD_JOIN   = 66
+  Line 873: SYS_FUTEX_WAIT    = 68
+  Line 874: SYS_FUTEX_WAKE    = 69
+  Line 1999: SYS_THREAD_EXIT case dispatches to process_thread_exit().
+  Line 2417: SYS_THREAD_CREATE case dispatches to
+             process_create_user_thread().
+  Line 2429: SYS_THREAD_JOIN case dispatches to process_thread_join().
+  Line 2433: SYS_FUTEX_WAIT case wired (kernel impl elsewhere).
+  Line 2435: SYS_FUTEX_WAKE case wired.
+
+File: src/kernel/proc/sched.h
+  Line 15-17: sched_block_futex(pid, word, expected, key, wake_time_ms)
+  Line 19:    sched_wake_futex(key, max_wake, result)
+  These are the kernel primitives SYS_FUTEX_WAIT/WAKE call into. They
+  exist and have been in production use (planv3 §148 wait_futex_key
+  field is referenced from process_wait + process_thread_join paths).
+
+CORRECTIONS TO fry816
+=====================================================================
+fry816 §2 ("PROBLEM #1: TATERTOS HAS NO USERLAND THREADING"):
+  Wrong. TaterTOS has full clone-style threading: threads are sibling
+  fry_process slots sharing the same `struct fry_process_shared *` and
+  the same cr3/tgid. The kernel-side work that fry816 proposed
+  (struct fry_thread, threads[16] array, run-queue rework, new
+  syscall numbers 70/71/72) is unnecessary AND would conflict with the
+  existing model. The existing model is actually MORE capable than
+  the planv3 §3813 sketch (16-threads-per-fry_process), because it
+  reuses the scheduler's per-pid blocking machinery uniformly.
+
+fry816 §4 ("CHUNK 2a — Phase 23 thread syscalls (kernel work)"):
+  DELETED in its entirety. Steps 2a.1 through 2a.5 are not needed.
+  The corresponding planned fry logs (fry817.txt for thread struct,
+  fry818 for thread.c, fry819 for sched.c run-queue, fry820 for
+  syscall wiring, fry821 for thtest validation) are CANCELLED.
+  fry817.txt was already used for the TATERSURF_*.md supersession,
+  which stands.
+
+fry816 syscall numbers were wrong:
+  Planned:   SYS_THREAD_CREATE=70, SYS_THREAD_EXIT=71, SYS_THREAD_JOIN=72
+  Actual:    SYS_THREAD_CREATE=64, SYS_THREAD_EXIT=65, SYS_THREAD_JOIN=66
+             SYS_FUTEX_WAIT=68,    SYS_FUTEX_WAKE=69
+  Use the actual numbers in shim/pthread.c.
+
+THREADING SEMANTICS — what the userland shim must respect
+=====================================================================
+1. The thread group leader (pid == tgid) is the original process. It
+   CANNOT be exited via SYS_THREAD_EXIT; trying returns -EINVAL.
+   pthread_exit() called from main thread must therefore translate to
+   process_exit_group (i.e. SYS_EXIT, not SYS_THREAD_EXIT).
+2. Only siblings within the same tgid can join each other. Cross-
+   group join returns -EINVAL. pthread shim must surface this as
+   EINVAL or document it as a TaterTOS-specific constraint.
+3. Threads share fd table, VM regions, heap, args_buf, and outbuf/
+   inbuf via shared->. This matches POSIX.
+4. Threads do NOT share kernel stacks or register contexts (each has
+   its own kernel_stack_top, user_rsp, user_rip, user_fs_base).
+5. user_fs_base on a new thread is initialized to 0 (process.c:297).
+   pthread_setspecific / TLS will need the shim to set this
+   per-thread (likely via SYS_SET_FS_BASE or similar — verify in
+   syscall.c during fry819 next investigation).
+6. Stack allocation: process_create_user_thread takes a
+   user_rsp argument from the caller — it does NOT allocate the
+   user stack. The pthread shim must mmap a stack region and pass
+   the top of it as user_rsp. Stack size policy lives in userland.
+
+RE-BASELINED CHUNK 2 (replaces fry816 §4 entirely)
+=====================================================================
+Chunk 2 is now a single chunk: the userland Ladybird shim.
+No kernel work. Each step its own fry log, stop-and-explain after each.
+
+  fry819  Investigation: enumerate the existing TaterTOS userland
+          threading + futex API surface (libc.h wrappers, what's
+          already exposed, what gaps the pthread shim has to fill).
+          Confirm SYS_SET_FS_BASE or equivalent path for per-thread
+          TLS. Confirm SYS_MMAP / SYS_BRK paths the shim's stack
+          allocation will use. NO CODE.
+
+  fry820  Investigation: enumerate the existing TaterTOS BSD-socket
+          syscall surface (FD_SOCKET path, fry_socket struct, what
+          syscalls are exposed in syscall.c for socket/bind/listen/
+          accept/connect/send/recv/getaddrinfo/poll/select). Map
+          each Ladybird call site to a TaterTOS syscall or identify
+          the gap. NO CODE.
+
+  fry821  Investigation: enumerate the existing TaterTOS file/dir
+          syscall surface (open, read, write, close, stat, fstat,
+          lseek, ftruncate, rename, mkdir, unlink, mmap, etc.).
+          Map each Ladybird POSIX call to a TaterTOS syscall.
+          NO CODE.
+
+  fry822  Decision log: based on fry819-821 findings, finalize the
+          shim file list, header layout, and license-file plan for
+          fmt + fast_float + simdutf vendoring. Confirm exception
+          path (D2: -fno-exceptions + ErrorOr<T> audit) and C++
+          stdlib glue path (D3: cross-compiler libstdc++ as-is).
+          NO CODE.
+
+  fry823+ Code begins. One header + impl pair per fry log. Order
+          determined at fry822, not pre-committed here.
+
+CHUNK 2 EXIT CRITERION (unchanged from fry816 §4 2b)
+=====================================================================
+  make AK.a LibCore.a succeeds with the cross-compiler:
+    x86_64-elf-g++ -ffreestanding -fno-exceptions -fno-rtti
+  Zero warnings outside the shim itself.
+  sha256 of AK.a and LibCore.a recorded.
+  Clean rebuild via planv3 Rule 12.
+
+WHAT THIS LOG DID NOT DO
+=====================================================================
+- Did not change any source file.
+- Did not run a build.
+- Did not modify TATERSURF_*.md (those carry SUPERSEDED banners
+  from fry817 already).
+- Did not delete the cancelled fry816 §4 chunk 2a steps from
+  fry816.txt — fry816 stands as written for historical record;
+  fry818 (this log) supersedes its §4 by reference.
+
+NEXT
+=====================================================================
+fry819 — Investigation only: TaterTOS userland threading + futex
+        surface. NO CODE. Stop and explain after.
+
+END fry818
+=====================================================================

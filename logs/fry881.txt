@@ -1,0 +1,24 @@
+2026-04-28 18:25:00 CDT
+
+Continued the effort to link `web_smoke.elf` and resolve the numerous missing symbols that resulted from widening the LibGfx and LibWeb builds.
+
+Completed steps:
+- Expanded `LIBWEB_CSS_NAMES` and added `LIBWEB_CSS_PARSER_NAMES` and `LIBWEB_CSS_STYLEVALUES_NAMES` to the Makefile.
+- Expanded the build to include `Animations`, `Fetch`, `IntersectionObserver`, `Platform`, `HighResolutionTime`, `ViewTransition`, `Editing`, `Painting`, `WebIDL`, `DOMURL`, `Selection`, and `Bindings`.
+- Synced the `SVG/` and `Bindings/` directories from `ladybird-upstream` to TaterTOS64 to provide missing implementations.
+- Added `LIBWEB_SVG_NAMES` to the Makefile to compile all SVG elements (e.g., `SVGAElement`, `SVGTitleElement`).
+- Added `DocumentPrototype` and `SVGTitleElement` to `LIBWEB_BINDINGS_NAMES`.
+- Created `src/user/apps/ladybird/test/web_smoke_stubs.cpp` to provide implementations for missing symbols that are too complex or unnecessary to pull in entirely right now (e.g., `process_auto_scroll`, `Unicode::Segmenter::create`, `AvailableSize::make_definite`, `Box::paintable_box`).
+- Added `web_smoke_stubs.o` to the `web_smoke` Makefile target.
+- Added missing math functions (`acosf`, `clamp`) to `src/include/c++/cmath` to resolve `Interpolation.cpp` build errors.
+- Fixed `TransformationStyleValue::create` initialization in `Interpolation.cpp` to use `StyleValueVector` correctly instead of an initializer list that `std::vector` couldn't resolve.
+- Fixed `Intrinsics::create_web_prototype_and_constructor` in `web_smoke_stubs.cpp` to properly specialize the template method on the `Intrinsics` class.
+
+Current state:
+- All required `LibWeb` source files, including CSS parsing and SVG, are compiling cleanly.
+- The `web_smoke_stubs.cpp` file successfully intercepts and stubs out the remaining internal `LibWeb` layout/rendering symbols.
+- The `web_smoke` link now fails exclusively on external host dependencies pulled in by `libskia.a` (e.g., `libfreetype.so`, `libpng.so`, `libwebp.so`, `libjpeg.so`), which inherently depend on Linux's `glibc` (e.g., `pthread_mutex_init`, `mmap64`, `fclose`).
+- As TaterTOS is a freestanding OS, linking against Linux `.so` files is impossible.
+
+Next:
+- Decide on a strategy to handle Skia's host dependencies (e.g., provide static freestanding ports of FreeType/libpng/etc., write a massive C stub file to intercept Skia's decoding calls, or rebuild Skia from source with decoding disabled).

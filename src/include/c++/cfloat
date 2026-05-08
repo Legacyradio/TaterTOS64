@@ -1,0 +1,4 @@
+// TaterTOS64v3 — <cfloat>. Wraps <float.h> (compiler-builtin).
+// Origin log: logs/fry832.txt
+#pragma once
+#include <float.h>

@@ -1,0 +1,48 @@
+TaterTOS64v3 Fry Log 887
+Timestamp: 2026-05-07 02:00:43 UTC
+
+Scope
+- Chrome Port Phase 2: add first second-wave POSIX file I/O syscalls and userspace wrappers.
+- Continued from Phase 1 epoll/eventfd work without renumbering existing live syscalls.
+
+Rules Followed
+- Read and continued under planv3.txt requirements.
+- Used apply_patch for source/log edits.
+- No QEMU logs read or written.
+- No SHA-256 hash generated because it was not explicitly requested.
+- Performed required clean rebuild with verbose ISO build command.
+
+Files Changed
+- src/include/sys/uio.h
+- src/user/libc/fry.h
+- src/user/libc/libc.c
+- src/user/libc/posix.c
+- src/kernel/proc/syscall.c
+
+What Changed
+- Added public <sys/uio.h> with struct iovec plus readv/writev declarations.
+- Added private fry_iovec ABI structure and fry_readv/fry_writev/fry_openat declarations.
+- Added libc syscall numbers:
+  - SYS_OPENAT = 105
+  - SYS_READV = 106
+  - SYS_WRITEV = 107
+- Added fry_openat, fry_readv, and fry_writev inline syscall wrappers.
+- Added POSIX openat, readv, and writev wrappers with errno translation.
+- Added kernel SYS_OPENAT handler for absolute paths and AT_FDCWD-relative paths.
+- Added kernel SYS_READV and SYS_WRITEV handlers using existing SYS_READ/SYS_WRITE paths.
+- Enforced iovcnt bounds, user iovec validation, buffer access checks, total length overflow checks, and partial I/O semantics.
+
+Why
+- Chromium and GN-built userspace expect POSIX openat/readv/writev APIs early in the port.
+- Implementing these as real syscall ABI entries keeps behavior available to all future C/C++ ports instead of adding one-off libc stubs.
+- Returning ENOTSUP for directory-fd-relative openat paths avoids faking unsupported kernel cwd/dirfd state.
+
+Verification
+- git diff --check -- src/include/sys/uio.h src/user/libc/fry.h src/user/libc/libc.c src/user/libc/posix.c src/kernel/proc/syscall.c
+- make clean
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+Result
+- Build completed successfully.
+- ISO produced at out/tatertos64v3.iso.
+- Existing non-fatal warnings remain in unrelated files; no new fatal build errors from the Phase 2 syscall work.

@@ -1,0 +1,80 @@
+2026-05-06 23:47:30 CDT
+
+TaterTOS64v3 Chrome Port — memfd_create, sendfile
+
+Completed work:
+
+Kernel — new FD type:
+- Added FD_MEMFD=11 to enum fry_fd_kind in process.h.
+- Added struct memfd_cb with: size, capacity, pos, page_count, pages[] (physical page array), used, name[32].
+- Added #define MEMFD_PAGE_CHUNK 4 for growth granularity.
+
+Kernel — memfd helpers (syscall.c):
+- memfd_grow(): Allocates new physical pages via pmm_alloc_page(), copies existing page pointers, zeros new pages. Grows by PAGE_SIZE increments. 4GB sanity cap.
+- memfd_free_pages(): Frees all physical pages via pmm_free_page() + kfrees page pointer array.
+- memfd_read(): Positional read from memfd buffer, copying from physical pages via vmm_phys_to_virt. Handles page boundary crossings.
+- memfd_write(): Positional write to memfd buffer with auto-grow when write exceeds capacity.
+- memfd_lseek(): SEEK_SET/SEEK_CUR/SEEK_END with bounds checking.
+- memfd_truncate(): Grows if needed, sets size, clamps position.
+- vm_map_memfd_region(): Maps memfd physical pages directly into process address space as user-accessible shared memory with proper VMM flags (present, write, user, no-exec unless requested).
+
+Kernel — SYS_MEMFD_CREATE handler (syscall 130):
+- Accepts name string (copied from user, max 31 chars) and flags (MFD_CLOEXEC = 0x80000).
+- Allocates and zero-initializes struct memfd_cb via kmalloc.
+- Installs as FD_MEMFD with proper fd_flags.
+- Returns new fd.
+
+Kernel — SYS_SENDFILE handler (syscall 131):
+- Accepts out_fd, in_fd, offset_ptr (user int64_t*), count.
+- Uses 4KB kernel bounce buffer for data transfer.
+- Reads from: FD_MEMFD (memfd_read) or FD_FILE (vfs_read).
+- Writes to: FD_MEMFD (memfd_write), FD_FILE (vfs_write), FD_SOCKET (tcp_send), FD_PIPE_WRITE (pipe_write).
+- Handles explicit offset (seek + read + report updated offset to user).
+- Caps single transfer at 1MB per call.
+- Supports non-NULL offset_ptr for pointer-based offset tracking (Chromium pattern).
+
+Kernel — SYS_LSEEK/SYS_FTRUNCATE updated:
+- Now dispatch FD_FILE and FD_MEMFD separately instead of rejecting non-FILE fds.
+- FD_MEMFD: routes to memfd_lseek/memfd_truncate.
+
+Kernel — SYS_MMAP updated:
+- Non-anon mappings now check for FD_MEMFD and call vm_map_memfd_region() instead of vm_map_file_region().
+
+Kernel — poll/read/write/close integration:
+- poll_check_fd: FD_MEMFD always readable/writable.
+- SYS_READ: FD_MEMFD routes to memfd_read().
+- SYS_WRITE: FD_MEMFD routes to memfd_write().
+- SYS_CLOSE: FD_MEMFD frees pages + kfrees struct.
+- dup2/dup3 close: FD_MEMFD cleanup added.
+
+Kernel — enum additions:
+  SYS_MEMFD_CREATE      = 130
+  SYS_SENDFILE          = 131
+
+New public headers:
+- src/include/sys/memfd.h: MFD_CLOEXEC, MFD_ALLOW_SEALING, MFD_HUGETLB flags. Declares memfd_create().
+- src/include/sys/sendfile.h: Declares sendfile() with POSIX signature (ssize_t, off_t*).
+
+Libc additions:
+- Added syscall enum values in libc.c (130-131).
+- Added fry_memfd_create, fry_sendfile in libc.c.
+- Declared both in fry.h.
+- Added POSIX wrappers in posix.c: memfd_create, sendfile.
+- Includes for sys/memfd.h and sys/sendfile.h in posix.c.
+
+Why:
+- memfd_create is the primary mechanism Chromium uses for anonymous shared memory
+  (base::SharedMemory, ELF loading, Mojo shared buffers, Vulkan/GPU allocations).
+  Linux's memfd_create replaced the old shm_open+unlink pattern and is required
+  by modern Chromium.
+- sendfile is used by Chromium's download manager and for serving static assets
+  from cache. The userspace-emulatable fallback exists but a kernel implementation
+  avoids unnecessary userspace buffering.
+
+Verification:
+- make clean + build_iso.sh: passed clean.
+- Only pre-existing EFI loader unused-function warnings.
+- ISO at out/tatertos64v3.iso.
+
+Next recommended slice: splice/tee (pipe-to-pipe zero-copy), or start iterating
+on actual Chromium build test to discover the next real missing piece.

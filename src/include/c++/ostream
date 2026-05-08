@@ -1,0 +1,52 @@
+// TaterTOS64v3 — minimal <ostream> for freestanding C++.
+// Origin log: logs/fry868.txt
+//
+// Scoped to the surface required by simdjson and other upstream code.
+// No real implementation (printing) — just enough for template
+// instantiation and operator overrides to compile.
+
+#pragma once
+
+#include <stddef.h>
+#include <string>
+#include <string_view>
+#include <ios>
+
+namespace std {
+
+template<typename CharT, typename Traits = char_traits<CharT>>
+class basic_ostream {
+public:
+    using char_type = CharT;
+    using traits_type = Traits;
+
+    basic_ostream& operator<<(basic_ostream& (*)(basic_ostream&)) { return *this; }
+    
+    basic_ostream& put(char_type) { return *this; }
+    basic_ostream& write(char_type const*, size_t) { return *this; }
+    basic_ostream& flush() { return *this; }
+
+    ios::fmtflags flags() const { return 0; }
+    void flags(ios::fmtflags) {}
+};
+
+using ostream = basic_ostream<char>;
+
+inline ostream& endl(ostream& os) { return os; }
+inline ostream& flush(ostream& os) { return os; }
+
+// Minimal operator<< for char/string to satisfy basic usage.
+template<typename CharT, typename Traits>
+inline basic_ostream<CharT, Traits>& operator<<(basic_ostream<CharT, Traits>& os, char) { return os; }
+
+template<typename CharT, typename Traits>
+inline basic_ostream<CharT, Traits>& operator<<(basic_ostream<CharT, Traits>& os, char const*) { return os; }
+
+template<typename CharT, typename Traits, typename Allocator>
+inline basic_ostream<CharT, Traits>& operator<<(basic_ostream<CharT, Traits>& os, basic_string<CharT, Traits, Allocator> const&) { return os; }
+
+// Use the same Traits as in string_view.h to avoid conflict.
+template<typename CharT, typename Traits>
+inline basic_ostream<CharT, Traits>& operator<<(basic_ostream<CharT, Traits>& os, basic_string_view<CharT, Traits> const&) { return os; }
+
+} // namespace std

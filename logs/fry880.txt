@@ -1,0 +1,26 @@
+2026-04-28 17:45:00 CDT
+
+Resumed Ladybird porting effort, focusing on the Skia hosted vs. freestanding blocker in LibGfx.
+- Identified that Skia headers (e.g., `SkColorSpace.h`, `SkSpan.h`) depend on several standard library features not present in the current TaterTOS freestanding C++ shims.
+- Encountered "requires_hosted.h" error and missing `std::size`, `std::data`, `std::remove_pointer_t`, etc.
+
+Completed steps:
+- Updated `src/include/c++/iterator` to include `std::size`, `std::data`, `std::reverse_iterator`, and `std::make_reverse_iterator`.
+- Updated `src/include/c++/type_traits` to include `std::remove_pointer`, `std::remove_pointer_t`, and several other traits and `*_v` templates.
+- Created `src/include/c++/iosfwd`, `src/include/c++/optional`, `src/include/c++/chrono`, `src/include/c++/map`, `src/include/c++/concepts`, `src/include/c++/functional`, `src/include/c++/bitset`, and `src/include/c++/cmath` as freestanding shims.
+- Updated `src/include/c++/new` to include `std::launder`.
+- Updated `src/include/c++/memory` to include `std::shared_ptr`, `std::make_unique`, and a more complete `std::unique_ptr` with deleter support and upcasting.
+- Enabled RTTI in `Makefile` for user C++ code (`AK_CXXFLAGS` and `UCXXFLAGS`) to support Ladybird's `dynamic_cast`.
+- Successfully built `LibGfx.a` with Skia integration.
+
+Current state:
+- `make libgfx` now completes successfully.
+- `make web_smoke` fails at the link stage.
+- Linker issues:
+    1. Host library conflicts: `freetype`, `png`, `jpeg`, etc. are shared libraries on the host and drag in glibc dependencies. Only `libskia.a` is available as a static library.
+    2. Numerous unresolved references in `LibWeb.a` (e.g., `Web::parse_css_value`, `Web::SVG::SVGTitleElement`, etc.) because the build surface was widened in `fry879.txt` but implementations are not yet linked or present.
+
+Next:
+- Analyze the unresolved references in `web_smoke` and categorize them.
+- Decide whether to stub missing `LibWeb` symbols or continue widening the build to include their implementations.
+- Address the host library linkage problem (possibly by providing minimal stubs for the required external library symbols if they are only needed by Skia).

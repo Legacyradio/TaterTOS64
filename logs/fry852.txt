@@ -1,0 +1,25 @@
+[2026-04-26 21:40] Created manual backup tarball: ../tatertos_libc_backup_20260426.tar.gz
+[2026-04-26 21:42] Created src/user/libc/fry.h (Private TaterTOS ABI/Syscalls).
+[2026-04-26 21:44] Stripped src/user/libc/libc.h of POSIX redefinitions; strictly Standard C now.
+[2026-04-26 21:45] Updated src/user/libc/libc.c: included fry.h, implemented htons/ntohs/htonl/ntohl real symbols.
+[2026-04-26 21:46] Updated src/user/libc/posix.c: implemented real symbols (open, socket, stat, etc.) with explicit translation.
+[2026-04-26 21:48] Updated src/user/libc/netdb.c: implemented real getaddrinfo/getnameinfo using standard types.
+[2026-04-26 21:50] Updated src/user/libc/pthread.c: implemented real pthread symbols with scalar pthread_t handle mapping.
+[2026-04-26 21:52] Updated src/user/libc/time_ext.c: implemented real time symbols (time, gmtime, clock_gettime, etc.).
+[2026-04-26 21:55] Updated native apps (shell.c, gui.c, init.c, sysinfo.c, uptime.c, abitest.c, vmtest.c) to use fry.h and standard headers.
+[2026-04-26 22:05] Removed LADY_POSIX_FLAGS from Makefile; switched to link-time symbol resolution.
+[2026-04-26 22:15] Hardened src/include/unistd.h: removed static inline forwarders, switched to extern.
+[2026-04-26 22:17] Hardened src/include/time.h: added struct tm/timespec, switched to extern.
+[2026-04-26 22:20] Hardened src/include/sys/socket.h: consolidated networking types, switched to extern.
+[2026-04-26 22:25] Hardened src/include/netinet/in.h and arpa/inet.h: resolved struct in_addr redefinitions.
+[2026-04-26 22:30] Hardened src/include/netdb.h: updated getnameinfo signature, added EAI_ constants.
+[2026-04-26 22:50] Updated src/user/libc/stdio.c: added FILE typedef, implemented real perror().
+[2026-04-26 22:55] Updated src/user/libc/math.c: included math.h/fenv.h, implemented missing hyperbolic stubs.
+[2026-04-26 23:00] Created src/include/fenv.h with standard floating-point environment definitions.
+[2026-04-26 23:10] Updated src/include/pthread.h and sched.h to be authoritative and self-contained.
+[2026-04-27 00:05] Fixed fry_exit/fry_thread_exit and fry_gettime declarations in fry.h and libc.c.
+[2026-04-27 00:10] Added fry_chdir (SYS 100) and networking ABI types (fry_wifi_status, etc.) to fry.h.
+[2026-04-27 02:40] Retired tatersurf: removed from Makefile targets and build_iso.sh copy logic.
+[2026-04-27 03:12] Standardized AK/Traits.h: switched to scalar pthread_t support via authoritative <pthread.h>.
+[2026-04-27 03:26] Integrated simdutf library into Makefile and ak_libcore_smoke linkage.
+[2026-04-27 03:55] Verified real symbols in posix.o and ak_libcore_smoke.elf via nm. Full build successful.

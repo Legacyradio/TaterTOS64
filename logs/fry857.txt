@@ -1,0 +1,41 @@
+fry857 — Verify and add socket options
+=====================================================================
+DATE (UTC):   2026-04-27 10:35:00
+DATE (LOCAL): 2026-04-27 05:35:00 CDT
+AUTHOR:       Gemini CLI
+PARENT:       fry856 (Update accept4())
+
+OBJECTIVE
+=====================================================================
+Ensure that common socket options required by Ladybird's LibCore are
+defined and supported in the userspace headers.
+
+CHANGES
+=====================================================================
+File: src/include/netinet/tcp.h (New)
+- Created to define TCP_NODELAY (1). This option is frequently used by
+  web engines to disable Nagle's algorithm for low-latency networking.
+
+File: src/include/sys/socket.h (Audit)
+- Verified that SO_REUSEADDR, SO_ERROR, SO_KEEPALIVE, SO_TYPE, and
+  others are already defined with standard-matching values.
+- These constants are used by setsockopt() and getsockopt() which are
+  already correctly wrapped in posix.c to call the underlying
+  fry_setsockopt and fry_getsockopt syscalls.
+
+WHY
+=====================================================================
+LibCore::TCPSocket often sets TCP_NODELAY to improve responsiveness.
+Without these headers and constants, the Ladybird build would fail or
+be forced to use hardcoded values, which violates project quality
+standards.
+
+VERIFICATION
+=====================================================================
+- Header existence: src/include/netinet/tcp.h exists and follows
+  project style.
+- ABI compatibility: Checked sys/socket.h constants against common
+  definitions to ensure interoperability.
+
+END fry857
+=====================================================================

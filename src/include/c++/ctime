@@ -1,0 +1,19 @@
+// TaterTOS64v3 — <ctime>. Forward to libc.h's time surface.
+// Origin log: logs/fry832.txt
+//
+// TaterTOS doesn't have a top-level <time.h> yet — when one is
+// engineered (likely soon, AK uses time_t / struct tm), this header
+// will simply #include <time.h>. For now we forward through libc.h
+// since libc.h already declares time_t, struct tm, time(), etc.
+
+#pragma once
+#include <stdint.h>
+#include <stddef.h>
+#include <fry_types.h>
+#include <fry_time.h>
+#include <sys/types.h>      // time_t, clock_t
+
+namespace std {
+using ::time_t;
+using ::clock_t;
+}

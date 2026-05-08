@@ -1,0 +1,106 @@
+fry830 — sys/types.h shim + Build #3. Error #3 captured: <memory> not found.
+=====================================================================
+DATE (UTC):   2026-04-26 03:56:36..04:00 (this log spans build #3)
+DATE (LOCAL): 2026-04-25 22:56–23:00 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSORS:   fry827 (AK source), fry828 (Makefile + Error #1),
+              fry829 (unistd.h shim + Error #2)
+TYPE:         New file (sys/types.h) + 3rd build attempt + error captured.
+
+WHAT THIS LOG DID
+=====================================================================
+DIFF 1 (NEW FILE): src/include/sys/types.h
+  Engineered POSIX <sys/types.h> for TaterTOS userland. Re-exports
+  the typedefs already in <fry_types.h>, adds the rest of the
+  POSIX-required type aliases (dev_t, ino_t, blkcnt_t, blksize_t,
+  nlink_t, time_t, clock_t, suseconds_t, useconds_t, key_t, id_t,
+  loff_t, BSD-flavor u_int8_t/etc.). Real code, not a stub.
+
+  time_t typedef matches src/user/libc/libc.h:981 exactly
+  (typedef int64_t time_t). Identical-typedef redeclarations are
+  legal per C11 §6.7p3 and C++.
+
+DIFF 2: mkdir src/include/sys/
+  New subdirectory under src/include/.
+
+BUILD #3 RESULT
+=====================================================================
+  Past Error #1 (unistd.h). Cleared.
+  Past Error #2 (sys/types.h). Cleared.
+  Failed at Error #3:
+
+  src/user/apps/ladybird/AK/StdLibExtras.h:13:10:
+  fatal error: memory: No such file or directory
+
+WHY — D3 OPTION A FAILED. The cross-compiler is freestanding-only.
+=====================================================================
+The AUR x86_64-elf-g++ 15.2.0 cross-compiler ships WITHOUT libstdc++.
+Verified via:
+  /home/legacyindieradio/TaterTOS64/tools/host/bin/x86_64-elf-g++ \
+    -E -x c++ -ffreestanding -v - </dev/null
+
+Only system include path:
+  /usr/lib/gcc/x86_64-elf/15.2.0/include          (compiler builtins)
+  /usr/lib/gcc/x86_64-elf/15.2.0/include-fixed    (compiler builtins)
+
+NO C++ stdlib. <memory>, <utility>, <iterator>, <new>,
+<initializer_list> all fail to resolve.
+
+This is the D3 decision point hitting reality. fry817 confirmed D3
+option A ("use cross-compiler libstdc++ headers as-is"), but the
+cross-compiler doesn't HAVE libstdc++ headers. D3 option A is
+therefore impossible. Falling back to D3 option B (vendor a minimal
+C++ stdlib replacement).
+
+The host system DOES have /usr/include/c++/15.2.1/memory etc., but
+those are glibc-targeting libstdc++ headers — using them in a
+TaterTOS cross-build risks pulling glibc-isms via <bits/c++config.h>
+AND violates planv3 Rule 3 (no Linux code in the OS). Not an option.
+
+SCOPE OF MINIMAL libc++ NEEDED — audit results
+=====================================================================
+Grep across src/user/apps/ladybird/AK/ for std:: symbol use sites:
+
+  std::initializer_list   4 uses → <initializer_list>
+  std::nothrow_t          2 uses → <new>
+  std::nothrow            1 use  → <new>
+  std::move               1 use  → <utility>
+  std::forward            1 use  → <utility>
+  std::construct_at       1 use  → <memory>
+  std::random_access_iterator_tag 1 use → <iterator>
+  std::max_align_t        1 use  → <cstddef>
+  std::fabs               2 uses → <cmath>
+  std::signbit            1 use  → <cmath>
+  std::copysign           1 use  → <cmath>
+  std::errc               2 uses → <system_error>
+
+  std::optional         (comment only — AK has its own Optional<T>)
+  std::format           (comment only — AK has its own format)
+
+Total: 8 minimal C++ stdlib headers needed for AK alone.
+
+DECISION FOR fry831
+=====================================================================
+Implement D3 option B:
+  Vendor minimal libc++-style headers under src/include/c++/.
+  Bare names (no .h extension), matching C++ stdlib convention.
+  -isystem src/include/c++ added to AK_CXXFLAGS.
+  Each header is engineered code matching the C++23 surface AK
+  uses. NOT stubs. Each is template-only / inline-only — no link
+  surface added.
+
+NOT DONE (intentional — discipline)
+=====================================================================
+  - sys/types.h written but no further code touched in this log.
+  - Build attempt #3 attempted but stopped at Error #3.
+  - No fix yet for Error #3.
+
+NEXT
+=====================================================================
+fry831 — Implement D3 option B: 8 minimal libc++ headers under
+        src/include/c++/. Add -isystem src/include/c++ to AK_CXXFLAGS.
+        Build #4. Capture next error.
+
+END fry830
+=====================================================================

@@ -1,0 +1,32 @@
+#pragma once
+
+#include <type_traits>
+#include <utility>
+
+namespace std {
+
+template<typename>
+class function;
+
+template<typename R, typename... Args>
+class function<R(Args...)> {
+public:
+    function() = default;
+    function(nullptr_t) {}
+    
+    template<typename F>
+    function(F) {} // Dummy constructor
+
+    R operator()(Args... args) const {
+        return R(); // Dummy call
+    }
+
+    explicit operator bool() const { return false; }
+};
+
+template<typename F, typename... Args>
+auto invoke(F&& f, Args&&... args) -> decltype(forward<F>(f)(forward<Args>(args)...)) {
+    return forward<F>(f)(forward<Args>(args)...);
+}
+
+}

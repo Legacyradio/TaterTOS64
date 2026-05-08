@@ -1,7 +1,8 @@
 // Minimal userspace libc
 
 #include "libc.h"
-#include <fry_time.h>
+#include "fry.h"
+#include <stdio.h>
 #include <stdarg.h>
 
 // String/memory
@@ -96,6 +97,26 @@ int memcmp(const void *a, const void *b, size_t n) {
     return 0;
 }
 
+/* -----------------------------------------------------------------------
+ * Byte Order Helpers (Canonical POSIX Symbols)
+ * ----------------------------------------------------------------------- */
+
+uint16_t htons(uint16_t h) { return (uint16_t)((h >> 8) | (h << 8)); }
+uint16_t ntohs(uint16_t n) { return (uint16_t)((n >> 8) | (n << 8)); }
+uint32_t htonl(uint32_t h) {
+    return (h >> 24) | ((h >> 8) & 0xFF00) |
+           ((h << 8) & 0xFF0000) | (h << 24);
+}
+uint32_t ntohl(uint32_t n) {
+    return (n >> 24) | ((n >> 8) & 0xFF00) |
+           ((n << 8) & 0xFF0000) | (n << 24);
+}
+
+uint16_t fry_htons(uint16_t h) { return htons(h); }
+uint16_t fry_ntohs(uint16_t n) { return ntohs(n); }
+uint32_t fry_htonl(uint32_t h) { return htonl(h); }
+uint32_t fry_ntohl(uint32_t n) { return ntohl(n); }
+
 char *utoa(unsigned int value, char *buf, int base);
 
 /* ------------------------------------------------------------------ */
@@ -106,6 +127,25 @@ void abort(void) {
     printf("ABORT called\n");
     fry_exit(134);
     __builtin_unreachable();
+}
+
+void abort_compat(void) {
+    abort();
+}
+
+__attribute__((noreturn)) void exit_compat(int status) {
+    fry_exit(status);
+    __builtin_unreachable();
+}
+
+__attribute__((noreturn)) void _exit_compat(int status) {
+    fry_exit(status);
+    __builtin_unreachable();
+}
+
+int atexit_compat(void (*func)(void)) {
+    (void)func;
+    return 0;
 }
 
 void __assert_fail(const char *expr, const char *file,
@@ -281,6 +321,21 @@ static inline long syscall5(long n, long a, long b, long c, long d, long e) {
     return ret;
 }
 
+static inline long syscall6(long n, long a, long b, long c, long d, long e, long f) {
+    long ret;
+    register long ra __asm__("rdi") = a;
+    register long rb __asm__("rsi") = b;
+    register long rc __asm__("rdx") = c;
+    register long rd __asm__("r10") = d;
+    register long re __asm__("r8") = e;
+    register long rf __asm__("r9") = f;
+    __asm__ volatile("syscall"
+                     : "=a"(ret), "+D"(ra), "+S"(rb), "+d"(rc), "+r"(rd), "+r"(re), "+r"(rf)
+                     : "a"(n)
+                     : "rcx", "r11", "memory");
+    return ret;
+}
+
 static inline long syscall2(long n, long a, long b) {
     long ret;
     register long ra __asm__("rdi") = a;
@@ -411,7 +466,54 @@ enum {
     SYS_AUDIO_OPEN  = 96,
     SYS_AUDIO_WRITE = 97,
     SYS_AUDIO_CLOSE = 98,
-    SYS_AUDIO_INFO  = 99
+    SYS_AUDIO_INFO  = 99,
+    SYS_CHDIR       = 100,
+    SYS_EPOLL_CREATE = 101,
+    SYS_EPOLL_CTL    = 102,
+    SYS_EPOLL_WAIT   = 103,
+    SYS_EVENTFD      = 104,
+    SYS_OPENAT       = 105,
+    SYS_READV        = 106,
+    SYS_WRITEV       = 107,
+    SYS_SENDMSG      = 108,
+    SYS_RECVMSG      = 109,
+    SYS_PRCTL        = 110,
+    SYS_MADVISE      = 111,
+    SYS_FACCESSAT    = 112,
+    SYS_READLINKAT   = 113,
+    SYS_FSTATAT      = 114,
+    SYS_MKDIRAT      = 115,
+    SYS_UNLINKAT     = 116,
+    SYS_RENAMEAT     = 117,
+    SYS_PIPE2        = 118,
+    SYS_DUP3         = 119,
+    SYS_SOCKETPAIR   = 120,
+    SYS_GETCWD       = 121,
+    SYS_ACCEPT4      = 122,
+    SYS_TIMERFD_CREATE  = 123,
+    SYS_TIMERFD_SETTIME = 124,
+    SYS_TIMERFD_GETTIME = 125,
+    SYS_SIGNALFD        = 126,
+    SYS_INOTIFY_INIT    = 127,
+    SYS_INOTIFY_ADD_WATCH = 128,
+    SYS_INOTIFY_RM_WATCH  = 129,
+    SYS_MEMFD_CREATE      = 130,
+    SYS_SENDFILE          = 131,
+
+    /* --- Chrome/GN probe syscalls (Phase 10, STUBS) --- */
+    SYS_UNAME             = 132,
+    SYS_SYSINFO           = 133,
+    SYS_GETRUSAGE         = 134,
+    SYS_GETPRIORITY       = 135,
+    SYS_SETPRIORITY       = 136,
+    SYS_FSYNC             = 137,
+    SYS_FDATASYNC         = 138,
+    SYS_SCHED_GETAFFINITY = 139,
+    SYS_SCHED_SETAFFINITY = 140,
+    SYS_MLOCK             = 141,
+    SYS_MUNLOCK           = 142,
+    SYS_SPLICE            = 143,
+    SYS_TEE               = 144,
 };
 
 #define FRY_THREAD_STACK_SIZE (2u * 1024u * 1024u)
@@ -480,12 +582,16 @@ long fry_read(int fd, void *buf, size_t len) {
     return syscall3(SYS_READ, fd, (long)buf, len);
 }
 
-long fry_spawn(const char *path) {
-    return syscall1(SYS_SPAWN, (long)path);
+long fry_readv(int fd, const struct fry_iovec *iov, int iovcnt) {
+    return syscall3(SYS_READV, (long)fd, (long)iov, (long)iovcnt);
 }
 
-long fry_exit(int code) {
-    return syscall1(SYS_EXIT, (long)code);
+long fry_writev(int fd, const struct fry_iovec *iov, int iovcnt) {
+    return syscall3(SYS_WRITEV, (long)fd, (long)iov, (long)iovcnt);
+}
+
+long fry_spawn(const char *path) {
+    return syscall1(SYS_SPAWN, (long)path);
 }
 
 long fry_gettid(void) {
@@ -540,6 +646,34 @@ long fry_open(const char *path, int flags) {
     return syscall2(SYS_OPEN, (long)path, (long)flags);
 }
 
+long fry_openat(int dirfd, const char *path, int flags) {
+    return syscall3(SYS_OPENAT, (long)dirfd, (long)path, (long)flags);
+}
+
+long fry_faccessat(int dirfd, const char *path, int mode, int flags) {
+    return syscall4(SYS_FACCESSAT, (long)dirfd, (long)path, (long)mode, (long)flags);
+}
+
+long fry_readlinkat(int dirfd, const char *path, char *buf, size_t bufsiz) {
+    return syscall4(SYS_READLINKAT, (long)dirfd, (long)path, (long)buf, (long)bufsiz);
+}
+
+long fry_fstatat(int dirfd, const char *path, struct fry_stat *st, int flags) {
+    return syscall4(SYS_FSTATAT, (long)dirfd, (long)path, (long)st, (long)flags);
+}
+
+long fry_mkdirat(int dirfd, const char *path, uint32_t mode) {
+    return syscall3(SYS_MKDIRAT, (long)dirfd, (long)path, (long)mode);
+}
+
+long fry_unlinkat(int dirfd, const char *path, int flags) {
+    return syscall3(SYS_UNLINKAT, (long)dirfd, (long)path, (long)flags);
+}
+
+long fry_renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath) {
+    return syscall4(SYS_RENAMEAT, (long)olddirfd, (long)oldpath, (long)newdirfd, (long)newpath);
+}
+
 long fry_close(int fd) {
     return syscall1(SYS_CLOSE, (long)fd);
 }
@@ -556,8 +690,121 @@ long fry_dup2(int oldfd, int newfd) {
     return syscall2(SYS_DUP2, (long)oldfd, (long)newfd);
 }
 
+long fry_pipe2(int fds[2], int flags) {
+    return syscall2(SYS_PIPE2, (long)fds, (long)flags);
+}
+
+long fry_dup3(int oldfd, int newfd, int flags) {
+    return syscall3(SYS_DUP3, (long)oldfd, (long)newfd, (long)flags);
+}
+
+long fry_socketpair(int domain, int type, int protocol, int sv[2]) {
+    return syscall4(SYS_SOCKETPAIR, (long)domain, (long)type, (long)protocol, (long)sv);
+}
+
+long fry_getcwd(char *buf, size_t size) {
+    return syscall2(SYS_GETCWD, (long)buf, (long)size);
+}
+
+long fry_accept4(int fd, void *addr, uint32_t *addrlen, int flags) {
+    return syscall4(SYS_ACCEPT4, (long)fd, (long)addr, (long)addrlen, (long)flags);
+}
+
+long fry_timerfd_create(int clockid, int flags) {
+    return syscall2(SYS_TIMERFD_CREATE, (long)clockid, (long)flags);
+}
+
+long fry_timerfd_settime(int fd, int flags, const void *new_value, void *old_value) {
+    return syscall4(SYS_TIMERFD_SETTIME, (long)fd, (long)flags, (long)new_value, (long)old_value);
+}
+
+long fry_timerfd_gettime(int fd, void *curr_value) {
+    return syscall2(SYS_TIMERFD_GETTIME, (long)fd, (long)curr_value);
+}
+
+long fry_signalfd(int fd, const uint64_t *mask, int flags) {
+    return syscall3(SYS_SIGNALFD, (long)fd, (long)mask, (long)flags);
+}
+
+long fry_inotify_init(int flags) {
+    return syscall1(SYS_INOTIFY_INIT, (long)flags);
+}
+
+long fry_inotify_add_watch(int fd, const char *path, uint32_t mask) {
+    return syscall3(SYS_INOTIFY_ADD_WATCH, (long)fd, (long)path, (long)mask);
+}
+
+long fry_inotify_rm_watch(int fd, int wd) {
+    return syscall2(SYS_INOTIFY_RM_WATCH, (long)fd, (long)wd);
+}
+
+long fry_memfd_create(const char *name, unsigned int flags) {
+    return syscall2(SYS_MEMFD_CREATE, (long)name, (long)flags);
+}
+
+long fry_sendfile(int out_fd, int in_fd, int64_t *offset, size_t count) {
+    return syscall4(SYS_SENDFILE, (long)out_fd, (long)in_fd, (long)offset, (long)count);
+}
+
+/* --- Chrome/GN probe wrappers (Phase 10) --- */
+long fry_uname(void *buf) {
+    return syscall1(SYS_UNAME, (long)buf);
+}
+long fry_sysinfo(void *info) {
+    return syscall1(SYS_SYSINFO, (long)info);
+}
+long fry_getrusage(int who, void *usage) {
+    return syscall2(SYS_GETRUSAGE, (long)who, (long)usage);
+}
+long fry_getpriority(int which, int who) {
+    return syscall2(SYS_GETPRIORITY, (long)which, (long)who);
+}
+long fry_setpriority(int which, int who, int prio) {
+    return syscall3(SYS_SETPRIORITY, (long)which, (long)who, (long)prio);
+}
+long fry_fsync(int fd) {
+    return syscall1(SYS_FSYNC, (long)fd);
+}
+long fry_fdatasync(int fd) {
+    return syscall1(SYS_FDATASYNC, (long)fd);
+}
+long fry_sched_getaffinity(int pid, size_t cpusetsize, void *mask) {
+    return syscall3(SYS_SCHED_GETAFFINITY, (long)pid, (long)cpusetsize, (long)mask);
+}
+long fry_sched_setaffinity(int pid, size_t cpusetsize, const void *mask) {
+    return syscall3(SYS_SCHED_SETAFFINITY, (long)pid, (long)cpusetsize, (long)mask);
+}
+long fry_mlock(const void *addr, size_t len) {
+    return syscall2(SYS_MLOCK, (long)addr, (long)len);
+}
+long fry_munlock(const void *addr, size_t len) {
+    return syscall2(SYS_MUNLOCK, (long)addr, (long)len);
+}
+long fry_splice(int fd_in, int64_t *off_in, int fd_out, int64_t *off_out, size_t len, unsigned int flags) {
+    return syscall6(SYS_SPLICE, (long)fd_in, (long)off_in, (long)fd_out, (long)off_out, (long)len, (long)flags);
+}
+long fry_tee(int fd_in, int fd_out, size_t len, unsigned int flags) {
+    return syscall4(SYS_TEE, (long)fd_in, (long)fd_out, (long)len, (long)flags);
+}
+
 long fry_poll(struct fry_pollfd *fds, uint32_t nfds, uint64_t timeout_ms) {
     return syscall3(SYS_POLL, (long)fds, (long)nfds, (long)timeout_ms);
+}
+
+long fry_epoll_create(int size) {
+    return syscall1(SYS_EPOLL_CREATE, (long)size);
+}
+
+long fry_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
+    return syscall4(SYS_EPOLL_CTL, (long)epfd, (long)op, (long)fd, (long)event);
+}
+
+long fry_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout_ms) {
+    return syscall4(SYS_EPOLL_WAIT, (long)epfd, (long)events, (long)maxevents, (long)timeout_ms);
+}
+
+long fry_eventfd(uint32_t initval, int flags) {
+    return syscall2(SYS_EVENTFD, (long)initval, (long)flags);
 }
 
 long fry_fcntl(int fd, int cmd, long arg) {
@@ -611,6 +858,14 @@ long fry_recv(int fd, void *buf, size_t len, int flags) {
     return syscall4(SYS_RECV, (long)fd, (long)buf, (long)len, (long)flags);
 }
 
+long fry_sendmsg(int fd, const struct fry_msghdr *msg, int flags) {
+    return syscall3(SYS_SENDMSG, (long)fd, (long)msg, (long)flags);
+}
+
+long fry_recvmsg(int fd, struct fry_msghdr *msg, int flags) {
+    return syscall3(SYS_RECVMSG, (long)fd, (long)msg, (long)flags);
+}
+
 long fry_shutdown_sock(int fd, int how) {
     return syscall2(SYS_SHUTDOWN_SOCK, (long)fd, (long)how);
 }
@@ -626,15 +881,15 @@ long fry_setsockopt(int fd, int level, int optname, const void *optval, uint32_t
 }
 
 long fry_sendto(int fd, const void *buf, size_t len, int flags,
-                const struct fry_sockaddr_in *dest_addr) {
-    return syscall5(SYS_SENDTO, (long)fd, (long)buf, (long)len,
-                    (long)flags, (long)dest_addr);
+                const struct fry_sockaddr_in *dest_addr, uint32_t addrlen) {
+    return syscall6(SYS_SENDTO, (long)fd, (long)buf, (long)len,
+                    (long)flags, (long)dest_addr, (long)addrlen);
 }
 
 long fry_recvfrom(int fd, void *buf, size_t len, int flags,
-                  struct fry_sockaddr_in *src_addr) {
-    return syscall5(SYS_RECVFROM, (long)fd, (long)buf, (long)len,
-                    (long)flags, (long)src_addr);
+                  struct fry_sockaddr_in *src_addr, uint32_t *addrlen) {
+    return syscall6(SYS_RECVFROM, (long)fd, (long)buf, (long)len,
+                    (long)flags, (long)src_addr, (long)addrlen);
 }
 
 long fry_dns_resolve(const char *hostname, uint32_t *ip_out) {
@@ -716,8 +971,9 @@ long fry_sbrk(intptr_t increment) {
     return syscall1(SYS_SBRK, (long)increment);
 }
 
-void *fry_mmap(void *addr, size_t len, uint32_t prot, uint32_t flags) {
-    return fry_mmap_fd(addr, len, prot, flags, -1);
+void *fry_mmap(void *addr, size_t len, uint32_t prot, uint32_t flags, int fd, int64_t offset) {
+    (void)offset;
+    return fry_mmap_fd(addr, len, prot, flags, fd);
 }
 
 void *fry_mmap_fd(void *addr, size_t len, uint32_t prot, uint32_t flags, int fd) {
@@ -726,11 +982,11 @@ void *fry_mmap_fd(void *addr, size_t len, uint32_t prot, uint32_t flags, int fd)
 }
 
 void *fry_mreserve(void *addr, size_t len, uint32_t flags) {
-    return fry_mmap(addr, len, 0, flags | FRY_MAP_ANON | FRY_MAP_RESERVE);
+    return fry_mmap(addr, len, 0, flags | FRY_MAP_ANON | FRY_MAP_RESERVE, -1, 0);
 }
 
 void *fry_mguard(void *addr, size_t len) {
-    return fry_mmap(addr, len, 0, FRY_MAP_PRIVATE | FRY_MAP_ANON | FRY_MAP_GUARD);
+    return fry_mmap(addr, len, 0, FRY_MAP_PRIVATE | FRY_MAP_ANON | FRY_MAP_GUARD, -1, 0);
 }
 
 long fry_mcommit(void *addr, size_t len, uint32_t prot) {
@@ -743,6 +999,16 @@ long fry_munmap(void *addr, size_t len) {
 
 long fry_mprotect(void *addr, size_t len, uint32_t prot) {
     return syscall3(SYS_MPROTECT, (long)addr, (long)len, (long)prot);
+}
+
+long fry_madvise(void *addr, size_t len, int advice) {
+    return syscall3(SYS_MADVISE, (long)addr, (long)len, (long)advice);
+}
+
+long fry_prctl(int option, unsigned long arg2, unsigned long arg3,
+               unsigned long arg4, unsigned long arg5) {
+    return syscall5(SYS_PRCTL, (long)option, (long)arg2, (long)arg3,
+                    (long)arg4, (long)arg5);
 }
 
 long fry_syscall_raw(long num, long a1) {
@@ -800,8 +1066,9 @@ long fry_thread_create(struct fry_thread *thr, fry_thread_start_t start, void *a
     if (thr->tid != 0) return -EINVAL;
 
     stack = (uint8_t *)fry_mmap(0, FRY_THREAD_STACK_SIZE,
-                                FRY_PROT_READ | FRY_PROT_WRITE,
-                                FRY_MAP_PRIVATE | FRY_MAP_ANON);
+                               FRY_PROT_READ | FRY_PROT_WRITE,
+                               FRY_MAP_PRIVATE | FRY_MAP_ANON, -1, 0);
+
     if (FRY_IS_ERR(stack)) return (long)(intptr_t)stack;
 
     tls_block = (struct fry_tls_block *)calloc(1, sizeof(*tls_block));
@@ -861,6 +1128,10 @@ long fry_thread_join(struct fry_thread *thr, int *exit_code) {
     thr->tls_base = 0;
     if (unmap_rc < 0) return unmap_rc;
     return 0;
+}
+
+long fry_exit(int code) {
+    fry_thread_exit(code);
 }
 
 __attribute__((noreturn))
@@ -1029,8 +1300,9 @@ long fry_proc_input(uint32_t pid, const void *buf, size_t len) {
     return syscall3(SYS_PROC_INPUT, (long)pid, (long)buf, len);
 }
 
-long fry_kill(long pid) {
-    return syscall1(SYS_KILL, pid);
+long fry_kill(int pid, int sig) {
+    (void)sig;
+    return syscall1(SYS_KILL, (long)pid);
 }
 
 long fry_acpi_diag(struct fry_acpi_diag *out) {
@@ -1059,6 +1331,10 @@ long fry_create(const char *path, uint16_t type) {
 
 long fry_mkdir(const char *path) {
     return syscall1(SYS_MKDIR, (long)path);
+}
+
+long fry_chdir(const char *path) {
+    return syscall1(SYS_CHDIR, (long)path);
 }
 
 long fry_unlink(const char *path) {
@@ -1662,7 +1938,7 @@ void *malloc(size_t size) {
         size_t map_len = malloc_align_up(total_size, MALLOC_PAGE_SIZE);
         struct malloc_block *block = (struct malloc_block *)fry_mmap(
             0, map_len, FRY_PROT_READ | FRY_PROT_WRITE,
-            FRY_MAP_PRIVATE | FRY_MAP_ANON);
+            FRY_MAP_PRIVATE | FRY_MAP_ANON, -1, 0);
         if (!FRY_IS_ERR(block)) {
             block->size = size;
             block->map_len = map_len;
@@ -1783,4 +2059,46 @@ size_t malloc_usable_size(void *ptr) {
     block = (struct malloc_block *)ptr - 1;
     if (block->magic != MALLOC_MAGIC) return 0;
     return block->size;
+}
+
+long fry_ioctl(int fd, uint32_t request, long arg) {
+    (void)arg; return fry_syscall_raw(11, (long)fd | ((long)request << 32));
+}
+long fry_getsockname(int fd, struct fry_sockaddr_in *addr, uint32_t *addrlen) {
+    (void)addr; (void)addrlen; return fry_syscall_raw(42, (long)fd);
+}
+long fry_getpeername(int fd, struct fry_sockaddr_in *addr, uint32_t *addrlen) {
+    (void)addr; (void)addrlen; return fry_syscall_raw(43, (long)fd);
+}
+
+
+long fry_sigaction(int sig, const struct fry_sigaction *act, struct fry_sigaction *oldact) { 
+    return fry_syscall_raw(13, (long)sig); 
+}
+int fry_sigemptyset(uint32_t *set) { if (set) *set = 0; return 0; }
+int fry_sigfillset(uint32_t *set) { if (set) *set = 0xFFFFFFFF; return 0; }
+int fry_sigaddset(uint32_t *set, int signum) { if (set && signum >= 0 && signum < 32) *set |= (1u << signum); return 0; }
+int fry_sigdelset(uint32_t *set, int signum) { if (set && signum >= 0 && signum < 32) *set &= ~(1u << signum); return 0; }
+int fry_sigismember(const uint32_t *set, int signum) { if (set && signum >= 0 && signum < 32) return (*set & (1u << signum)) != 0; return 0; }
+
+
+void __stack_chk_fail(void) {
+    fry_exit(1);
+}
+
+/* -----------------------------------------------------------------------
+ * strtoimax / wcstoimax — forward to strtol/strtoul
+ * ----------------------------------------------------------------------- */
+intmax_t strtoimax(const char *nptr, char **endptr, int base) {
+    return (intmax_t)strtol(nptr, endptr, base);
+}
+uintmax_t strtoumax(const char *nptr, char **endptr, int base) {
+    return (uintmax_t)strtoul(nptr, endptr, base);
+}
+intmax_t wcstoimax(const wchar_t *nptr, wchar_t **endptr, int base) {
+    /* For now: treat wchar_t as narrow char — TaterTOS has no wide locale */
+    return strtoimax((const char *)nptr, (char **)endptr, base);
+}
+uintmax_t wcstoumax(const wchar_t *nptr, wchar_t **endptr, int base) {
+    return strtoumax((const char *)nptr, (char **)endptr, base);
 }

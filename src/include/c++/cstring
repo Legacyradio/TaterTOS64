@@ -1,0 +1,51 @@
+// TaterTOS64v3 — minimal <cstring> for freestanding C++.
+// Origin log: logs/fry832.txt
+// Wraps <string.h> and re-exports the C names into namespace std.
+
+#pragma once
+
+#include <string.h>
+
+namespace std {
+
+// Memory ops.
+using ::memset;
+using ::memcpy;
+using ::memmove;
+using ::memcmp;
+using ::memchr;
+
+// String length / compare.
+using ::strlen;
+using ::strnlen;
+using ::strcmp;
+using ::strncmp;
+using ::strcasecmp;
+using ::strncasecmp;
+
+// Copy / concat.
+using ::strcpy;
+using ::strncpy;
+using ::strcat;
+using ::strncat;
+
+// Search.
+using ::strchr;
+using ::strrchr;
+using ::strstr;
+using ::strpbrk;
+using ::strspn;
+using ::strcspn;
+
+// Tokenize.
+using ::strtok;
+using ::strtok_r;
+
+// Allocation-returning.
+using ::strdup;
+using ::strndup;
+
+// Errors.
+using ::strerror;
+
+} // namespace std

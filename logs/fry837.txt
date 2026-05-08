@@ -1,0 +1,185 @@
+fry837 — fmt header-only + simdutf compile + AK.a archive.
+         🎯🎯🎯 CHUNK 2 MILESTONE #1: AK.a BUILT.
+=====================================================================
+DATE (UTC):   2026-04-26 13:07:54
+DATE (LOCAL): 2026-04-26 08:07:54 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSOR:    fry836 (37/37 AK .cpp clean; fmt format.cc blocking)
+
+🎯🎯🎯 MILESTONE #1 — AK.a SUCCESSFULLY ARCHIVED
+=====================================================================
+Path:    src/user/apps/ladybird/AK.a
+Size:    1,759,180 bytes (1.7 MiB)
+SHA-256: bf4d4678f69a9573b0aa8fc1f35d5874a189178e78effe07b29ee1f775bf17b8
+File:    current ar archive
+
+Member objects (38 total):
+  37 AK .cpp → .o files (fry834/836 milestone)
+  +  src/user/apps/ladybird-3rd/simdutf/src/simdutf.o (fry837)
+
+This is the first concrete artifact from the Ladybird port. From
+here forward, anything that wants AK can `-L src/user/apps/ladybird
+-l:AK.a` and link.
+
+DIFFS APPLIED IN fry837
+=====================================================================
+
+A. STRATEGY PIVOT — fmt switched to FMT_HEADER_ONLY
+   Reason: fmt's format.cc translation unit demanded an ever-deepening
+   pile of std:: stdlib surface (iterator_traits, basic_string::assign,
+   allocator_traits, std::move, std::fprintf, std::char_traits<char>::
+   to_int_type, ambiguous FMT_COMPILE_STRING vs fstring, etc.). Each
+   fix unblocked one site and revealed two more.
+
+   FMT_HEADER_ONLY is upstream-supported. fmt's templates inline into
+   each consumer TU; format.cc is not compiled. AK already includes
+   fmt's headers in its own .cpp files (Format.cpp, NumberFormat.cpp,
+   etc.) — those compiled cleanly in fry836. So shipping fmt
+   header-only is exactly equivalent to AK's header-only fmt usage,
+   just with the heavy machinery duplicated across AK TUs (linker
+   weak-symbol dedup handles the duplicate definitions).
+
+   Changes:
+     Makefile AK_CXXFLAGS += -DFMT_HEADER_ONLY=1
+     AK_OBJS no longer includes $(LADYBIRD_3RD)/fmt/src/format.o
+     The fmt format.cc compile rule is dead code (Make won't build it
+       since it's no longer in any target's prereq list).
+
+B. POSIX shim header additions for fmt + simdutf
+   src/include/c++/array          ~50 LOC. std::array<T, N> for
+                                  simdutf base64_tables.
+   src/include/c++/iostream       Empty stub. simdutf's
+                                  scalar/base64.h #include's it but
+                                  uses no symbols.
+   src/include/c++/tuple          ~100 LOC. std::tuple template +
+                                  make_tuple + get<N>(t) +
+                                  tuple_element + tuple_size. simdutf
+                                  uses 3-element tuples for utf16/32
+                                  conversion result types.
+
+C. PATCHES — string template surface expansion
+   src/include/c++/string         basic_string<CharT, Traits, Allocator>
+                                  gained: assign(count, ch), assign(s, n),
+                                  assign(s), append(s, n), append(s),
+                                  append(other), append(count, ch),
+                                  operator+=(ch), operator+=(s),
+                                  operator+=(other), push_back(ch).
+                                  Plus char_traits<CharT> gained:
+                                  to_int_type, to_char_type, eof,
+                                  eq_int_type, not_eof, compare,
+                                  length, find, move, copy, assign-buf.
+
+D. PATCHES — type_traits / utility cross-include hygiene
+   src/include/c++/type_traits    Pull <iterator>, <cstdio>, then
+                                  later removed (string handles
+                                  these). Guarded remove_reference
+                                  with _UTILITY_REMOVE_REFERENCE_DEFINED
+                                  so utility and type_traits don't
+                                  conflict.
+   src/include/c++/utility        Same guard. Renamed local
+                                  is_lvalue_reference to
+                                  _utility_is_lvalue_ref to avoid
+                                  collision with type_traits's
+                                  is_lvalue_reference_<T&> partial.
+                                  Added _utility_detail::decay_local
+                                  so make_pair can use decay-style
+                                  type stripping without including
+                                  <type_traits> (would be circular).
+   src/include/c++/string         Added transitive #include <memory>
+                                  and <utility> to provide
+                                  allocator_traits and std::move
+                                  visibility (libstdc++ does this).
+
+E. PATCH — pair conversion-copy ctor
+   src/include/c++/utility        std::pair gained two new ctors:
+                                    pair(pair<U1, U2> const&)
+                                    pair(pair<U1, U2>&&)
+                                  with element-wise conversion.
+                                  simdutf's
+                                    return std::make_pair(nullptr, ptr);
+                                  needs pair<nullptr_t, X*> →
+                                  pair<char32_t const*, X*> conversion.
+
+F. PATCH — make_pair uses decay
+   src/include/c++/utility        Replaced make_pair's
+                                  remove_reference_t<T> with the
+                                  inline decay_local. Matches libstdc++.
+
+G. PATCH — Makefile AR path
+   AR was set to $(TOOLBIN)/x86_64-elf-ar but the AUR
+   x86_64-elf-binutils package installs ar at /usr/bin/x86_64-elf-ar.
+   Fixed.
+
+H. ASSORTED type_traits additions earlier in the build
+   is_assignable, is_copy_assignable, is_move_assignable,
+   is_trivially_copy/move_constructible, is_nothrow_*,
+   is_member_pointer / is_member_function_pointer / is_member_object_pointer,
+   is_base_of, is_convertible (SFINAE-based, gcc-portable).
+
+BUILD ATTEMPTS THIS BATCH
+=====================================================================
+#60 — type_traits include iterator        past iterator_traits issue
+#61 — added basic_string::assign etc.     fmt allocator_traits
+#62 — string include memory                fmt std::move
+#63 — utility include type_traits         remove_reference dup
+#64 — guarded remove_reference            past dup; fprintf
+#65 — added cstdio to type_traits         fmt char_traits to_int_type
+#66 — basic_string::append/push_back      fmt format_error_code lambda
+#67 — char_traits beefed up               fmt ambiguous compile_string
+#68 — DFMT_HEADER_ONLY=1                   simdutf needs <array>
+#69 — array shim                           simdutf needs <iostream>
+#70 — iostream empty stub                  simdutf needs <tuple>
+#71 — tuple shim                           simdutf make_pair nullptr
+#72/73 — make_pair decay (variants)        utility decay scope
+#74 — local decay_local in utility         pair<nullptr_t> conversion
+#75 — pair conversion-copy ctor           AR path wrong
+#76/77 — AR fix                            ✅ AK.a built
+
+POST-MILESTONE STATE
+=====================================================================
+src/include/                  23 top-level headers
+src/include/c++/              33 libc++ shim headers
+src/include/sys/              2 (types.h, time.h)
+
+src/user/apps/ladybird/AK.a   ✅ 1.7 MB, 38 members
+src/user/apps/ladybird/AK/    37 .cpp + 158 .h + Backtrace.h + Debug.h
+src/user/apps/ladybird-3rd/   fmt 12.1.0, fast_float 8.1.0, simdutf 7.4.0
+
+REMAINING DIVERGENCES FROM UPSTREAM (logged + reversible)
+=====================================================================
+- AK/kmalloc.cpp: replaced mimalloc calls with libc malloc (S1b, fry827)
+- AK/Platform.h: AK_OS_TATERTOS branch + #include <unistd.h> (fry829, fry832)
+- AK/Random.cpp: AK_OS_TATERTOS CSPRNG branch using fry_getrandom (fry834)
+- src/user/libc/libc.h: struct tm + time_t guards (fry834)
+- src/include/assert.h: C++ guard around _Static_assert macro (fry835)
+- Makefile: -DAK_OS_TATERTOS=1, -isystem src/include/c++,
+            -U__STDCPP_FLOAT*_T__, -DFMT_USE_LOCALE=0,
+            -DFMT_USE_FCNTL=0, -DFMT_HEADER_ONLY=1, AR path
+
+ALL OTHER UPSTREAM FILES ARE VERBATIM. The divergences total <50
+lines across 3 .cpp files + 1 header, all clearly marked with
+"TaterTOS divergence" comments referencing the relevant fry log.
+
+NOT DONE (intentional)
+=====================================================================
+- LibCore source not yet copied. fry838 will copy + walk LibCore
+  errors. LibCore is smaller (37 .cpp) than AK and uses the same
+  shim surface AK already exercises, so should go faster.
+- Trivial test program ("hello world that uses AK::String +
+  LibCore::ArgsParser") not yet attempted. Chunk 2 exit criterion.
+- No clean+verbose rebuild yet (planv3 Rule 12). Will run that
+  AFTER LibCore.a builds and the test program runs in QEMU.
+
+NEXT
+=====================================================================
+fry838 — LibCore source copy:
+  - mkdir src/user/apps/ladybird/Libraries/LibCore
+  - Copy 37 LibCore .cpp + .h files per fry821 KEEP manifest
+    (excludes Windows, macOS, and inotify variants)
+  - Add Makefile target for LibCore.a
+  - First build attempt
+  - Walk first error class. Stop and explain.
+
+END fry837
+=====================================================================

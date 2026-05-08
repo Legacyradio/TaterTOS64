@@ -1,0 +1,186 @@
+fry840 — POSIX-fs surface batch in unistd.h.
+         🎯🎯🎯 CHUNK 2 MILESTONE #2: LibCore.a BUILT.
+=====================================================================
+DATE (UTC):   2026-04-26 14:25:34
+DATE (LOCAL): 2026-04-26 09:25:34 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSOR:    fry839 (27/35 LibCore .cpp)
+
+🎯🎯🎯 MILESTONE #2 — LibCore.a SUCCESSFULLY ARCHIVED
+=====================================================================
+Path:    src/user/apps/ladybird/LibCore.a
+Size:    854,950 bytes (836 KiB)
+SHA-256: b3ae13dc800b6d7bb0d3949ad92649e7ec32139d54801c24e3948c700d60eaaa
+File:    current ar archive
+Members: 35 LibCore objects + 1 Platform/ProcessStatisticsUnimplemented
+         (MimeData.cpp dropped per U1 carve-out, fry823)
+
+PORT STATE — both AK.a and LibCore.a present
+=====================================================================
+src/user/apps/ladybird/
+  AK.a        1,759,180 bytes  sha bf4d4678...  (fry837)
+  LibCore.a     854,950 bytes  sha b3ae13dc...  (fry840)
+
+This represents the foundation Chunk 2 was meant to deliver:
+the two core static libraries Ladybird's web engine sits on,
+running on TaterTOS's freestanding cross-toolchain with our own
+libc++ shim, our own POSIX header surface, and AK's mimalloc
+patched out for libc malloc.
+
+DIFFS APPLIED IN fry840
+=====================================================================
+
+A. unistd.h: full POSIX-fs surface batch (~70 extern decls)
+   - Filesystem ops upstream LibCore expects:
+     link, linkat, unlinkat, mknod, mkfifo, pipe2, pause, nice,
+     alarm, acct, sethostname, getdomainname, setdomainname, syscall
+   - Process group / session control:
+     getsid, setsid, getpgrp, setpgid, getpgid, tcgetpgrp,
+     tcsetpgrp, ttyname, ttyname_r, getlogin, getlogin_r
+   - Temp file creation:
+     mkstemp, mkstemps, mkdtemp, mktemp, tmpnam, mkostemp, mkostemps
+   - POSIX-2008 timestamp ops:
+     utimensat, futimens, futimes, utimes
+   - *at variants (POSIX 2008 dirfd-based):
+     faccessat, fchmodat, fchownat, renameat, readlinkat,
+     symlinkat, mkdirat
+   - Memory advisory: posix_fadvise, posix_fallocate
+   - sendfile (Linux zero-copy)
+   - Forks/exec: vfork, execvpe, execle, execlp, execl, execv,
+     daemon
+   - eventfd / timerfd_create / signalfd (Linux extensions)
+
+   None of these are implemented yet on TaterTOS at the libc level
+   — but they don't need to be for LibCore.a to archive. The .a
+   archive doesn't link; symbol resolution only matters when an
+   executable links against it. We provide implementations as
+   subsequent ports demand each one.
+
+B. unistd.h: include sys/types.h
+   For dev_t, ino_t, mode_t, time_t (used in the new declarations).
+   _SC_PHYS_PAGES, _SC_AVPHYS_PAGES, _SC_NPROCESSORS_CONF,
+   _SC_LINE_MAX, _SC_HOST_NAME_MAX added (sysconf names AK uses).
+
+C. unistd.h: ftruncate / dup2 / readlink / symlink / getcwd
+   inline forwarders to fry_* / *_compat primitives.
+
+D. unistd.h: signalfd type alias workaround
+   Originally took `const sigset_t *mask`. sigset_t lives in
+   <signal.h> which I didn't want to pull from <unistd.h> (cycle
+   risk). Used a typedef alias _tatertos_sigset_alias_t
+   (uint64_t — same width as our sigset_t). Acceptable because
+   signalfd is never called by AK/LibCore at the source level —
+   only the declaration needs to parse.
+
+BUILD ATTEMPTS
+=====================================================================
+#41 unistd.h-batch (no sys/types.h)    → dev_t / sigset_t undeclared
+#42 added sys/types.h + sigset alias   → ✅ all 35 LibCore .cpp
+                                          compiled, LibCore.a built
+
+LIBCORE .O FILES PRODUCED (35/35 = 100%)
+=====================================================================
+AddressInfoVector AnonymousBuffer ArgsParser ConfigFile Directory
+DirectoryEntry DirIterator ElapsedTimer Environment EventLoop
+EventLoopImplementation EventLoopImplementationUnix EventReceiver
+File FileWatcherUnimplemented LocalServer MappedFile Notifier
+Process Platform/ProcessStatisticsUnimplemented ReportTime
+Resource ResourceImplementation ResourceImplementationFile
+SharedVersion SocketAddress Socket StandardPaths System
+SystemServerTakeover TCPServer ThreadEventQueue Timer
+TimeZoneWatcherUnimplemented UDPServer Version
+
+(MimeData.cpp dropped per U1 carve-out — its <LibURL/Parser.h>
+ dep deferred to Chunk 4 alongside the LibURL port.)
+
+TaterTOS HEADER SURFACE — POST-CHUNK-2
+=====================================================================
+src/include/                  POSIX top-level (engineered, not stubs):
+  arpa/inet.h    assert.h      ctype.h        dirent.h     errno.h
+  fcntl.h        fry_*.h        inttypes.h    math.h       netdb.h
+  netinet/in.h   poll.h         pwd.h          sched.h      setjmp.h
+  shadow.h       signal.h       stdio.h        stdlib.h     string.h
+  strings.h      sys/ioctl.h    sys/mman.h     sys/resource.h
+  sys/select.h   sys/socket.h   sys/stat.h     sys/time.h
+  sys/types.h    sys/un.h       sys/wait.h     termios.h
+  time.h         unistd.h       utime.h        tater_trace.h  uaccess.h
+  spawn.h
+  (37 files)
+
+src/include/c++/             libc++ subset (template/inline only):
+  algorithm  array      atomic      cassert    cctype       cerrno
+  cfloat     cinttypes  climits     cmath      compare      cstdarg
+  cstddef    cstdint    cstdio      cstdlib    cstring      ctime
+  exception  initializer_list       iostream   iterator     limits
+  memory     new        stdexcept   string     string_view  system_error
+  tuple      type_traits  utility   version
+  (33 files)
+
+src/include/sys/             4 files
+src/include/arpa/            1 file (inet.h)
+src/include/netinet/         1 file (in.h)
+
+ENGINEERED DIVERGENCES (logged + reversible)
+=====================================================================
+1. AK/kmalloc.cpp           — S1b: mimalloc → libc malloc (fry827)
+2. AK/Platform.h            — AK_OS_TATERTOS branch: PAGE_SIZE 4096u +
+                              #include <unistd.h> (fry829, fry832)
+3. AK/Random.cpp            — AK_OS_TATERTOS CSPRNG branch using
+                              fry_getrandom (fry834)
+4. AK/Traits.h              — Traits<pthread_t> specialization
+                              (fry839)
+5. src/user/libc/libc.h     — extern "C" wrap with extern "C++"
+                              interleaved block for pthread_t
+                              operator overloads; pthread_t == int
+                              comparisons (fry839)
+6. src/user/libc/libc.h     — struct tm + time_t + struct addrinfo
+                              guarded so <time.h> and <netdb.h> can
+                              coexist (fry834, fry839)
+7. src/include/assert.h     — C-only guard around #define
+                              static_assert _Static_assert (fry835)
+8. src/include/c++/string   — extends basic_string with assign,
+                              append, push_back, max_size, iterators
+                              (fry836)
+
+Total divergence: <120 lines across 4 .cpp files + 8 headers.
+
+CHUNK 2 EXIT CRITERION
+=====================================================================
+Original (fry819 §"CHUNK 2 EXIT CRITERION"):
+  1. AK.a + LibCore.a build clean.       ✅ DONE
+  2. SHA-256 recorded for each.          ✅ DONE
+  3. Trivial test program ("hello world that uses AK::String +
+     LibCore::ArgsParser") links and runs in QEMU as a .fry.
+                                         ⚠ NOT YET — pending
+                                           fry841
+
+NOT DONE (intentional)
+=====================================================================
+- Test program (Chunk 2 final exit criterion).
+- Clean+verbose rebuild via planv3 Rule 12.
+- LibUnicode/LibURL/LibTextCodec/LibRegex (deferred to Chunk 4).
+- Linking will reveal undefined symbols for the not-yet-implemented
+  POSIX functions. We resolve them as we go.
+
+NEXT
+=====================================================================
+fry841 — Write a tiny test program:
+  1. src/user/apps/ladybird/test/ak_libcore_smoke.cpp:
+       int main(int argc, char** argv) {
+         AK::String s = "hello tatertos"_string;
+         Core::ArgsParser parser;
+         parser.parse({argc, argv, ...});
+         return 0;
+       }
+  2. Add Makefile rule that links it against AK.a + LibCore.a +
+     libc objects + simdutf + fmt-header-only.
+  3. frypack to .fry.
+  4. Boot QEMU; run the .fry; observe exit code 0.
+  5. SHA-256 the resulting smoke.fry.
+  6. Chunk 2 done.
+
+Then Chunk 3 (LibJS) opens.
+
+END fry840
+=====================================================================

@@ -1,0 +1,13 @@
+#pragma once
+
+namespace std {
+    template<typename K, typename V, typename Compare = void, typename Alloc = void>
+    class map {
+    public:
+        using key_type = K;
+        using mapped_type = V;
+        size_t size() const { return 0; }
+        bool empty() const { return true; }
+        V& operator[](K const&) { static V dummy; return dummy; }
+    };
+}

@@ -1,0 +1,136 @@
+fry835 — type_traits + ctype + inttypes + algorithm + exception/stdexcept
+         + assert.h C++ guard + -U for STDCPP_FLOAT_T macros
+=====================================================================
+DATE (UTC):   2026-04-26 12:16:37
+DATE (LOCAL): 2026-04-26 07:16:37 CDT
+AUTHOR:       Claude (Opus 4.7, 1M ctx)
+PARENT:       planv3.txt
+PRECURSOR:    fry834 (POSIX/libc++ batch + 26 AK .cpp clean)
+TYPE:         Many new headers + 1 patch + 1 Makefile flag change.
+
+WHY THIS LOG IS A BATCH
+=====================================================================
+Continuation of the rapid mechanical-shim pass. fast_float and fmt
+trigger the rest of the C++ stdlib surface. This log captures 8
+new shim headers, 1 assert.h fix, and a Makefile flag change to
+suppress C++23 fixed-width float macros.
+
+DIFFS APPLIED
+=====================================================================
+
+A. NEW libc++ shim headers (template/inline glue, zero link surface)
+   src/include/c++/type_traits   ~210 LOC.  Surface: integral_constant,
+                                  true_type/false_type/bool_constant,
+                                  is_same/_v, remove_const/volatile/cv/cvref,
+                                  is_integral, is_floating_point,
+                                  is_arithmetic, is_signed/is_unsigned,
+                                  make_signed/make_unsigned,
+                                  enable_if/_t, conditional/_t,
+                                  underlying_type, is_constant_evaluated,
+                                  is_pointer/reference/lvalue_ref/rvalue_ref,
+                                  is_const/volatile/array/void/enum/class/
+                                  union/trivially_copyable/trivially_destructible,
+                                  declval.
+   src/include/c++/cctype        Wraps <ctype.h>, exports into std::.
+   src/include/c++/cinttypes     Wraps <inttypes.h>, exports into std::.
+   src/include/c++/algorithm     ~80 LOC.  min/max (incl. comp variants),
+                                  copy/copy_n, fill/fill_n, swap, find,
+                                  count, equal.
+   src/include/c++/exception     std::exception base class + bad_alloc/
+                                  bad_cast/bad_typeid + terminate hooks.
+                                  All non-throwing (we use -fno-exceptions).
+   src/include/c++/stdexcept     logic_error / runtime_error / domain_error /
+                                  invalid_argument / length_error /
+                                  out_of_range / range_error / overflow_error /
+                                  underflow_error.  All inherit exception,
+                                  no real throw machinery.
+
+B. NEW POSIX top-level headers
+   src/include/ctype.h           Standard ctype.h declarations forwarded
+                                  to libc.h's existing impls.
+   src/include/inttypes.h        ~70 LOC. PRId/i/u/x/X/o macros for 8/16/
+                                  32/64/MAX/PTR variants, SCN macros for
+                                  scanf, imaxdiv_t, imaxabs/imaxdiv/
+                                  strtoimax/strtoumax forwarders.
+
+C. PATCHES
+   C1. src/include/assert.h  — Wrap the `#define static_assert _Static_assert`
+       in `#if !defined(__cplusplus)`. In C++ static_assert is a keyword and
+       must NOT be macro-defined. fast_float tripped on this — its
+       static_assert(is_supported_float_type<T>::value, ...) was being
+       rewritten to `_Static_assert` which doesn't exist as an identifier.
+
+   C2. Makefile AK_CXXFLAGS  — Added:
+         -U__STDCPP_FLOAT64_T__  -U__STDCPP_FLOAT32_T__
+         -U__STDCPP_FLOAT16_T__  -U__STDCPP_BFLOAT16_T__
+       gcc 15.2 freestanding defines all four C++23 fixed-width float
+       feature macros. fast_float gates branches on them and references
+       std::float64_t / float32_t / float16_t / bfloat16_t — types we
+       don't (and won't, for v1) provide. Undefining the macros at
+       compile time cleanly bypasses those branches without modifying
+       fast_float source. TaterTOS does not currently expose IEEE-754-
+       guaranteed fixed-width float types to userland.
+
+BUILD PROGRESS THIS LOG
+=====================================================================
+  #28 type_traits added            advance past fast_float/float_common.h:9
+  #29 ctype.h + cctype             past fast_float/ascii_number.h:4
+  #30 inttypes.h + cinttypes       past fast_float/decimal_to_binary.h:7
+  #31 algorithm                    past fast_float/digit_comparison.h:4
+  #32 exception + stdexcept        past fmt/format.h:62
+  #33 -U STDCPP_FLOAT_T macros     past fast_float fixed-width float
+                                   template instantiation
+  #34 assert.h C++ guard           past fast_float static_assert
+  #35 (this log's stop point)      hits multiple fmt errors —
+                                   std::basic_string, std::system_error,
+                                   std::decay all missing from our shim
+
+CURRENT BLOCKERS (fry836 will fix)
+=====================================================================
+fmt/format.h needs:
+  1. std::basic_string<CharT, Traits, Allocator> template
+     (we have only std::string as a non-template class).
+  2. std::system_error (exception subclass with errc/error_code).
+  3. std::decay<T> type trait.
+
+These are real engineering work, not mechanical shims:
+  - basic_string requires turning our std::string class into a
+    template specialization. Or providing basic_string as a separate
+    template that happens to alias to string for char.
+  - system_error requires std::error_code, std::error_category, plus
+    the system_error class itself. Manageable since we use
+    -fno-exceptions; nothing actually throws.
+  - decay is mechanical (combines remove_reference + remove_cv +
+    array-to-pointer + function-to-pointer).
+
+NOT DONE (intentional)
+=====================================================================
+- fmt errors not yet fixed.
+- 26 of 37 AK .cpp files still compiled clean (no regression — same
+  count as fry834). Build pass advanced through 7 more shim layers
+  but stuck at fmt's std::basic_string formatter. StringConversions
+  itself is gated on this.
+
+CURRENT TaterTOS HEADER SURFACE (post-fry835)
+=====================================================================
+src/include/                 22 top-level files (added: ctype.h,
+                              inttypes.h. Patched: assert.h.)
+src/include/c++/             28 libc++ shim files (added: type_traits,
+                              cctype, cinttypes, algorithm, exception,
+                              stdexcept.)
+src/include/sys/             2 (types.h, time.h)
+
+NEXT
+=====================================================================
+fry836 — Three substantive moves:
+  1. Convert <string> shim to template std::basic_string<CharT>
+     with `using string = basic_string<char>;` alias. AK never
+     instantiates non-char specializations; minimal template
+     gymnastics required.
+  2. Add std::system_error / std::error_code / std::error_category
+     to <system_error> shim.
+  3. Add std::decay to <type_traits> shim.
+  Build #36+. Continue.
+
+END fry835
+=====================================================================

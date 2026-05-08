@@ -1,0 +1,13 @@
+// TaterTOS64v3 — <cinttypes>. Wraps <inttypes.h>, exports into std::.
+// Origin log: logs/fry835.txt
+#pragma once
+#include <inttypes.h>
+#include <cstdint>
+
+namespace std {
+using ::imaxdiv_t;
+using ::imaxabs;
+using ::imaxdiv;
+using ::strtoimax;
+using ::strtoumax;
+}

@@ -1,3 +1,13 @@
+*** SUPERSEDED 2026-04-25 ***
+This upgrade plan is no longer authoritative. The hand-built TaterSurf
+engine has been retired in favor of a Ladybird engine port.
+
+Authoritative plan: logs/fry816.txt
+Supersession recorded: logs/fry817.txt
+
+The text below is preserved verbatim for historical reference only.
+*** END SUPERSEDED HEADER ***
+
 TaterSurf Browser Upgrade Plan — From Basic to Professional
 =====================================================================
 DATE: 2026-04-03

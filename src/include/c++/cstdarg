@@ -1,0 +1,8 @@
+// TaterTOS64v3 — <cstdarg>. Wraps <stdarg.h>, re-exports into std::.
+// Origin log: logs/fry832.txt
+#pragma once
+#include <stdarg.h>
+
+namespace std {
+using ::va_list;
+}

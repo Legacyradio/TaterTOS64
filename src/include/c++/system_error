@@ -1,0 +1,131 @@
+// TaterTOS64v3 — minimal <system_error> for freestanding C++.
+// Origin log: logs/fry831.txt + fry836.txt (system_error class added)
+// Surface: std::errc enum + std::error_code / std::error_category /
+//          std::system_error class.
+// fmt declares system_error in error-formatting paths; AK uses errc.
+// Built with -fno-exceptions, so system_error never throws at
+// runtime — it's just a class shape.
+
+#pragma once
+
+#include <errno.h>
+#include <stdexcept>
+#include <string>
+
+namespace std {
+
+// errc — POSIX errno values. Subset matching the canonical libc++
+// surface; widen as later AK/LibCore code demands.
+enum class errc {
+    success                              = 0,
+
+    invalid_argument                     = EINVAL,
+    result_out_of_range                  = ERANGE,
+    no_such_file_or_directory            = ENOENT,
+    permission_denied                    = EACCES,
+    file_exists                          = EEXIST,
+    is_a_directory                       = EISDIR,
+    not_a_directory                      = ENOTDIR,
+    not_enough_memory                    = ENOMEM,
+    bad_file_descriptor                  = EBADF,
+    operation_not_supported              = ENOTSUP,
+    interrupted                          = EINTR,
+    io_error                             = EIO,
+    function_not_supported               = ENOSYS,
+    timed_out                            = ETIMEDOUT,
+    connection_refused                   = ECONNREFUSED,
+    address_in_use                       = EADDRINUSE,
+};
+
+// error_category — virtual base. Two singletons: generic + system.
+class error_category {
+public:
+    constexpr error_category() noexcept = default;
+    virtual ~error_category() noexcept {}
+    virtual char const* name() const noexcept = 0;
+    virtual string      message(int) const { return string("error"); }
+
+    bool operator==(error_category const& other) const noexcept { return this == &other; }
+    bool operator!=(error_category const& other) const noexcept { return this != &other; }
+};
+
+// Inline minimal categories. Not multiply-defined because they're
+// inline static — the linker dedupes.
+inline error_category const& generic_category() noexcept {
+    struct generic_cat : error_category {
+        char const* name() const noexcept override { return "generic"; }
+    };
+    static generic_cat instance;
+    return instance;
+}
+
+inline error_category const& system_category() noexcept {
+    struct system_cat : error_category {
+        char const* name() const noexcept override { return "system"; }
+    };
+    static system_cat instance;
+    return instance;
+}
+
+// error_code — value + category pointer.
+class error_code {
+public:
+    constexpr error_code() noexcept : m_val(0), m_cat(nullptr) {}
+    error_code(int val, error_category const& cat) noexcept
+        : m_val(val), m_cat(&cat) {}
+    error_code(errc e) noexcept
+        : m_val(static_cast<int>(e)), m_cat(&generic_category()) {}
+
+    int                   value()    const noexcept { return m_val; }
+    error_category const& category() const noexcept {
+        return m_cat ? *m_cat : generic_category();
+    }
+    string message() const { return category().message(m_val); }
+
+    explicit operator bool() const noexcept { return m_val != 0; }
+
+    bool operator==(error_code const& other) const noexcept {
+        return m_val == other.m_val && m_cat == other.m_cat;
+    }
+    bool operator!=(error_code const& other) const noexcept { return !(*this == other); }
+
+private:
+    int                   m_val;
+    error_category const* m_cat;
+};
+
+// system_error — exception subclass. We build with -fno-exceptions
+// so this never throws at runtime; it's referenced at parse time
+// by fmt's format_system_error et al.
+class system_error : public runtime_error {
+public:
+    system_error(error_code ec) noexcept
+        : runtime_error("system_error"), m_code(ec) {}
+    system_error(error_code ec, string const&) noexcept
+        : runtime_error("system_error"), m_code(ec) {}
+    system_error(error_code ec, char const*) noexcept
+        : runtime_error("system_error"), m_code(ec) {}
+    system_error(int v, error_category const& cat) noexcept
+        : runtime_error("system_error"), m_code(v, cat) {}
+    system_error(int v, error_category const& cat, char const*) noexcept
+        : runtime_error("system_error"), m_code(v, cat) {}
+
+    error_code const& code() const noexcept { return m_code; }
+
+private:
+    error_code m_code;
+};
+
+// is_error_code_enum — used by error_code construction. Make it
+// recognize std::errc.
+template<typename T>
+struct is_error_code_enum { static constexpr bool value = false; };
+
+template<>
+struct is_error_code_enum<errc> { static constexpr bool value = true; };
+
+inline error_code make_error_code(errc e) noexcept {
+    return error_code(static_cast<int>(e), generic_category());
+}
+
+} // namespace std

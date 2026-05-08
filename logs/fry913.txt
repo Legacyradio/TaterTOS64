@@ -1,0 +1,47 @@
+Fry Log 913 — ToTFS Enablement & Installer Plan
+Timestamp: 2026-05-07 19:55 CDT
+Based on assessment in fry912.txt.
+
+=== PHASE 1: KERNEL ToTFS WIRING (estimated: 1 session) ===
+
+1a. Add seek/truncate/rename to totfs.c
+    - totfs_seek_vfs: use totfs_file_private->pos, handle SEEK_SET/CUR/END
+    - totfs_truncate_vfs: set new size, free excess blocks
+    - totfs_rename_vfs: readdir manipulation, inode updates
+1b. Set ENABLE_TOTFS 1 in vfs.c
+1c. Add seek/truncate/rename to totfs_ops table in vfs_init
+1d. Wire totfs_ops into vfs_mount_secondary for NVMe ToTFS partition
+1e. Build and test (smoketest in QEMU with NVMe emulation)
+
+=== PHASE 2: NVMe DRIVER VERIFICATION (estimated: 1 session) ===
+
+2a. Read NVMe driver fully, identify issues
+2b. Set up QEMU with NVMe device (-drive file=...,if=none -device nvme...)
+2c. Verify driver initializes, block_device read/write works
+2d. Verify `nvme_get_block_device()` returns valid device
+2e. Test FAT32 read on NVMe (current fallback path)
+
+=== PHASE 3: TOOLING (estimated: 1-2 sessions) ===
+
+3a. mktotfs: add block device path (use fopen on /dev/sda + part offset,
+    same code path, just different filename)
+3b. Write a simple installer shell app (fry-install) that:
+    - Probes NVMe via kernel API (ioctl or /sys/probe)
+    - Lists block devices
+    - Accepts target device + partition size
+    - Creates GPT partition with TOTFS_PART_GUID
+    - Runs mktotfs equivalent (inline, don't shell out)
+    - Copies ramdisk files into ToTFS via VFS
+    - Writes EFI boot entry (UEFI variable manipulation)
+3c. Boot test: QEMU with NVMe backed by ToTFS image
+
+=== PHASE 4: DUAL-BOOT (estimated: 1-2 sessions) ===
+
+4a. Partition resizing (shrink NTFS/ext4, create free space)
+4b. Bootloader entry management (efibootmgr-style)
+4c. Installer UI polish
+
+=== IMMEDIATE NEXT STEP ===
+
+Phase 1a: implement totfs_seek/truncate/rename in totfs.c
+Then flip ENABLE_TOTFS and see if the basic mount path compiles.

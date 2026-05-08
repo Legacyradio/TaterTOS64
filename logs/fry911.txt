@@ -1,0 +1,17 @@
+Fry Log 911 - Git push + state snapshot
+Timestamp: 2026-05-07 19:15 CDT
+
+Pushed TaterTOS64 to GitHub:
+  remote: https://github.com/Legacyradio/TaterTOS64.git
+  commit c737ded (was 45baa40)
+  Files: 11624 changed, 4,144,259 insertions, 6,575 deletions
+
+Chromium checkout NOT pushed (no remote configured for chromium-tatertos).
+  Dirty worktree saved as chromium-port-wip-2026-05-07.patch (2338 lines).
+  Staged (force-added): Rust PAL files + target spec JSON.
+  Unstaged: all other port changes (configs, libc++, abseil, perfetto, etc.).
+
+Remaining tasks (per user request):
+  3. Reconcile ToTFS
+  4. Centralize syscall numbers
+  5. mlock/splice/tee real or marked unsupported

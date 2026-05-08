@@ -1,0 +1,28 @@
+Fry Log 915 — mlock/splice/tee: ENOSYS cleanup
+Timestamp: 2026-05-07 20:30 CDT
+
+Task: Convert the three ENOSYS stub syscalls. Each option:
+  a) Real implementation in the kernel.
+  b) Explicitly marked as unsupported (remove stubs from libc wrappers).
+
+Current state:
+  Kernel: SYS_MLOCK/SYS_MUNLOCK/SYS_SPLICE/SYS_TEE fall through to
+    return (uint64_t)-ENOSYS at bottom of switch.
+  Libc: mlock/munlock/splice/tee wrappers exist, call the syscall
+    and return -1 with errno=ENOSYS via the kernel.
+
+Audit:
+  mlock/munlock — need working page-level memory locking. TaterTOS
+    doesn't support swapping, so all memory is effectively pinned.
+    Simple: return 0 (no-op) with a comment explaining semantics.
+    Or: keep ENOSYS but mark in POSIX conformance notes.
+
+  splice — zero-copy data transfer between file descriptors.
+    Requires pipe buffer support + VFS splice op. Heavy lift for
+    current VFS model. Best to keep ENOSYS but mark explicitly.
+
+  tee — duplicate pipe content (splice variant). Same dependency
+    on pipe buffers. Keep ENOSYS.
+
+Decision: mlock/munlock -> no-op (all memory is resident).
+splice/tee -> keep ENOSYS but add explicit case comments.

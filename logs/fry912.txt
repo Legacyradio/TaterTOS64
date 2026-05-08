@@ -1,0 +1,52 @@
+Fry Log 912 — ToTFS Assessment Report (CORRECTED)
+Timestamp: 2026-05-07 20:00 CDT
+
+Source-verified facts only. Corrections applied from review.
+
+=== KERNEL DRIVER (src/kernel/fs/totfs.c, 812 lines) ===
+
+EXISTS — COMPLETE:
+  totfs_probe()             — checks TOTF magic
+  totfs_mount()             — reads superblock, bitmaps
+  totfs_read/write_block()  — block I/O via block_device
+  totfs_read/write_inode()  — inode table I/O
+  totfs_resolve_path()      — path -> inode
+  totfs_dir_lookup()        — directory entry lookup
+  totfs_read/write_file_data() — extent-based data I/O
+  totfs_alloc/free_block()  — bitmap allocator
+  totfs_alloc/free_inode()
+  VFS_ops: open, read, write, close, readdir, stat, create, mkdir, unlink
+
+MISSING VFS OPS (null-checked at call site, return -1):
+  seek, truncate, rename
+
+=== VFS INTEGRATION ===
+
+ENABLE_TOTFS = 0 in vfs.c.
+Behind ENABLE_TOTFS:
+  - find_totfs_gpt_part() scans GPT for TOTFS_PART_GUID
+  - vfs_init() tries ToTFS first (GPT + raw offsets), falls to FAT32
+  - totfs_ops wired for all existing functions
+
+vfs_seek/vfs_truncate/vfs_rename in vfs.c already null-check ops
+and return -1 before calling. Missing ToTFS ops do NOT crash.
+
+=== NVMe DRIVER (src/drivers/storage/nvme.c, 1375 lines) ===
+
+EXISTS:
+  PCI probe, MMIO init, admin/IO queue setup, PRP DMA
+  nvme_read/write_sector, nvme_read/write_blocks
+  nvme_get_block_device() -> &g_primary_nvme->bd
+  MSI support (MSI-X NOT verified in current read)
+
+NOT CONFIRMED:
+  MSI-X support — source review found MSI capability, not MSI-X.
+  VirtIO NVMe transport — not found in source.
+
+=== TOOLS (mktotfs.c, totcopy.c) ===
+
+mktotfs: writes superblock/bitmaps/inodes/root dir, uses fopen(file, "r+b")
+totcopy: reads/writes existing ToTFS image entries, same fopen pattern
+Both work on any fopen-accessible path including /dev/sda on Linux.
+Real limitation: they are host-side build tools, not TaterTOS-native
+installer apps that can run from within the OS.

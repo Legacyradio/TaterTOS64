@@ -1,0 +1,17 @@
+Fry Log 914 — Centralize syscall numbers
+Timestamp: 2026-05-07 20:15 CDT
+
+Task: Extract the duplicated SYS_ enum from syscall.c and libc.c
+into a single shared header so new syscalls only need one edit.
+
+Current state:
+- src/kernel/proc/syscall.c lines 1270-1444 defines enum { SYS_* }
+- src/user/libc/libc.c lines 370-517 defines the SAME enum
+- Both are identical in numbering (0-144) but maintained separately
+- Risk: adding a new syscall means editing two files; if they drift,
+  userspace calls the wrong kernel function
+
+Plan:
+1. Create src/include/tatertos/syscall.h with the canonical enum
+2. Replace both inline enums with #include "tatertos/syscall.h"
+3. Verify build

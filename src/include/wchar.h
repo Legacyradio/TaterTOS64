@@ -13,6 +13,11 @@
 #include <time.h>
 #include <string.h>
 
+#ifndef __wint_t_defined
+#define __wint_t_defined
+typedef int wint_t;
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -67,6 +72,10 @@ size_t wcsrtombs(char *dest, const wchar_t **src, size_t len, mbstate_t *ps);
 /* Wide to/from narrow */
 wchar_t *btowc(int c);
 int wctob(wint_t c);
+
+/* stdlib-style wide/narrow conversions */
+size_t mbstowcs(wchar_t *dest, const char *src, size_t n);
+size_t wcstombs(char *dest, const wchar_t *src, size_t n);
 
 #ifdef __cplusplus
 }

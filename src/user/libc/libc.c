@@ -4,6 +4,7 @@
 #include "fry.h"
 #include <stdio.h>
 #include <stdarg.h>
+#include <langinfo.h>
 
 // String/memory
 size_t strlen(const char *s) {
@@ -1954,4 +1955,54 @@ intmax_t wcstoimax(const wchar_t *nptr, wchar_t **endptr, int base) {
 }
 uintmax_t wcstoumax(const wchar_t *nptr, wchar_t **endptr, int base) {
     return strtoumax((const char *)nptr, (char **)endptr, base);
+}
+
+/* ── Locale / langinfo — TaterTOS C locale only ─────────────────────────── */
+
+char *nl_langinfo(nl_item item) {
+    static char codeset_utf8[] = "UTF-8";
+    static char empty[] = "";
+    static char dot[] = ".";
+    static char radix_dot[] = ".";
+    static char date_fmt[] = "%Y-%m-%d";
+    static char time_fmt[] = "%H:%M:%S";
+    static char date_time_fmt[] = "%Y-%m-%d %H:%M:%S";
+    static char am_str[] = "AM";
+    static char pm_str[] = "PM";
+
+    switch (item) {
+        case CODESET:   return codeset_utf8;
+        case D_T_FMT:   return date_time_fmt;
+        case D_FMT:     return date_fmt;
+        case T_FMT:     return time_fmt;
+        case T_FMT_AMPM: return time_fmt;  /* 24h is fine */
+        case AM_STR:    return am_str;
+        case PM_STR:    return pm_str;
+        case RADIXCHAR: return radix_dot;
+        case THOUSEP:   return empty;
+        case CRNCYSTR:  return empty;
+        case YESSTR:    return (char*)"yes";
+        case NOSTR:     return (char*)"no";
+        default:
+            /* DAY_1..DAY_7, ABDAY_1..ABDAY_7, MON_1..MON_12, ABMON_1..ABMON_12 */
+            if (item >= DAY_1 && item <= DAY_7)
+                return (char*)(const char *[]){"Sunday", "Monday", "Tuesday", "Wednesday",
+                                                "Thursday", "Friday", "Saturday"}[item - DAY_1];
+            if (item >= ABDAY_1 && item <= ABDAY_7)
+                return (char*)(const char *[]){"Sun", "Mon", "Tue", "Wed",
+                                                "Thu", "Fri", "Sat"}[item - ABDAY_1];
+            if (item >= MON_1 && item <= MON_12)
+                return (char*)(const char *[]){"January", "February", "March", "April",
+                                                "May", "June", "July", "August",
+                                                "September", "October", "November", "December"}[item - MON_1];
+            if (item >= ABMON_1 && item <= ABMON_12)
+                return (char*)(const char *[]){"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}[item - ABMON_1];
+            return empty;
+    }
+}
+
+char *nl_langinfo_l(nl_item item, locale_t locale) {
+    (void)locale;
+    return nl_langinfo(item);
 }

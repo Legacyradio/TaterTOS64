@@ -1,0 +1,20 @@
+Fry Log 917 — langinfo.h + nl_langinfo for ICU
+Timestamp: 2026-05-07 21:00 CDT
+
+Blocker from Chromium build (step 270/2575):
+  third_party/icu/source/common/putil.cpp:132:10:
+    fatal error: langinfo.h: No such file or directory
+
+Fix:
+  src/include/langinfo.h — new header with POSIX langinfo constants
+    (CODESET, D_T_FMT, D_FMT, T_FMT, DAY_1..7, ABDAY_1..7,
+     MON_1..12, ABMON_1..12, RADIXCHAR, THOUSEP, etc.)
+    Also declares nl_langinfo() and nl_langinfo_l().
+
+  src/include/locale.h — added locale_t typedef for nl_langinfo_l
+
+  src/user/libc/libc.c — nl_langinfo() and nl_langinfo_l() implementations.
+    Returns C locale values (UTF-8, English names, POSIX date/time formats).
+    Added #include <langinfo.h>.
+
+Build: make all -j4 — SUCCESS, no warnings.

@@ -1,0 +1,33 @@
+Fry Log 918 — Chromium port build state snapshot
+Timestamp: 2026-05-08 00:55 CDT
+
+Chromium revision: bbac87806289b0b55b10bddc66b3155b68dcaab5
+Build dir: out/tatertos
+GN args: target_os="tatertos" target_cpu="x64" is_debug=false is_clang=false symbol_level=0
+
+Build progress: ~1238/2816 targets (varies with parallel scheduling)
+
+THINGS WORKING:
+- Rust stdlib for x86_64-unknown-tatertos: all 20 rlibs including libstd_std.rlib
+- Rust host build tools: small_ctor, cxxbridge_macro, serde_derive, import_attribute
+- C++ compilation: most of base, partition_alloc, perfetto, ICU, protobuf, abseil
+- syscall numbers centralized in single header (task 4)
+- mlock/munlock no-op, splice/tee ENOSYS (task 5)
+- ToTFS enabled with ENABLE_TOTFS=1 + VFS ops (task 3)
+- langinfo.h + nl_langinfo for ICU (fry917)
+
+CURRENT BLOCKERS (need fixes):
+1. base/logging.h: std::ostringstream incomplete type
+   - Likely <sstream> include issue from cxx.h or header ordering
+   
+2. third_party/rust/serde_core-v1: unused imports OsStr/OsString
+   - Rust cfg gates don't include target_os="tatertos"
+   - Fix: add target_os="tatertos" to the rustc cfg match or allow unused
+
+3. base/strings/utf_ostream_operators.h: wstring_view not declared
+   - Already guarded by _LIBCPP_HAS_NO_WIDE_CHARACTERS
+   - Guards may not cover all include paths
+
+NEXT FIX QUEUE:
+1. serde_core unused import — quickest fix in Rust
+2. logging.h ostringstream — need to trace the include chain

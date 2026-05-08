@@ -1,0 +1,17 @@
+Fry Log 916 — ToTFS enabled in kernel
+Timestamp: 2026-05-07 20:45 CDT
+
+Changes:
+  src/kernel/fs/totfs.c: added 3 new VFS wrappers
+    - totfs_seek_vfs — SEEK_SET/CUR/END via totfs_file_private->pos
+    - totfs_truncate_vfs — extend (zero-fill) or shrink size
+    - totfs_rename_vfs — create new entry, copy extents, unlink old
+
+  src/kernel/fs/totfs.h: declarations for the 3 new functions
+
+  src/kernel/fs/vfs.c:
+    - ENABLE_TOTFS 0 -> 1
+    - Wire seek/truncate/rename in all 3 totfs_ops tables
+      (GPT mount, raw offset mount, secondary mount)
+
+Build: make all -j4 — SUCCESS, no warnings.

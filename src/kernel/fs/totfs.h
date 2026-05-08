@@ -175,6 +175,11 @@ int totfs_create_vfs(void *fs_data, const char *path, uint16_t type);
 int totfs_mkdir_vfs(void *fs_data, const char *path);
 int totfs_unlink_vfs(void *fs_data, const char *path);
 
+/* Seek / Truncate / Rename */
+int64_t totfs_seek_vfs(struct vfs_file *f, int64_t offset, int whence);
+int totfs_truncate_vfs(struct vfs_file *f, uint64_t length);
+int totfs_rename_vfs(void *fs_data, const char *old_path, const char *new_path);
+
 #endif /* !TOTFS_HOST_TOOL */
 
 #endif /* TATER_TOTFS_H */

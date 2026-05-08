@@ -9,7 +9,7 @@
 void kprint(const char *fmt, ...);
 void *kmalloc(uint64_t size);
 void kfree(void *ptr);
-#define ENABLE_TOTFS 0
+#define ENABLE_TOTFS 1
 #define TATER_PHYSMAP 0xFFFF800000000000ULL
 static struct vfs_mount *g_mounts;
 static struct fat32_fs   g_fat32;
@@ -845,6 +845,9 @@ int vfs_init(struct block_device *bd) {
             totfs_ops.create  = totfs_create_vfs;
             totfs_ops.mkdir   = totfs_mkdir_vfs;
             totfs_ops.unlink  = totfs_unlink_vfs;
+            totfs_ops.seek    = totfs_seek_vfs;
+            totfs_ops.truncate = totfs_truncate_vfs;
+            totfs_ops.rename  = totfs_rename_vfs;
             vfs_mount("/", &totfs_ops, &g_totfs);
             kprint("VFS: ToTFS mounted at LBA %llu\n", (unsigned long long)totfs_lba);
             return 0;
@@ -866,6 +869,9 @@ int vfs_init(struct block_device *bd) {
                     totfs_ops.create  = totfs_create_vfs;
                     totfs_ops.mkdir   = totfs_mkdir_vfs;
                     totfs_ops.unlink  = totfs_unlink_vfs;
+                    totfs_ops.seek    = totfs_seek_vfs;
+                    totfs_ops.truncate = totfs_truncate_vfs;
+                    totfs_ops.rename  = totfs_rename_vfs;
                     vfs_mount("/", &totfs_ops, &g_totfs);
                     kprint("VFS: ToTFS mounted at raw LBA %llu\n",
                            (unsigned long long)raw_offsets[i]);
@@ -1453,6 +1459,9 @@ static void sec_ops_init(void) {
     sec_totfs_ops.create  = totfs_create_vfs;
     sec_totfs_ops.mkdir   = totfs_mkdir_vfs;
     sec_totfs_ops.unlink  = totfs_unlink_vfs;
+    sec_totfs_ops.seek    = totfs_seek_vfs;
+    sec_totfs_ops.truncate = totfs_truncate_vfs;
+    sec_totfs_ops.rename  = totfs_rename_vfs;
 #endif
     sec_fat32_ops.open     = fat32_open_vfs;
     sec_fat32_ops.read     = fat32_read_vfs;

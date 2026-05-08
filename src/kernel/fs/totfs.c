@@ -810,3 +810,90 @@ int totfs_unlink_vfs(void *fs_data, const char *path) {
 
     return 0;
 }
+
+/* ── Seek / Truncate / Rename VFS wrappers ─────────────────────────────── */
+
+int64_t totfs_seek_vfs(struct vfs_file *f, int64_t offset, int whence) {
+    struct totfs_file_private *priv = (struct totfs_file_private *)f->private;
+    uint64_t new_pos;
+    switch (whence) {
+        case 0: /* SEEK_SET */
+            if (offset < 0) return -1;
+            new_pos = (uint64_t)offset;
+            break;
+        case 1: /* SEEK_CUR */
+            if (offset < 0 && (uint64_t)(-offset) > priv->pos) return -1;
+            new_pos = (offset >= 0) ? priv->pos + (uint64_t)offset
+                                    : priv->pos - (uint64_t)(-offset);
+            break;
+        case 2: /* SEEK_END */
+            if (offset < 0 && (uint64_t)(-offset) > priv->size) return -1;
+            new_pos = (offset >= 0) ? priv->size + (uint64_t)offset
+                                    : priv->size - (uint64_t)(-offset);
+            break;
+        default:
+            return -1;
+    }
+    priv->pos = new_pos;
+    return (int64_t)new_pos;
+}
+
+int totfs_truncate_vfs(struct vfs_file *f, uint64_t length) {
+    struct totfs_file_private *priv = (struct totfs_file_private *)f->private;
+    struct totfs_inode inode;
+    if (totfs_read_inode(priv->fs, priv->inode_num, &inode) != 0)
+        return -1;
+
+    if (length > inode.size) {
+        /* Extend: zero-fill new space */
+        uint64_t old_size = inode.size;
+        inode.size = length;
+        uint8_t zero[TOTFS_BLOCK_SIZE];
+        for (uint32_t i = 0; i < sizeof(zero); i++) zero[i] = 0;
+        uint64_t pos = old_size;
+        while (pos < length) {
+            uint32_t chunk = TOTFS_BLOCK_SIZE;
+            if ((uint64_t)chunk > length - pos) chunk = (uint32_t)(length - pos);
+            if (totfs_write_file_data(priv->fs, &inode, priv->inode_num, pos, zero, chunk) != 0)
+                return -1;
+            pos += chunk;
+        }
+    } else {
+        inode.size = length;
+    }
+
+    priv->size = length;
+    if (priv->pos > length) priv->pos = length;
+    return totfs_write_inode(priv->fs, priv->inode_num, &inode);
+}
+
+int totfs_rename_vfs(void *fs_data, const char *old_path, const char *new_path) {
+    struct totfs_fs *fs = (struct totfs_fs *)fs_data;
+    uint32_t old_inum;
+    if (totfs_resolve_path(fs, old_path, &old_inum) != 0) return -1;
+
+    struct totfs_inode old_inode;
+    if (totfs_read_inode(fs, old_inum, &old_inode) != 0) return -1;
+
+    if (totfs_create_vfs(fs_data, new_path, old_inode.type) != 0) return -1;
+
+    uint32_t new_inum;
+    if (totfs_resolve_path(fs, new_path, &new_inum) != 0) return -1;
+
+    struct totfs_inode new_inode;
+    if (totfs_read_inode(fs, new_inum, &new_inode) != 0) return -1;
+
+    new_inode.size = old_inode.size;
+    new_inode.blocks_used = old_inode.blocks_used;
+    new_inode.extent_count = old_inode.extent_count;
+    for (uint32_t i = 0; i < old_inode.extent_count && i < TOTFS_NUM_EXTENTS; i++) {
+        new_inode.extents[i] = old_inode.extents[i];
+    }
+
+    if (totfs_unlink_vfs(fs_data, old_path) != 0) {
+        totfs_unlink_vfs(fs_data, new_path);
+        return -1;
+    }
+
+    return totfs_write_inode(fs, new_inum, &new_inode);
+}

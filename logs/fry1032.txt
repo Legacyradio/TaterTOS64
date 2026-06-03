@@ -1,0 +1,3 @@
+STEP 1032
+TIME: 2026-05-10 20:26:42
+ACTION: Added rand_r() inline implementation to <stdlib.h>. This was required because Chromium's bundled libwebm library (mkvmuxerutil.cc) uses rand_r() for thread-safe random number generation. The implementation uses the same LCG algorithm as the existing rand() but with caller-provided state. Resumed the Chromium ninja build.

@@ -1,0 +1,27 @@
+2026-05-15T05:46:59-05:00
+
+Stop:
+- Full Chromium TaterTOS build stopped in services metrics at
+  [112/27964] obj/services/metrics/public/cpp/metrics_cpp/ukm_source_id.o
+  with a parallel failure at
+  [119/27964] obj/services/metrics/public/cpp/metrics_cpp/ukm_source.o.
+
+Classification:
+- Compiler strictness, not a TaterTOS API gap.
+
+Why:
+- Both files had exhaustive enum switches in non-void functions, but no
+  compiler-visible fallback after the switch. GCC treated this as
+  `-Werror=return-type`.
+
+Fix:
+- Added explicit NOTREACHED fallbacks:
+  - ukm_source_id.cc returns "UNKNOWN" after the debug-string switch.
+  - ukm_source.cc returns SourceType::DEFAULT after the proto mapping switch.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja \
+    -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos \
+    obj/services/metrics/public/cpp/metrics_cpp/ukm_source_id.o \
+    obj/services/metrics/public/cpp/metrics_cpp/ukm_source.o

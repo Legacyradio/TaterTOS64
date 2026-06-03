@@ -1,0 +1,16 @@
+2026-05-15T09:02:14-05:00
+
+Fix: Resolved GPU IPC shared-image proxy strictness failures.
+
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Why: Clang's -Werror rejected redundant std::move() calls on const SyncToken&
+parameters and a dangling-else pattern in shared_image_interface_proxy.cc.
+
+Change: Passed SyncToken references directly to GenerateDependenciesFromSyncToken()
+and braced the sync-token DCHECK guard in UpdateSharedImage().
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/gpu/ipc/client/client/shared_image_interface_proxy.o
+
+Result: passed.

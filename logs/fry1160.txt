@@ -1,0 +1,25 @@
+Timestamp: 2026-05-15T07:19:49-05:00
+Blocker: Chromium network IPC/mojom traits failed under fatal GCC warnings.
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Files changed:
+- /home/legacyindieradio/chromium-tatertos/src/services/network/public/cpp/p2p_param_traits.h
+- /home/legacyindieradio/chromium-tatertos/src/services/network/public/cpp/host_resolver_mojom_traits.cc
+- /home/legacyindieradio/chromium-tatertos/src/services/network/public/cpp/cookie_manager_mojom_traits.cc
+
+Why:
+- P2P IPC enum validation used IPC_ENUM_TRAITS_MAX_VALUE on enums whose
+  underlying type made the generated lower-bound check tautological.
+- Host resolver and cookie mojom enum conversion switches relied on exhaustive
+  enum handling, but GCC still requires explicit fallbacks with -Werror.
+
+Fix:
+- Replaced the P2P IPC validation macros with explicit checks against the signed
+  IPC integer value.
+- Added NOTREACHED() plus conservative return fallbacks to the host resolver and
+  cookie enum conversion helpers.
+
+Verification:
+- Ran:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/services/network/public/cpp/cpp_p2p/p2p_param_traits.o obj/services/network/public/cpp/host_resolver_mojom_support/host_resolver_mojom_traits.o obj/services/network/public/mojom/cookies_mojom/cookie_manager_mojom_traits.o
+- Result: passed.

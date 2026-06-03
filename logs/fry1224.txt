@@ -1,0 +1,18 @@
+2026-05-16T13:27:52-05:00
+
+Fix: addressed persistent cache compiler-strictness failures.
+
+Files:
+- chromium-tatertos/src/components/persistent_cache/metrics_util.cc
+- chromium-tatertos/src/components/persistent_cache/backend_storage.cc
+
+Why:
+- The build stopped on -Werror=return-type in metrics_util.cc and backend_storage.cc where non-void functions used exhaustive switch statements without fallback returns. Added appropriate fallback returns to ensure all control paths are covered.
+- Classification: compiler strictness/library analysis, not a TaterTOS API/platform gap.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/components/persistent_cache/persistent_cache/metrics_util.o
+  obj/components/persistent_cache/persistent_cache/backend_storage.o

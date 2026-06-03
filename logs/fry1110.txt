@@ -1,0 +1,29 @@
+fry1110 - cc devtools instrumentation redundant move cleanup
+
+Timestamp: 2026-05-14T22:09:55-05:00
+Build stop: [84/31373]
+Failed object: obj/cc/base/base/devtools_instrumentation.o
+Failed source: cc/base/devtools_instrumentation.h
+Classification: compiler strictness / portability cleanup, not a TaterTOS API gap
+
+Problem:
+GCC, under -Werror, rejected two return statements in inline helper functions
+because returning std::move(value) from a local std::unique_ptr was redundant.
+
+Fix:
+Removed the redundant std::move() calls in:
+- BeginMainThreadFrameData()
+- NeedsBeginFrameData()
+
+Why:
+Returning the local unique_ptr directly preserves move semantics through the
+return statement and satisfies GCC's -Wredundant-move diagnostic.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja \
+  -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos \
+  obj/cc/base/base/devtools_instrumentation.o
+
+Result:
+[1/1] CXX obj/cc/base/base/devtools_instrumentation.o
+

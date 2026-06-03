@@ -1,0 +1,21 @@
+2026-05-15T06:04:07-05:00
+
+Stop:
+- Full Chromium TaterTOS build stopped at
+  [103/27610] obj/ui/display/display/screen.o.
+
+Classification:
+- Compiler strictness, not a TaterTOS API gap.
+
+Why:
+- GCC rejected an XOR expression mixing comparisons without explicit grouping
+  under `-Werror=parentheses`.
+
+Fix:
+- Parenthesized both comparison operands in Screen::SetScopedDisplayForNewWindows.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja \
+    -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos \
+    obj/ui/display/display/screen.o

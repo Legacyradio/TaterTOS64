@@ -1,0 +1,3 @@
+STEP 1036
+TIME: 2026-05-11 00:36:57
+ACTION: Patched third_party/webrtc/modules/rtp_rtcp/source/rtcp_packet/congestion_control_feedback.cc to add a default return to To2BitEcn. The compiler was failing with -Werror=return-type because it could not guarantee that all control paths returned a value, even though the switch was logically exhaustive for the EcnMarking enum. This fix ensures the build can continue past step 7089. Resumed the Chromium ninja build.

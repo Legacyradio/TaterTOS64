@@ -1,0 +1,34 @@
+2026-05-14 12:15:50 CDT
+
+Fixed the monitored Chromium/TaterTOS build stop from stamp 20260514_121343.
+
+Build status before fix:
+- Monitored log: /home/legacyindieradio/TaterTOS64/logs/chrome_build_20260514_121343.log
+- Exit: 1 at 2026-05-14T12:14:31-05:00
+- Local Ninja stop points:
+  - [1/34114] obj/net/dns/dns/dns_reloader.o
+  - [2/34114] obj/net/dns/dns/dns_query.o
+  - [10/34114] obj/net/dns/dns/dns_response_result_extractor.o
+- Logical phase: Chromium net/dns
+
+Why:
+- dns_reloader.cc includes <resolv.h> on POSIX systems. TaterTOS did not yet
+  provide that resolver header.
+- dns_query.cc and dns_response_result_extractor.cc needed compiler-visible
+  fallback returns under -Werror=return-type.
+
+Fix:
+- Added a minimal TaterTOS resolv.h that does not advertise res_ninit/res_nclose:
+  - /home/legacyindieradio/TaterTOS64/src/include/resolv.h
+- Added NOTREACHED() fallback returns in:
+  - /home/legacyindieradio/chromium-tatertos/src/net/dns/dns_query.cc
+  - /home/legacyindieradio/chromium-tatertos/src/net/dns/dns_response_result_extractor.cc
+
+Verification:
+- Targeted Chromium object rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/net/dns/dns/dns_reloader.o obj/net/dns/dns/dns_query.o obj/net/dns/dns/dns_response_result_extractor.o
+- Completed objects:
+  - [1/3] CXX obj/net/dns/dns/dns_reloader.o
+  - [2/3] CXX obj/net/dns/dns/dns_query.o
+  - [3/3] CXX obj/net/dns/dns/dns_response_result_extractor.o
+

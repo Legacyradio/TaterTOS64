@@ -1,0 +1,1 @@
+STEP/2026-05-11 12:15/PATCH_WEBRTC_RETURNTYPE: Added a default return case to NetworkPreferenceToString in network_monitor.cc. WHY: Satisfy -Werror=return-type for non-Linux compilation paths where the switch statement was incomplete.

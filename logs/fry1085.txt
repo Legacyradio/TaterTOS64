@@ -1,0 +1,31 @@
+2026-05-14 12:19:25 CDT
+
+Fixed the monitored Chromium/TaterTOS build stop from stamp 20260514_121612.
+
+Build status before fix:
+- Monitored log: /home/legacyindieradio/TaterTOS64/logs/chrome_build_20260514_121612.log
+- Exit: 1 at 2026-05-14T12:17:23-05:00
+- Local Ninja stop points:
+  - [6/34104] obj/net/dns/dns/dns_util.o
+  - [9/34104] obj/net/dns/dns/host_resolver_internal_result.o
+  - [13/34104] obj/net/dns/dns/host_resolver_dns_task.o
+- Logical phase: Chromium net/dns
+
+Why:
+- x86_64-elf-g++ required compiler-visible fallback returns for exhaustive
+  DNS enum/state switches under -Werror=return-type.
+
+Fix:
+- Added explicit base/notreached.h includes and fallback returns in:
+  - /home/legacyindieradio/chromium-tatertos/src/net/dns/dns_util.cc
+  - /home/legacyindieradio/chromium-tatertos/src/net/dns/host_resolver_internal_result.cc
+  - /home/legacyindieradio/chromium-tatertos/src/net/dns/host_resolver_dns_task.h
+
+Verification:
+- Targeted Chromium object rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/net/dns/dns/dns_util.o obj/net/dns/dns/host_resolver_internal_result.o obj/net/dns/dns/host_resolver_dns_task.o
+- Completed objects:
+  - [1/3] CXX obj/net/dns/dns/host_resolver_internal_result.o
+  - [2/3] CXX obj/net/dns/dns/dns_util.o
+  - [3/3] CXX obj/net/dns/dns/host_resolver_dns_task.o
+

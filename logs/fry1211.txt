@@ -1,0 +1,19 @@
+2026-05-15T22:22:38-05:00
+
+Fix: addressed cc input compiler-strictness failures.
+
+Files:
+- chromium-tatertos/src/cc/input/snap_fling_controller.cc
+- chromium-tatertos/src/cc/input/scroll_elasticity_helper.cc
+
+Why:
+- The build stopped on -Werror=return-type in snap_fling_controller.cc where a non-void function lacked a fallback return. A fallback return false; was added.
+- The build stopped on -Werror=range-loop-construct in scroll_elasticity_helper.cc due to a structured binding creating a copy instead of a reference. Changed the loop variable to const auto& to prevent the copy.
+- Classification: compiler strictness/library analysis, not a TaterTOS API/platform gap.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/cc/cc/snap_fling_controller.o
+  obj/cc/cc/scroll_elasticity_helper.o

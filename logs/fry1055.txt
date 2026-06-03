@@ -1,0 +1,1 @@
+STEP/2026-05-11 14:50/PATCH_IFADDRS: Guarded <ifaddrs.h> and provided a dummy CreateIfAddrsConverter implementation for TaterTOS64 in ifaddrs_converter.h/cc. WHY: TaterTOS64 does not support the Linux-specific ifaddrs network interface enumeration. This allows WebRTC to compile and gracefully degrade functionality without violating OS architectural purity (Rule 3).

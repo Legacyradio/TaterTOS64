@@ -1,0 +1,38 @@
+Timestamp: 2026-05-17T13:29:32-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped at [104/23071] in the Blink public Mojom
+core target set after the origin trials fix.
+
+Failed objects:
+obj/third_party/blink/public/mojom/mojom_core/service_worker_container.mojom.o
+obj/third_party/blink/public/mojom/mojom_core/service_worker.mojom.o
+obj/third_party/blink/public/mojom/mojom_core/dedicated_worker_host_factory.mojom.o
+obj/third_party/blink/public/mojom/mojom_core/shared_worker_factory.mojom.o
+
+Failure:
+Three Blink enum trait ToMojom() helpers reached the end of non-void
+functions under -Werror=return-type:
+- third_party/blink/public/common/safe_url_pattern_mojom_traits.h
+- third_party/blink/public/common/service_worker/service_worker_router_rule_mojom_traits.h
+- third_party/blink/public/common/service_worker/service_worker_embedded_worker_status_mojom_traits.h
+
+Classification:
+Compiler strictness in Chromium/Blink enum conversion code. This is not a
+TaterTOS API/platform gap.
+
+Fix:
+Added final fallback returns after the exhaustive switches:
+- safe URL pattern modifiers fall back to kNone.
+- service worker router running status falls back to kNotRunning.
+- embedded worker status falls back to kStopped.
+
+Why:
+The switches cover known enum values, but GCC still requires a reachable
+fallback return when warnings are promoted to errors.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C out/tatertos obj/third_party/blink/public/mojom/mojom_core/service_worker_container.mojom.o obj/third_party/blink/public/mojom/mojom_core/service_worker.mojom.o obj/third_party/blink/public/mojom/mojom_core/dedicated_worker_host_factory.mojom.o obj/third_party/blink/public/mojom/mojom_core/shared_worker_factory.mojom.o
+
+Result:
+All four targeted Blink Mojom objects rebuilt successfully.

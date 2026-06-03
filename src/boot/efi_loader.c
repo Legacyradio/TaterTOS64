@@ -610,6 +610,12 @@ static int ramdisk_should_load_name(const CHAR16 *name) {
            char16_suffix_ieq(name, ".ICON") ||
            char16_suffix_ieq(name, ".ucode") ||
            char16_suffix_ieq(name, ".ttf") ||
+           char16_suffix_ieq(name, ".LXE") ||
+           char16_suffix_ieq(name, ".so") ||
+           char16_suffix_ieq(name, ".so.0") ||
+           char16_suffix_ieq(name, ".so.1") ||
+           char16_suffix_ieq(name, ".so.2") ||
+           char16_suffix_ieq(name, ".so.6") ||
            char16_suffix_ieq(name, ".RUN");
 }
 

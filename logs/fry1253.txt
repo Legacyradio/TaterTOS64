@@ -1,0 +1,25 @@
+Timestamp: 2026-05-17T15:55:00-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped due to redundant-move error in web_gesture_curve_impl.cc.
+
+Failure:
+1. web_gesture_curve_impl.cc: "redundant move in return statement" [-Werror=redundant-move].
+
+Exact compiler error:
+../../ui/events/gestures/blink/web_gesture_curve_impl.cc:49:21: error: redundant move in return statement [-Werror=redundant-move]
+
+Classification:
+C++20/C++23 compatibility in ui/events.
+
+Fix:
+1. Removed std::move() from the return statement of scroller in CreateDefaultPlatformCurve.
+
+Why:
+C++20 and later require copy elision (NRVO) in more cases, making explicit std::move() redundant or harmful for some return types like std::unique_ptr when returning a local variable of the same type.
+
+Verification:
+Build restarted and progressing.
+
+Result:
+Build is now continuing with PID 1243240.

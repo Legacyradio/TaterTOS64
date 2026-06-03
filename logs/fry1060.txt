@@ -1,0 +1,1 @@
+STEP/2026-05-13 18:58:21/PATCH_AUDIT_REPORT: Added CHROMIUM_PORT_AUDIT_REPORT.md documenting Linux-compatibility contamination, Chromium patch spread, and a cleanup plan. WHY: Establish a concrete baseline before further Chromium-port fixes so new work follows an explicit architectural boundary.

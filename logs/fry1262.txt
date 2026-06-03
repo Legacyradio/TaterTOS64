@@ -1,0 +1,24 @@
+Fry Log 1262 — v8: V8_TARGET_OS_LINUX empty macro #if fixes
+Timestamp: 2026-05-18 ~22:05 CDT
+
+Scope:
+  Build stopped at [1130/21764] in clang_x64 V8 targets. Same root cause
+  as std-object-sizes.h (fry1258): V8_TARGET_OS_LINUX is #define'd to
+  empty, causing "invalid token at start of a preprocessor expression"
+  when used directly in #if.
+
+Files fixed:
+  1. v8/src/wasm/wasm-objects.cc — 4 instances:
+     Line 7:   V8_TARGET_OS_LINUX → defined(V8_TARGET_OS_LINUX)
+     Line 1186: V8_TARGET_OS_LINUX && V8_OS_LINUX →
+                defined(V8_TARGET_OS_LINUX) && defined(V8_OS_LINUX)
+     Line 1228: V8_TARGET_OS_LINUX → defined(V8_TARGET_OS_LINUX)
+     Line 1274: V8_TARGET_OS_LINUX → defined(V8_TARGET_OS_LINUX)
+
+  2. v8/src/d8/d8.cc — 2 instances:
+     Lines 3364, 4525: V8_TARGET_OS_LINUX → defined(V8_TARGET_OS_LINUX)
+
+Why:
+  V8_TARGET_OS_LINUX is defined as empty (via v8config.h:247,
+  conditional on V8_OS_LINUX). Empty macros in #if evaluate to nothing,
+  producing syntax like "&& &&". defined() correctly tests macro presence.

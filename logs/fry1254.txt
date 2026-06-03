@@ -1,0 +1,34 @@
+Timestamp: 2026-05-17T16:25:00-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped due to multiple C++20 compatibility and return-type errors in cc/animation.
+
+Failure:
+1. filter_animation_curve.cc: "redundant move in return statement" [-Werror=redundant-move].
+2. scroll_offset_animation_curve.cc: "control reaches end of non-void function" [-Werror=return-type].
+3. keyframe_effect.cc: "suggest explicit braces to avoid ambiguous 'else'" [-Werror=dangling-else].
+4. animation_host.cc: "control reaches end of non-void function" [-Werror=return-type].
+
+Exact compiler errors:
+../../cc/animation/filter_animation_curve.cc:96:19: error: redundant move in return statement [-Werror=redundant-move]
+../../cc/animation/scroll_offset_animation_curve.cc:213:1: error: control reaches end of non-void function [-Werror=return-type]
+
+Classification:
+C++20/C++23 compatibility and compiler strictness in cc/animation.
+
+Fix:
+1. filter_animation_curve.cc: Removed std::move() from return statement.
+2. scroll_offset_animation_curve.cc: Added NOTREACHED() and fallback return.
+3. keyframe_effect.cc: Added explicit braces around if-block.
+4. animation_host.cc: Added NOTREACHED() and fallback return.
+
+Why:
+1. C++20 and later require copy elision (NRVO) in more cases, making explicit std::move() redundant.
+2. GCC requires explicit returns in all paths of non-void functions.
+3. GCC is stricter about ambiguous else blocks in nested if statements.
+
+Verification:
+Build restarted and progressing.
+
+Result:
+Build is now continuing with PID 1320621.

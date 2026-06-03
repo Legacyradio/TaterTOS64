@@ -1,0 +1,29 @@
+2026-05-14 09:46:25 CDT
+
+Fixed the next Chromium net/proxy_resolution compile blockers.
+
+Build status:
+- Monitored full build stamp: 20260514_094400.
+- Local Ninja stop points:
+  - [8/34368] obj/net/net/proxy_config_service.o
+  - [16/34368] obj/net/net/configured_proxy_resolution_request.o
+- Logical phase: Chromium net/proxy_resolution, after net/log and net/nqe.
+
+What changed:
+- net/proxy_resolution/proxy_config_service.cc:
+  - Removed a redundant std::move() from a unique_ptr return path.
+- net/proxy_resolution/configured_proxy_resolution_request.cc:
+  - Added base/notreached.h.
+  - Added an explicit GCC-only fallback after the exhaustive DNS probe
+    condition switch.
+
+Why:
+The TaterTOS GCC target treats redundant move and return-path warnings as
+errors. These are narrow compiler-correctness fixes and do not add platform
+shortcuts.
+
+Verification:
+- ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/net/net/proxy_config_service.o obj/net/net/configured_proxy_resolution_request.o passed.
+
+Next:
+- Resume the monitored full chrome build from this point.

@@ -1,0 +1,27 @@
+Timestamp: 2026-05-17T15:45:00-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped due to return-type errors in components/input.
+
+Failure:
+1. utils.cc: "control reaches end of non-void function" in InputEventTypeToProto and InputEventResultStateToProto.
+2. render_widget_host_input_event_router.cc: "control reaches end of non-void function" in TouchscreenPinchState methods and PhaseToString.
+
+Exact compiler errors:
+../../components/input/utils.cc:155:1: error: control reaches end of non-void function [-Werror=return-type]
+../../components/input/render_widget_host_input_event_router.cc:240:1: error: control reaches end of non-void function [-Werror=return-type]
+
+Classification:
+Compiler strictness in components/input.
+
+Fix:
+1. Added NOTREACHED() and fallback returns to all affected functions in utils.cc and render_widget_host_input_event_router.cc.
+
+Why:
+GCC requires explicit returns in all paths of non-void functions.
+
+Verification:
+Build restarted and progressing.
+
+Result:
+Build is now continuing with PID 1229368.

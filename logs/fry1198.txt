@@ -1,0 +1,19 @@
+2026-05-15T09:42:38-05:00
+
+Fix: Added media support/type fallback returns.
+
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Why: Clang's -Werror=return-type rejected several media support helpers in
+supported_types.cc, VideoCodecProfileToVideoCodec(), and
+MakeReplacementBitrate() because the compiler could not prove all enum values
+returned.
+
+Change: Added NOTREACHED() fallbacks. Unknown support/proprietary checks return
+false, codec profile mapping returns VideoCodec::kUnknown, and bitrate
+replacement falls back to external rate control.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/media/base/base/supported_types.o obj/media/base/base/video_codecs.o obj/media/base/base/video_bitrate_allocation.o
+
+Result: passed.

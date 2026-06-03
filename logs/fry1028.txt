@@ -1,0 +1,3 @@
+STEP 1028
+TIME: 2026-05-10 16:43:20
+ACTION: Reverted the shortcut patch in base/debug/stack_trace_posix.cc. Properly fixed the compilation error by including <ucontext.h> in <signal.h>, ensuring that ucontext_t and the REG_* macros are visible to Chromium's stack trace code. This adheres to Rule 1 and Rule 2 of the plan. Resumed the Chromium ninja build.

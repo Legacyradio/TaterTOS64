@@ -1,0 +1,136 @@
+Fry Log 923 — Chromium base:base POSIX fixes and next blocker handoff
+Timestamp: 2026-05-08 21:10 CDT
+
+Scope:
+  Continued from Fry 922. Verified the reported four base:base failures against
+  the actual Chromium build output, fixed the missing TaterTOS POSIX surface,
+  fixed the Chromium pthread_t thread-id cast, and pushed base:base far enough
+  to expose the next non-POSIX blocker.
+
+TaterTOS64 changes:
+  src/include/fcntl.h
+    - Added O_NDELAY as an alias for O_NONBLOCK.
+    - Added F_RDLCK, F_WRLCK, F_UNLCK.
+    - Added POSIX struct flock.
+
+  src/include/unistd.h
+    - Added pwrite declaration.
+    - Added ftruncate64 declaration as the 64-bit alias surface for ftruncate.
+
+  src/include/sys/time.h
+    - Added utimes and futimes declarations.
+
+  src/include/pthread.h
+    - Extended pthread_mutexattr_t with protocol storage.
+    - Added PTHREAD_PRIO_NONE, PTHREAD_PRIO_INHERIT, PTHREAD_PRIO_PROTECT.
+    - Added pthread_mutexattr_getprotocol / setprotocol declarations.
+    - Added pthread_condattr_getclock / setclock declarations.
+
+  src/user/libc/posix.c
+    - Implemented pread and pwrite as offset-preserving wrappers using the
+      existing fry_lseek + fry_read/fry_write ABI.
+    - Implemented ftruncate using existing fry_ftruncate.
+    - Implemented ftruncate64 as an alias to ftruncate.
+    - Implemented truncate via open + ftruncate + close.
+    - Implemented utimes via utimensat conversion.
+    - Implemented futimes as fd validation plus timestamp no-op matching the
+      current timestamp-storage limits of the filesystem layer.
+
+  src/user/libc/pthread.c
+    - Initialized mutex protocol attrs to PTHREAD_PRIO_NONE.
+    - Implemented pthread_mutexattr_getprotocol / setprotocol.
+    - Initialized cond clock attrs to CLOCK_REALTIME.
+    - Implemented pthread_condattr_getclock / setclock.
+
+Why:
+  Chromium base/files and base/synchronization POSIX code required these normal
+  POSIX declarations/constants to compile. The TaterTOS ABI already had
+  ftruncate and seek/read/write primitives, so the libc surface could be
+  completed without adding Linux code or pretending a syscall exists.
+
+Chromium changes:
+  base/threading/platform_thread_posix.cc
+    - Changed pthread_self() conversion to cast through uintptr_t and then to
+      PlatformThreadId::UnderlyingType.
+    - The first suggested int64_t cast was wrong for this target because
+      PlatformThreadId::UnderlyingType is pid_t on POSIX, and pid_t is int.
+
+  base/parameter_pack.h
+    - Replaced local constexpr any_of/all_of helpers using
+      std::ranges::contains(initializer_list<bool>, ...) with explicit
+      constexpr loops.
+    - Reason: GCC + Chromium libc++ hit a constexpr failure inside
+      libc++ __constexpr_memchr while evaluating Chromium trait packs. This is
+      a compiler/libc++ constexpr fast-path issue, not a TaterTOS POSIX header
+      issue. The local loop preserves semantics and avoids the bad fast path.
+
+Commands run:
+  cd /home/legacyindieradio/TaterTOS64
+  make clean
+  env PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:/home/legacyindieradio/.local/bin:/usr/local/bin" /bin/bash build_iso.sh
+
+  cd /home/legacyindieradio/chromium-tatertos/src
+  ./buildtools/linux64/gn gen out/tatertos
+  ninja -C out/tatertos obj/base/base/file_posix.o obj/base/base/condition_variable_posix.o obj/base/base/lock_impl_posix.o obj/base/base/platform_thread_posix.o
+  ninja -C out/tatertos base:base
+  ninja -C out/tatertos obj/base/base/important_file_writer_cleaner.o
+
+Results:
+  TaterTOS clean ISO build passed.
+
+  GN generation passed. It still warns that use_goma has no effect.
+
+  Fry 922 exact failed objects now compile:
+    obj/base/base/file_posix.o
+    obj/base/base/condition_variable_posix.o
+    obj/base/base/lock_impl_posix.o
+    obj/base/base/platform_thread_posix.o
+
+  base:base progressed through:
+    - Rust core/std/test build for x86_64-unknown-tatertos.
+    - allocator Rust FFI.
+    - rust_logger generated C++/Rust bridge.
+    - BoringSSL, including previous cpu_intel/getentropy areas.
+    - ICU static libraries.
+    - large sections of Chromium //base.
+
+  base:base first stopped at:
+    obj/base/base/important_file_writer_cleaner.o
+
+  Failure class:
+    GCC rejected constexpr trait validation through libc++ ranges contains/find
+    and __constexpr_memchr. Patched base/parameter_pack.h to use local constexpr
+    loops instead.
+
+  Verification after patch:
+    ninja -C out/tatertos obj/base/base/important_file_writer_cleaner.o
+    passed.
+
+Current handoff:
+  A final rerun of:
+    ninja -C out/tatertos base:base
+  was started, but the machine was choking and the user requested restart.
+  The background ninja/rustc processes were stopped with:
+    pkill -f "ninja -C out/tatertos base:base"
+
+  Confirmed no remaining ninja, rustc, or x86_64-elf-g++ process was running
+  afterward.
+
+Next step:
+  After restart, rerun:
+    cd /home/legacyindieradio/chromium-tatertos/src
+    ninja -C out/tatertos base:base
+
+  Expected behavior:
+    It should continue past the previous important_file_writer_cleaner.o stop.
+    If it fails again, treat the new first failed object as the next real
+    blocker. The Fry 922 POSIX blockers are cleared.
+
+Notes:
+  Ninja repeatedly printed:
+    ninja: warning: premature end of file; recovering
+  This caused major rebuild churn after interrupted runs. That was the main
+  reason the work took much longer than the four-object report suggested.
+
+  No SHA-256 hashes were recorded because this was not a user-requested hash
+  verification step.

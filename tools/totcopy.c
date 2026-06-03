@@ -23,7 +23,10 @@ static FILE *g_img;
 static uint64_t g_part_off;
 static struct totfs_superblock g_sb;
 static uint8_t g_inode_bmp[TOTFS_BLOCK_SIZE];
-static uint8_t g_block_bmp[TOTFS_BLOCK_SIZE];
+/* Block bitmap may span multiple blocks (partitions > 128MB). 64 blocks =
+ * 256KB tracks up to ~2M blocks (8GB at 4K) — ample headroom. */
+#define TOTFS_BLOCK_BMP_MAXBLK 64
+static uint8_t g_block_bmp[TOTFS_BLOCK_BMP_MAXBLK * TOTFS_BLOCK_SIZE];
 
 static void read_block(uint64_t bnum, void *buf) {
     uint64_t off = g_part_off + bnum * TOTFS_BLOCK_SIZE;
@@ -77,7 +80,7 @@ static uint32_t alloc_inode(void) {
 }
 
 static uint64_t alloc_block(void) {
-    for (uint64_t i = g_sb.data_start; i < g_sb.total_blocks && i < TOTFS_BLOCK_SIZE * 8; i++) {
+    for (uint64_t i = g_sb.data_start; i < g_sb.total_blocks; i++) {
         if (!bit_test(g_block_bmp, (uint32_t)i)) {
             bit_set(g_block_bmp, (uint32_t)i);
             g_sb.free_blocks--;
@@ -92,7 +95,7 @@ static uint64_t alloc_block(void) {
 static uint64_t alloc_blocks_contig(uint32_t count, uint32_t *got) {
     uint64_t start = 0;
     uint32_t run = 0;
-    for (uint64_t i = g_sb.data_start; i < g_sb.total_blocks && i < TOTFS_BLOCK_SIZE * 8; i++) {
+    for (uint64_t i = g_sb.data_start; i < g_sb.total_blocks; i++) {
         if (!bit_test(g_block_bmp, (uint32_t)i)) {
             if (run == 0) start = i;
             run++;
@@ -443,9 +446,14 @@ static void do_copy(const char *host_file, const char *dest_path) {
 /* ── Flush metadata ──────────────────────────────────────────────────── */
 
 static void flush_metadata(void) {
-    /* Write bitmaps */
+    /* Write bitmaps (block bitmap may span multiple blocks) */
     write_block(g_sb.inode_bitmap_start, g_inode_bmp);
-    write_block(g_sb.block_bitmap_start, g_block_bmp);
+    {
+        uint32_t bbn = g_sb.block_bitmap_blocks ? (uint32_t)g_sb.block_bitmap_blocks : 1;
+        if (bbn > TOTFS_BLOCK_BMP_MAXBLK) bbn = TOTFS_BLOCK_BMP_MAXBLK;
+        for (uint32_t i = 0; i < bbn; i++)
+            write_block(g_sb.block_bitmap_start + i, g_block_bmp + (size_t)i * TOTFS_BLOCK_SIZE);
+    }
 
     /* Write superblock */
     uint8_t blk[TOTFS_BLOCK_SIZE];
@@ -483,9 +491,14 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Read bitmaps */
+    /* Read bitmaps (block bitmap may span multiple blocks) */
     read_block(g_sb.inode_bitmap_start, g_inode_bmp);
-    read_block(g_sb.block_bitmap_start, g_block_bmp);
+    {
+        uint32_t bbn = g_sb.block_bitmap_blocks ? (uint32_t)g_sb.block_bitmap_blocks : 1;
+        if (bbn > TOTFS_BLOCK_BMP_MAXBLK) bbn = TOTFS_BLOCK_BMP_MAXBLK;
+        for (uint32_t i = 0; i < bbn; i++)
+            read_block(g_sb.block_bitmap_start + i, g_block_bmp + (size_t)i * TOTFS_BLOCK_SIZE);
+    }
 
     if (argc >= 5 && strcmp(argv[3], "--list") == 0) {
         do_list(argv[4]);

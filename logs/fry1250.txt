@@ -1,0 +1,31 @@
+Timestamp: 2026-05-17T15:25:00-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped at [327/22354] due to false positive stringop-overflow and missing return-type fallbacks.
+
+Failure:
+1. string_impl.h: GCC false positive -Werror=stringop-overflow during atomic load inlining.
+2. context_properties_mojom_traits.h: "control reaches end of non-void function" in switch-based traits.
+3. number_mojom_traits.h: "control reaches end of non-void function" in GetTag.
+
+Exact compiler errors:
+../../third_party/blink/renderer/platform/wtf/text/string_impl.h:189:32: error: 'unsigned int __atomic_load_4(const volatile void*, int)' writing 4 bytes into a region of size 0 overflows the destination [-Werror=stringop-overflow=]
+../../services/webnn/public/mojom/context_properties_mojom_traits.h:25:3: error: control reaches end of non-void function [-Werror=return-type]
+
+Classification:
+Compiler false positive and strictness in Blink and WebNN Mojom traits.
+
+Fix:
+1. string_impl.h: Wrapped Is8Bit() in #pragma GCC diagnostic ignored "-Wstringop-overflow" to suppress the false positive.
+2. context_properties_mojom_traits.h: Added NOTREACHED() and fallback returns to switch-based functions.
+3. number_mojom_traits.h: Added NOTREACHED() and fallback return to GetTag.
+
+Why:
+1. GCC 11+ sometimes incorrectly identifies atomic loads in highly inlined code as buffer overflows when it can't prove a pointer is non-null.
+2. GCC requires explicit returns in all paths of non-void functions.
+
+Verification:
+Build restarted and progressing.
+
+Result:
+Build is now continuing with PID 1083737.

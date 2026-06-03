@@ -1,0 +1,43 @@
+2026-05-14 01:20:07 CDT
+
+Added and validated a durable monitored full-build launcher.
+
+What changed:
+- Added tools/chromium_build_monitor.sh.
+- The monitor launches the Chromium TaterTOS chrome build, writes the full build
+  output to logs/chrome_build_<stamp>.log, writes periodic monitor snapshots to
+  logs/chrome_build_<stamp>_monitor.log, and records build PID/log paths in
+  logs/chrome_build_<stamp>.pid.
+- The monitor records log size and idle seconds every 60 seconds so a stalled
+  or stopped build leaves a useful trail.
+
+Why:
+The interactive session can stop or lose process state during long Chromium
+builds. A detached monitor gives us a durable record of whether ninja is still
+alive, where it stopped, and the final exit code.
+
+Verification:
+- A foreground probe with timeout created build, monitor, and pid logs.
+- A detached run using setsid -f successfully launched the monitor and ninja:
+  logs/chrome_build_20260514_011900.log
+  logs/chrome_build_20260514_011900_monitor.log
+  logs/chrome_build_20260514_011900.pid
+- The monitored full build advanced past the cookie compile wave and exited
+  cleanly with EXIT 1 at the next compiler blockers.
+
+Current full-build stop point:
+- net/disk_cache/simple/simple_version_upgrade.h:
+  disk_cache::IsOK(SimpleCacheConsistencyResult) reaches end of non-void
+  function under GCC return analysis.
+- net/first_party_sets/first_party_set_entry.cc:
+  SiteTypeToString(SiteType) reaches end of non-void function.
+- net/disk_cache/simple/simple_synchronous_entry.cc:
+  ReadFromFileOrPrefetched() compares unsigned size_t size < 0.
+- net/filter/filter_source_stream.cc:
+  DoFilterData() trips GCC -Wdangling-else under -Werror.
+
+Notes:
+- The first inline nohup launch attempt failed before starting ninja; it left
+  only empty/partial startup logs and no active build process.
+- No QEMU logs were read.
+- No SHA-256 hashes were verified.

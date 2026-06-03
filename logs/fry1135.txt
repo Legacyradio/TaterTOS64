@@ -1,0 +1,8 @@
+Timestamp: 2026-05-15T04:36:10-05:00
+Fix: Added TaterTOS64 libc gamma-family math APIs needed by Eigen/TensorFlow Lite.
+Stop: [566/29909] obj/third_party/tflite/tflite_kernels/arg_min_max.o and sibling TFLite kernel objects.
+Classification: TaterTOS libc/API gap.
+Why: Eigen's SpecialFunctions implementation calls POSIX/GNU reentrant gamma entry points lgamma_r() and lgammaf_r() when Chromium builds TensorFlow Lite. TaterTOS declared parts of the gamma family but did not expose or implement the reentrant variants, leaving Chromium's TFLite objects unable to compile.
+Change: Added signgam, lgamma(), lgammaf(), lgammal(), lgamma_r(), lgammaf_r(), lgammal_r(), tgamma(), tgammaf(), and tgammal() declarations and implemented them in src/user/libc/math.c using a Lanczos approximation plus Euler reflection for negative non-integers.
+Verification: make -C /home/legacyindieradio/TaterTOS64 src/user/libc/math.o
+Verification: /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/third_party/tflite/tflite_kernels/arg_min_max.o obj/third_party/tflite/tflite_kernels/add_n.o obj/third_party/tflite/tflite_kernels/add.o obj/third_party/tflite/tflite_kernels/activations.o obj/third_party/tflite/tflite_kernels/batch_matmul.o obj/third_party/tflite/tflite_kernels/batch_to_space_nd.o

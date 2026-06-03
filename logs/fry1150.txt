@@ -1,0 +1,23 @@
+2026-05-15T06:36:53-0500
+
+Fixed TaterTOS EGL platform typedef gap and GL display strictness fallbacks.
+
+Blocker classification:
+- third_party/angle/include/EGL/eglplatform.h: TaterTOS platform integration
+  gap, not compiler strictness.
+- ui/gl/gl_display.cc fallbacks: compiler strictness, not a TaterTOS API gap.
+
+Why:
+- ANGLE's eglplatform.h had no __tatertos__/__TATERTOS__ branch, so EGL native
+  display, pixmap, and window types were undefined for the TaterTOS target.
+- ui/gl/gl_display.cc had NOTREACHED-only default paths that GCC still treats
+  as fallthrough or missing-return under -Werror.
+
+Fix:
+- Added a TaterTOS-specific EGL platform branch using void* for native display
+  and khronos_uintptr_t for native pixmap/window handles.
+- Added explicit fallback returns/breaks in GL display helper switches.
+
+Verification:
+- Passed targeted rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/ui/gl/gl/egl_util.o obj/ui/gl/gl/gl_context_stub.o obj/ui/gl/gl/gl_bindings.o obj/ui/gl/gl/gl_context.o obj/ui/gl/gl/gl_display.o

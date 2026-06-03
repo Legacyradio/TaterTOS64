@@ -1,0 +1,35 @@
+fry1280 - 2026-06-02 14:25:15 CDT - linuxulator VFS probe and ISO staging
+
+What changed:
+- Added tools/host/lfile.S, an unmodified static Linux x86_64 ELF probe for:
+  access, openat, fstat, read, lseek, pread64, newfstatat, close, write, and
+  exit_group.
+- Updated build_iso.sh to build lfile.lxe, create LXTEST.TXT, and stage
+  LFILE.LXE plus LXTEST.TXT into fs.img, efiboot.img, ISO root/apps, and ToTFS.
+- Updated src/kernel/main.c so the marker-gated linuxulator boot hook launches
+  LFILE.LXE after LHELLO.LXE when /LXTEST.RUN is present.
+
+Why:
+- The end target is Claude Code on TaterTOS, and the traced Claude startup path
+  needs Linux VFS syscalls before dynamic-loader work can be useful.
+- A separate file probe gives a narrow, boot-visible proof that the new Linux
+  open/read/stat/seek fd translations work before widening mmap/dynamic ELF.
+
+Verification:
+- bash -n build_iso.sh
+- gcc -nostdlib -static -no-pie -o lfile.lxe tools/host/lfile.S
+- make src/kernel/main.o src/kernel/proc/syscall.o
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+- Verified packaged files:
+  out/isodir/apps/LFILE.LXE
+  out/isodir/LFILE.LXE
+  out/isodir/LXTEST.RUN
+  out/isodir/LXTEST.TXT
+  efiboot.img root contains LFILE.LXE, LXTEST.RUN, LXTEST.TXT
+  efiboot.img /apps contains LHELLO.LXE and LFILE.LXE
+  ISO root contains LFILE.LXE, LXTEST.RUN, LXTEST.TXT
+  ISO /apps contains LHELLO.LXE and LFILE.LXE
+
+Notes:
+- Runtime QEMU serial verification is intentionally not recorded here because
+  planv3 says QEMU logs are off limits unless expressly stated.

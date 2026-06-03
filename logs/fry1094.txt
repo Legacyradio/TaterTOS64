@@ -1,0 +1,20 @@
+2026-05-14T12:41:02-05:00
+
+Step: Chromium TaterTOS64v3 WebRTC simulcast SDP serializer blocker cleanup after monitored build 20260514_123931.
+
+Local Ninja failure position:
+- [14/33835] obj/third_party/webrtc/pc/simulcast_sdp_serializer/simulcast_sdp_serializer.o
+
+Logical phase:
+- third_party/webrtc peer-connection SDP serialization.
+
+Exact blocker:
+- third_party/webrtc/pc/simulcast_sdp_serializer.cc returned local variables through redundant std::move() calls, which GCC rejects under -Werror=redundant-move.
+
+Fix:
+- Removed redundant std::move() calls at the failing return sites so normal return-value optimization/move conversion can apply.
+
+Verification:
+- Ran targeted Ninja rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/third_party/webrtc/pc/simulcast_sdp_serializer/simulcast_sdp_serializer.o
+- Result: passed [1/1].

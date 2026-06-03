@@ -1,0 +1,22 @@
+2026-05-14T16:02:26-05:00
+
+Step: Chromium TaterTOS64v3 WebRTC dcsctp socket blocker cleanup after monitored build 20260514_155556.
+
+Local Ninja failure position:
+- [185/33246] obj/third_party/webrtc/net/dcsctp/socket/dcsctp_socket/dcsctp_socket.o
+
+Logical phase:
+- third_party/webrtc dcsctp socket state machine.
+
+Exact blockers:
+- third_party/webrtc/net/dcsctp/socket/dcsctp_socket.cc had exhaustive State switches that GCC still treated as possible non-void fallthrough in IsConsistent(), ToString(State), and state().
+- The same file returned a local DcSctpSocketHandoverState through redundant std::move(), rejected under -Werror=redundant-move.
+
+Fix:
+- Added explicit fallback returns after the affected State switches.
+- Removed the redundant std::move() from GetHandoverStateAndClose().
+
+Verification:
+- Ran targeted Ninja rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/third_party/webrtc/net/dcsctp/socket/dcsctp_socket/dcsctp_socket.o
+- Result: passed [1/1].

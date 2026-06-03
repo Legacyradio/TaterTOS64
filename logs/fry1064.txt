@@ -1,0 +1,37 @@
+2026-05-14 00:11:25 CDT
+
+Fixed the Chromium net/cookies compile wave reached by the full TaterTOS chrome
+build.
+
+What changed:
+- net/cookies/cookie_base.cc:
+  - Added base/notreached.h.
+  - Added an explicit GCC-only fallback after the exhaustive SameSite switch in
+    CookieBase::GetEffectiveSameSite().
+- net/cookies/cookie_change_dispatcher.cc:
+  - Added base/notreached.h.
+  - Added explicit GCC-only fallbacks after exhaustive CookieChangeCause
+    switches.
+- net/cookies/cookie_constants.cc:
+  - Added GCC-only fallbacks after NOTREACHED paths in string conversion
+    helpers.
+- net/cookies/cookie_deletion_info.cc:
+  - Added braces around a DCHECK guarded by an if to satisfy GCC
+    -Wdangling-else under -Werror.
+- net/cookies/canonical_cookie.cc:
+  - Added base/notreached.h.
+  - Added explicit GCC-only fallbacks for the storage call-site string helper.
+
+Why:
+The TaterTOS target build uses GCC with -Werror and reports control-flow and
+dangling-else warnings that Chromium's host Clang path does not treat the same
+way. The enum fallbacks are placed after NOTREACHED() and guarded to GCC-only
+where appropriate, so normal Chromium behavior is preserved while the TaterTOS
+target compiler has a concrete return path.
+
+Verification:
+- ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/net/net/cookie_base.o obj/net/net/cookie_change_dispatcher.o obj/net/net/cookie_constants.o obj/net/net/cookie_deletion_info.o obj/net/net/canonical_cookie.o passed.
+
+Next:
+- Resume the full chrome build with a background monitor logging progress and
+  final exit status under /home/legacyindieradio/TaterTOS64/logs.

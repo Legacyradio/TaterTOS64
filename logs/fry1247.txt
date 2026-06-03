@@ -1,0 +1,29 @@
+Timestamp: 2026-05-17T14:33:00-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped at [281/22650] in Blink/WTF code.
+
+Failure:
+Multiple C++20 compatibility errors in Blink/WTF headers:
+1. string_concatenate.h: template-id not allowed for constructor in C++20.
+2. vector.h: 'ConstructTraits' changes meaning of 'ConstructTraits' (name collision between alias and template).
+
+Exact compiler errors:
+../../third_party/blink/renderer/platform/wtf/text/string_concatenate.h:48:35: error: template-id not allowed for constructor in C++20 [-Werror=template-id-cdtor]
+../../third_party/blink/renderer/platform/wtf/vector.h:161:9: error: declaration of 'using blink::VectorTypeOperations<T, Allocator>::ConstructTraits = ...' changes meaning of 'ConstructTraits' [-Werror=changes-meaning]
+
+Classification:
+C++20 compatibility issues in legacy Blink/WTF code. Not a TaterTOS API/platform gap.
+
+Fix:
+1. Removed template arguments from StringTypeAdapter constructors in string_concatenate.h.
+2. Qualified the right-hand side of the ConstructTraits alias in vector.h with blink::.
+
+Why:
+C++20 forbids template arguments on constructors and is stricter about name shadowing between types and aliases in the same scope.
+
+Verification:
+Build restarted and progressed beyond the previous failure point.
+
+Result:
+Build is now continuing with PID 1074051.

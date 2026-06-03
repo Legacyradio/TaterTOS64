@@ -1,0 +1,22 @@
+2026-05-15T07:03:15-0500
+
+Fixed host i18n and target Lottie compiler strictness failures.
+
+Blocker classification:
+- compiler strictness, not a TaterTOS API gap.
+
+Why:
+- base/i18n/break_iterator.cc had a post-NOTREACHED fallback return that host
+  Clang diagnoses as unreachable under -Werror.
+- ui/lottie/animation.cc had an exhaustive PlayState switch without a
+  compiler-visible fallback return.
+
+Fix:
+- Kept the break iterator fallback return for non-Clang compilers while
+  omitting it for Clang, where NOTREACHED is recognized as noreturn.
+- Added a NOTREACHED fallback returning std::nullopt in
+  Animation::GetCurrentProgress().
+
+Verification:
+- Passed targeted rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos clang_x64/obj/base/i18n/break_iterator.o obj/ui/lottie/lottie/animation.o

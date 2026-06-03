@@ -1,0 +1,30 @@
+timestamp: 2026-05-14T22:48:34-05:00
+stop: chrome_build_20260514_224503.log at [100/30820]
+failed_object:
+  obj/third_party/webrtc/modules/audio_processing/agc2/rnn_vad/rnn_vad_layers/rnn_fc.o
+classification: compiler strictness, not a TaterTOS API gap
+
+problem:
+  GCC with -Werror rejected WebRTC's FunctionView function-reference path
+  because it null-checked a function reference, producing -Waddress and
+  -Wnonnull-compare. The same object also had an exhaustive activation-function
+  switch without an explicit fallback return.
+
+fix:
+  Updated FunctionView's function constructor so function pointers keep the
+  nullable behavior, while function references go directly to the call wrapper
+  without a null comparison. Added RTC_DCHECK_NOTREACHED() plus a conservative
+  Tansig fallback in rnn_fc.cc.
+
+why:
+  This keeps FunctionView semantics intact for both nullable function pointers
+  and non-null function references. The activation fallback only handles an
+  impossible enum path. No warning suppression, platform shortcut, or
+  Linux/Windows behavior was added.
+
+verification:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/third_party/webrtc/modules/audio_processing/agc2/rnn_vad/rnn_vad_layers/rnn_fc.o
+
+  Result: targeted object rebuilt successfully.

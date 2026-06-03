@@ -1,0 +1,18 @@
+Timestamp: 2026-05-15T08:19:50-05:00
+Blocker: originating_process_id mojom traits failed under -Werror=return-type.
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+File changed:
+- /home/legacyindieradio/chromium-tatertos/src/services/network/public/cpp/originating_process_id_mojom_traits.cc
+
+Why:
+- The OriginatingProcessId union Read() switch handled known tags but had no
+  final fallback return for GCC.
+
+Fix:
+- Added base/notreached.h and a NOTREACHED() + false fallback after the switch.
+
+Verification:
+- Ran:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/services/network/public/mojom/mojom/originating_process_id_mojom_traits.o
+- Result: passed.

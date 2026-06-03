@@ -89,6 +89,10 @@ void lapic_timer_init(void);
 void gop_fb_init(void);
 int process_launch(const char *path);
 int process_last_launch_error(void);
+/* Linuxulator: launch an unmodified Linux ELF (linux_compat.h). vfs_open/
+ * vfs_close already come from "fs/vfs.h" included above. */
+int process_launch_linux(const char *path, const char *const *argv, int argc,
+                         const char *const *envp, int envc);
 void stack_switch_and_call(uint64_t new_rsp, void (*fn)(struct fry_handoff *), struct fry_handoff *arg);
 
 /* For background aml_extended_init thread */
@@ -162,6 +166,14 @@ static int dbg_vfs_emit_name(const char *name, void *ctx) {
     if (!name || !*name) return 0;
     if (!TATER_BOOT_SERIAL_TRACE) return 0;
     kprint("DBG_VFS entry=%s\n", name);
+    return 0;
+}
+
+/* Always-on /apps listing for the coreutils staging diagnostic. */
+void kprint_serial_only(const char *fmt, ...);
+static int lx_apps_emit(const char *name, void *ctx) {
+    (void)ctx;
+    if (name && *name) kprint_serial_only("LXAPPS: %s\n", name);
     return 0;
 }
 
@@ -526,6 +538,220 @@ static void after_vmm(struct fry_handoff *handoff) {
         early_fb_color(handoff, 4, 2, 0x0000FFFFu); /* R2C4: sched_init done */
         syscall_init();
         early_fb_color(handoff, 5, 2, 0x0000FFFFu); /* R2C5: syscall_init done */
+
+        /* Linuxulator proof-of-life: when /LXTEST.RUN is present, launch an
+         * UNMODIFIED static Linux x86_64 ELF through the compatibility layer.
+         * Diagnostics go via kprint_serial_only() because plain kprint() is
+         * filtered this early in boot; the Linux process's own write() reaches
+         * serial like any other userspace stdout. */
+        {
+            void kprint_serial_only(const char *fmt, ...);
+            struct vfs_file *lxm = vfs_open("/LXTEST.RUN");
+            if (lxm) {
+                vfs_close(lxm);
+                const char *lxpath = "/apps/LHELLO.LXE";
+                struct vfs_file *lxb = vfs_open(lxpath);
+                if (!lxb) { lxpath = "/LHELLO.LXE"; lxb = vfs_open(lxpath); }
+                if (lxb) {
+                    vfs_close(lxb);
+                    const char *lxargv[] = { "/apps/lhello", "phase1" };
+                    const char *lxenvp[] = { "PATH=/apps", "TATERTOS=1" };
+                    kprint_serial_only("LINUXTEST: launching %s\n", lxpath);
+                    int lrc = process_launch_linux(lxpath, lxargv, 2, lxenvp, 2);
+                    kprint_serial_only("LINUXTEST: process_launch_linux rc=%d\n", lrc);
+                } else {
+                    kprint_serial_only("LINUXTEST: marker present but LHELLO.LXE not found\n");
+                }
+
+                lxpath = "/apps/LFILE.LXE";
+                lxb = vfs_open(lxpath);
+                if (!lxb) { lxpath = "/LFILE.LXE"; lxb = vfs_open(lxpath); }
+                if (lxb) {
+                    vfs_close(lxb);
+                    const char *lfargv[] = { "/apps/lfile", "vfs" };
+                    const char *lfenvp[] = { "PATH=/apps", "TATERTOS=1" };
+                    kprint_serial_only("LINUXTEST: launching %s\n", lxpath);
+                    int lfrc = process_launch_linux(lxpath, lfargv, 2, lfenvp, 2);
+                    kprint_serial_only("LINUXTEST: process_launch_linux rc=%d\n", lfrc);
+                } else {
+                    kprint_serial_only("LINUXTEST: marker present but LFILE.LXE not found\n");
+                }
+
+                lxpath = "/apps/LMMAP.LXE";
+                lxb = vfs_open(lxpath);
+                if (!lxb) { lxpath = "/LMMAP.LXE"; lxb = vfs_open(lxpath); }
+                if (lxb) {
+                    vfs_close(lxb);
+                    const char *lmargv[] = { "/apps/lmmap", "mmap" };
+                    const char *lmenvp[] = { "PATH=/apps", "TATERTOS=1" };
+                    kprint_serial_only("LINUXTEST: launching %s\n", lxpath);
+                    int lmrc = process_launch_linux(lxpath, lmargv, 2, lmenvp, 2);
+                    kprint_serial_only("LINUXTEST: process_launch_linux rc=%d\n", lmrc);
+                } else {
+                    kprint_serial_only("LINUXTEST: marker present but LMMAP.LXE not found\n");
+                }
+
+                lxpath = "/apps/LDYN.LXE";
+                lxb = vfs_open(lxpath);
+                if (!lxb) { lxpath = "/LDYN.LXE"; lxb = vfs_open(lxpath); }
+                if (lxb) {
+                    vfs_close(lxb);
+                    const char *ldargv[] = { "/apps/ldyn", "interp" };
+                    const char *ldenvp[] = {
+                        "PATH=/apps",
+                        "LD_LIBRARY_PATH=/usr/lib:/lib64",
+                        "TATERTOS=1"
+                    };
+                    kprint_serial_only("LINUXTEST: launching %s\n", lxpath);
+                    int ldrc = process_launch_linux(lxpath, ldargv, 2, ldenvp, 3);
+                    kprint_serial_only("LINUXTEST: process_launch_linux rc=%d\n", ldrc);
+                } else {
+                    kprint_serial_only("LINUXTEST: marker present but LDYN.LXE not found\n");
+                }
+
+                lxpath = "/apps/LLIBC.LXE";
+                lxb = vfs_open(lxpath);
+                if (!lxb) { lxpath = "/LLIBC.LXE"; lxb = vfs_open(lxpath); }
+                if (lxb) {
+                    vfs_close(lxb);
+                    const char *lliargv[] = { "/apps/llibc", "libc" };
+                    const char *llienvp[] = {
+                        "PATH=/apps",
+                        "LD_LIBRARY_PATH=/usr/lib:/lib64",
+                        "TATERTOS=1"
+                    };
+                    kprint_serial_only("LINUXTEST: launching %s\n", lxpath);
+                    int llirc = process_launch_linux(lxpath, lliargv, 2, llienvp, 3);
+                    kprint_serial_only("LINUXTEST: process_launch_linux rc=%d\n", llirc);
+                } else {
+                    kprint_serial_only("LINUXTEST: marker present but LLIBC.LXE not found\n");
+                }
+
+                lxpath = "/apps/LGAP.LXE";
+                lxb = vfs_open(lxpath);
+                if (!lxb) { lxpath = "/LGAP.LXE"; lxb = vfs_open(lxpath); }
+                if (lxb) {
+                    vfs_close(lxb);
+                    const char *lgargv[] = { "/apps/lgap", "gap" };
+                    const char *lgenvp[] = {
+                        "PATH=/apps",
+                        "LD_LIBRARY_PATH=/usr/lib:/lib64",
+                        "TATERTOS=1"
+                    };
+                    kprint_serial_only("LINUXTEST: launching %s\n", lxpath);
+                    int lgrc = process_launch_linux(lxpath, lgargv, 2, lgenvp, 3);
+                    kprint_serial_only("LINUXTEST: process_launch_linux rc=%d\n", lgrc);
+                } else {
+                    kprint_serial_only("LINUXTEST: marker present but LGAP.LXE not found\n");
+                }
+
+                lxpath = "/apps/LTHR.LXE";
+                lxb = vfs_open(lxpath);
+                if (!lxb) { lxpath = "/LTHR.LXE"; lxb = vfs_open(lxpath); }
+                if (lxb) {
+                    vfs_close(lxb);
+                    const char *ltargv[] = { "/apps/lthr", "thread" };
+                    const char *ltenvp[] = {
+                        "PATH=/apps",
+                        "LD_LIBRARY_PATH=/usr/lib:/lib64",
+                        "TATERTOS=1"
+                    };
+                    kprint_serial_only("LINUXTEST: launching %s\n", lxpath);
+                    int ltrc = process_launch_linux(lxpath, ltargv, 2, ltenvp, 3);
+                    kprint_serial_only("LINUXTEST: process_launch_linux rc=%d\n", ltrc);
+                } else {
+                    kprint_serial_only("LINUXTEST: marker present but LTHR.LXE not found\n");
+                }
+
+                lxpath = "/apps/LASYNC.LXE";
+                lxb = vfs_open(lxpath);
+                if (!lxb) { lxpath = "/LASYNC.LXE"; lxb = vfs_open(lxpath); }
+                if (lxb) {
+                    vfs_close(lxb);
+                    const char *laargv[] = { "/apps/lasync", "async" };
+                    const char *laenvp[] = {
+                        "PATH=/apps",
+                        "LD_LIBRARY_PATH=/usr/lib:/lib64",
+                        "TATERTOS=1"
+                    };
+                    kprint_serial_only("LINUXTEST: launching %s\n", lxpath);
+                    int larc = process_launch_linux(lxpath, laargv, 2, laenvp, 3);
+                    kprint_serial_only("LINUXTEST: process_launch_linux rc=%d\n", larc);
+                } else {
+                    kprint_serial_only("LINUXTEST: marker present but LASYNC.LXE not found\n");
+                }
+
+                lxpath = "/apps/LFUTEX.LXE";
+                lxb = vfs_open(lxpath);
+                if (!lxb) { lxpath = "/LFUTEX.LXE"; lxb = vfs_open(lxpath); }
+                if (lxb) {
+                    vfs_close(lxb);
+                    const char *lfxargv[] = { "/apps/lfutex", "futex" };
+                    const char *lfxenvp[] = {
+                        "PATH=/apps",
+                        "LD_LIBRARY_PATH=/usr/lib:/lib64",
+                        "TATERTOS=1"
+                    };
+                    kprint_serial_only("LINUXTEST: launching %s\n", lxpath);
+                    int lfxrc = process_launch_linux(lxpath, lfxargv, 2, lfxenvp, 3);
+                    kprint_serial_only("LINUXTEST: process_launch_linux rc=%d\n", lfxrc);
+                } else {
+                    kprint_serial_only("LINUXTEST: marker present but LFUTEX.LXE not found\n");
+                }
+
+                /* REAL unmodified Linux coreutils — prove the layer runs
+                 * arbitrary host binaries, and harvest the next syscall gaps
+                 * (ls -> getdents64) toward the real claude binary. */
+                {
+                    const char *rcenvp[] = {
+                        "PATH=/apps",
+                        "LD_LIBRARY_PATH=/usr/lib:/lib64",
+                        "TATERTOS=1"
+                    };
+                    kprint_serial_only("LXAPPS: --- listing /apps at runtime ---\n");
+                    vfs_readdir("/apps", lx_apps_emit, 0);
+                    kprint_serial_only("LXAPPS: --- end /apps ---\n");
+                    lxb = vfs_open("/apps/RENV.LXE");
+                    if (lxb) {
+                        vfs_close(lxb);
+                        const char *a[] = { "env" };
+                        kprint_serial_only("LINUXTEST: launching REAL env\n");
+                        process_launch_linux("/apps/RENV.LXE", a, 1, rcenvp, 3);
+                    }
+                    lxb = vfs_open("/apps/RCAT.LXE");
+                    if (lxb) {
+                        vfs_close(lxb);
+                        const char *a[] = { "cat", "/LXTEST.TXT" };
+                        kprint_serial_only("LINUXTEST: launching REAL cat /LXTEST.TXT\n");
+                        process_launch_linux("/apps/RCAT.LXE", a, 2, rcenvp, 3);
+                    }
+                    lxb = vfs_open("/apps/RLS.LXE");
+                    if (lxb) {
+                        vfs_close(lxb);
+                        const char *a[] = { "ls", "/apps" };
+                        kprint_serial_only("LINUXTEST: launching REAL ls /apps\n");
+                        process_launch_linux("/apps/RLS.LXE", a, 2, rcenvp, 3);
+                    }
+                    /* The REAL claude binary on the NVMe (/nvme), streamed from
+                     * disk by the loader (not in the ramdisk). --version
+                     * exercises Bun startup without needing the network. */
+                    lxb = vfs_open("/nvme/RCLAUDE.LXE");
+                    if (lxb) {
+                        vfs_close(lxb);
+                        const char *a[] = { "claude", "--version" };
+                        const char *ce[] = {
+                            "PATH=/apps", "LD_LIBRARY_PATH=/usr/lib:/lib64",
+                            "HOME=/", "TMPDIR=/tmp", "TATERTOS=1"
+                        };
+                        kprint_serial_only("LINUXTEST: launching REAL claude --version (from /nvme)\n");
+                        int crc = process_launch_linux("/nvme/RCLAUDE.LXE", a, 2, ce, 5);
+                        kprint_serial_only("LINUXTEST: claude launch rc=%d\n", crc);
+                    } else {
+                        kprint_serial_only("LINUXTEST: /nvme/RCLAUDE.LXE not present (skip)\n");
+                    }
+                }
+            }
+        }
 #if TATER_SELFTEST
         kernel_selftest();
 #endif

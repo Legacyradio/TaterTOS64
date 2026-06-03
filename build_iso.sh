@@ -15,6 +15,11 @@ AUTOTEST_VM="${TATERTOS_AUTOTEST_VM:-0}"
 AUTOTEST_VMFAULT="${TATERTOS_AUTOTEST_VMFAULT:-0}"
 VMTEST_RUN_MARKER="$OUT_DIR/VMTEST.RUN"
 VMFAULT_RUN_MARKER="$OUT_DIR/VMFAULT.RUN"
+LINUXTEST_RUN_MARKER="$OUT_DIR/LXTEST.RUN"
+LINUXTEST_DATA_FILE="$OUT_DIR/LXTEST.TXT"
+LINUX_DYN_LD_SRC="${LINUX_DYN_LD_SRC:-/lib64/ld-linux-x86-64.so.2}"
+LINUX_DYN_LIB_DIR="${LINUX_DYN_LIB_DIR:-/usr/lib}"
+LINUX_DYN_LIBS=(librt.so.1 libc.so.6 libpthread.so.0 libdl.so.2 libm.so.6)
 
 . "$ROOT_DIR/tools/host/env.sh"
 
@@ -89,6 +94,202 @@ copy_autotest_markers_totfs() {
   fi
 }
 
+build_linuxulator_test() {
+  if [ -f "$ROOT_DIR/tools/host/lhello.S" ]; then
+    gcc -nostdlib -static -no-pie -o "$ROOT_DIR/lhello.lxe" \
+      "$ROOT_DIR/tools/host/lhello.S"
+  fi
+  if [ -f "$ROOT_DIR/tools/host/lfile.S" ]; then
+    gcc -nostdlib -static -no-pie -o "$ROOT_DIR/lfile.lxe" \
+      "$ROOT_DIR/tools/host/lfile.S"
+  fi
+  if [ -f "$ROOT_DIR/tools/host/lmmap.S" ]; then
+    gcc -nostdlib -static -no-pie -o "$ROOT_DIR/lmmap.lxe" \
+      "$ROOT_DIR/tools/host/lmmap.S"
+  fi
+  if [ -f "$ROOT_DIR/tools/host/ldyn.S" ]; then
+    gcc -nostartfiles -no-pie \
+      -Wl,--dynamic-linker=/lib64/ld-linux-x86-64.so.2 \
+      -Wl,-e,_start \
+      -o "$ROOT_DIR/ldyn.lxe" "$ROOT_DIR/tools/host/ldyn.S" -lc
+  fi
+  if [ -f "$ROOT_DIR/tools/host/llibc.c" ]; then
+    gcc -no-pie -o "$ROOT_DIR/llibc.lxe" "$ROOT_DIR/tools/host/llibc.c"
+  fi
+  if [ -f "$ROOT_DIR/tools/host/lthr.c" ]; then
+    gcc -no-pie -pthread -o "$ROOT_DIR/lthr.lxe" "$ROOT_DIR/tools/host/lthr.c"
+  fi
+  if [ -f "$ROOT_DIR/tools/host/lgap.c" ]; then
+    gcc -no-pie -o "$ROOT_DIR/lgap.lxe" "$ROOT_DIR/tools/host/lgap.c"
+  fi
+  if [ -f "$ROOT_DIR/tools/host/lasync.c" ]; then
+    gcc -no-pie -o "$ROOT_DIR/lasync.lxe" "$ROOT_DIR/tools/host/lasync.c"
+  fi
+  if [ -f "$ROOT_DIR/tools/host/lfutex.c" ]; then
+    gcc -no-pie -pthread -o "$ROOT_DIR/lfutex.lxe" "$ROOT_DIR/tools/host/lfutex.c"
+  fi
+}
+
+prepare_linuxulator_marker() {
+  if [ -f "$ROOT_DIR/lhello.lxe" ] || [ -f "$ROOT_DIR/lfile.lxe" ] || [ -f "$ROOT_DIR/lmmap.lxe" ] || [ -f "$ROOT_DIR/ldyn.lxe" ] || [ -f "$ROOT_DIR/llibc.lxe" ] || [ -f "$ROOT_DIR/lthr.lxe" ] || [ -f "$ROOT_DIR/lgap.lxe" ] || [ -f "$ROOT_DIR/lasync.lxe" ] || [ -f "$ROOT_DIR/lfutex.lxe" ]; then
+    printf "lxtest\n" > "$LINUXTEST_RUN_MARKER"
+    printf "TaterTOS linuxulator VFS probe\n" > "$LINUXTEST_DATA_FILE"
+  fi
+}
+
+copy_linux_runtime_mtools() {
+  local img="$1"
+  if [ ! -f "$LINUX_DYN_LD_SRC" ]; then
+    return 0
+  fi
+  if command -v mmd >/dev/null 2>&1; then
+    mmd -i "$img" ::/lib64 2>/dev/null || true
+    mmd -i "$img" ::/usr 2>/dev/null || true
+    mmd -i "$img" ::/usr/lib 2>/dev/null || true
+  fi
+  mcopy -o -i "$img" "$LINUX_DYN_LD_SRC" ::/lib64/ld-linux-x86-64.so.2 || true
+  for lib in "${LINUX_DYN_LIBS[@]}"; do
+    [ -f "$LINUX_DYN_LIB_DIR/$lib" ] && \
+      mcopy -o -i "$img" "$LINUX_DYN_LIB_DIR/$lib" "::/usr/lib/$lib" || true
+  done
+}
+
+copy_linux_runtime_dir() {
+  local dir="$1"
+  if [ ! -f "$LINUX_DYN_LD_SRC" ]; then
+    return 0
+  fi
+  mkdir -p "$dir/lib64" "$dir/usr/lib"
+  cp "$LINUX_DYN_LD_SRC" "$dir/lib64/ld-linux-x86-64.so.2"
+  for lib in "${LINUX_DYN_LIBS[@]}"; do
+    [ -f "$LINUX_DYN_LIB_DIR/$lib" ] && cp "$LINUX_DYN_LIB_DIR/$lib" "$dir/usr/lib/$lib"
+  done
+}
+
+copy_linuxulator_test_mtools() {
+  local img="$1"
+  if [ ! -f "$ROOT_DIR/lhello.lxe" ] && [ ! -f "$ROOT_DIR/lfile.lxe" ] && [ ! -f "$ROOT_DIR/lmmap.lxe" ] && [ ! -f "$ROOT_DIR/ldyn.lxe" ] && [ ! -f "$ROOT_DIR/llibc.lxe" ] && [ ! -f "$ROOT_DIR/lthr.lxe" ] && [ ! -f "$ROOT_DIR/lgap.lxe" ] && [ ! -f "$ROOT_DIR/lasync.lxe" ] && [ ! -f "$ROOT_DIR/lfutex.lxe" ]; then
+    return 0
+  fi
+  prepare_linuxulator_marker
+  [ -f "$ROOT_DIR/ldyn.lxe" ] && copy_linux_runtime_mtools "$img"
+  if command -v mmd >/dev/null 2>&1; then
+    mmd -i "$img" ::/apps 2>/dev/null || true
+  fi
+  [ -f "$ROOT_DIR/lhello.lxe" ] && mcopy -o -i "$img" "$ROOT_DIR/lhello.lxe" ::/apps/LHELLO.LXE || true
+  [ -f "$ROOT_DIR/lhello.lxe" ] && mcopy -o -i "$img" "$ROOT_DIR/lhello.lxe" ::/LHELLO.LXE || true
+  [ -f "$ROOT_DIR/lfile.lxe" ] && mcopy -o -i "$img" "$ROOT_DIR/lfile.lxe" ::/apps/LFILE.LXE || true
+  [ -f "$ROOT_DIR/lfile.lxe" ] && mcopy -o -i "$img" "$ROOT_DIR/lfile.lxe" ::/LFILE.LXE || true
+  [ -f "$ROOT_DIR/lmmap.lxe" ] && mcopy -o -i "$img" "$ROOT_DIR/lmmap.lxe" ::/apps/LMMAP.LXE || true
+  [ -f "$ROOT_DIR/lmmap.lxe" ] && mcopy -o -i "$img" "$ROOT_DIR/lmmap.lxe" ::/LMMAP.LXE || true
+  [ -f "$ROOT_DIR/ldyn.lxe" ] && mcopy -o -i "$img" "$ROOT_DIR/ldyn.lxe" ::/apps/LDYN.LXE || true
+  [ -f "$ROOT_DIR/ldyn.lxe" ] && mcopy -o -i "$img" "$ROOT_DIR/ldyn.lxe" ::/LDYN.LXE || true
+  [ -f "$ROOT_DIR/llibc.lxe" ] && mcopy -o -i "$img" "$ROOT_DIR/llibc.lxe" ::/apps/LLIBC.LXE || true
+  [ -f "$ROOT_DIR/llibc.lxe" ] && mcopy -o -i "$img" "$ROOT_DIR/llibc.lxe" ::/LLIBC.LXE || true
+  [ -f "$ROOT_DIR/lthr.lxe" ] && mcopy -o -i "$img" "$ROOT_DIR/lthr.lxe" ::/apps/LTHR.LXE || true
+  [ -f "$ROOT_DIR/lthr.lxe" ] && mcopy -o -i "$img" "$ROOT_DIR/lthr.lxe" ::/LTHR.LXE || true
+  [ -f "$ROOT_DIR/lgap.lxe" ] && mcopy -o -i "$img" "$ROOT_DIR/lgap.lxe" ::/apps/LGAP.LXE || true
+  [ -f "$ROOT_DIR/lgap.lxe" ] && mcopy -o -i "$img" "$ROOT_DIR/lgap.lxe" ::/LGAP.LXE || true
+  [ -f "$ROOT_DIR/lasync.lxe" ] && mcopy -o -i "$img" "$ROOT_DIR/lasync.lxe" ::/apps/LASYNC.LXE || true
+  [ -f "$ROOT_DIR/lasync.lxe" ] && mcopy -o -i "$img" "$ROOT_DIR/lasync.lxe" ::/LASYNC.LXE || true
+  [ -f "$ROOT_DIR/lfutex.lxe" ] && mcopy -o -i "$img" "$ROOT_DIR/lfutex.lxe" ::/apps/LFUTEX.LXE || true
+  [ -f "$ROOT_DIR/lfutex.lxe" ] && mcopy -o -i "$img" "$ROOT_DIR/lfutex.lxe" ::/LFUTEX.LXE || true
+  mcopy -o -i "$img" "$LINUXTEST_RUN_MARKER" ::/LXTEST.RUN || true
+  mcopy -o -i "$img" "$LINUXTEST_DATA_FILE" ::/LXTEST.TXT || true
+  # REAL unmodified Linux coreutils. Must end in .LXE so the EFI ramdisk
+  # scanner (ramdisk_should_load_name) includes them.
+  [ -f /usr/bin/env ] && mcopy -o -i "$img" /usr/bin/env ::/apps/RENV.LXE || true
+  [ -f /bin/cat ] && mcopy -o -i "$img" /bin/cat ::/apps/RCAT.LXE || true
+  [ -f /bin/ls ] && mcopy -o -i "$img" /bin/ls ::/apps/RLS.LXE || true
+  [ -f /usr/lib/libcap.so.2 ] && mcopy -o -i "$img" /usr/lib/libcap.so.2 ::/usr/lib/libcap.so.2 || true
+}
+
+copy_linuxulator_test_dir() {
+  local dir="$1"
+  if [ ! -f "$ROOT_DIR/lhello.lxe" ] && [ ! -f "$ROOT_DIR/lfile.lxe" ] && [ ! -f "$ROOT_DIR/lmmap.lxe" ] && [ ! -f "$ROOT_DIR/ldyn.lxe" ] && [ ! -f "$ROOT_DIR/llibc.lxe" ] && [ ! -f "$ROOT_DIR/lthr.lxe" ] && [ ! -f "$ROOT_DIR/lgap.lxe" ] && [ ! -f "$ROOT_DIR/lasync.lxe" ] && [ ! -f "$ROOT_DIR/lfutex.lxe" ]; then
+    return 0
+  fi
+  prepare_linuxulator_marker
+  [ -f "$ROOT_DIR/ldyn.lxe" ] && copy_linux_runtime_dir "$dir"
+  mkdir -p "$dir/apps"
+  [ -f "$ROOT_DIR/lhello.lxe" ] && cp "$ROOT_DIR/lhello.lxe" "$dir/apps/LHELLO.LXE"
+  [ -f "$ROOT_DIR/lhello.lxe" ] && cp "$ROOT_DIR/lhello.lxe" "$dir/LHELLO.LXE"
+  [ -f "$ROOT_DIR/lfile.lxe" ] && cp "$ROOT_DIR/lfile.lxe" "$dir/apps/LFILE.LXE"
+  [ -f "$ROOT_DIR/lfile.lxe" ] && cp "$ROOT_DIR/lfile.lxe" "$dir/LFILE.LXE"
+  [ -f "$ROOT_DIR/lmmap.lxe" ] && cp "$ROOT_DIR/lmmap.lxe" "$dir/apps/LMMAP.LXE"
+  [ -f "$ROOT_DIR/lmmap.lxe" ] && cp "$ROOT_DIR/lmmap.lxe" "$dir/LMMAP.LXE"
+  [ -f "$ROOT_DIR/ldyn.lxe" ] && cp "$ROOT_DIR/ldyn.lxe" "$dir/apps/LDYN.LXE"
+  [ -f "$ROOT_DIR/ldyn.lxe" ] && cp "$ROOT_DIR/ldyn.lxe" "$dir/LDYN.LXE"
+  [ -f "$ROOT_DIR/llibc.lxe" ] && cp "$ROOT_DIR/llibc.lxe" "$dir/apps/LLIBC.LXE"
+  [ -f "$ROOT_DIR/llibc.lxe" ] && cp "$ROOT_DIR/llibc.lxe" "$dir/LLIBC.LXE"
+  [ -f "$ROOT_DIR/lthr.lxe" ] && cp "$ROOT_DIR/lthr.lxe" "$dir/apps/LTHR.LXE"
+  [ -f "$ROOT_DIR/lthr.lxe" ] && cp "$ROOT_DIR/lthr.lxe" "$dir/LTHR.LXE"
+  [ -f "$ROOT_DIR/lgap.lxe" ] && cp "$ROOT_DIR/lgap.lxe" "$dir/apps/LGAP.LXE"
+  [ -f "$ROOT_DIR/lgap.lxe" ] && cp "$ROOT_DIR/lgap.lxe" "$dir/LGAP.LXE"
+  [ -f "$ROOT_DIR/lasync.lxe" ] && cp "$ROOT_DIR/lasync.lxe" "$dir/apps/LASYNC.LXE"
+  [ -f "$ROOT_DIR/lasync.lxe" ] && cp "$ROOT_DIR/lasync.lxe" "$dir/LASYNC.LXE"
+  [ -f "$ROOT_DIR/lfutex.lxe" ] && cp "$ROOT_DIR/lfutex.lxe" "$dir/apps/LFUTEX.LXE"
+  [ -f "$ROOT_DIR/lfutex.lxe" ] && cp "$ROOT_DIR/lfutex.lxe" "$dir/LFUTEX.LXE"
+  cp "$LINUXTEST_RUN_MARKER" "$dir/LXTEST.RUN"
+  cp "$LINUXTEST_DATA_FILE" "$dir/LXTEST.TXT"
+  # REAL unmodified Linux coreutils (ISO-dir tree = the EFI ramdisk source).
+  # Must end in .LXE so ramdisk_should_load_name includes them.
+  mkdir -p "$dir/apps" "$dir/usr/lib"
+  [ -f /usr/bin/env ] && cp /usr/bin/env "$dir/apps/RENV.LXE"
+  [ -f /bin/cat ] && cp /bin/cat "$dir/apps/RCAT.LXE"
+  [ -f /bin/ls ] && cp /bin/ls "$dir/apps/RLS.LXE"
+  [ -f /usr/lib/libcap.so.2 ] && cp /usr/lib/libcap.so.2 "$dir/usr/lib/libcap.so.2"
+  # (The real 243MB claude binary is NOT staged in the ramdisk — it can't
+  #  fit below 4GB. It goes on the NVMe ToTFS and is streamed from disk.)
+}
+
+copy_linuxulator_test_totfs() {
+  if [ ! -f "$ROOT_DIR/lhello.lxe" ] && [ ! -f "$ROOT_DIR/lfile.lxe" ] && [ ! -f "$ROOT_DIR/lmmap.lxe" ] && [ ! -f "$ROOT_DIR/ldyn.lxe" ] && [ ! -f "$ROOT_DIR/llibc.lxe" ] && [ ! -f "$ROOT_DIR/lthr.lxe" ] && [ ! -f "$ROOT_DIR/lgap.lxe" ] && [ ! -f "$ROOT_DIR/lasync.lxe" ] && [ ! -f "$ROOT_DIR/lfutex.lxe" ]; then
+    return 0
+  fi
+  prepare_linuxulator_marker
+  if [ -f "$ROOT_DIR/lhello.lxe" ]; then
+    "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
+      "$ROOT_DIR/lhello.lxe" "/LHELLO.LXE"
+  fi
+  if [ -f "$ROOT_DIR/lfile.lxe" ]; then
+    "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
+      "$ROOT_DIR/lfile.lxe" "/LFILE.LXE"
+  fi
+  if [ -f "$ROOT_DIR/lmmap.lxe" ]; then
+    "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
+      "$ROOT_DIR/lmmap.lxe" "/LMMAP.LXE"
+  fi
+  if [ -f "$ROOT_DIR/ldyn.lxe" ]; then
+    "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
+      "$ROOT_DIR/ldyn.lxe" "/LDYN.LXE"
+  fi
+  if [ -f "$ROOT_DIR/llibc.lxe" ]; then
+    "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
+      "$ROOT_DIR/llibc.lxe" "/LLIBC.LXE"
+  fi
+  if [ -f "$ROOT_DIR/lthr.lxe" ]; then
+    "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
+      "$ROOT_DIR/lthr.lxe" "/LTHR.LXE"
+  fi
+  if [ -f "$ROOT_DIR/lgap.lxe" ]; then
+    "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
+      "$ROOT_DIR/lgap.lxe" "/LGAP.LXE"
+  fi
+  if [ -f "$ROOT_DIR/lasync.lxe" ]; then
+    "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
+      "$ROOT_DIR/lasync.lxe" "/LASYNC.LXE"
+  fi
+  if [ -f "$ROOT_DIR/lfutex.lxe" ]; then
+    "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
+      "$ROOT_DIR/lfutex.lxe" "/LFUTEX.LXE"
+  fi
+  "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
+    "$LINUXTEST_RUN_MARKER" "/LXTEST.RUN"
+  "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
+    "$LINUXTEST_DATA_FILE" "/LXTEST.TXT"
+}
+
 # Ensure old ISO-tree artifacts (like stale SHELL.FRY) do not leak into new builds.
 rm -rf "$ISO_DIR"
 mkdir -p "$EFI_DIR"
@@ -96,7 +297,9 @@ prepare_autotest_markers
 
 # Build kernel and user apps
 make -C "$ROOT_DIR" clean
-make -C "$ROOT_DIR" kernel init shell gui sysinfo uptime ps fileman netmgr vmtest vmfault abitest thtest smoketest evloop chrome_probe
+make -C "$ROOT_DIR" kernel init shell gui sysinfo uptime ps fileman netmgr vmtest vmfault abitest thtest smoketest evloop chrome_probe claude
+build_linuxulator_test
+prepare_linuxulator_marker
 
 # Create FAT32 image for userspace files
 rm -f "$FS_IMG"
@@ -134,6 +337,9 @@ if command -v mcopy >/dev/null 2>&1; then
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/smoketest.fry" ::/apps/SMOKETEST.FRY || true
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/evloop.fry" ::/apps/EVLOOP.FRY || true
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/chrome_probe.fry" ::/apps/CHROME_PROBE.FRY || true
+  mcopy -o -i "$FS_IMG" "$ROOT_DIR/claude.fry" ::/apps/CLAUDE.FRY || true
+  [ -f "$ROOT_DIR/DSKEY.TXT" ] && mcopy -o -i "$FS_IMG" "$ROOT_DIR/DSKEY.TXT" ::/apps/DSKEY.TXT || true
+  copy_linuxulator_test_mtools "$FS_IMG"
   mmd -i "$FS_IMG" ::/fonts 2>/dev/null || true
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/DejaVuSans.ttf" ::/fonts/DEJAVU.TTF 2>/dev/null || true
 
@@ -169,12 +375,12 @@ gcc -O2 -o "$ROOT_DIR/tools/mktotfs" "$ROOT_DIR/tools/mktotfs.c"
 gcc -O2 -o "$ROOT_DIR/tools/totcopy" "$ROOT_DIR/tools/totcopy.c"
 
 # Create/update NVMe image with ToTFS partition
-NVME_SIZE=$((100 * 1024 * 1024))  # 100 MB
+NVME_SIZE=$((400 * 1024 * 1024))  # 400 MB (holds large binaries e.g. claude)
 NVME_PART_SIZE=$((NVME_SIZE - NVME_PART_OFFSET))
 
 if [ ! -f "$NVME_IMG" ]; then
   echo "Creating NVMe image: $NVME_IMG ($NVME_SIZE bytes)"
-  dd if=/dev/zero of="$NVME_IMG" bs=1M count=100 >/dev/null 2>&1
+  dd if=/dev/zero of="$NVME_IMG" bs=1M count=400 >/dev/null 2>&1
 fi
 
 # Write GPT header with ToTFS partition type
@@ -217,7 +423,16 @@ if [ -f "$ROOT_DIR/vmtest_fixture.txt" ]; then
   "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
     "$ROOT_DIR/vmtest_fixture.txt" "/VMTEST.TXT"
 fi
+copy_linuxulator_test_totfs
 copy_autotest_markers_totfs
+# The REAL claude binary (ET_EXEC, ~243MB) onto the NVMe ToTFS, opt-in via
+# STAGE_CLAUDE=1. Launched from /nvme/RCLAUDE.LXE and STREAMED from disk by
+# the loader (never staged in the ramdisk). Live boot is unaffected.
+if [ "$STAGE_CLAUDE" = "1" ] && [ -n "$CLAUDE_BIN" ] && [ -f "$CLAUDE_BIN" ]; then
+  echo "Staging real claude binary onto NVMe ToTFS: $CLAUDE_BIN"
+  "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
+    "$CLAUDE_BIN" "/RCLAUDE.LXE"
+fi
 
 # Verify
 echo "NVMe ToTFS contents:"
@@ -285,6 +500,9 @@ if command -v mmd >/dev/null 2>&1 && command -v mcopy >/dev/null 2>&1; then
   mcopy -o -i "$EFI_IMG" "$ROOT_DIR/smoketest.fry" ::/apps/SMOKETEST.FRY || true
   mcopy -o -i "$EFI_IMG" "$ROOT_DIR/evloop.fry"  ::/apps/EVLOOP.FRY   || true
   mcopy -o -i "$EFI_IMG" "$ROOT_DIR/chrome_probe.fry" ::/apps/CHROME_PROBE.FRY || true
+  mcopy -o -i "$EFI_IMG" "$ROOT_DIR/claude.fry" ::/apps/CLAUDE.FRY || true
+  [ -f "$ROOT_DIR/DSKEY.TXT" ] && mcopy -o -i "$EFI_IMG" "$ROOT_DIR/DSKEY.TXT" ::/apps/DSKEY.TXT || true
+  copy_linuxulator_test_mtools "$EFI_IMG"
 
   mmd -i "$EFI_IMG" ::/fonts 2>/dev/null || true
   mcopy -o -i "$EFI_IMG" "$ROOT_DIR/DejaVuSans.ttf" ::/fonts/DEJAVU.TTF 2>/dev/null || true
@@ -324,6 +542,7 @@ if command -v mmd >/dev/null 2>&1 && command -v mcopy >/dev/null 2>&1; then
     mcopy -o -i "$EFI_IMG" "$ROOT_DIR/smoketest.fry" "$mcopy_dir/SMOKETEST.FRY" || true
     mcopy -o -i "$EFI_IMG" "$ROOT_DIR/evloop.fry"  "$mcopy_dir/EVLOOP.FRY"  || true
     mcopy -o -i "$EFI_IMG" "$ROOT_DIR/chrome_probe.fry" "$mcopy_dir/CHROME_PROBE.FRY" || true
+    mcopy -o -i "$EFI_IMG" "$ROOT_DIR/claude.fry" "$mcopy_dir/CLAUDE.FRY" || true
 
   done
   copy_wifi_fw_mtools "$EFI_IMG"
@@ -358,6 +577,9 @@ cp "$ROOT_DIR/thtest.fry"  "$ISO_DIR/apps/THTEST.FRY"
 cp "$ROOT_DIR/smoketest.fry" "$ISO_DIR/apps/SMOKETEST.FRY"
 cp "$ROOT_DIR/evloop.fry"  "$ISO_DIR/apps/EVLOOP.FRY"
 cp "$ROOT_DIR/chrome_probe.fry" "$ISO_DIR/apps/CHROME_PROBE.FRY"
+cp "$ROOT_DIR/claude.fry" "$ISO_DIR/apps/CLAUDE.FRY"
+[ -f "$ROOT_DIR/DSKEY.TXT" ] && cp "$ROOT_DIR/DSKEY.TXT" "$ISO_DIR/apps/DSKEY.TXT"
+copy_linuxulator_test_dir "$ISO_DIR"
 
 # Fonts
 mkdir -p "$ISO_DIR/fonts"
@@ -397,6 +619,7 @@ for dir in "${iso_app_dirs[@]}"; do
   cp "$ROOT_DIR/smoketest.fry" "$target_dir/SMOKETEST.FRY"
   cp "$ROOT_DIR/evloop.fry"  "$target_dir/EVLOOP.FRY"
   cp "$ROOT_DIR/chrome_probe.fry" "$target_dir/CHROME_PROBE.FRY"
+  cp "$ROOT_DIR/claude.fry" "$target_dir/CLAUDE.FRY"
 
   copy_wifi_fw_dir "$target_dir"
 done

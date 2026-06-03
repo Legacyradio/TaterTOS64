@@ -1,0 +1,24 @@
+Timestamp: 2026-05-16T17:29:37-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped at [5/23108] and [8/23108] in Blink
+use-counter code.
+
+Failures:
+- use_counter_feature.cc: UseCounterFeature::IsValid() reached the end under
+  -Werror=return-type.
+- use_counter_feature_tracker.cc: UseCounterFeatureTracker::Test() reached the
+  end under -Werror=return-type.
+
+Classification:
+Compiler strictness. These are not TaterTOS API/platform gaps.
+
+Fix:
+Added explicit false fallbacks after the exhaustive UseCounterFeatureType
+switches.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C out/tatertos obj/third_party/blink/common/common/use_counter_feature.o obj/third_party/blink/common/common/use_counter_feature_tracker.o
+
+Result:
+Targeted object rebuild passed.

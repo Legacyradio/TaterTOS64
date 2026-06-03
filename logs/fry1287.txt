@@ -1,0 +1,206 @@
+=====================================================================
+fry1287 — Linuxulator review + fixes (LLIBC, FAT32 revert, clone3 x2)
+=====================================================================
+DATE: 2026-06-02 18:35 CDT
+AUTHOR: Claude (review of the parallel "Hermes" linuxulator work +
+        targeted fixes). Zack asked: "check it was done cleanly."
+
+This log supersedes the clone3 analysis in
+.hermes/handoff_2026-06-02_linuxulator.md — that handoff's root-cause
+was WRONG (see below). All findings here are from live QEMU boots
+(serial logs /tmp/lxser*.log) + symbol inspection, not assumptions.
+
+---------------------------------------------------------------------
+REVIEW FINDINGS (verified live, glibc 2.43, tcg/-smp2/-m4G)
+---------------------------------------------------------------------
+Build: CLEAN (only benign unused-var/comment warnings).
+
+PASSING (independently confirmed on a real boot):
+  - LHELLO  (static, fry1277 Phase 1): banner+argc+argv+envp+exit. OK.
+  - LFILE   (static): access/openat/fstat/read/lseek/pread64/
+            newfstatat/close. OK.
+  - LMMAP   (static): file-backed mmap(fd,offset=0) exposes bytes. OK.
+  - LDYN    (dynamic PT_INTERP): ld.so maps + reaches user entry. OK.
+  - LGAP    (dynamic): nanosleep/fcntl/dup2/clock_getres → exit(0). OK.
+
+WAS FAILING (contradicting the Hermes handoff's claims):
+  - LLIBC (dynamic, heavy libc): the handoff claimed "7/7 pass". In the
+    actual tree it died BEFORE main:
+      "/apps/llibc: symbol lookup error: /usr/lib/libc.so.6:
+       undefined symbol: __tunable_is_initialized, version GLIBC_PRIVATE"
+    Symbol check: libc.so.6 IMPORTS __tunable_is_initialized (U); ld.so
+    EXPORTS it (T). Staged libc == host libc (both 2.43, byte-identical).
+    No version skew → a dynamic-LINKER bug in our env, on heavier paths.
+  - LTHR (dynamic, threads): #GP'd before even reaching clone3 (0 CLONE3
+    lines in the boot) — i.e. clone3 was NOT the live blocker; the
+    lazy-bind failure was hit first.
+
+clone3 "FAT32 read corruption" diagnosis in the handoff = WRONG:
+  - Threads share the parent's address space (process.c: p->cr3 =
+    parent->cr3). Child fetches from the SAME physical pages as parent.
+  - Parent runs libc heavily and works → those pages are NOT corrupted.
+  - PROC_START insn dumps are identical across processes.
+  - The handoff's "corrupted bytes 48 85 c0 7c 14 17 01 c3" was a MISREAD
+    (74 transposed to 17). Real bytes = 48 85 c0 7c 14 74 01 c3 =
+    test rax,rax; jl; je; ret — valid code.
+  => The mmap "verify+re-read+correct" workaround treated a non-cause.
+     REVERTED this session.
+
+---------------------------------------------------------------------
+ROOT CAUSES (proved) + FIXES APPLIED THIS SESSION
+---------------------------------------------------------------------
+(1) LLIBC failure = ld.so LAZY BINDING bug.
+    Proof: launching LLIBC with LD_BIND_NOW=1 makes it pass FULLY
+    (printf, malloc(64K), fopen+fread, mmap, getpid, malloc/free stress,
+    getcwd, exit). Forcing eager binding avoids the lazy
+    _dl_runtime_resolve_xsave* trampoline → it is the broken piece.
+    Likely deeper cause: kernel never sets up extended FPU/AVX state
+    (no CR4.OSXSAVE / XCR0 / xsetbv anywhere; AP trampoline sets only
+    OSFXSR|OSXMMEXCPT). The xsave-based PLT resolver needs it.
+    FIX (this session, deliberate + documented): process_launch_linux()
+    injects LD_BIND_NOW=1 into every Linux process's envp. Safe
+    (full-RELRO distros run this way), harmless for static bins.
+    PROPER FOLLOW-UP: enable XSAVE/XCR0 + per-task XSTATE save/restore,
+    then drop the forced bind-now.
+
+(2) clone3 child crashed at rip=0 = child entered with RAX != 0.
+    glibc __clone post-syscall does test rax,rax; jl err; je child; ret.
+    process_start clobbers RAX (mov $0x23,%ax) and never set it, so the
+    child fell through to `ret` -> rip=0.
+    FIX: added fry_process.user_rax (zero-init for all; 0 = correct for
+    _start and for clone children). process_start now does
+    `mov %3,%%rax` just before iretq. VERIFIED: child no longer hits
+    rip=0; advances into the child path.
+
+(3) clone3 child then faulted writing stack-8 = wrong child RSP.
+    clone3 (unlike legacy clone) takes cl_args.stack = LOWEST addr and
+    the kernel sets child SP = stack + stack_size. Handler used
+    args.stack directly → first push 1 slot below the mapped stack.
+    Fault addr == args.stack - 8 confirmed it.
+    FIX: child_rsp = args.stack ? (args.stack + args.stack_size)
+                                : user_rsp_saved. VERIFIED: stack-8 fault
+    gone; child rsp now = stack+size (e.g. 0x6fffffddff80).
+
+---------------------------------------------------------------------
+REMAINING clone3 BLOCKER (diagnosed, NOT yet fixed)
+---------------------------------------------------------------------
+After (2)+(3) the child runs further but now faults executing AT its own
+rsp (RIP==CR2==child_rsp, err=0x15 = NX instruction fetch). Cause:
+the child does NOT inherit the parent's callee-saved registers
+(rbx, r12-r15) where glibc stashes the thread fn/arg across the clone
+syscall. Our child starts with a zeroed register file (setup_initial_stack
+zeroes; process_start sets only rdi/rax/rsp/rip/fs).
+
+syscall_entry pushes rax,rcx,r11,rbp,rdi,rsi,rdx,r10,r8,r9 — it does
+NOT save rbx/r12-r15 (not needed for normal syscalls since the C ABI
+keeps them live). So the parent's callee-saved regs aren't captured at
+the clone point and can't be replayed into the child.
+
+PLANNED FIX (own focused change — touches the hot syscall path):
+  a. In syscall_entry, also push rbx,r12,r13,r14,r15 into the frame
+     (full GPR capture, like Linux pt_regs). Update frame offsets and
+     the clone3 handler's frame[] indices accordingly.
+  b. Give clone children a dedicated first-run path that iretqs with the
+     FULL parent register set restored (rbx,rbp,r12-r15,rsi,rdi,rdx,
+     r8,r9,r10 from the captured frame) + rax=0, rsp=child_rsp,
+     rip=ret_addr, fs=tls. Keep the normal process_start path unchanged.
+  c. Re-test LTHR: thread fn should run + join.
+Deferred because it modifies the kernel's hottest path and deserves
+isolated verification rather than a rushed end-of-session edit.
+
+---------------------------------------------------------------------
+DIAGNOSTIC NOISE (intentionally LEFT IN until clone3 is green)
+---------------------------------------------------------------------
+- process.c process_start: PROC_START + PTE-chain dump (is_linux only).
+- syscall.c clone3: CLONE3 frame dump.
+Remove both once clone3 lands (was also flagged in the Hermes handoff).
+
+---------------------------------------------------------------------
+FILES TOUCHED THIS SESSION
+---------------------------------------------------------------------
+- src/kernel/proc/process.h : +user_rax field.
+- src/kernel/proc/process.c : process_start sets user RAX; LD_BIND_NOW
+                              injection in process_launch_linux.
+- src/kernel/proc/syscall.c : clone3 child_rsp = stack+stack_size;
+                              removed FAT32 mmap verify/re-read workaround.
+- src/kernel/main.c         : reverted temp LLIBC LD_BIND_NOW diag env.
+Build + boot verified after each change. fat32_read() left UNTOUCHED
+(it is correct; the bug was never there).
+
+---------------------------------------------------------------------
+2026-06-02 18:40 CDT — STARTING clone3 register-inheritance fix
+---------------------------------------------------------------------
+Zack greenlit continuing. Implementing full GPR inheritance for clone
+children (the diagnosed remaining blocker).
+
+Design (chosen to minimize hot-path risk):
+- Capture the parent's callee-saved regs (rbx,r12,r13,r14,r15) — which
+  the existing syscall_entry frame does NOT save — into per-CPU scratch
+  (%gs:24..56), mirroring the existing %gs:16 frame_rsp mechanism. This
+  avoids altering the kernel-stack frame layout / its 16-byte call
+  alignment (adding 5 pushes = 40 bytes would misalign the C call).
+- percpu_data (sched.c) gains uint64_t linux_clone_saved[5] at gs:24..56.
+- clone3 handler snapshots the FULL register set into the child PCB
+  (struct linux_clone_ctx clone_ctx) from frame[] + the percpu callee-
+  saved, with rax=0, rsp=stack+size, fs=tls.
+- process_start gets a clone-child branch that iretqs restoring ALL GPRs
+  from clone_ctx (normal path unchanged). is_clone_child gates it.
+Frame[] indices UNCHANGED (percpu approach), so existing rip=frame[10]/
+rsp=frame[11] reads stay valid.
+Steps logged below as completed.
+
+---------------------------------------------------------------------
+2026-06-02 18:55 CDT — clone3 GREEN + FPU/XSAVE root-cause found
+---------------------------------------------------------------------
+Register-inheritance fix implemented + VERIFIED. Steps done:
+- sched.c: percpu_data += linux_clone_saved[5] (gs:24..56).
+- syscall.c syscall_entry: snapshot rbx/r12-r15 -> gs:24..56 (side-effect
+  free; only needed for clone3).
+- process.h: struct linux_clone_ctx + is_clone_child + clone_ctx.
+- syscall.c clone3 handler: fill child->clone_ctx (frame[] + gs:24..56).
+- process.c process_start: clone-child branch iretqs full GPR set; then
+  also had to re-set FS.BASE via wrmsr AFTER the %fs selector load (the
+  selector load zeroes FS.BASE; child was faulting at %fs:0x28 canary).
+- process.c process_clone_linux_thread: is_clone_child = 1.
+
+VERIFIED (grep -a on serial — note: logs contain a NUL so plain grep
+mis-detects binary; always use grep -a):
+  LTHR: "[OK] thread 1 started" -> "[OK] thread 1 done, counter=5" in
+  two separate boots. clone3 + pthread_create + thread fn + join WORK.
+  LLIBC + LGAP also complete in other boots. No regression from the
+  hot-path syscall_entry change (LLIBC/LTHR both pass).
+
+clone3 progression this session (each a real, distinct bug):
+  rip=0 (rax!=0) -> stack-8 PF (rsp=stack not stack+size) ->
+  exec-at-rsp NX (no GPR inheritance) -> %fs:0x28 (FS.BASE wiped) -> OK.
+
+NEW ROOT CAUSE (explains remaining instability): the kernel does NOT
+save/restore FPU/SSE/AVX (XSAVE) state across context switches. With
+several glibc processes running concurrently, preemption corrupts a
+process's vector registers -> intermittent NULL/GP fault in glibc
+string/math code (0x6fffffe086e6 / 0x6fffffe199f6, cr2=0). Hits a
+RANDOM one of the 7 concurrent Linux procs per boot; not deterministic;
+not caused by the clone3 changes. This is the SAME extended-state gap
+that makes the lazy-bind trampoline need LD_BIND_NOW.
+
+=> PROPER NEXT FIX (own focused effort — delicate scheduler surgery):
+   1. Enable CR4.OSXSAVE (BSP+APs) + xsetbv XCR0 from CPUID leaf 0xD.
+   2. Per-task XSAVE area; xsave/xrstor in the context switch.
+   3. Then: concurrency stable AND LD_BIND_NOW can be dropped (lazy
+      _dl_runtime_resolve_xsavec works once XSAVE state is real).
+Removing the PROC_START/CLONE3 diagnostics now that clone3 is green.
+
+---------------------------------------------------------------------
+2026-06-02 19:25 CDT — FPU/XSAVE context-switch (toward real Claude Code)
+---------------------------------------------------------------------
+Goal restated by Zack: the REAL Claude Code binary (threaded Bun, uses
+AVX). The intermittent concurrency faults = kernel not preserving vector
+state across context switches. Fix:
+- Enable CR4.OSXSAVE+OSFXSR+OSXMMEXCPT and xsetbv XCR0 = (CPUID.0xD.EAX
+  & 0x7)|1 (x87+SSE+AVX as supported) per CPU in init_boot_context.
+  Guarded by CPUID.1.ECX.XSAVE; g_xcr0_mask=0 -> no-op fallback.
+- Per-task fpu_area[1024] aligned(64) in the PCB; new tasks zeroed +
+  MXCSR=0x1f80 (so xrstor of XSTATE_BV=0 gives clean init state, masked).
+- context_switch: xsave64(from) + xrstor64(to) BEFORE the GPR/stack swap
+  (doing it after would run in the wrong task's frame).
+- Then: drop LD_BIND_NOW and re-test lazy-bind (xsavec needs real XSAVE).

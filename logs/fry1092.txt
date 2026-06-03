@@ -1,0 +1,20 @@
+2026-05-14T12:37:19-05:00
+
+Step: Chromium TaterTOS64v3 WebRTC dcsctp timer blocker cleanup after monitored build 20260514_123552.
+
+Local Ninja failure position:
+- [22/33961] obj/third_party/webrtc/net/dcsctp/timer/timer/timer.o
+
+Logical phase:
+- third_party/webrtc dcsctp timer/backoff support.
+
+Exact blocker:
+- third_party/webrtc/net/dcsctp/timer/timer.cc had an exhaustive TimerBackoffAlgorithm switch that GCC still treated as possible non-void fallthrough under -Werror=return-type.
+
+Fix:
+- Added an explicit base-duration fallback return after GetBackoffDuration()'s switch.
+
+Verification:
+- Ran targeted Ninja rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/third_party/webrtc/net/dcsctp/timer/timer/timer.o
+- Result: passed [1/1].

@@ -4,12 +4,14 @@
 #include "syscall.h"
 #include "sched.h"
 #include "elf.h"
+#include "linux_compat.h"
 #include <errno.h>
 #include "../fs/vfs.h"
 #include "../mm/pmm.h"
 #include "../mm/vmm.h"
 #include "../../drivers/net/netcore.h"
 void kprint(const char *fmt, ...);
+void kprint_serial_only(const char *fmt, ...);
 
 #define KSTACK_SIZE 32768
 #define PAGE_SIZE   4096ULL
@@ -157,6 +159,79 @@ static void process_start(struct fry_process *p) {
     __asm__ volatile("mov %0, %%cr3" : : "r"(p->cr3));
     write_user_fs_base(p->user_fs_base);
 
+    if (p->is_linux && p->is_clone_child) {
+        /*
+         * clone()/clone3() child: enter user mode with the FULL parent
+         * register set (rax forced to 0, rsp=new stack), so glibc's thread
+         * bootstrap finds fn/arg in the callee-saved registers it stashed
+         * across the clone syscall. cr3 + FS base are already set above.
+         *
+         * Build a [15 GPRs][iret frame] block on the kernel stack from
+         * clone_ctx, then pop the GPRs and iretq. The ctx base register is
+         * only READ during the pushes, so it can be safely overwritten by
+         * the later pops.
+         */
+        struct linux_clone_ctx *ctx = &p->clone_ctx;
+        __asm__ volatile(
+            "cli\n"
+            "swapgs\n"
+            "movw $0x23, %%ax\n"
+            "movw %%ax, %%ds\n"
+            "movw %%ax, %%es\n"
+            "movw %%ax, %%fs\n"
+            "movw %%ax, %%gs\n"
+            /* The %fs selector load just zeroed FS.BASE — restore the TLS
+             * base (%1) via wrmsr so %fs:0x28 (stack canary) etc. work.
+             * Clobbers rax/rcx/rdx, all reloaded from clone_ctx by the pops. */
+            "movq %1, %%rdx\n"
+            "movq %%rdx, %%rax\n"
+            "shrq $32, %%rdx\n"
+            "movl $0xC0000100, %%ecx\n"
+            "wrmsr\n"
+            /* iret frame: ss, rsp, rflags, cs, rip (pushed high->low) */
+            "pushq $0x23\n"
+            "pushq 16*8(%0)\n"
+            "pushq 17*8(%0)\n"
+            "pushq $0x2b\n"
+            "pushq 15*8(%0)\n"
+            /* GPRs in reverse pop order: r15..rax (rax ends on top) */
+            "pushq 14*8(%0)\n"
+            "pushq 13*8(%0)\n"
+            "pushq 12*8(%0)\n"
+            "pushq 11*8(%0)\n"
+            "pushq 10*8(%0)\n"
+            "pushq 9*8(%0)\n"
+            "pushq 8*8(%0)\n"
+            "pushq 7*8(%0)\n"
+            "pushq 6*8(%0)\n"
+            "pushq 5*8(%0)\n"
+            "pushq 4*8(%0)\n"
+            "pushq 3*8(%0)\n"
+            "pushq 2*8(%0)\n"
+            "pushq 1*8(%0)\n"
+            "pushq 0*8(%0)\n"
+            "popq %%rax\n"
+            "popq %%rbx\n"
+            "popq %%rcx\n"
+            "popq %%rdx\n"
+            "popq %%rsi\n"
+            "popq %%rdi\n"
+            "popq %%rbp\n"
+            "popq %%r8\n"
+            "popq %%r9\n"
+            "popq %%r10\n"
+            "popq %%r11\n"
+            "popq %%r12\n"
+            "popq %%r13\n"
+            "popq %%r14\n"
+            "popq %%r15\n"
+            "iretq\n"
+            :
+            : "r"(ctx), "r"(p->user_fs_base)
+            : "rax", "rcx", "rdx", "memory"
+        );
+    }
+
     __asm__ volatile(
         "cli\n"
         "mov %2, %%rdi\n"
@@ -177,9 +252,12 @@ static void process_start(struct fry_process *p) {
         "pushq $0x202\n"
         "pushq $0x2B\n"
         "pushq %1\n"
+        // Set user RAX last (segment loads above clobber AX). Normal _start
+        // ignores RAX; clone() children require RAX=0 to take the child path.
+        "mov %3, %%rax\n"
         "iretq\n"
         :
-        : "r"(p->user_rsp), "r"(p->user_rip), "r"(p->user_arg)
+        : "r"(p->user_rsp), "r"(p->user_rip), "r"(p->user_arg), "r"(p->user_rax)
         : "rax", "rdi", "memory"
     );
 }
@@ -238,6 +316,9 @@ static struct fry_process *proc_alloc(void) {
             procs[i].wait_tid = 0;
             procs[i].dumpable = 1;
             procs[i].timer_slack_ns = 50000;
+            /* Seed MXCSR so the first XRSTOR (zeroed XSAVE area) yields a clean,
+             * exception-masked FPU init state instead of MXCSR=0. */
+            *(uint32_t *)(procs[i].fpu_area + 24) = 0x1f80u;
             return &procs[i];
         }
     }
@@ -310,6 +391,48 @@ struct fry_process *process_create_user_thread(struct fry_process *parent, uint6
     if (alloc_kernel_stack(p) != 0) {
         p->shared = 0;
         p->state = PROC_DEAD;
+        return 0;
+    }
+
+    if (shared->refcount != 0xFFFFFFFFU) shared->refcount++;
+    setup_initial_stack(p);
+    return p;
+}
+
+struct fry_process *process_clone_linux_thread(struct fry_process *parent,
+                                                uint64_t user_rip,
+                                                uint64_t user_rsp,
+                                                uint64_t tls,
+                                                uint64_t child_tid_addr,
+                                                uint64_t parent_tid_addr) {
+    struct fry_process_shared *shared = proc_shared(parent);
+    struct fry_process *p;
+    (void)child_tid_addr;   /* TID notifications are written by the clone3 handler */
+    (void)parent_tid_addr;
+    if (!parent || parent->is_kernel || !shared) return 0;
+
+    p = proc_alloc();
+    if (!p) return 0;
+    p->cr3           = parent->cr3;
+    p->tgid          = parent->tgid;
+    p->shared        = shared;
+    p->user_rip      = user_rip;
+    p->user_rsp      = user_rsp;
+    p->user_arg      = 0;
+    p->user_fs_base  = tls;
+    p->cpu           = parent->cpu;
+    p->no_new_privs  = parent->no_new_privs;
+    p->dumpable      = parent->dumpable;
+    p->thp_disabled  = parent->thp_disabled;
+    p->timer_slack_ns= parent->timer_slack_ns;
+    p->is_linux      = parent->is_linux;
+    p->is_clone_child = 1;   /* first run restores full GPRs from clone_ctx */
+    p->linux_mmap_next = parent->linux_mmap_next;
+    copy_name(p->name, parent->name);
+
+    if (alloc_kernel_stack(p) != 0) {
+        p->shared = 0;
+        p->state  = PROC_DEAD;
         return 0;
     }
 
@@ -451,6 +574,7 @@ void proc_free(uint32_t pid) {
             procs[i].wait_pid = 0;
             procs[i].wait_tid = 0;
             procs[i].wait_futex_key = 0;
+            procs[i].wait_futex_bitset = 0;
             procs[i].wait_result = 0;
 
             for (uint32_t w = 0; w < PROC_MAX; w++) {
@@ -589,6 +713,54 @@ int process_launch_args(const char *path, const char **argv, uint32_t argc,
     return (int)p->pid;
 }
 
+/*
+ * Launch an UNMODIFIED Linux x86_64 ELF as a Linux-personality process.
+ * Loads via the linuxulator ELF loader (bare ELF + SysV stack), tags the
+ * process is_linux so its syscalls route through linux_syscall_dispatch,
+ * and seeds the program break + anonymous-mmap arena.
+ */
+int process_launch_linux(const char *path,
+                         const char *const *argv, int argc,
+                         const char *const *envp, int envc) {
+    struct fry_process *cur = proc_current();
+    uint64_t cr3 = 0, entry = 0, rsp = 0, brk = 0;
+    g_process_last_launch_error = 0;
+
+    int rc = elf_load_linux(path, argv, argc,
+                            envp, envc,
+                            &cr3, &entry, &rsp, &brk);
+    if (rc != 0) {
+        g_process_last_launch_error = rc;
+        kprint("PROC: linux launch fail path=%s rc=%d\n", path ? path : "(null)", rc);
+        return rc;
+    }
+
+    struct fry_process *p = process_create_user(cr3, entry, rsp, path);
+    if (!p) {
+        vmm_destroy_address_space(cr3);
+        g_process_last_launch_error = PROCESS_LAUNCH_ERR_CREATE_USER;
+        return PROCESS_LAUNCH_ERR_CREATE_USER;
+    }
+
+    p->is_linux = 1;
+    p->linux_mmap_next = LX_MMAP_BASE;
+    {
+        struct fry_process_shared *sh = proc_shared(p);
+        if (sh) {
+            sh->heap_start = brk;
+            sh->heap_end = brk;
+        }
+    }
+    if (cur) p->cpu = cur->cpu;
+
+    g_process_last_launch_error = 0;
+    sched_add(p->pid);
+    kprint("PROC: linux launch ok path=%s pid=%u entry=%lx rsp=%lx brk=%lx\n",
+           path ? path : "(null)", p->pid,
+           (unsigned long)entry, (unsigned long)rsp, (unsigned long)brk);
+    return (int)p->pid;
+}
+
 int process_wait(uint32_t pid) {
     if (pid == 0) return -EINVAL;
     struct fry_process *cur = proc_current();
@@ -606,6 +778,7 @@ int process_wait(uint32_t pid) {
     cur->wait_pid = pid;
     cur->wait_tid = 0;
     cur->wait_futex_key = 0;
+    cur->wait_futex_bitset = 0;
     cur->wait_result = 0;
     cur->wake_time_ms = UINT64_MAX;
     sched_block(cur->pid);
@@ -632,6 +805,7 @@ int process_wait_status(uint32_t pid, int *exit_code_out) {
     cur->wait_pid = pid;
     cur->wait_tid = 0;
     cur->wait_futex_key = 0;
+    cur->wait_futex_bitset = 0;
     cur->wait_result = 0;
     cur->wake_time_ms = UINT64_MAX;
     sched_block(cur->pid);
@@ -662,6 +836,7 @@ int process_thread_join(uint32_t tid) {
         cur->wait_pid = 0;
         cur->wait_tid = tid;
         cur->wait_futex_key = 0;
+        cur->wait_futex_bitset = 0;
         cur->wait_result = 0;
         cur->wake_time_ms = UINT64_MAX;
         sched_block(cur->pid);

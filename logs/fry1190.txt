@@ -1,0 +1,27 @@
+2026-05-15T09:16:44-05:00
+
+Fix: Excluded ALSA from TaterTOS media builds and fixed audio glitch metric fallbacks.
+
+Classification:
+- ALSA include failure: TaterTOS platform/config gap.
+- system_glitch_reporter.cc fallthrough/missing return: compiler strictness.
+
+Why: The media build treated TaterTOS as a generic POSIX target and enabled
+use_alsa, pulling in Linux ALSA sources that require <alsa/asoundlib.h>. TaterTOS
+does not provide that Linux audio stack. The same build pass also rejected
+nested switch fallthrough in GetMetricName().
+
+Change: Updated media_options.gni so TaterTOS does not enable ALSA through the
+generic POSIX branch. Added explicit breaks plus a NOTREACHED() fallback to
+GetMetricName().
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/media/audio/audio/system_glitch_reporter.o
+
+Result: passed after ninja regenerated files.
+
+Additional verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/media/audio/audio/alsa_input.o
+
+Result: failed with "unknown target", confirming ALSA sources are no longer in
+the TaterTOS audio build graph.

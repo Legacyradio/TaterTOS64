@@ -1,0 +1,38 @@
+Fry Log 927 — Chromium base:base: NZERO, _PC_NAME_MAX, pathconf
+Timestamp: 2026-05-08 23:45:00 CDT
+
+Scope:
+  Fry 926 cleared dlfcn.h, drive_info, process_metrics, and dirent suite.
+  Build progressed further and hit three new blockers, all PATH/POSIX
+  surface gaps.
+
+Build result before fix:
+  ninja -C out/tatertos base:base
+
+  can_lower_nice_to.o: NZERO was not declared in this scope
+  file_util_posix.o: _PC_NAME_MAX was not declared
+  file_util_posix.o: pathconf was not declared
+
+Changes:
+  src/include/limits.h
+    - Added #define NZERO 20 (default nice value, process priority baseline).
+
+  src/include/unistd.h
+    - Added _PC_NAME_MAX, _PC_PATH_MAX, _PC_PIPE_BUF, _PC_LINK_MAX,
+      _PC_MAX_CANON constants.
+    - Added pathconf() and fpathconf() declarations.
+
+  src/user/libc/posix.c
+    - Added pathconf(): returns TaterTOS64 kernel values for each _PC_*
+      name. _PC_NAME_MAX = FRY_NAME_MAX (127), _PC_PATH_MAX = PATH_MAX,
+      _PC_PIPE_BUF = FRY_PIPE_BUFSZ, _PC_LINK_MAX = 1024,
+      _PC_MAX_CANON = 255. Unknown names return -1 with EINVAL.
+    - Added fpathconf(): delegates to pathconf (same limits for all fds).
+
+Why:
+  Chromium's base::GetMaximumPathComponentLength calls pathconf(_PC_NAME_MAX)
+  to determine filesystem path component limits. can_lower_nice_to checks
+  NZERO for nice value bounds. Both are standard POSIX.
+
+Verification:
+  Pending: full ninja -C out/tatertos base:base.

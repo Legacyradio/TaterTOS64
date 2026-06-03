@@ -1,0 +1,31 @@
+timestamp: 2026-05-14T22:44:48-05:00
+stop: chrome_build_20260514_224048.log at [219/31047]
+failed_objects:
+  obj/services/tracing/public/mojom/mojom/console_config_mojom_traits.o
+  obj/services/tracing/public/mojom/mojom/trace_config_mojom_traits.o
+  obj/services/tracing/public/mojom/mojom/perfetto_service.mojom.o
+classification: compiler strictness, not a TaterTOS API gap
+
+problem:
+  GCC with -Werror rejected hand-written tracing Mojom enum trait conversions
+  whose switches covered known enum values but lacked explicit fallback returns:
+  - ConsoleOutput <-> perfetto ConsoleConfig::Output
+  - BufferFillPolicy <-> perfetto TraceConfig::BufferConfig::FillPolicy
+
+fix:
+  Added NOTREACHED() fallback returns to the trait headers. Fallbacks use the
+  existing unspecified enum values for each direction.
+
+why:
+  This preserves valid enum mapping behavior while making invalid/impossible
+  paths explicit for TaterTOS64's GCC build. No warning suppression or
+  non-TaterTOS platform behavior was added.
+
+verification:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/services/tracing/public/mojom/mojom/console_config_mojom_traits.o
+  obj/services/tracing/public/mojom/mojom/trace_config_mojom_traits.o
+  obj/services/tracing/public/mojom/mojom/perfetto_service.mojom.o
+
+  Result: all three targeted objects rebuilt successfully.

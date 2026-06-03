@@ -1,0 +1,1 @@
+STEP/2026-05-11 15:00/PATCH_NET_HELPER: Added default return to ProtoToString in net_helper.cc. WHY: Satisfy -Werror=return-type.

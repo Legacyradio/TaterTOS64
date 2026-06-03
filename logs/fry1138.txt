@@ -1,0 +1,28 @@
+2026-05-15T05:34:24-05:00
+
+Stop:
+- Full Chromium TaterTOS build stopped in WebRTC after
+  [180/29281] obj/third_party/webrtc/p2p/turn_port_factory/turn_port_factory.o
+  and a parallel failure at
+  [189/29281] obj/third_party/webrtc/pc/sdp_offer_answer/sdp_offer_answer.o.
+
+Classification:
+- Compiler strictness, not a TaterTOS API gap.
+
+Why:
+- GCC diagnosed redundant `std::move(...)` calls in return statements under
+  `-Werror=redundant-move`. The affected locals were already being returned
+  by value, so the explicit move only blocked normal return-value handling and
+  was unnecessary.
+
+Fix:
+- Removed redundant `std::move` from local returns in:
+  - third_party/webrtc/p2p/client/turn_port_factory.cc
+  - third_party/webrtc/pc/sdp_offer_answer.cc
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja \
+    -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos \
+    obj/third_party/webrtc/p2p/turn_port_factory/turn_port_factory.o \
+    obj/third_party/webrtc/pc/sdp_offer_answer/sdp_offer_answer.o

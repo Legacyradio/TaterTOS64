@@ -1,0 +1,25 @@
+Timestamp: 2026-05-15T08:11:55-05:00
+Blocker: network cpp/simple_url_loader and generated network mojom certificate
+callbacks failed under fatal GCC warnings.
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Files changed:
+- /home/legacyindieradio/chromium-tatertos/src/services/network/public/cpp/simple_url_loader.cc
+- /home/legacyindieradio/chromium-tatertos/src/services/network/public/mojom/BUILD.gn
+
+Why:
+- SimpleURLLoaderImpl::OnReadyToStart() was declared and defined but had no
+  remaining call sites, so GCC reported it as an unused function.
+- The X509Certificate mojom typemap passed scoped_refptr by const ref while
+  generated callback code assigned it with std::move(), producing redundant-move
+  errors in generated cert_verifier_service and network_context sources.
+
+Fix:
+- Removed the unused OnReadyToStart() member.
+- Marked the X509Certificate typemap copyable_pass_by_value so regenerated mojom
+  code passes the scoped_refptr by value before moving it.
+
+Verification:
+- Ran:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/services/network/public/cpp/cpp/simple_url_loader.o obj/services/network/public/mojom/mojom/cert_verifier_service.mojom.o obj/services/network/public/mojom/mojom/network_context.mojom.o
+- Result: passed. Ninja regenerated the affected network mojom bindings first.

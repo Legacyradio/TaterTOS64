@@ -1,0 +1,21 @@
+2026-05-15T06:48:11-0500
+
+Fixed network policy and URL pattern compiler strictness failures.
+
+Blocker classification:
+- compiler strictness, not a TaterTOS API gap.
+
+Why:
+- services/network/public/cpp/cross_origin_embedder_policy.cc and
+  document_isolation_policy.cc had exhaustive enum switches without
+  compiler-visible fallback returns.
+- components/url_pattern/simple_url_pattern_matcher.cc returned a local object
+  through std::move, triggering -Werror=redundant-move.
+
+Fix:
+- Added NOTREACHED fallback returns to the network compatibility helpers.
+- Removed the redundant std::move so NRVO/move elision can apply normally.
+
+Verification:
+- Passed targeted rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/services/network/public/cpp/cross_origin_embedder_policy/cross_origin_embedder_policy.o obj/services/network/public/cpp/document_isolation_policy/document_isolation_policy.o obj/components/url_pattern/url_pattern/simple_url_pattern_matcher.o

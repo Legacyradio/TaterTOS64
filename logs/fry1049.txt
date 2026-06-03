@@ -1,0 +1,1 @@
+STEP/2026-05-11 13:35/PATCH_BREAK_ITERATOR: Added NOTREACHED() and default return to BreakIterator::Advance(). WHY: Fix -Werror=return-type where the switch statement was considered non-exhaustive by the compiler.

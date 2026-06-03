@@ -1,0 +1,52 @@
+Fry Log 925 — Chromium base:base: libgen.h and grp.h libc gaps
+Timestamp: 2026-05-08 22:30:00 CDT
+
+Scope:
+  Fry 924 cleared fnmatch and SO_PASSCRED. The next base:base frontier hit
+  two more missing POSIX headers: libgen.h (basename/dirname) and grp.h
+  (group database).
+
+Build results before fix:
+  # First blocker — libgen.h
+  file_util_posix.cc:10:10: fatal error: libgen.h: No such file or directory
+  Build stopped at 2660/2892.
+
+  # After libgen.h fix — second blocker
+  file_util_posix.cc:74:10: fatal error: grp.h: No such file or directory
+  Build stopped at 2671/2892.
+
+Changes:
+  src/include/libgen.h (new)
+    - POSIX basename() and dirname() declarations.
+
+  src/user/libc/posix.c
+    - Added TaterTOS64-owned basename(): strips trailing slashes, finds
+      last path component, handles root "/" and empty input (returns ".").
+    - Added TaterTOS64-owned dirname(): strips trailing slashes, finds
+      directory portion, handles root, handles no-slash (returns ".").
+
+  src/include/grp.h (new)
+    - POSIX group database header: struct group, getgrnam(), getgrgid(),
+      getgrent(), setgrent(), endgrent().
+
+  src/user/libc/posix.c
+    - Added group database stubs: all lookup functions return NULL with
+      errno=ENOENT. TaterTOS64 has no Unix-style group database — this is
+      correct POSIX behavior. Chromium handles NULL return gracefully
+      (DPLOG + continue in VerifyPathControlledByAdmin).
+
+Why:
+  Chromium's file_util_posix.cc includes both headers unconditionally
+  under POSIX. libgen.h provides basename/dirname declarations (though
+  Chromium doesn't call them directly in this file). grp.h provides
+  getgrnam() for admin group verification — TaterTOS64 correctly reports
+  no groups.
+
+Verification:
+  Pending: full ninja -C out/tatertos base:base. Both headers resolve
+  the immediate compile errors. Next blocker expected at next frontier.
+
+Runtime caveat:
+  grp.h stubs return ENOENT for all group lookups. This means
+  VerifyPathControlledByAdmin will log errors for any admin group names
+  but will continue — correct for an OS with no Unix group concept.

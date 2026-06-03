@@ -1,0 +1,30 @@
+fry1278 - linuxulator proof-of-life ramdisk delivery fix
+
+What changed:
+- Added .LXE to the EFI ramdisk scanner allow-list so bare Linux ELF payloads can be packed into the live ramdisk.
+- Reworked build_iso.sh Linux test staging into helpers:
+  build_linuxulator_test, prepare_linuxulator_marker, copy_linuxulator_test_mtools,
+  copy_linuxulator_test_dir, copy_linuxulator_test_totfs.
+- Now builds tools/host/lhello.S into lhello.lxe during the ISO build and places LHELLO.LXE plus LXTEST.RUN in fs.img,
+  efiboot.img, ISO root/apps, and ToTFS.
+- Restored marker-gated main.c behavior: /LXTEST.RUN must exist before the boot hook launches /apps/LHELLO.LXE.
+
+Why:
+- The first QEMU boot proved fs.img and ToTFS had LHELLO.LXE, but the live runtime was using the EFI-built ramdisk.
+  That ramdisk did not include .LXE files, so vfs_open("/apps/LHELLO.LXE") failed.
+
+Verification:
+- bash -n build_iso.sh
+- make src/kernel/main.o
+- gcc -nostdlib -static -no-pie -o lhello.lxe tools/host/lhello.S
+- ./build_iso.sh
+- Verified ISO/EFI paths include /apps/LHELLO.LXE, /LHELLO.LXE, and /LXTEST.RUN.
+- QEMU serial /tmp/tater_lx_serial.88boFf.log:
+  LINUXTEST: launching /apps/LHELLO.LXE
+  PROC: linux launch ok path=/apps/LHELLO.LXE pid=3 entry=401000 rsp=7ffffffffe40 brk=404000
+  ==== TaterTOS linuxulator: hello from a REAL unmodified Linux ELF ====
+  argc=2
+  argv0=/apps/lhello
+  env0=PATH=/apps
+  [OK] write + SysV stack + auxv reached; calling exit_group(argc)
+- Native selftest stayed 77/77; smoketest stayed 15/15; chrome_probe stayed 12/12.

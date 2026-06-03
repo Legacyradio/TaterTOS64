@@ -1,0 +1,3 @@
+STEP 1034
+TIME: 2026-05-10 21:27:52
+ACTION: Created <linux/auxvec.h> with standard ELF auxiliary vector constants (AT_HWCAP, AT_PAGESZ, etc.) and updated <sys/auxv.h> to include it. This was required because V8 (v8/src/base/cpu/cpu.cc) expects these headers to be present for CPU capability detection on Linux-like systems. By providing these stubs, we allow V8 to compile correctly on TaterTOS64 while maintaining architectural consistency. Resumed the Chromium ninja build.

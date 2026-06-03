@@ -1,0 +1,21 @@
+2026-05-16T11:37:05-05:00
+
+Fix: addressed cc trees and host compiler-strictness failures.
+
+Files:
+- chromium-tatertos/src/cc/trees/property_tree_builder.cc
+- chromium-tatertos/src/cc/trees/layer_tree_impl.cc
+- chromium-tatertos/src/cc/trees/layer_tree_host_impl.cc
+
+Why:
+- The build stopped on -Werror=dangling-else in property_tree_builder.cc and layer_tree_impl.cc where if statements containing a DCHECK (which expands to another if) lacked braces, leading to ambiguity. Added explicit braces.
+- The build stopped on -Werror=redundant-move in layer_tree_host_impl.cc due to an unnecessary std::move on a local variable being returned.
+- Classification: compiler strictness/library analysis, not a TaterTOS API/platform gap.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/cc/cc/property_tree_builder.o
+  obj/cc/cc/layer_tree_impl.o
+  obj/cc/cc/layer_tree_host_impl.o

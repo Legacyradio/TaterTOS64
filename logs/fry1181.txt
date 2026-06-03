@@ -1,0 +1,18 @@
+2026-05-15T08:40:08-05:00
+
+Fix: Resolved google_apis register payload and multilogin strictness failures.
+
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Why: Clang's -Werror rejected redundant std::move() returns in
+register_bound_session_payload.cc and a missing fallback return in
+oauth_multilogin_result.cc.
+
+Change: Returned the local vectors directly from the parser helpers. Added a
+NOTREACHED() fallback in ConvertRegisterPayloadParserErrorToOAuthMultiloginError()
+with a conservative required-field-missing error.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/google_apis/google_apis/register_bound_session_payload.o obj/google_apis/google_apis/oauth_multilogin_result.o
+
+Result: passed.

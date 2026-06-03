@@ -1,0 +1,25 @@
+Timestamp: 2026-05-17T15:35:00-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped due to return-type error in events_helper.cc.
+
+Failure:
+1. events_helper.cc: "control reaches end of non-void function" in InputEventResultStateIsSetBlocking.
+
+Exact compiler error:
+../../components/input/events_helper.cc:26:1: error: control reaches end of non-void function [-Werror=return-type]
+
+Classification:
+Compiler strictness in components/input.
+
+Fix:
+1. events_helper.cc: Added NOTREACHED() and fallback return to InputEventResultStateIsSetBlocking.
+
+Why:
+GCC requires explicit returns in all paths of non-void functions.
+
+Verification:
+Build restarted and progressing.
+
+Result:
+Build is now continuing with PID 1213438.

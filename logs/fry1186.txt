@@ -1,0 +1,17 @@
+2026-05-15T08:58:49-05:00
+
+Fix: Removed redundant moves in private metrics and GPU IPC.
+
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Why: Clang's -Werror rejected redundant std::move() usage in
+PumaService::BuildPrivateMetricRcReport() and
+ClientSharedImageInterface::CreateSharedImageForMLTensor().
+
+Change: Returned the optional report local directly and passed the const
+gfx::Size& by copy into SharedImageInfo instead of attempting to move it.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/components/metrics/private_metrics/private_metrics/puma_service.o obj/gpu/ipc/client/client/client_shared_image_interface.o
+
+Result: passed.

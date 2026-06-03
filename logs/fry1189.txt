@@ -1,0 +1,18 @@
+2026-05-15T09:10:11-05:00
+
+Fix: Resolved media audio compiler strictness failures.
+
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Why: Clang/GCC-style -Werror rejected a dangling-else DCHECK guard in
+audio_output_device.cc, a missing enum fallback return in audio_input_device.cc,
+and an inlined atomic store warning in audio_thread_hang_monitor.cc.
+
+Change: Braced the DCHECK guard, added a NOTREACHED() fallback returning the
+default thread type, and made the posted atomic store use an explicit checked
+raw pointer plus relaxed atomic store.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/media/audio/audio/audio_output_device.o obj/media/audio/audio/audio_input_device.o obj/media/audio/audio/audio_thread_hang_monitor.o
+
+Result: passed.

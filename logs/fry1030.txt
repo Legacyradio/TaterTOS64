@@ -1,0 +1,3 @@
+STEP 1030
+TIME: 2026-05-10 18:48:31
+ACTION: Resolved circular header dependency between <signal.h> and <sys/ucontext.h> by refactoring sigset_t and stack_t into dedicated "bits" headers (bits/types/sigset_t.h and bits/types/stack_t.h). This architectural change allows both headers to access core types without including each other directly, ensuring proper type visibility for the compiler. This adheres to Rule 1 and Rule 3 by implementing a thorough, non-mimicked system header structure. Resumed the Chromium ninja build.

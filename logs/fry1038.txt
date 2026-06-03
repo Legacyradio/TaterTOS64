@@ -1,0 +1,3 @@
+STEP 1038
+TIME: 2026-05-11 09:58:58
+ACTION: Corrected the fix for the type-limits compilation error in WebRTC's rtp_video_layers_allocation_extension.cc. The previous static_cast<int> fix failed because GCC traces the value's original bounds. Wrapped the offending check in #pragma GCC diagnostic push/ignored/pop to explicitly silence the -Wtype-limits warning for that specific block, maintaining the upstream logic without removing code. Resumed the Chromium ninja build.

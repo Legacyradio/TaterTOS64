@@ -1,0 +1,30 @@
+2026-05-16T13:15:27-05:00
+
+Fix: addressed massive attribution reporting compiler-strictness failures.
+
+Files:
+- chromium-tatertos/src/components/attribution_reporting/source_type.cc
+- chromium-tatertos/src/components/attribution_reporting/max_event_level_reports.cc
+- chromium-tatertos/src/components/attribution_reporting/trigger_config.cc
+- chromium-tatertos/src/components/attribution_reporting/source_registration.cc
+- chromium-tatertos/src/components/attribution_reporting/attribution_scopes_set.cc
+- chromium-tatertos/src/components/attribution_reporting/filters.cc
+- chromium-tatertos/src/components/attribution_reporting/aggregatable_trigger_config.cc
+- chromium-tatertos/src/components/attribution_reporting/aggregatable_utils.cc
+
+Why:
+- The build stopped on dozens of -Werror=return-type failures across the attribution_reporting component where non-void functions and lambdas used exhaustive switch statements without fallback returns. Added appropriate fallback returns to ensure all control paths are covered.
+- Classification: compiler strictness/library analysis, not a TaterTOS API/platform gap.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/components/attribution_reporting/attribution_reporting/source_type.o
+  obj/components/attribution_reporting/attribution_reporting/max_event_level_reports.o
+  obj/components/attribution_reporting/attribution_reporting/trigger_config.o
+  obj/components/attribution_reporting/attribution_reporting/source_registration.o
+  obj/components/attribution_reporting/attribution_reporting/attribution_scopes_set.o
+  obj/components/attribution_reporting/attribution_reporting/filters.o
+  obj/components/attribution_reporting/attribution_reporting/aggregatable_trigger_config.o
+  obj/components/attribution_reporting/attribution_reporting/aggregatable_utils.o

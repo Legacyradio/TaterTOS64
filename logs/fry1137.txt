@@ -1,0 +1,36 @@
+2026-05-15T05:28:39-05:00
+
+Stop:
+- Full Chromium TaterTOS build stopped at the TFLite kernel wave after
+  [3296/32586] on obj/third_party/tflite/tflite_kernels/reduce.o, with
+  additional parallel failures in strided_slice.o, svdf.o, and
+  stablehlo_scatter.o.
+
+Classification:
+- Compiler strictness, not a TaterTOS API gap.
+
+Why:
+- GCC under the TaterTOS freestanding Chromium toolchain treats warnings as
+  errors and diagnosed existing TensorFlow Lite source patterns:
+  - bool product using `*` in reduce.cc and stablehlo_scatter.cc
+  - ambiguous chained comparison in strided_slice.cc
+  - restrict-qualified argument aliasing in reference/svdf.h where a float
+    scratch/output buffer was also passed as an int32 accumulator scratch.
+
+Fix:
+- In reduce.cc and stablehlo_scatter.cc, made bool multiply/product use
+  logical AND while preserving numeric multiplication for non-bool types.
+- In strided_slice.cc, parenthesized the sign comparison explicitly:
+  `(dim_shape < 0) != (stride < 0)`.
+- In reference/svdf.h, added a separate int32 matmul scratch vector for the
+  accumulator scratch argument instead of aliasing it over the float result
+  scratch buffer.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja \
+    -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos \
+    obj/third_party/tflite/tflite_kernels/reduce.o \
+    obj/third_party/tflite/tflite_kernels/strided_slice.o \
+    obj/third_party/tflite/tflite_kernels/svdf.o \
+    obj/third_party/tflite/tflite_kernels/stablehlo_scatter.o

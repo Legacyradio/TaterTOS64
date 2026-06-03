@@ -1,0 +1,1 @@
+STEP/2026-05-11 15:05/PATCH_OPENSSL_ADAPTER: Added default return to GetMaxVersion in openssl_stream_adapter.cc. WHY: Satisfy -Werror=return-type.

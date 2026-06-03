@@ -1,0 +1,19 @@
+2026-05-15T22:54:29-05:00
+
+Fix: addressed cc metrics compiler-strictness failures.
+
+Files:
+- chromium-tatertos/src/cc/metrics/event_latency_tracing_recorder.cc
+- chromium-tatertos/src/cc/metrics/compositor_frame_reporter.cc
+
+Why:
+- The build stopped on -Werror=return-type in event_latency_tracing_recorder.cc and compositor_frame_reporter.cc where non-void functions used exhaustive switch statements without fallback returns. Added return statements and NOTREACHED() assertions where appropriate.
+- The build stopped on -Werror=implicit-fallthrough in compositor_frame_reporter.cc where internal switch statements within a case were falling through to the next case of the outer switch. Resolved by adding return statements to ensure cases are fully handled.
+- Classification: compiler strictness/library analysis, not a TaterTOS API/platform gap.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/cc/cc/event_latency_tracing_recorder.o
+  obj/cc/cc/compositor_frame_reporter.o

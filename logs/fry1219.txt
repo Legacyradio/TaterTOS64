@@ -1,0 +1,22 @@
+2026-05-16T02:18:44-05:00
+
+Fix: addressed cc trees and tiling compiler-strictness failures.
+
+Files:
+- chromium-tatertos/src/cc/trees/effect_node.cc
+- chromium-tatertos/src/cc/tiles/tile_manager.cc
+- chromium-tatertos/src/cc/trees/draw_property_utils.cc
+
+Why:
+- The build stopped on -Werror=return-type in effect_node.cc where a non-void function used an exhaustive switch statement without a fallback return. Added return "unknown";.
+- The build stopped on -Werror=redundant-move in tile_manager.cc due to multiple unnecessary std::move calls on local unique_ptr variables being returned. These were removed to allow for RVO.
+- The build stopped on -Werror=dangling-else in draw_property_utils.cc where a nested if statement (via DCHECK) without braces triggered an ambiguity warning. Added explicit braces to the outer if.
+- Classification: compiler strictness/library analysis, not a TaterTOS API/platform gap.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/cc/cc/effect_node.o
+  obj/cc/cc/tile_manager.o
+  obj/cc/cc/draw_property_utils.o

@@ -1,0 +1,4 @@
+fry1017
+blocker: base sys_info_posix.cc — fatal error: sys/statfs.h missing
+patch: created sys/statfs.h with struct statfs and statfs/fstatfs definitions.
+build: resumed chromium-tatertos ninja build.

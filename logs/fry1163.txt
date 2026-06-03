@@ -1,0 +1,23 @@
+Timestamp: 2026-05-15T07:34:10-05:00
+Blocker: ui/base drag-drop OS exchange provider factory rejected TaterTOS as an
+unknown operating system.
+Classification: TaterTOS platform integration gap.
+
+File changed:
+- /home/legacyindieradio/chromium-tatertos/src/ui/base/dragdrop/os_exchange_data_provider_factory.cc
+
+Why:
+- The factory only handled Linux/ChromeOS/Fuchsia/Apple/Windows and fell into
+  #error for TaterTOS.
+- TaterTOS does not currently provide a platform-specific drag-and-drop backend
+  through this factory.
+
+Fix:
+- Added an explicit BUILDFLAG(IS_TATERTOS) branch using
+  OSExchangeDataProviderNonBacked, matching the existing Chromium fallback for
+  platforms without a native drag-and-drop provider.
+
+Verification:
+- Ran:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/ui/base/base/os_exchange_data_provider_factory.o
+- Result: passed.

@@ -1,0 +1,3 @@
+STEP 1031
+TIME: 2026-05-10 19:32:03
+ACTION: Added the C99 fpclassify macro to <math.h> using the GCC __builtin_fpclassify compiler intrinsic. This was required because Chromium's bundled ffmpeg library (libavutil/timestamp.c) expects a standard-compliant math.h with floating-point categorization support. This fix ensures TaterTOS64 provides necessary C99 math features while maintaining clean OS headers. Resumed the Chromium ninja build.

@@ -1,0 +1,1 @@
+STEP/2026-05-11 15:30/PATCH_CANDIDATE: Added default return to IceCandidateTypeToString in candidate.cc. WHY: Satisfy -Werror=return-type for non-standard compilation paths.

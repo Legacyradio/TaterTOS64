@@ -1,0 +1,23 @@
+2026-05-15T06:56:15-0500
+
+Fixed UI interaction unique identifier subobject-linkage strictness.
+
+Blocker classification:
+- compiler strictness, not a TaterTOS API gap.
+
+Why:
+- DECLARE_UNIQUE_IDENTIFIER_TYPE uses a static constexpr class-name array.
+  That is valid for nested identifier types, but namespace-scope exported
+  identifier classes inherited from UniqueIdentifierImpl specializations keyed
+  by internal-linkage arrays, which GCC reports as -Wsubobject-linkage.
+
+Fix:
+- Added DECLARE_NAMESPACE_UNIQUE_IDENTIFIER_TYPE for namespace-scope identifier
+  classes using an inline constexpr class-name array with external linkage.
+- Switched ElementIdentifier, CustomElementEventType, UntypedStateIdentifier,
+  and InteractiveTestTemporaryIdentifier to the namespace-scope macro.
+- Left the original macro intact for nested class identifier declarations.
+
+Verification:
+- Passed targeted rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/ui/base/interaction/interaction/element_identifier.o obj/ui/base/interaction/interaction/element_events.o obj/ui/base/interaction/interaction/element_specifier.o obj/ui/base/interaction/interaction/element_tracker.o

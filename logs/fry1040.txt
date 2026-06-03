@@ -1,0 +1,3 @@
+STEP 1040
+TIME: 2026-05-11 12:38:25
+ACTION: Added missing socket options and protocol constants to TaterTOS64 networking headers. Added IPPROTO_IPV6, IP_TOS, IP_RECVTOS, IPV6_TCLASS, and IPV6_RECVTCLASS to <netinet/in.h>. Added TCP_KEEPCNT, TCP_KEEPIDLE, and TCP_KEEPINTVL to <netinet/tcp.h>. Added SO_TIMESTAMP to <sys/socket.h>. This architectural fix ensures the system headers provide the standard POSIX/Linux socket configuration interface required by WebRTC's physical_socket_server.cc. Resumed the Chromium ninja build.

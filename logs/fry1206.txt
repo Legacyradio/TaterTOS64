@@ -1,0 +1,19 @@
+2026-05-15T10:24:01-05:00
+
+Fix: made HLS variable dictionary insertion use an owned std::string key.
+
+Files:
+- chromium-tatertos/src/media/formats/hls/variable_dictionary.cc
+
+Why:
+- The build stopped because base::flat_map<std::string, ...>::try_emplace()
+  does not accept the std::string_view returned by VariableName::GetName().
+- Classification: compiler/library strictness, not a TaterTOS API/platform gap.
+- Insert now explicitly constructs the map's owned std::string key while
+  preserving the existing value ownership behavior.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/media/formats/formats/variable_dictionary.o

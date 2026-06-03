@@ -108,6 +108,7 @@ KERNEL_OBJS = \
   src/kernel/proc/process.o \
   src/kernel/proc/sched.o \
   src/kernel/proc/elf.o \
+  src/kernel/proc/linux_elf.o \
   src/kernel/proc/syscall.o \
   src/kernel/selftest.o \
   src/drivers/audio/hda.o
@@ -131,6 +132,7 @@ THTEST_OBJS = $(LIBC_OBJ) src/user/apps/thtest.o
 SMOKETEST_OBJS = $(LIBC_OBJ) src/user/apps/smoketest.o
 EVLOOP_OBJS = $(LIBC_OBJ) src/user/apps/evloop.o
 CHROME_PROBE_OBJS = $(LIBC_OBJ) src/user/apps/chrome_probe.o
+CLAUDE_OBJS = $(LIBC_OBJ) $(BEARSSL_OBJS) src/user/apps/claude.o
 
 # TaterSurf: BearSSL objects + browser app
 BEARSSL_SRC = src/user/apps/bearssl/src
@@ -204,10 +206,10 @@ USER_OBJS = \
   src/user/apps/evloop.o \
   src/user/apps/chrome_probe.o
 
-.PHONY: all clean kernel init shell gui sysinfo uptime ps fileman netmgr vmtest vmfault abitest thtest smoketest evloop chrome_probe hosttools test-elf-bounds test-storage-fuzz
+.PHONY: all clean kernel init shell gui sysinfo uptime ps fileman netmgr vmtest vmfault abitest thtest smoketest evloop chrome_probe claude hosttools test-elf-bounds test-storage-fuzz
 .SECONDARY:
 
-all: kernel init shell gui sysinfo uptime ps fileman netmgr vmtest vmfault abitest thtest smoketest evloop chrome_probe hosttools
+all: kernel init shell gui sysinfo uptime ps fileman netmgr vmtest vmfault abitest thtest smoketest evloop chrome_probe claude hosttools
 
 
 test-elf-bounds: out/elf_loader_bounds_test
@@ -326,8 +328,20 @@ chrome_probe: $(CHROME_PROBE_OBJS)
 	$(LD) -T user_linker.ld -o chrome_probe.elf $(CHROME_PROBE_OBJS)
 	./tools/frypack.py chrome_probe.elf chrome_probe.fry
 
+# claude.o: per-function/data sections so --gc-sections can drop unused BearSSL.
+src/user/apps/claude.o: src/user/apps/claude.c
+	$(CC) $(UFLAGS) -ffunction-sections -fdata-sections -c $< -o $@
+
+# claude links the full BearSSL object set but only uses the TLS-client path;
+# --gc-sections drops everything unreachable from main(), shrinking the .fry
+# from ~620KB to something in the size class of the other apps so the EFI
+# ramdisk scan can allocate + pack it.
+claude: $(CLAUDE_OBJS)
+	$(LD) -T user_linker.ld --gc-sections -o claude.elf $(CLAUDE_OBJS)
+	./tools/frypack.py claude.elf claude.fry
+
 # BearSSL library objects: compile with shim headers
-BEARSSL_CFLAGS = $(UFLAGS) -Isrc/user/apps/bearssl/inc -Isrc/user/apps/bearssl/src -Isrc/user/apps/mbedtls/shim -Wno-unused-parameter
+BEARSSL_CFLAGS = $(UFLAGS) -ffunction-sections -fdata-sections -Isrc/user/apps/bearssl/inc -Isrc/user/apps/bearssl/src -Isrc/user/apps/mbedtls/shim -Wno-unused-parameter
 
 $(BEARSSL_SRC)/aead/%.o: $(BEARSSL_SRC)/aead/%.c
 	$(CC) $(BEARSSL_CFLAGS) -c $< -o $@

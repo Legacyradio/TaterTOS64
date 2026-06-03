@@ -1,0 +1,48 @@
+Fry Log 928 — Chromium base:base: launch_posix, module_cache, stack_copier
+Timestamp: 2026-05-09 00:00:00 CDT
+
+Scope:
+  Fry 927 cleared NZERO and pathconf. Build hit three categories of
+  blockers: launch_posix (fork/execvp/setpgid/kFDDir), module_cache
+  (Dl_info/dladdr), and stack_copier_signal (linux/futex.h).
+
+Build result before fix:
+  launch_posix.o: kFDDir not declared, fork not declared, setpgid not declared,
+                  execvp not declared
+  module_cache_posix.o: Dl_info not declared, dladdr not declared
+  stack_copier_signal.o: linux/futex.h: No such file or directory
+
+Changes:
+  src/include/unistd.h
+    - Added fork(), execvp(), setpgid() declarations.
+
+  src/user/libc/posix.c
+    - Added fork(): wraps fry_fork().
+    - Added execvp(): passes through to fry_exec().
+    - Added setpgid(): returns 0 (no process groups on TaterTOS64).
+
+  base/process/launch_posix.cc
+    - Added BUILDFLAG(IS_TATERTOS) with kFDDir = "/fd".
+
+  src/include/dlfcn.h
+    - Added Dl_info struct and dladdr() declaration (GNU extension).
+
+  src/user/libc/posix.c
+    - Added dladdr(): returns 0 with all-NULL Dl_info (no dynamic linker).
+
+  base/BUILD.gn
+    - Moved stack_copier_signal.cc/.h out of is_posix && !is_apple into
+      a separate is_posix && !is_apple && !is_tatertos guard. This file
+      requires linux/futex.h which is Linux kernel API — rule 3 prohibits
+      Linux kernel code in the TaterTOS64 codebase.
+
+Why:
+  launch_posix.cc is the POSIX process launcher — it needs fork/exec.
+  module_cache_posix.cc uses dladdr for symbol resolution in stack traces.
+  stack_copier_signal.cc is a Linux-only async-signal-safe futex waiter.
+  TaterTOS64 must exclude it rather than stub futex constants.
+
+Verification:
+  Pending: ninja -C out/tatertos base:base. Note: excluding
+  stack_copier_signal.cc may cause link failures if other files depend on
+  StackCopierSignal. If so, those files also need exclusion or stubbing.

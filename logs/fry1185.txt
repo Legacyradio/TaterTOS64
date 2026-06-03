@@ -1,0 +1,19 @@
+2026-05-15T08:55:02-05:00
+
+Fix: Added metrics observer/stability fallback returns.
+
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Why: Clang's -Werror=return-type rejected CreateReasonToString() in
+metrics_service_observer.cc and HostedContentTypeToString() in
+stability_metrics_helper.cc because the compiler could not prove all enum
+values returned.
+
+Change: Added NOTREACHED() fallbacks. Unknown create reasons stringify as
+"Reason: Unknown"; unexpected hosted-content types use the existing
+"NoFrameOrExtension" bucket.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/components/metrics/metrics/metrics_service_observer.o obj/components/metrics/metrics/stability_metrics_helper.o
+
+Result: passed.

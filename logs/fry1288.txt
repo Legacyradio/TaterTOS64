@@ -1,0 +1,28 @@
+=====================================================================
+fry1288 — Linuxulator follow-up: drop forced LD_BIND_NOW
+=====================================================================
+DATE: 2026-06-02 20:23 CDT
+AUTHOR: Codex
+
+Goal:
+- Remove the temporary eager-binding override from process_launch_linux()
+  and re-test the real lazy-binding path now that XSAVE/XRSTOR state is
+  enabled across context switches.
+
+Why:
+- The previous state used LD_BIND_NOW=1 as a guard because ld.so's lazy
+  resolver was unstable without proper vector-state preservation.
+- That guard hides the remaining reality for the endgame: a real
+  Claude Code / Bun-style dynamic Linux runtime needs the lazy path to
+  work directly.
+
+Change:
+- src/kernel/proc/process.c
+  - removed the LD_BIND_NOW=1 env injection
+  - pass caller envp/envc straight through to elf_load_linux()
+
+Expected verification:
+- rebuild
+- boot the linuxulator probe suite
+- confirm LLIBC / LDYN / LTHR still run without the forced bind-now
+  fallback

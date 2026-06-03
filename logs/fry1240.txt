@@ -1,0 +1,33 @@
+Timestamp: 2026-05-16T17:24:31-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped at [32/23160], [36/23160], and [39/23160] in
+third_party/blink/common.
+
+Failures:
+- peerconnection/webrtc_ip_handling_policy.cc: ToString() reached the end under
+  -Werror=return-type.
+- permissions/permission_utils.cc: PermissionDescriptorInfoToPermissionType()
+  reached the end under -Werror=return-type. Two other non-void unreachable
+  helpers in the same object were also missing explicit fallback returns.
+- loader/throttling_url_loader.cc: GetStageNameForHistogram() reached the end
+  under -Werror=return-type.
+
+Classification:
+Compiler strictness. These are not TaterTOS API/platform gaps.
+
+Fix:
+- Added default WebRTC IP handling string fallback.
+- Added conservative permission fallbacks: DENIED for unknown status,
+  empty string for unknown permission string, and std::nullopt for unmapped
+  permission features/types.
+- Added an empty histogram stage fallback after the unreachable deferred-stage
+  switch.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C out/tatertos obj/third_party/blink/common/common/webrtc_ip_handling_policy.o obj/third_party/blink/common/common/permission_utils.o obj/third_party/blink/common/common/throttling_url_loader.o
+
+Result:
+webrtc_ip_handling_policy.o and permission_utils.o passed in the clustered
+targeted rebuild. throttling_url_loader.o initially caught a misplaced return
+inside void Resume(); after correction, its targeted rebuild passed.

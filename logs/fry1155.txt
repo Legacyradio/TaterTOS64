@@ -1,0 +1,21 @@
+2026-05-15T07:00:20-0500
+
+Fixed UI events and interaction sequence compiler strictness fallbacks.
+
+Blocker classification:
+- compiler strictness, not a TaterTOS API gap.
+
+Why:
+- ui/events/event.cc had enum-to-string helpers without compiler-visible
+  fallback returns.
+- ui/base/interaction/interaction_sequence.cc had missing fallback returns in
+  step handling/context helpers.
+
+Fix:
+- Added NOTREACHED fallback strings for scroll/momentum phase string helpers.
+- Added explicit fallback returns for null-element handling, named-element
+  lookup, and next-step context calculation.
+
+Verification:
+- Passed targeted rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/ui/events/events/event.o obj/ui/base/interaction/interaction/interaction_sequence.o

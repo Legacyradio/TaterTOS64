@@ -1,0 +1,31 @@
+Timestamp: 2026-05-15T03:10:12-05:00
+Stop: [1380/32963] CXX obj/net/dns/dns/dns_reloader.o
+Classification: TaterTOS API gap / Linux glibc resolver dependency.
+
+Problem:
+Chromium's net/dns/dns_reloader.cc enabled the res_ninit reload path whenever
+__RES was recent enough and the platform was not Apple, Android, or Fuchsia.
+TaterTOS provides res_ninit/res_nclose with caller-owned resolver state, but it
+does not expose glibc's process-global _res object. The Chromium Linux path
+therefore failed to compile on TaterTOS while trying to call res_ninit(&_res)
+and res_nclose(&_res).
+
+Fix:
+Excluded BUILDFLAG(IS_TATERTOS) from USE_RES_NINIT in
+third_party Chromium's net/dns/dns_reloader.cc. This keeps TaterTOS on the
+file's no-op DNS reloader path instead of pretending that the glibc _res
+mechanism exists.
+
+Why:
+TaterTOS libc already resolves names through its native network-interface DNS
+state in getaddrinfo/fry_dns_resolve, and its res_ninit API initializes explicit
+caller-provided resolver state. The missing _res global is a real platform API
+difference, not a compiler warning or a missing include.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+/home/legacyindieradio/chromium-tatertos/src/out/tatertos
+obj/net/dns/dns/dns_reloader.o
+
+Result:
+Passed; obj/net/dns/dns/dns_reloader.o rebuilt successfully.

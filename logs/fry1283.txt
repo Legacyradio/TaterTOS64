@@ -1,0 +1,37 @@
+fry1283 - 2026-06-02 14:45:28 CDT - linuxulator runtime probe verification and exit-path fix
+
+What changed:
+- Added packed-ramdisk seek support in src/kernel/fs/vfs.c and wired rd_ops.seek.
+- Changed syscall exit teardown in src/kernel/proc/syscall.c from one global safe stack to per-CPU safe stacks.
+- Disabled local interrupts before switching onto the exit teardown stack.
+- Stored the Linux ELF entry value before freeing the temporary ELF image in src/kernel/proc/linux_elf.c.
+
+Why:
+- The first QEMU run proved LHELLO launched, but LFILE failed lseek(fd), LMMAP failed file-backed mmap, and the kernel later page-faulted.
+- Root cause for lseek/mmap failure: ISO boot used the packed ramdisk backend, which had read/stat but no seek operation.
+- Root cause for the post-probe panic: short-lived Linux processes can exit close together; a single shared exit stack can corrupt the saved kernel context.
+- The Linux ELF loader also had a use-after-free style read of eh->e_entry after freeing the temporary ELF buffer.
+
+Verification:
+- make src/kernel/fs/vfs.o
+- make src/kernel/proc/syscall.o
+- make src/kernel/proc/linux_elf.o
+- make clean
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+- Bounded QEMU serial verification with the rebuilt ISO.
+
+Observed QEMU evidence:
+- LINUXTEST launched /apps/LHELLO.LXE, /apps/LFILE.LXE, and /apps/LMMAP.LXE.
+- selftest: 77 passed, 0 failed.
+- [OK] write + SysV stack + auxv reached; calling exit_group(argc)
+- [OK] access/openat/fstat/read/lseek/pread64/newfstatat/close passed
+- [OK] mmap(fd, offset=0) exposed LXTEST.TXT bytes
+- Native smoketest: 15 passed, 0 failed.
+- Native chrome_probe: 12 passed, 0 failed.
+- init completed smoketest and chrome_probe, then spawned /system/GUI.FRY.
+- No kernel panic was observed in the final bounded QEMU run.
+
+Notes:
+- The final serial capture still shows existing native user-mode RIP=0 faults after smoketest/chrome_probe exit; init handles them and continues.
+- Current linuxulator rung is runtime-green for static Linux ELF launch, SysV stack/auxv, VFS file syscalls, pread/lseek, and file-backed mmap(fd, offset=0).
+- Next Claude Code rung is dynamic Linux ELF/PT_INTERP support and staging /lib64/ld-linux-x86-64.so.2 plus glibc shared libraries.

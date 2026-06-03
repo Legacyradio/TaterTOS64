@@ -1,0 +1,22 @@
+2026-05-15T19:29:06-05:00
+
+Fix: addressed media parser and renderer compiler-strictness failures.
+
+Files:
+- chromium-tatertos/src/media/parsers/vp9_parser.cc
+- chromium-tatertos/src/media/base/media_serializers.h
+- chromium-tatertos/src/media/renderers/paint_canvas_video_renderer.cc
+
+Why:
+- The build stopped on -Werror=type-limits in vp9_parser.cc where an unsigned size_t variable was being checked if it was less than 0. This check is always false and was removed.
+- The build stopped on -Werror=return-type in media_serializers.h and paint_canvas_video_renderer.cc because non-void functions used exhaustive switch statements without fallback returns.
+- Classification: compiler strictness/library analysis, not a TaterTOS API/platform gap.
+- Added NOTREACHED() and fallback return values to address the -Werror=return-type issues to properly align with Chromium and TaterTOSv3 strictness rules.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/media/parsers/parsers/vp9_parser.o
+  obj/media/renderers/renderers/paint_canvas_video_renderer.o
+  obj/media/renderers/renderers/audio_renderer_impl.o

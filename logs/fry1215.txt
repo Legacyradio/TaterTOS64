@@ -1,0 +1,18 @@
+2026-05-15T22:59:24-05:00
+
+Fix: addressed cc frame metrics compiler-strictness failures.
+
+Files:
+- chromium-tatertos/src/cc/metrics/frame_info.cc
+- chromium-tatertos/src/cc/metrics/frame_sequence_tracker.cc
+
+Why:
+- The build stopped on -Werror=return-type in frame_info.cc and frame_sequence_tracker.cc where non-void functions used exhaustive switch statements without fallback returns. Added fallback returns to ensure all control paths are covered.
+- Classification: compiler strictness/library analysis, not a TaterTOS API/platform gap.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/cc/cc/frame_info.o
+  obj/cc/cc/frame_sequence_tracker.o

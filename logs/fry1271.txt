@@ -1,0 +1,13 @@
+Fry Log 1271 — v8/heap/factory-base.cc: remove unsigned < 0 check
+Timestamp: 2026-05-19 ~13:15 CDT
+
+Scope:
+  Build stopped at [24/19602] with -Werror=type-limits in
+  v8/src/heap/factory-base.cc:949.
+
+Fix:
+  Removed "length < 0" from the bounds check — length parameter is
+  unsigned (uint32_t/size_t) so the check is always false and dead.
+
+Why:
+  GCC 15 -Werror=type-limits flags unsigned < 0 as always-false.

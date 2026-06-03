@@ -1,0 +1,34 @@
+Timestamp: 2026-05-17T14:13:58-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped at [31/22690] in the Blink platform Mojom
+target set:
+obj/third_party/blink/public/mojom/mojom_platform/use_counter_feature_mojom_traits.o.
+
+Failure:
+third_party/blink/common/use_counter/use_counter_feature_mojom_traits.cc had
+IsReservedFeature() reach the end of a non-void bool function, tripping
+-Werror=return-type.
+
+Exact compiler error:
+../../third_party/blink/common/use_counter/use_counter_feature_mojom_traits.cc:41:1: error: control reaches end of non-void function [-Werror=return-type]
+
+Classification:
+Compiler strictness in Chromium/Blink use-counter Mojom trait code. This is
+not a TaterTOS API/platform gap.
+
+Fix:
+Added a final fallback return false after the exhaustive UseCounterFeatureType
+switch.
+
+Why:
+The switch covers known feature types, but GCC still requires a reachable
+fallback return when warnings are promoted to errors. Unknown feature types
+should not be treated as reserved.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C out/tatertos obj/third_party/blink/public/mojom/mojom_platform/use_counter_feature_mojom_traits.o
+
+Result:
+The targeted Blink use_counter_feature Mojom traits object rebuilt
+successfully.

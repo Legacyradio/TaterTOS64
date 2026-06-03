@@ -1,0 +1,26 @@
+Timestamp: 2026-05-16T17:00:08-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped at [21/23473] on
+obj/ui/base/ime/mojom/shared_mojom_traits/ime_types_mojom_traits.o.
+
+Failure:
+ui/base/ime/mojom/ime_types_mojom_traits.cc had enum conversion helpers that
+reached the end of non-void functions under -Werror=return-type:
+- TextInputAction ToMojom()
+- TextInputAction FromMojom()
+- TextInputMode ToMojom()
+- TextInputMode FromMojom()
+
+Classification:
+Compiler strictness. This is not a TaterTOS API/platform gap.
+
+Fix:
+Added NOTREACHED() fallback returns to the affected enum conversion helpers,
+using the default input action/mode values as conservative fallbacks.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C out/tatertos obj/ui/base/ime/mojom/shared_mojom_traits/ime_types_mojom_traits.o
+
+Result:
+Targeted object rebuild passed.

@@ -1,0 +1,28 @@
+Timestamp: 2026-05-17T14:52:00-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped due to multiple C++20 and compiler strictness errors in Blink/WTF.
+
+Failure:
+1. ascii_lower_hash_reader.h: "suggest parentheses around comparison in operand of '&'" in vector operations.
+2. atomic_string_table.cc: "control reaches end of non-void function" in ComputeHashAndMaskTop8Bits and CreateStringImpl.
+
+Exact compiler errors:
+../../third_party/blink/renderer/platform/wtf/text/ascii_lower_hash_reader.h:32:20: error: suggest parentheses around comparison in operand of '&' [-Werror=parentheses]
+../../third_party/blink/renderer/platform/wtf/text/atomic_string_table.cc:130:3: error: control reaches end of non-void function [-Werror=return-type]
+
+Classification:
+Compiler strictness and C++20 compatibility issues in Blink/WTF. Not a TaterTOS API/platform gap.
+
+Fix:
+1. Added explicit parentheses around vector comparisons in ascii_lower_hash_reader.h.
+2. Added fallback returns (NOTREACHED(); return ...) in atomic_string_table.cc to satisfy GCC's return-type analysis.
+
+Why:
+GCC is stricter about operator precedence warnings and requires explicit returns in all paths of non-void functions, even if they end in NOTREACHED() macros (unless marked noreturn).
+
+Verification:
+Build restarted and progressing.
+
+Result:
+Build is now continuing with PID 1075120.

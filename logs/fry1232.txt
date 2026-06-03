@@ -1,0 +1,29 @@
+Timestamp: 2026-05-16T16:57:26-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped at [2/23484] and [11/23484] on:
+- obj/ui/accessibility/ax_base/ax_tree_id.o
+- obj/ui/accessibility/ax_base/ax_node_data.o
+
+Failure:
+ui/accessibility/ax_tree_id.cc reached the end of AXTreeID::ToString() under
+-Werror=return-type.
+
+ui/accessibility/ax_node_data.cc reached the end of
+IsNodeIdIntListAttribute() under -Werror=return-type, and copied structured
+bindings in two range-for loops under -Werror=range-loop-construct.
+
+Classification:
+Compiler strictness. These are not TaterTOS API/platform gaps.
+
+Fix:
+- Added NOTREACHED() plus return "" fallback to AXTreeID::ToString().
+- Added NOTREACHED() plus return false fallback to IsNodeIdIntListAttribute().
+- Changed the int_attributes and float_attributes structured-binding loops to
+  use const references.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C out/tatertos obj/ui/accessibility/ax_base/ax_tree_id.o obj/ui/accessibility/ax_base/ax_node_data.o
+
+Result:
+Targeted object rebuild passed.

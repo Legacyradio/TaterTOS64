@@ -1,0 +1,23 @@
+2026-05-14T12:31:26-05:00
+
+Step: Chromium TaterTOS64v3 net/dns/public blocker cleanup after monitored build 20260514_122954.
+
+Local Ninja failure positions:
+- [1/34061] obj/net/dns/public/public/secure_dns_policy.o
+- [6/34061] obj/net/dns/public/public/resolv_reader.o
+
+Logical phase:
+- Chromium net/dns public resolver policy and resolver-state reader.
+
+Exact blockers:
+- secure_dns_policy.cc had an exhaustive enum switch that GCC still treated as a possible non-void fallthrough under -Werror=return-type.
+- resolv_reader.cc entered Chromium's glibc/Linux resolver-state layout because BUILDFLAG(IS_LINUX) is true, but TaterTOS deliberately exposes a POSIX nsaddr_list resolver state instead of glibc's _u._ext.nsaddrs layout.
+
+Fix:
+- Added an explicit NOTREACHED() fallback return in SecureDnsPolicyToDebugString().
+- Excluded __TATERTOS__ from the Linux/glibc resolver-state branch so TaterTOS uses the generic POSIX nsaddr_list reader path.
+
+Verification:
+- Ran targeted Ninja rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/net/dns/public/public/secure_dns_policy.o obj/net/dns/public/public/resolv_reader.o
+- Result: passed [2/2].

@@ -1,0 +1,32 @@
+Timestamp: 2026-05-16T17:27:15-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped at [2/23119], [3/23119], [4/23119], and
+[7/23119] in Blink security/service-worker code.
+
+Failures:
+- address_space_feature.cc: AddressSpaceFeature() reached the end under
+  -Werror=return-type.
+- service_worker_router_rule.cc: ServiceWorkerRouterSource::operator==()
+  reached the end under -Werror=return-type.
+- safe_url_pattern_mojom_traits.cc: PatternTemplateDataView GetTag() reached
+  the end under -Werror=return-type; the same object also had a nearby
+  Modifier::FromMojom() NOTREACHED() path without explicit return.
+- service_worker_router_rule_mojom_traits.cc: ServiceWorkerRouterSourceDataView
+  GetTag() reached the end under -Werror=return-type.
+
+Classification:
+Compiler strictness. These are not TaterTOS API/platform gaps.
+
+Fix:
+Added explicit conservative fallbacks:
+- std::nullopt for unknown address-space feature fetch type
+- false for unexpected service-worker router source equality
+- kNone for unexpected URL-pattern modifier
+- default fixed/network union tags after unreachable serialization states
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C out/tatertos obj/third_party/blink/common/common/address_space_feature.o obj/third_party/blink/common/common/service_worker_router_rule.o obj/third_party/blink/common/common/safe_url_pattern_mojom_traits.o obj/third_party/blink/common/common/service_worker_router_rule_mojom_traits.o
+
+Result:
+Targeted object rebuild passed.

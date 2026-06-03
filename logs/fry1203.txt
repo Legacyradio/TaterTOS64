@@ -1,0 +1,24 @@
+2026-05-15T10:11:03-05:00
+
+Fix: added explicit fallback returns for media decoder enum conversion helpers
+that Clang rejected under -Werror=return-type.
+
+Files:
+- chromium-tatertos/src/media/filters/symphonia_audio_decoder.cc
+- chromium-tatertos/src/media/filters/dav1d_video_decoder.cc
+
+Why:
+- The build stopped on missing returns from Symphonia init/decode status mapping
+  and dav1d image-format mapping.
+- Classification: compiler strictness, not a TaterTOS API/platform gap.
+- Symphonia's impossible kMaxValue paths now fall back to kFailed after
+  NOTREACHED().
+- dav1d's impossible pixel-layout path now records NOTREACHED() and returns
+  PIXEL_FORMAT_UNKNOWN.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/media/filters/filters/symphonia_audio_decoder.o
+  obj/media/filters/filters/dav1d_video_decoder.o

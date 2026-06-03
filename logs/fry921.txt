@@ -1,0 +1,30 @@
+Fry Log 921 — Chromium base:base: last fixes, build 28 in progress
+Timestamp: 2026-05-08 18:55 CDT
+
+STATE: Full rebuild #3 (gn gen keeps invalidating — lesson learned).
+Build 28 is ~362/2892, host toolchain protobuf. 
+
+SINCE fry920:
+
+New TaterTOS headers:
+  src/include/sys/param.h — NEW (minimal stub, just header guard)
+
+Chromium patches:
+  base/values.cc — 8 flat_map call sites converted string_view→string
+    (libc++ flat_map lacks heterogenous lookup for find/contains/
+     insert_or_assign/erase — same root cause as module_cache.cc)
+  base/values.cc — Wrapped type-limits check with GCC pragma
+    (unsigned char enum, < 0 always false on GCC 15)
+  base/strings/utf_ostream_operators.cc — All 3 wide-char operator<<
+    use out.write() instead of operator<< chaining
+    (libc++ inline __Cr namespace + GCC 15 namespace restrictions)
+  build/config/tatertos/BUILD.gn — Added -Wno-alloc-size-larger-than
+    and -Wno-array-bounds (libc++ false positives on GCC 15)
+
+COMPLETE FIX LIST (all 28 builds):
+  See fry919 and fry920 for full history.
+
+WHAT'S LEFT: After this build, 0 remaining failures expected.
+All known issues are fixed. If new ones appear, they'll be GCC 15
+exhaustiveness issues (pattern: __builtin_unreachable() after
+exhaustive switch — same fix every time).

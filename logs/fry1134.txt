@@ -1,0 +1,7 @@
+Timestamp: 2026-05-15T04:28:41-05:00
+Fix: Enabled Chromium IPC long/unsigned long ParamTraits for TaterTOS64.
+Stop: [18/29935] obj/ipc/ipc/param_traits_utils.o
+Classification: TaterTOS API/port compatibility gap.
+Why: TaterTOS64 uses the normal LP64 spelling where int64_t and uint64_t are long and unsigned long. Chromium already carries ParamTraits<long> and ParamTraits<unsigned long> for Linux/Fuchsia/64-bit Android for this exact ABI shape, but the TaterTOS build flag was not included in that gate, so IPC serialization of base::Time, TimeDelta, TimeTicks, UnguessableToken, and related values fell into the unspecialized ParamTraits static assertion.
+Change: Added BUILDFLAG(IS_TATERTOS) to ipc/param_traits_utils.h next to the existing LP64 platforms, preserving the existing IPC type checks for other platforms.
+Verification: /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/ipc/ipc/param_traits_utils.o

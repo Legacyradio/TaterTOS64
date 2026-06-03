@@ -1,0 +1,24 @@
+2026-05-15T07:06:39-0500
+
+Fixed Khronos EGL TaterTOS platform typedef gap and GPU buffer fallback.
+
+Blocker classification:
+- third_party/khronos/EGL/eglplatform.h: TaterTOS platform integration gap,
+  not compiler strictness.
+- ui/gfx/gpu_memory_buffer_handle.h: compiler strictness, not a TaterTOS API
+  gap.
+
+Why:
+- The Khronos EGL header copy had no __tatertos__/__TATERTOS__ branch, so GPU
+  command buffer code including third_party/khronos/EGL/egl.h had no native EGL
+  display/pixmap/window typedefs.
+- GpuMemoryBufferHandle::region() had a NOTREACHED-only default path that GCC
+  still treats as a missing return.
+
+Fix:
+- Added the same TaterTOS EGL native type branch used in the ANGLE EGL header.
+- Added a fallback return of region_ after NOTREACHED in region().
+
+Verification:
+- Passed targeted rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/gpu/command_buffer/client/internal/internal/mappable_buffer_shared_memory.o

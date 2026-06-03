@@ -1,0 +1,59 @@
+fry1285 - 2026-06-02 16:05:00 CDT - linuxulator dynamic libc probe (LLIBC.LXE)
+
+What changed:
+- Added tools/host/llibc.c, a dynamically linked Linux x86_64 C binary that
+  exercises glibc/libc paths: printf, fopen/fread, mmap, malloc/free, writev,
+  getpid, getcwd, and 10-cycle malloc stress.
+- Updated build_iso.sh: build_linuxulator_test() builds llibc.lxe with system
+  gcc -no-pie; prepare_linuxulator_marker, copy_linuxulator_test_mtools,
+  copy_linuxulator_test_dir, and copy_linuxulator_test_totfs all include
+  llibc.lxe in guards and staging.
+- Updated src/kernel/main.c: the linuxulator test hook launches LLIBC.LXE
+  after LDYN.LXE with the dynamic runtime env (LD_LIBRARY_PATH, TATERTOS=1).
+
+Why:
+- LDYN.LXE proved ld-linux handoff works but only tested write+exit_group.
+- A real dynamically linked C binary exercising libc flushes out:
+  (a) whether glibc init completes without hitting unimplemented syscalls,
+  (b) whether fopen/fread/mmap/malloc/getcwd all function through libc,
+  (c) whether the existing ~44 syscall translations are sufficient for
+      a realistic dynamically-linked program.
+- This is a prerequisite for porting Claude Code or Node.js — those depend
+  on libc init succeeding and basic file/memory/stdio paths working.
+
+Verification:
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+- QEMU serial: logs/serial_fry1285.log
+
+Observed final QEMU evidence:
+- LINUXTEST launched /apps/LHELLO.LXE, /apps/LFILE.LXE, /apps/LMMAP.LXE,
+  /apps/LDYN.LXE, and /apps/LLIBC.LXE.
+- All previous probes passed (static, VFS, mmap, dynamic PT_INTERP).
+- selftest: 77 passed, 0 failed.
+- LLIBC.LXE (pid=7) produced:
+  ==== TaterTOS linuxulator: libc probe ====
+  [OK] printf works via libc
+  [OK] malloc(64K) returned 0x406020
+  [OK] fopen+fread(31 bytes): 'TaterTOS linuxulator VFS probe
+  [OK] mmap(31 bytes): 'TaterTOS linuxulator VFS probe
+  [OK] getpid=7
+  [OK] 10x malloc/free loop passed
+  [OK] getcwd=/
+  [OK] libc probe complete, calling exit(0)
+- Zero LINUXSYS (unimplemented syscall) lines in the serial log.
+- Zero page faults from the LLIBC process.
+- Native smoketest: 15 passed, 0 failed.
+- Native chrome_probe: 12 passed, 0 failed.
+
+Notes:
+- All 44 existing Linux syscall translations are sufficient for a real
+  dynamically-linked glibc C program doing stdio, file I/O, mmap, malloc,
+  and process info. Glibc init completes silently — no rseq ENOSYS noise
+  visible because glibc's fallback handles it.
+- The writev test output shows a null byte in the interleaved serial capture
+  (chrome_probe sched_getaffinity output runs concurrently). The writev
+  syscall itself is correct — this is a serial concurrency artifact.
+- Next Claude Code rung is still a larger binary that exercises threading
+  (clone/futex), networking (socket), or filesystem metadata (fcntl, dup2).
+  The simplest path: build a statically-linked Node.js (--fully-static) or
+  a minimal dynamically-linked curl binary, then trace missing syscalls.

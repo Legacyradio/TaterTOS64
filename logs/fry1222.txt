@@ -1,0 +1,22 @@
+2026-05-16T12:07:52-05:00
+
+Fix: addressed additional attribution reporting compiler-strictness failures.
+
+Files:
+- chromium-tatertos/src/components/attribution_reporting/attribution_scopes_set.cc
+- chromium-tatertos/src/components/attribution_reporting/filters.cc
+
+Why:
+- The build stopped on -Werror=return-type in lambda functions within attribution_scopes_set.cc and filters.cc where exhaustive switch statements lacked fallback returns. Added appropriate fallback returns.
+- Fixed an incorrect enum member reference kFiltersInvalid (changed to kFiltersValueInvalid) in filters.cc.
+- Cleaned up file corruption (stray characters at the end of files) caused by previous failed edit attempts.
+- Classification: compiler strictness/library analysis, not a TaterTOS API/platform gap.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/components/attribution_reporting/attribution_reporting/attribution_scopes_set.o
+  obj/components/attribution_reporting/attribution_reporting/filters.o
+  obj/components/attribution_reporting/attribution_reporting/aggregatable_trigger_config.o
+  obj/components/attribution_reporting/attribution_reporting/aggregatable_utils.o

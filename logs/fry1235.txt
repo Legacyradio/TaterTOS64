@@ -1,0 +1,25 @@
+Timestamp: 2026-05-16T17:06:40-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped at [75/23419] on
+obj/device/bluetooth/public/mojom/mojom/gatt_service_mojom_traits.o.
+
+Failure:
+device/bluetooth/public/mojom/gatt_service_mojom_traits.cc had two enum
+conversion helpers that reached the end of non-void functions under
+-Werror=return-type:
+- BluetoothGattService::GattErrorCode -> mojom::GattServiceErrorCode
+- mojom::GattServiceErrorCode -> BluetoothGattService::GattErrorCode
+
+Classification:
+Compiler strictness. This is not a TaterTOS API/platform gap.
+
+Fix:
+Added NOTREACHED() fallback returns to both conversions, mapping unexpected
+values to the existing kUnknown error code on the destination side.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C out/tatertos obj/device/bluetooth/public/mojom/mojom/gatt_service_mojom_traits.o
+
+Result:
+Targeted object rebuild passed.

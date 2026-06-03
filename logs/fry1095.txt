@@ -1,0 +1,20 @@
+2026-05-14T12:43:10-05:00
+
+Step: Chromium TaterTOS64v3 ipcz checked_cast blocker cleanup after monitored build 20260514_124122.
+
+Local Ninja failure position:
+- [24/33812] obj/third_party/ipcz/src/impl_chromium/block_allocator.o
+
+Logical phase:
+- third_party/ipcz block allocation safe-math helpers.
+
+Exact blocker:
+- third_party/ipcz/src/util/safe_math.h compared an unsigned source value against a signed destination max in checked_cast<int16_t>(size_t), which GCC rejects under -Werror=sign-compare.
+
+Fix:
+- Added a signed-destination/unsigned-source branch in checked_cast() that casts the destination max to the source type before comparison.
+
+Verification:
+- Ran targeted Ninja rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/third_party/ipcz/src/impl_chromium/block_allocator.o
+- Result: passed [1/1].

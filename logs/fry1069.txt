@@ -1,0 +1,23 @@
+2026-05-14 02:28:30 CDT
+
+Fixed the next Chromium net/http response-property compile blockers.
+
+What changed:
+- net/http/http_response_info.cc:
+  - Added base/notreached.h.
+  - Added an explicit GCC-only fallback after the exhaustive
+    HttpConnectionInfo switch in HttpResponseInfo::DidUseQuic().
+- net/http/http_server_properties_manager.cc:
+  - Added GCC-only returns for the PRIVACY_MODE_DISABLED NOTREACHED path and
+    the final exhaustive PrivacyMode switch fallback.
+
+Why:
+The TaterTOS GCC target build requires concrete return paths for these
+unreachable enum cases. The changes keep normal Chromium behavior intact and
+avoid broad warning suppression.
+
+Verification:
+- ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/net/net/http_response_info.o obj/net/net/http_server_properties_manager.o passed.
+
+Next:
+- Resume the monitored full chrome build from this point.

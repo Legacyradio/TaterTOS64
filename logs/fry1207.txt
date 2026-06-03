@@ -1,0 +1,25 @@
+2026-05-15T14:06:23-05:00
+
+Fix: addressed media muxer compiler-strictness failures.
+
+Files:
+- chromium-tatertos/src/media/muxers/mp4_movie_box_writer.cc
+- chromium-tatertos/src/media/muxers/webm_muxer.cc
+
+Why:
+- The build stopped on -Werror=stringop-overflow in MP4 compressor-name field
+  serialization and -Werror=return-type in WebM projection rotation mapping.
+- Classification: compiler strictness/library analysis, not a TaterTOS
+  API/platform gap.
+- The MP4 writer now constructs the fixed 31-byte compressor-name payload
+  directly before writing it, preserving the existing 30-byte Pascal string
+  length limit plus trailing padding.
+- The WebM rotation lambda now records NOTREACHED() and returns 0 for impossible
+  rotation values.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/media/muxers/muxers/mp4_movie_box_writer.o
+  obj/media/muxers/muxers/webm_muxer.o

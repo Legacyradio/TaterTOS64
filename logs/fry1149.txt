@@ -1,0 +1,21 @@
+2026-05-15T06:32:31-0500
+
+Fixed base ScopedObservation alias strictness failure.
+
+Blocker classification:
+- compiler strictness, not a TaterTOS API gap.
+
+Why:
+- base/scoped_observation.h defined a nested alias named
+  LeakedDanglingUntriaged and used the same unqualified identifier as the
+  source_ptr_trait template argument. GCC diagnosed this as changing the
+  meaning of the global raw_ptr LeakedDanglingUntriaged trait under -Werror.
+
+Fix:
+- Kept the public nested alias name intact for existing call sites.
+- Qualified the raw_ptr trait constant as ::LeakedDanglingUntriaged inside the
+  alias definition.
+
+Verification:
+- Passed targeted rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/ui/color/color/color_provider_source.o obj/ui/color/color/color_provider_source_observer.o

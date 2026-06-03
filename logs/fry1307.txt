@@ -1,0 +1,83 @@
+=====================================================================
+fry1307 — run REAL unmodified Linux coreutils (env, cat, ls)
+=====================================================================
+DATE: 2026-06-02 ~23:40 CDT
+AUTHOR: Claude. Goal: prove the linuxulator runs REAL, unmodified Linux
+binaries (not just our hand-written probes), and harvest the next file-
+syscall gaps toward the real claude binary.
+
+Why coreutils now: the real claude binary is 243 MB (won't fit the 16 MB
+fs.img yet) but its NEEDED libs (librt/libc/ld-linux/libpthread/libdl/libm)
+are already staged. Before bumping the image for claude, validate the
+staging+launch path with small REAL binaries.
+  - /usr/bin/env, /bin/cat, /bin/head: NEEDED = libc.so.6 only (staged).
+  - /bin/ls: also needs libcap.so.2 (now staged); ls exercises getdents64
+    (Linux nr 217) which the Linux dispatch does NOT yet implement -> this
+    boot harvests that gap via the "LINUXSYS: unimplemented nr=" beacon.
+
+Plan:
+  - build_iso.sh: mcopy /usr/bin/env -> /apps/RENV, /bin/cat -> /apps/RCAT,
+    /bin/ls -> /apps/RLS, /usr/lib/libcap.so.2 -> /usr/lib/.
+  - main.c: launch  env (no args),  cat /LXTEST.TXT,  ls /apps.
+  - Build, boot, grep -a for their output + the unimplemented-nr beacon.
+  - Next: implement getdents64 (+ statx if needed), then signals/sockets.
+(results appended after boot)
+
+---------------------------------------------------------------------
+RESULTS / FINDINGS
+---------------------------------------------------------------------
+- EFI ramdisk gotcha: the root FS is a ramdisk the EFI loader builds by
+  SCANNING the ISO tree, filtered by ramdisk_should_load_name() in
+  src/boot/efi_loader.c — only .FRY/.TOT/.TXT/.ICON/.ucode/.ttf/.LXE/
+  .so/.so.{0,1,2,6}/.RUN are included. No-extension files (RENV/RCAT/RLS)
+  were silently dropped. Fix: name staged real binaries *.LXE. (fs.img is
+  NOT the runtime root — the ISO-dir tree is.)
+- With .LXE names the coreutils load-attempt fires, but elf_load_linux
+  returns -ENOEXEC (rc=-8): /usr/bin/env, /bin/cat, /bin/ls are PIE
+  (ET_DYN); our loader only supports ET_EXEC main binaries (+PT_INTERP).
+- KEY: the REAL claude binary is **ET_EXEC** (not PIE), 243 MB, interp
+  /lib64/ld-linux, NEEDED libs all already staged. So PIE is NOT on
+  claude's critical path; the coreutils (PIE) were a side path.
+- DECISION: don't chase PIE for coreutils right now. claude's real
+  blockers are: (a) 243 MB won't fit the current ramdisk; (b) signals,
+  sockets+TLS, JIT pages, syscall tail. Next: assess staging a big binary
+  into the ramdisk, then build those features.
+- Coreutils launch hooks + the LXAPPS /apps-listing diagnostic are left in
+  main.c for now (harmless; gated on the LXE files existing); remove later.
+
+---------------------------------------------------------------------
+ARCHITECTURAL BLOCKER for the real claude binary (243 MB)
+---------------------------------------------------------------------
+Staged the real claude binary as /apps/RCLAUDE.LXE (ET_EXEC, 243 MB) and
+launched `claude --version` at boot. RESULT: it never launched — vfs_open
+fails because RCLAUDE.LXE is NOT in the runtime /apps (only the small
+RENV/RCAT/RLS coreutils are).
+
+Root cause = boot/memory architecture, NOT a syscall gap:
+- TaterTOS loads its ENTIRE root FS into one in-RAM ramdisk the EFI loader
+  builds by reading each ISO file via read_file() ->
+  AllocatePages(AllocateMaxAddress, max=TATER_BOOT_IDENTITY_MAX_ADDR).
+- TATER_BOOT_IDENTITY_LIMIT = 0x100000000 = 4 GB. So every ramdisk file
+  must be allocated CONTIGUOUSLY below 4 GB.
+- A 243 MB contiguous allocation below 4 GB fails (RAM below 4 GB ~3 GB due
+  to the PCI hole, fragmented by OVMF + kernel + other ramdisk files), so
+  read_file errors and the scanner silently skips the file.
+- Small files (coreutils ~50-160 KB) fit; claude (243 MB) cannot.
+
+Implication: large real binaries cannot be staged in the boot ramdisk.
+The runtime/syscall layer (clone3/futex/epoll/dynamic-linking) is fine;
+the STORAGE path is the wall.
+
+PATH TO RUN claude (decision point):
+  Re-route large binaries to DISK-BACKED storage so the ELF loader reads
+  segments ON DEMAND via vfs_read (into high user VA, unconstrained by the
+  4 GB boot limit) instead of staging the whole file in the ramdisk:
+    - Bump the NVMe ToTFS image (currently 100 MB) to ~400 MB.
+    - Put claude on the NVMe ToTFS (not the ramdisk).
+    - Attach the NVMe drive in QEMU (-drive ... -device nvme ...).
+    - Ensure the kernel mounts/reads /apps (or a path) from the NVMe FS.
+    - Launch claude from there; loader reads its PT_LOAD from disk.
+  Bounded (NVMe + ToTFS + VFS already exist) but a distinct chunk of work.
+
+Cleanup pending: remove the LXAPPS /apps-listing diagnostic from main.c;
+coreutils + claude hooks are harmless/opt-in (STAGE_CLAUDE gates the 243MB).

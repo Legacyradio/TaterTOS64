@@ -1,0 +1,32 @@
+timestamp: 2026-05-14T22:53:31-05:00
+stop: chrome_build_20260514_224850.log at [281/30914]
+failed_objects:
+  obj/third_party/webrtc/video/adaptation/video_adaptation/pixel_limit_resource.o
+  obj/third_party/webrtc/video/config/streams_config/encoder_stream_factory.o
+  obj/third_party/webrtc/pc/rtp_transmission_manager/rtp_transmission_manager.o
+classification: compiler strictness, not a TaterTOS API gap
+
+problem:
+  GCC with -Werror rejected:
+  - two WebRTC switch helpers that covered known enum values but lacked explicit
+    fallback returns;
+  - a redundant std::move from a const reference in RtpTransmissionManager.
+
+fix:
+  Added RTC_DCHECK_NOTREACHED() plus conservative fallback return values in
+  pixel_limit_resource.cc and encoder_stream_factory.cc. Removed the redundant
+  std::move so the const vector parameter is copied normally.
+
+why:
+  The valid behavior is unchanged. These changes only make impossible paths and
+  const-copy semantics explicit for TaterTOS64's strict GCC build; no warning
+  suppression or platform shortcut was added.
+
+verification:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/third_party/webrtc/video/adaptation/video_adaptation/pixel_limit_resource.o
+  obj/third_party/webrtc/video/config/streams_config/encoder_stream_factory.o
+  obj/third_party/webrtc/pc/rtp_transmission_manager/rtp_transmission_manager.o
+
+  Result: all three targeted objects rebuilt successfully.

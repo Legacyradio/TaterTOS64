@@ -1,0 +1,506 @@
+Fry Log 1276 — Native in-OS AI agent client (`claude`/`agy`): Phase 0 kickoff
+Timestamp: 2026-06-01 ~18:05 CDT
+
+GOAL (Zack):
+  Open the shell in TaterTOS64, type `claude` (later `agy` for anti-gravity /
+  OpenAI), and have the AI agent actually run inside the OS. Instances kept
+  separate from the host Claude Code session for now. `claude` is first.
+
+PLANV3 DEVIATION NOTE (rule 1 — flagging, not silently adding):
+  A native AI agent client is net-new scope not present in planv3.txt. Logged
+  here and authorized by Zack 2026-06-01. The earlier-discussed boot splash +
+  terminal QoL work is DROPPED per Zack ("I don't care about anything else in
+  the terminal"). This effort supersedes it.
+
+APPROACH DECISION:
+  Two readings of "run Claude inside TaterTOS64":
+    (1) Port the real Claude Code (Node.js) / Codex (Rust) binaries — requires
+        porting Node/V8 or a full Rust std runtime + dep trees to a freestanding
+        hobby OS. Rejected as infeasible / wrong use of effort.
+    (2) Native TaterTOS64 C agent client (`claude`.fry) that talks DIRECTLY to
+        the Anthropic Messages API over the OS's own socket+TLS stack, streams
+        replies into the shell, and (Phase 3) gains tool-use over TaterTOS
+        syscalls. CHOSEN.
+
+KEY FINDING — most of the client already exists:
+  src/user/apps/ts_http.h — production HTTP/1.1 + HTTPS client (header-only):
+    - HTTPS via BearSSL TLS 1.2, full X.509 validation, 146 Mozilla root CAs
+      (TS_TRUST_ANCHORS in ts_trust_anchors.h) — should cover api.anthropic.com.
+    - Hardened ECDHE+AEAD suites, SNI via br_ssl_client_reset(host).
+    - DNS via fry_dns_resolve; GET and POST; chunked + Content-Length; redirects;
+      non-blocking poll loop (ts_http_init / ts_http_get|post / ts_http_poll).
+  Integration surface:
+    - Makefile: app builds as $(LIBC_OBJ) + app.o -> app.fry; an HTTPS app must
+      also link the BearSSL object set (BEARSSL_OBJS), like tatersurf does.
+    - build_iso.sh: apps copied via `mcopy ... ::/apps/NAME.FRY`.
+    - shell.c: non-builtin command -> fry_spawn(argv[0]); bare name resolves to
+      /apps/NAME.FRY. So `claude` -> /apps/CLAUDE.FRY, same as `sysinfo`.
+
+GAP TO CLOSE:
+  ts_http__send_request hardcodes browser headers + Content-Type
+  application/x-www-form-urlencoded. The Anthropic API needs:
+    x-api-key: <key>; anthropic-version: 2023-06-01; Content-Type: application/json
+  Plan: ADD optional extra_headers + content_type override to struct ts_http
+  (additive; TaterSurf unaffected when fields are NULL/empty). No mutation of the
+  existing browser request path.
+
+PHASES:
+  Phase 0  Prove the pipe: minimal probe .fry GETs https://api.anthropic.com/ and
+           prints HTTP status. 401/405 without a key = SUCCESS (DNS+TLS+HTTP work).
+  Phase 1  `claude` REPL: read API key from TotFS, POST /v1/messages
+           (non-streaming first), parse content[].text, print. Multi-turn loop.
+  Phase 2  `agy`: same client against OpenAI API (auth + JSON shape differ).
+  Phase 3  Tool-use agent loop: read_file/write_file/run_command/list_dir over
+           TaterTOS syscalls so the model can act in the OS.
+
+VALIDATION: QEMU + live API egress authorized by Zack (planv3 rule 11). API key
+  to be provided for Phase 1 and stored in TotFS.
+
+THIS ENTRY: pivot recorded, phases + decisions locked, ts_http reference mapped.
+  Next: baseline build sanity check, then Phase 0 probe.
+
+----------------------------------------------------------------------
+Phase 0 — build + first boot attempt (2026-06-01 ~18:20 CDT)
+----------------------------------------------------------------------
+DONE:
+  - Resolved broken working tree: stashed uncommitted Chromium/Rust-PAL WIP
+    (git stash@{0}) which had non-linking libc additions (dup basename/dirname/
+    dlopen + undefined fry_fork/fry_exec). Built on clean committed baseline.
+  - Wrote src/user/apps/claude.c — Phase 0 HTTPS connectivity probe using
+    ts_http (GET https://api.anthropic.com/v1/messages, expect 401/405).
+    Include env mirrors evloop.c; shims: #define time_func time, SO_RCVTIMEO 20.
+  - Makefile: CLAUDE_OBJS = $(LIBC_OBJ) $(BEARSSL_OBJS) claude.o; `claude` target,
+    added to .PHONY + all. build_iso.sh: build `claude` + mcopy CLAUDE.FRY -> /apps.
+  - init.c: added boot-time auto-run of /apps/CLAUDE.FRY (mirrors chrome_probe),
+    output to serial. (Temporary — remove once claude runs from shell.)
+  - Clean ISO built OK (155MB), CLAUDE.FRY (633848 B) present in image /apps.
+  - Booted QEMU headless w/ -nic user,model=e1000, serial capture.
+
+BLOCKERS FOUND (serial /tmp/tatertos_serial_claude.log):
+  B1: claude probe failed to LAUNCH — elf_rc=-101 (ELF_LOAD_ERR_OPEN) on all
+      paths. vfs_open() NULL => CLAUDE.FRY not present in the boot ramdisk.
+      NOT the 48-file cap (only ~28 .fry/.tot on ESP). claude.fry is 633KB,
+      4-5x larger than every other app (~136KB). Hypothesis: EFI ramdisk scan
+      (ramdisk_scan_try_load, efi_loader.c:698) reads each file into a buffer
+      below 4GB; the large file's read_file()/alloc fails and the file is
+      silently skipped (early return l.707-708). Needs loader instrumentation
+      to confirm + a fix (bump alloc budget / place ramdisk differently /
+      shrink claude via -Os + --gc-sections or split BearSSL).
+  B2: DHCP failed (NET: DHCP failed; init: DHCP failed rc=-1). No IP =>
+      probe could not reach network regardless. SLIRP DHCP not completing with
+      this e1000 path. Separate from B1; must be solved for any live API call.
+
+NEXT: confirm B1 cause (serial trace in loader), then B1 fix; investigate B2
+  (DHCP/SLIRP — check netcore DHCP client + whether a static fallback exists;
+  cross-ref browser networking notes). Selftest: 77 passed, 0 failed (kernel OK).
+
+----------------------------------------------------------------------
+Phase 0 — B1 RESOLVED (2026-06-01 ~18:50 CDT)
+----------------------------------------------------------------------
+B1 root cause (NOT size): claude.fry was only mcopy'd into out/fs.img, but the
+  UEFI loader's ramdisk scanner reads efiboot.img + the ISO staging tree. Every
+  other app is copied there via 4 separate blocks in build_iso.sh (EFI_IMG /apps
+  l.288, EFI_IMG dir-loop l.327, ISO_DIR/apps l.361, ISO_DIR dir-loop l.400) that
+  I had not mirrored for claude. elf_rc=-101 (ELF_LOAD_ERR_OPEN) = file genuinely
+  absent from the FS the loader sees. Fix: added claude to all 4 blocks (+ fs.img).
+  Confirmed via TATER_EFI_SERIAL_TRACE=1: "EFI: ramdisk scan file CLAUDE.FRY".
+  Also shrank claude.fry 633KB->313KB via -ffunction-sections/-fdata-sections +
+  --gc-sections (kept; good practice, not strictly required).
+RESULT: SPAWN_OK /apps/CLAUDE.FRY pid=9; claude runs, prints banner, attempts
+  probe. Reaches network code -> "DNS failed for api.anthropic.com (err -2)"
+  because B2 (no IP) still open. => claude executes as a real process in the OS.
+
+B2 OPEN: DHCP fails (no IP) so DNS can't resolve. Zack: networking worked in
+  QEMU + hardware before. Suspect: regression vs the stashed WIP (which may have
+  carried net fixes), or e1000 RX not receiving the DHCP OFFER. NEXT: inspect
+  netcore DHCP/e1000 RX + static-IP fallback (SLIRP 10.0.2.15/24 gw .2 dns .3).
+  Leave TATER_EFI_SERIAL_TRACE=1 for now (revert before ship).
+
+----------------------------------------------------------------------
+Phase 0 — B2 bisected via pcap (2026-06-01 ~19:20 CDT)
+----------------------------------------------------------------------
+Method: -netdev user,id=net0 -device e1000,netdev=net0 + -object filter-dump
+  (pcap parsed with python; no tcpdump/tshark on box). Solo boot (NVMe lock:
+  cannot run 2 QEMUs on same raw img). Note: foreground `sleep` is blocked by
+  harness — bit me twice (aborted scripts -> empty pcaps).
+FINDING (decisive):
+  OUT [1,3,5,7]: DHCP discover 0.0.0.0->255.255.255.255 UDP68->67 (TX works).
+  IN  [2,4,6,8]: DHCP OFFER from 10.0.2.2 UDP67->68, dst MAC = BROADCAST
+                 (SLIRP IS replying — server works).
+  e1000 RX regs during wait: STATUS=0x80080783 (link UP), RCTL=0x06028002
+  (EN+BAM+BSEX+BSIZE8K+SECRC), RDH=0 (never advances), RDT=31, ICR never sets
+  RXT0, descriptor[0].status=0. => e1000 model never delivers the broadcast
+  OFFER into the guest RX ring despite EN+BAM+available descriptors+link up.
+  Bisection: TX ok, SLIRP ok, e1000 RX delivery BROKEN. Not SLIRP, not TX,
+  not a malformed discover. Genuine e1000 RX bug (RDH stuck at 0).
+HYPOTHESES to test next: (a) QEMU -d guest_errors / e1000 trace to see drop
+  reason; (b) RCTL tweak — try promiscuous (UPE|MPE) and/or drop BSEX (use
+  2048B buffers) — some e1000 setups need this in QEMU; (c) verify g_rx_bufs
+  phys addrs the NIC DMAs to are valid; (d) RX desc struct layout/alignment.
+STILL IN TREE (revert before ship): TATER_EFI_SERIAL_TRACE=1 (efi_loader.c:491),
+  e1000_rx_poll E1000_RX_DBG dump, init.c boot-time claude auto-run.
+
+----------------------------------------------------------------------
+Phase 0 — B2 trace finding (2026-06-01 ~19:45 CDT)
+----------------------------------------------------------------------
+QEMU --trace 'e1000*' shows: mac_indicate; ONE early rx_can_recv_disabled
+(link_up 1, rx_enabled 0, pci_master 0 — fired before driver enabled RX, a
+transient); then 4x vlan_is_vlan_pkt = the 4 DHCP offers DO enter QEMU
+e1000_receive and pass the VLAN check, but never land in the ring (RDH stays 0,
+no RXT0). 
+CRUX: guest reads its PCI command reg = 0x0007 (I/O+MEM+BUS MASTER set; verified
+by new readback print "E1000: PCI cmd before=0x0007 after-reassert=0x0007"), but
+QEMU's e1000 model reports pci_master=0. So ECAM CONFIG WRITES from the guest are
+NOT reaching the e1000's real PCI_COMMAND in QEMU, even though ECAM READS work
+(BAR0 correct, MMIO/TX functional). Bus-master re-assert after reset did NOT help
+(guest already 0x0007). QEMU e1000 RX is gated on PCI_COMMAND.MASTER -> all RX
+dropped -> DHCP no offer received -> no IP -> claude DNS fails.
+NEXT HYPOTHESIS (B2): pci_ecam write path / q35 MMCONFIG base is wrong for
+CONFIG WRITES specifically (reads may hit a different/cached path). Investigate
+pci_ecam.c write vs read, the ECAM base (MCFG), and whether q35 needs the PCIe
+ECAM region for config writes to take. Compare with how NVMe's bus-master enable
+actually reaches its device (NVMe DMA works -> its config write reaches QEMU;
+why does e1000's not? same pci_ecam_write32). Possibly NVMe is on a different
+bus/segment where ECAM works, or e1000's bus/slot ECAM addr is miscomputed.
+TEMP DIAGNOSTICS STILL IN TREE (revert before ship):
+  - efi_loader.c:491 TATER_EFI_SERIAL_TRACE=1
+  - e1000.c e1000_rx_poll E1000_RX_DBG dump
+  - e1000.c init PCI-cmd readback print + bus-master re-assert
+  - init.c boot-time claude auto-run
+STATUS: B1 DONE (claude runs in-OS). B2 localized to ECAM config-write reaching
+  e1000 PCI_COMMAND in QEMU. Phase 0 pipe not yet proven (blocked on B2).
+
+----------------------------------------------------------------------
+SCOPE CLARIFICATION (2026-06-02) — auth model
+----------------------------------------------------------------------
+Zack: "native claude" = the SAME experience as the host Claude Code window
+(type `claude`, talk to real Claude). Real Claude is cloud-only (closed weights),
+so network IS required. Constraint is NO separate/billed API KEY: authenticate
+via Zack's Claude PLAN (OAuth), like the host window does. => Phase 1 client
+sends a plan OAuth bearer token (copied from host creds into TotFS; refresh TBD),
+NOT x-api-key. Phase 0 (prove HTTPS pipe) is auth-agnostic and unchanged.
+"Full Claude Code experience" = incrementally reimplement the agent loop in C
+(chat -> tools/file-edit/bash). Networking (B2) is required regardless -> keep
+solving it now.
+
+----------------------------------------------------------------------
+B2 cont. — ECAM config-access audit (2026-06-02)
+----------------------------------------------------------------------
+pci_ecam_addr() formula: base + (slot<<15) + (func<<12) + (offset&0xFFF).
+  *** MISSING the (bus<<20) term *** unless mcfg_get_ecam_base(seg,bus) already
+  folds the per-bus offset into the returned base. Checking mcfg + whether
+  enumeration uses ECAM vs legacy CF8/CFC (would explain reads-ok/writes-not).
+
+======================================================================
+COMPLETE CHANGE LEDGER — every modification this session (2026-06-01/02)
+Status key: KEEP=intended/permanent | EXPERIMENT=still in tree, unproven |
+            TEMP=diagnostic, revert before ship | REVERTED=undone
+Maintained per planv3 Rule 5 after Zack flagged incomplete paper trail.
+======================================================================
+
+NEW FILES
+  [KEEP]  src/user/apps/claude.c  — native in-OS AI client (Phase 0 probe).
+          Edits within it: include set (libc.h, fry.h, stdio.h, time.h,
+          sys/socket.h, netinet/in.h, fcntl.h); `#define time_func time`
+          shim; `#ifndef SO_RCVTIMEO #define SO_RCVTIMEO 20`.
+  [KEEP]  logs/fry1276.txt — this log.
+
+Makefile
+  [KEEP]  + CLAUDE_OBJS = $(LIBC_OBJ) $(BEARSSL_OBJS) src/user/apps/claude.o
+  [KEEP]  + `claude` added to .PHONY and to `all`
+  [KEEP]  + `claude:` target (link claude.elf + frypack claude.fry)
+  [KEEP]  ~ BEARSSL_CFLAGS += -ffunction-sections -fdata-sections
+  [KEEP]  + explicit src/user/apps/claude.o rule with -ffunction-sections
+          -fdata-sections
+  [KEEP]  ~ claude link uses --gc-sections  (633KB -> 313KB; drops unused BearSSL)
+
+build_iso.sh
+  [KEEP]  ~ make line: appended `claude` target
+  [KEEP]  + mcopy claude.fry -> FS_IMG ::/apps/CLAUDE.FRY
+  [KEEP]  + mcopy claude.fry -> EFI_IMG ::/apps/CLAUDE.FRY        (l~289)
+  [KEEP]  + mcopy claude.fry -> EFI_IMG dir-loop CLAUDE.FRY       (l~328)
+  [KEEP]  + cp claude.fry -> ISO_DIR/apps/CLAUDE.FRY              (l~362)
+  [KEEP]  + cp claude.fry -> ISO_DIR dir-loop CLAUDE.FRY          (l~402)
+          (B1 fix: claude must be in efiboot.img/ISO tree the ramdisk scans,
+          not just fs.img — that was why elf_rc=-101.)
+
+src/user/init/init.c
+  [TEMP]  + boot-time auto-run of /apps/CLAUDE.FRY (mirrors chrome_probe block,
+          after it). Revert before ship — claude should run from the shell.
+
+src/boot/efi_loader.c
+  [TEMP]  ~ #define TATER_EFI_SERIAL_TRACE 0 -> 1  (l491). Revert before ship.
+
+src/drivers/net/e1000.c  (all B2 / e1000-RX debugging)
+  [TEMP]  + E1000_RX_DBG register dump in e1000_rx_poll (STATUS/RCTL/RDH/RDT/
+          ICR/desc). Revert before ship.
+  [TEMP]  + PCI bus-master RE-ASSERT after TIPG + cmd readback print. Did NOT
+          fix RX (cmd already 0x7 = master on). Candidate revert (harmless but
+          unnecessary).
+  [EXPERIMENT] + RCTL_UPE / RCTL_MPE #defines.
+  [EXPERIMENT] ~ RCTL write changed from
+          (RCTL_EN|RCTL_BAM|RCTL_BSEX|RCTL_BSIZE_8K|RCTL_SECRC)
+          to (RCTL_EN|RCTL_UPE|RCTL_MPE|RCTL_BAM|RCTL_SECRC)
+          = 2048B buffers + promiscuous. Did NOT fix RX. Revert to 8K/BSEX
+          original if this isn't the fix.
+  [EXPERIMENT] + RDT re-kick: e_write(E1000_RDT, NUM_RX_DESC-1) AFTER RCTL.EN.
+          Hypothesis: QEMU 11 only registers RX descriptors on an RDT write
+          while RX enabled. CURRENTLY UNDER TEST (boot bf9r6zhnx).
+
+GIT / ENV OPS
+  [ACTIVE]   git stash push -m "chromium/rust-pal WIP ..." (stash@{0}) — Chromium
+             WIP set aside for clean baseline. RESTORE before resuming Chromium.
+  [REVERTED] git worktree add /tmp/tater-fry815 c5a6bdf (to build fry815 era) —
+             FAILED: old tree predates April Linux toolchain/openh264-shim fixes
+             (broken g++ symlink -> /home/jjsako/..., inttypes.h missing).
+             Copied main-tree g++/libexec in (in the worktree only); worktree
+             then REMOVED (git worktree remove --force). Main tree untouched.
+
+NOT CHANGED (verified): src/drivers/net/e1000.c core RX/TX logic, pmm, vmm,
+  main.c, struct e1000_rx_desc (16B packed) — all byte-identical to fry815 era.
+
+NOTED-NOT-FIXED: alloc_dma() in e1000.c allocates multi-page buffers as
+  separate pmm pages but records only the first -> buffers >4KB are non-
+  contiguous (latent bug; not the RX cause since DHCP frames <4KB).
+
+GOING FORWARD: log each change here at the moment it is made, including reverts.
+
+[2026-06-02] RESULT — RDT re-kick (boot bf9r6zhnx, KVM): FAILED. RDH still 0,
+  DHCP still fails. The "RDT-after-enable" hypothesis is WRONG. Also: TCG boot
+  (boqg9aczq, no -enable-kvm) FAILED identically -> not KVM-related.
+  RX-failure hypotheses now ruled out WITH EVIDENCE: KVM/accel, PCI slot/NVMe,
+  bus master (QEMU got cmd=0x7), RCTL.EN, MAC filter (promiscuous), buffer size
+  (2048 & 8K both), link (LU=1), RDT ordering. Guest config provably correct;
+  QEMU 11.0.1 still won't place the received DHCP offer in the ring.
+  -> e1000-RX hypotheses exhausted via black-box. The RDT re-kick + promiscuous
+     + bus-master-reassert are EXPERIMENTS that did not help; pending decision
+     to revert to original RCTL (8K/BSEX) or keep.
+
+[2026-06-02] QEMU 11.0.1 e1000 SOURCE ANALYSIS (fetched hw/net/e1000.c v11.0.1).
+  Walked our state through every drop path in e1000_receive_iov + can_receive +
+  has_rxbufs: hw_rx_enabled(RCTL.EN)=pass; flush_queue_timer=pass (vlan trace
+  fires => past it); is_oversized(590 vs 2048/8192)=pass; receive_filter=pass
+  (promiscuous); has_rxbufs fast-path returns (RDH!=RDT)=(0!=31)=true, AND no
+  e1000_receiver_overrun trace fired => pass. By QEMU's own logic the packet
+  SHOULD be delivered and RDH advanced. It is not. => either a register value
+  QEMU holds differs from the guest MMIO readback, or a host/QEMU-build quirk.
+  Black-box debugging is exhausted; guest config is provably correct.
+  EXPERIMENTS STILL IN TREE (unproven, pending revert decision): RCTL promiscuous
+  +2048 buffers; bus-master re-assert; RDT re-kick. TEMP diagnostics: E1000_RX_DBG,
+  TATER_EFI_SERIAL_TRACE=1, init.c claude auto-run.
+
+[2026-06-02] CHANGE [TEMP] e1000.c E1000_RX_DBG: now also dumps RDLEN(0x2808),
+  RDBAL(0x2800), RDBAH(0x2804) + g_rx_ring_phys. Goal: confirm the NIC latched
+  the RX ring base/length (QEMU 11 receive loop bails to overrun if RDLEN is
+  0/wrong, leaving RDH=0 — matches our symptom). Per QEMU v11.0.1 e1000.c source.
+
+[2026-06-02] KEY REALIZATION: prior "RDH=0" evidence was FLAWED — E1000_RX_DBG
+  only fired on the first 6 e1000_rx_poll calls (~first 60ms of the DHCP wait,
+  BEFORE the offer round-trips from SLIRP). So it only proved RDH=0 early, not
+  that RDH never advanced. ALSO confirmed via QEMU v11.0.1 e1000x_common.c source:
+  e1000x_rx_group_filter ACCEPTS our broadcast offer (dst=ff..ff, RCTL.BAM=0x8000
+  set -> return true). So the filter does NOT reject it. => QEMU likely DOES
+  deliver the offer; suspicion shifts to OUR rx consume/processing path.
+  CHANGE [TEMP] e1000.c: (a) log E1000_RX_GOT inside the DD-consume loop (proves
+  delivery+consumption), (b) replace first-6 dump with E1000_RDH_CHG that logs
+  whenever RDH changes across the whole wait. Rebuilding to see if RDH ever
+  advances and whether our consume loop fires.
+
+======================================================================
+[2026-06-02] *** ROOT CAUSE FOUND + FIX *** (the B2 bug)
+======================================================================
+EVIDENCE (delivery-window instrumentation): QEMU 11 DOES deliver the DHCP
+offers — E1000_RX_GOT fired 3x: "tail=N len=590 status=0x07 eop=2 err=0xaf cb=1".
+RDH advanced 0->1->2->3. The frames are valid (590B, DD+EOP). BUT our consume
+check `if (eop && !err && len>0 && g_rx_cb)` DROPS them because the descriptor
+errors byte reads 0xaf (!err == false).
+ROOT CAUSE (TaterTOS bug, latent for ~years): e1000_init set g_rx_ring[i].status=0
+but NEVER initialized g_rx_ring[i].errors (or length/checksum/special). The DMA
+ring page from pmm_alloc_page_below is NOT zeroed -> errors = garbage (0xaf).
+QEMU v11.0.1 e1000 RX (verified in hw/net/e1000.c source) reads the descriptor,
+sets only status/length/special, and writes it back WITHOUT touching errors ->
+our garbage errors survives -> rx_poll rejects every received frame. The old
+Windows QEMU happened to leave errors=0, masking the bug; QEMU 11 preserves it.
+FIX [KEEP]: e1000.c e1000_init RX setup loop now zeroes the WHOLE descriptor
+(addr/length/checksum/status/errors/special) per entry. (Recycle path already
+zeroes status/errors/length, so only first-use was affected — but that first
+use is the DHCP offer.)
+Rebuilding to verify DHCP + the claude probe now reach the network.
+
+[2026-06-02] *** B2 FIXED — VERIFIED *** Boot b6ki5cxih: E1000_RX_GOT err=0x00,
+  DHCP:OK, DNS resolved api.anthropic.com -> 160.79.104.10, TCP + TLS handshake
+  data flowing (RX_GOT 1494/1364B). Networking works END TO END. The descriptor-
+  errors init fix was THE fix. Zack's call ("it's a tater bug") was correct.
+  NEW (separate) issue: claude TLS handshake fails "BearSSL err=54" (X.509 cert
+  validation) against api.anthropic.com. That's Phase 0's TLS/cert step, not the
+  networking bug. To investigate next.
+
+[2026-06-02] TLS error decoded: BearSSL err=54 == BR_ERR_X509_EXPIRED
+  (bearssl_x509.h:202). The cert-time callback ts_tls_time_check (ts_http.h)
+  returns 0=accept when time()<=0, so EXPIRED means time() returns a POSITIVE
+  but WRONG epoch -> a currently-valid api.anthropic.com cert looks out of its
+  validity window. => TaterTOS RTC/clock read (or epoch conversion) is wrong.
+  This is the NEXT bug (Phase 0 TLS step), separate from the now-fixed B2 RX bug.
+  Networking itself (DHCP/DNS/TCP/TLS-handshake-start) is PROVEN working.
+
+[2026-06-02] DIAGNOSIS STEP (clock/cert): traced the time path.
+  - libc time() = fry_gettime()/1000 ; fry_gettime() -> SYS_GETTIME.
+  - Kernel SYS_GETTIME handler @ syscall.c:2744 returns HPET UPTIME ms (since
+    boot), with NO RTC wall-clock epoch added -> time() ~= seconds-since-boot
+    ~= 1970 -> BearSSL sees "before cert notBefore" -> BR_ERR_X509_EXPIRED(54).
+  - rtc.c DOES exist + works: rtc_init() IS called (main.c:308) and sets
+    g_boot_epoch_sec from the CMOS RTC (QEMU host date). Getter:
+    rtc_boot_epoch_sec().
+  - PROOF the wiring is the gap: SYS_CLOCK_GETTIME @ ~4695 ALREADY does
+    "ts.tv_sec = rtc_boot_epoch_sec() + sec" (correct wall clock), but time()
+    uses SYS_GETTIME which does NOT. So time() is wired to the uptime-only path.
+  PLANNED FIX: make SYS_GETTIME return wall-clock ms = (rtc_boot_epoch_sec()*1000
+  + uptime_ms), so time() yields the real epoch and cert validity passes.
+  Next: read SYS_GETTIME handler to apply.
+
+[2026-06-02] CHANGE [KEEP] src/kernel/proc/syscall.c SYS_GETTIME handler:
+  was: return HPET uptime ms only.
+  now: return rtc_boot_epoch_sec()*1000 + uptime_ms (real wall-clock ms), so
+  libc time() yields the true epoch and BearSSL cert validity passes. Mirrors
+  the wall-clock math SYS_CLOCK_GETTIME already used. Fixes BR_ERR_X509_EXPIRED.
+
+======================================================================
+[2026-06-02] *** PHASE 0 COMPLETE — PIPE PROVEN *** (boot b07dx8pwy)
+======================================================================
+Native claude.fry did a full HTTPS round-trip to LIVE api.anthropic.com:
+  DHCP:OK -> DNS api.anthropic.com=160.79.104.10 -> TCP 443 connect OK ->
+  TLS 1.2 handshake OK (cert validated, clock now correct) -> HTTP request ->
+  HTTP 405 Method Not Allowed, content-type application/json, 112B JSON body.
+  (GET on POST-only /v1/messages => 405 = the expected proof.) claude: PIPE PROVEN.
+THREE real TaterTOS bugs found + fixed to get here (all KEEP):
+  1. claude.fry missing from scanned ESP/ISO tree (build_iso wiring) — B1.
+  2. e1000 RX: uninitialized descriptor errors byte -> valid frames dropped — B2
+     (the networking bug; QEMU 11 preserves errors, old Windows QEMU zeroed it).
+  3. SYS_GETTIME returned uptime not wall-clock -> time()~1970 -> certs looked
+     EXPIRED. Wired rtc_boot_epoch_sec() into SYS_GETTIME (the "clock that never
+     existed").
+STILL TO DO (cleanup): revert unproven EXPERIMENTS (RCTL promiscuous/2048 ->
+  original 8K/BSEX+BAM; bus-master re-assert; RDT re-kick) and remove TEMP
+  diagnostics (E1000_RX_GOT, E1000_RDH_CHG, PCI-cmd print, TATER_EFI_SERIAL_TRACE=1,
+  init.c claude auto-run); then clean rebuild + re-verify pipe still proven.
+
+======================================================================
+[2026-06-02] CLEANUP PASS (Zack approved) — revert experiments + diagnostics
+======================================================================
+e1000.c reverts (KEEP only the descriptor-zero fix):
+  [REVERTED] RCTL_UPE/RCTL_MPE defines removed.
+  [REVERTED] RCTL write back to original RCTL_EN|RCTL_BAM|RCTL_BSEX|RCTL_BSIZE_8K|
+             RCTL_SECRC (8K buffers, no promiscuous). (Filter accepts broadcast
+             via BAM regardless; promiscuous was never the fix.)
+  [REVERTED] RDT re-kick after RCTL.EN removed.
+  [REVERTED] PCI bus-master re-assert block (after TIPG) removed.
+  [REMOVED]  E1000_RX_GOT diagnostic (in rx_poll while loop).
+  [REMOVED]  E1000_RDH_CHG diagnostic block.
+  [KEEP]     RX descriptor zero-init (the actual B2 fix).
+efi_loader.c: [REVERTED] TATER_EFI_SERIAL_TRACE 1 -> 0.
+init.c: [REMOVE-LAST] boot-time claude auto-run (removed after re-verify).
+Next: apply edits, rebuild, boot, confirm pipe STILL proven on minimal change set.
+
+[2026-06-02] CLEANUP COMPLETE + RE-VERIFIED.
+  Re-verify boot (bvrfx9out, clean change set): DHCP:OK, DNS ok, claude PIPE
+  PROVEN, HTTP 405. So the minimal fix set carries it.
+  Removed init.c boot auto-run (claude now runs from the shell). init.c and
+  efi_loader.c fully reverted (no diff). Final FET tree changes (KEEP only):
+    - src/drivers/net/e1000.c   (RX descriptor zero-init — B2 fix)
+    - src/kernel/proc/syscall.c (SYS_GETTIME wall-clock — clock fix)
+    - Makefile                  (claude target + gc-sections + bearssl sections)
+    - build_iso.sh              (CLAUDE.FRY into fs.img/EFI/ISO tree — B1 fix)
+    - NEW src/user/apps/claude.c (the native client / Phase 0 probe)
+  All temp diagnostics + experiments reverted. Build clean. CLAUDE.FRY ships in
+  /apps; runnable from the shell by typing `claude`.
+PHASE 0 = DONE. Next: Phase 1 (claude chat REPL: POST /v1/messages via plan
+  OAuth token from TotFS, parse content[].text). Chromium WIP still in git
+  stash@{0} — restore before resuming Chromium.
+
+======================================================================
+[2026-06-02] PHASE 1 START — claude chat REPL (plan OAuth, no API key)
+======================================================================
+Host creds: ~/.claude/.credentials.json -> claudeAiOauth.accessToken (Bearer).
+Token VALID (~3h left), subscriptionType=pro, scopes incl user:inference.
+OAUTH CONTRACT VERIFIED via host curl: POST api.anthropic.com/v1/messages with
+  Authorization: Bearer <token>
+  anthropic-version: 2023-06-01
+  anthropic-beta: oauth-2025-04-20
+  content-type: application/json
+  (NO x-api-key) -> got HTTP 429 rate_limit WITH a request_id => authenticated +
+  routed (NOT 401). Header set is correct. 429 likely concurrency with the live
+  host Claude Code session sharing the same pro plan.
+SECURITY: token never printed/logged/committed; will live only in the local
+  image TotFS. Retrying once for a clean 200 with a current model id.
+
+======================================================================
+[2026-06-02] PHASE 1 PIVOT — native agent -> DeepSeek (not Anthropic)
+======================================================================
+Zack: can't afford Anthropic API; has DeepSeek; wants autonomy (no Anthropic,
+no Linux-ABI). Reframe: build a native TaterTOS agent (Hermes-style) talking to
+DeepSeek's OpenAI-compatible API. Repoint claude.fry from api.anthropic.com ->
+api.deepseek.com. (Command stays 'claude' for now = least build churn; trivial
+to rename 'hermes' later.)
+DEEPSEEK CONTRACT VERIFIED (host curl, key from hermes-agent/.env, NOT printed):
+  POST https://api.deepseek.com/chat/completions
+  Authorization: Bearer <key> ; Content-Type: application/json
+  body {"model":"deepseek-chat","messages":[...],"max_tokens":N,"stream":false}
+  -> HTTP 200, choices[0].message.content = the reply. model->deepseek-v4-flash.
+PLAN: (A) ts_http: additive custom headers (Authorization, Content-Type:json).
+  (B) claude.c -> DeepSeek chat REPL: read key from TotFS, build JSON, POST,
+  parse choices[0].message.content, print; multi-turn loop. (C) provision key
+  into image TotFS (never commit/log value). (D) QEMU verify a real reply.
+
+[2026-06-02] CHANGE [KEEP] ts_http.h: added optional content_type + extra_headers
+  to struct ts_http; POST builder uses them (Content-Type override + injected
+  header lines like Authorization: Bearer). Additive; TaterSurf unaffected (NULL).
+[2026-06-02] CHANGE [KEEP] src/user/apps/claude.c: rewritten from probe into a
+  DeepSeek chat REPL — loads key from /apps/DSKEY.TXT, builds OpenAI-style JSON,
+  POST api.deepseek.com/chat/completions with Bearer+json, parses
+  choices[0].message.content, prints; loops (single-turn/request for v1).
+[2026-06-02] PROVISIONING: DSKEY.TXT (DeepSeek key) created at repo root,
+  gitignored, chmod 600. Value never logged/committed. build_iso will copy it to
+  image /apps/DSKEY.TXT (ramdisk-scanned). Key lives only in the local image.
+
+[2026-06-02] CHANGE [KEEP] claude.c batch mode: if /apps/CLAUDE_ASK.TXT exists,
+  answer it once non-interactively and exit (useful + enables auto-verify).
+[2026-06-02] TEMP (verify, remove after): init.c boot auto-run of claude;
+  CLAUDE_ASK.TXT test prompt provisioned to image /apps (EFI_IMG+ISO_DIR);
+  build_iso copies for DSKEY.TXT (KEEP) + CLAUDE_ASK.TXT (TEMP).
+  Building + booting to verify a real DeepSeek reply prints inside TaterTOS.
+
+======================================================================
+[2026-06-02] *** PHASE 1 WORKS *** native DeepSeek agent in TaterTOS
+======================================================================
+Boot b56hd051n: /apps/CLAUDE.FRY ran, read key+prompt, DNS api.deepseek.com
+-> 3.173.21.63, TCP 443, TLS handshake, SYS_SEND 138B, SYS_RECV 3784B (200),
+parsed choices[0].message.content, printed:
+  "I am running. TaterTOS DeepSeek agent online."
+= live DeepSeek reply rendered by a native TaterTOS .fry. No Anthropic, no Linux.
+CLEANUP: removing TEMP verify scaffolding (init.c auto-run; CLAUDE_ASK.TXT +
+its build_iso copies). KEEP: claude.c DeepSeek client+REPL+batch mode, ts_http
+headers, DSKEY.TXT provisioning, build wiring. Ship = interactive `claude` from
+the shell.
+
+======================================================================
+[2026-06-02] HANDOFF POINT — fresh instance to continue
+======================================================================
+Zack is handing off after a long run. State at handoff:
+  DONE + WORKING: Phase 0 (HTTPS pipe) + Phase 1 (native DeepSeek chat agent,
+  `claude` in TaterTOS). Tree clean; KEEP changes = e1000.c (RX desc zero-init),
+  syscall.c (SYS_GETTIME wall-clock), ts_http.h (custom headers), claude.c (new),
+  Makefile/build_iso (claude + DSKEY.TXT wiring). Chromium WIP in git stash@{0}.
+NEW DIRECTION (Zack's call, pending his final GO): build a LINUX COMPATIBILITY
+  LAYER (linuxulator/WSL1-style) so TaterTOS runs UNMODIFIED Linux glibc binaries
+  -> real Claude Code binary, real Hermes (Python/CPython), Linux CLI tools.
+  NOT becoming Linux — a syscall-translation personality + stock glibc/ld-linux
+  in the FS. Shelve Chromium. Measured target: claude binary uses 46 syscalls at
+  startup (list in this log above + the handoff memory). Plan = 6 phases +
+  milestone ladder (static hello -> dynamic glibc tool -> CPython/Hermes -> Bun
+  -> Claude Code). See handoff memory for the full plan.
+WHY NOT what was tried: Anthropic API unaffordable + plan-OAuth 429s/ToS-risk;
+  Claude Code is a compiled Linux binary (npm JS version needs all of Node+WASM+
+  native addons) -> can't port -> Linux-compat layer is the path.
+NEXT INSTANCE: read memory handoff_tatertos_linux_compat + project_tatertos_ai_agent
+  + reference_tatertos_networking_fix + this log (fry1276). Confirm direction w/
+  Zack, then start Phase 1 (Linux ELF loader + core syscalls on a static binary).

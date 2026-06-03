@@ -1,0 +1,25 @@
+2026-05-15T05:51:28-05:00
+
+Stop:
+- Full Chromium TaterTOS build stopped at
+  [112/27843] obj/third_party/tflite/tflite/memory_info.o.
+
+Classification:
+- TaterTOS libc/API compatibility gap.
+
+Why:
+- TFLite's Linux memory profiling path selected `mallinfo2()` based on glibc
+  feature macros, but TaterTOS does not provide the glibc 2.33 `mallinfo2`
+  API. The build defines `__linux__` for compatibility, so this Linux path was
+  reached under TaterTOS.
+
+Fix:
+- Added a TaterTOS-specific guard in memory_info.cc so malloc arena counters
+  are reported as unavailable on TaterTOS instead of calling absent glibc
+  `mallinfo2()`. The existing `getrusage` footprint path remains intact.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja \
+    -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos \
+    obj/third_party/tflite/tflite/memory_info.o

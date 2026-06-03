@@ -1,0 +1,21 @@
+Timestamp: 2026-05-15T08:03:45-05:00
+Blocker: network cpp No-Vary-Search parser and network service task priority
+mapping failed under -Werror=return-type.
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Files changed:
+- /home/legacyindieradio/chromium-tatertos/src/services/network/public/cpp/no_vary_search_header_parser.cc
+- /home/legacyindieradio/chromium-tatertos/src/services/network/public/cpp/network_service_task_priority.cc
+
+Why:
+- Enum helper switches relied on exhaustive handling but still needed explicit
+  fallback returns with GCC warnings treated as errors.
+
+Fix:
+- Added base/notreached.h where needed and conservative fallback returns for
+  No-Vary-Search parse mapping/message helpers and network priority mappings.
+
+Verification:
+- Ran:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/services/network/public/cpp/cpp/no_vary_search_header_parser.o obj/services/network/public/cpp/cpp/network_service_task_priority.o
+- Result: passed.

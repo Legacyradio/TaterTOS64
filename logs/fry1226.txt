@@ -1,0 +1,14 @@
+2026-05-16T15:47:19-05:00
+
+Fix: addressed IPC enum traits type-limits compiler failure.
+
+Files:
+- chromium-tatertos/src/ipc/param_traits_macros.h
+
+Why:
+- The build stopped on -Werror=type-limits in the expansion of IPC_ENUM_TRAITS_MAX_VALUE (which uses IPC_ENUM_TRAITS_MIN_MAX_VALUE with minvalue=0). When the enum's underlying type is unsigned, comparing 'value >= 0' is always true, triggering the warning.
+- Resolved by casting operands to int64_t in the validation expression, ensuring the comparison is safe and doesn't trigger the always-true warning for unsigned types.
+- Classification: compiler strictness/library analysis, not a TaterTOS API/platform gap.
+
+Verification:
+- Resumed build moves past the previously failing media IPC macro expansions.

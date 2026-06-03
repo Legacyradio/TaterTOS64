@@ -1,0 +1,36 @@
+Fry Log 1260 — cc/mojo_embedder + discardable_memory fixes (corrected)
+Timestamp: 2026-05-18 ~21:45 CDT
+
+Scope:
+  Build stopped at [23/21801] with 3 blocker classes. Fry 1259's
+  NOTREACHED() approach was wrong — GCC 15 doesn't recognize
+  NOTREACHED() as noreturn, and one switch had a pre-existing empty
+  default case.
+
+Fixes:
+
+  1. cc/mojo_embedder/viz_layer_context.cc:1129-1131
+     Pre-existing bug: default case with no statement body.
+     Added missing break; statement.
+
+  2. cc/mojo_embedder/viz_layer_context.cc — 3 return-type errors:
+     NOTREACHED() is NOT noreturn under GCC 15 with the TaterTOS
+     Chromium toolchain. Replaced all 3 with explicit return statements
+     using sensible default enum values:
+       - TimingStepPosition default → kJumpNone
+       - AnimationDirection default → kNormal
+       - AnimationFillMode default → kNone
+
+  3. cc/mojo_embedder/async_layer_tree_frame_sink.cc:95
+     -Wparentheses on CHECK(a && b || c). Added parens around && subexpr.
+
+  4. components/discardable_memory/client/client_discardable_shared_memory_manager.cc
+     GCC 15 -Wredundant-move on returning local unique_ptr.
+     Removed std::move() from two return statements (lines 323, 384).
+
+Why:
+  GCC 15 + -Werror catches redundant-move, missing break in default,
+  and requires explicit returns after exhaustive switches.
+  NOTREACHED() expands to NotReachedNoreturnError() which is not
+  __attribute__((noreturn)) in this build config, so GCC still
+  warns about control reaching end of non-void function.

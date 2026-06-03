@@ -1,0 +1,26 @@
+Fry Log 1258 — V8 std-object-sizes.h: empty-macro #if fix
+Timestamp: 2026-05-18 18:00 CDT
+
+Scope:
+  HANDOFF_CHROME_BUILD.md claimed fry1257 fixed the std-object-sizes.h
+  preprocessor error by joining a multi-line #if. Build was restarted but
+  failed again on the same file, same line. Root cause was misdiagnosed.
+
+Problem:
+  v8/src/wasm/std-object-sizes.h line 71:
+    #if V8_TARGET_ARCH_X64 && defined(__clang__) && V8_TARGET_OS_LINUX && ...
+  V8_TARGET_OS_LINUX is #define'd to empty (v8config.h:247, conditional on
+  V8_OS_LINUX). Empty macro in #if evaluates to nothing, producing:
+    ... && defined(__clang__) && && !V8_USE_ADDRESS_SANITIZER ...
+  The "&& &&" is "invalid token at start of a preprocessor expression."
+
+Fix:
+  Changed V8_TARGET_OS_LINUX to defined(V8_TARGET_OS_LINUX) on line 71.
+  V8_TARGET_ARCH_X64 does not have this problem — it's defined to 1.
+
+Why:
+  Empty macros in #if are UB per C standard. Clang rejects "&& &&" syntax.
+  defined() is the correct way to test presence of a value-less macro.
+
+Verification:
+  Build was dead on arrival (PID 1921968 gone). Fix applied, not yet rebuilt.

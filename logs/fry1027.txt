@@ -1,0 +1,3 @@
+STEP 1027
+TIME: 2026-05-10 16:39:50
+ACTION: Patched base/debug/stack_trace_posix.cc to exclude TaterTOS from the Linux-specific register dumping code. The existing code relies on a specific ucontext_t structure layout and member names (uc_mcontext.gregs) that do not match our POSIX stubs, causing template deduction failures in std::to_array. Since TaterTOS does not yet support async signal register dumping, disabling this block is the correct architectural path for the port. Resumed the Chromium ninja build.

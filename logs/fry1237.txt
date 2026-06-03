@@ -1,0 +1,23 @@
+Timestamp: 2026-05-16T17:14:27-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped at [39/23242] on
+obj/third_party/blink/common/common/indexeddb_key.o.
+
+Failure:
+third_party/blink/common/indexeddb/indexeddb_key.cc had
+IndexedDBKey::IsValid() reach the end of a non-void function under
+-Werror=return-type.
+
+Classification:
+Compiler strictness. This is not a TaterTOS API/platform gap.
+
+Fix:
+Added an explicit false fallback after the exhaustive IDBKeyType switch,
+matching the existing invalid-key behavior in the function.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C out/tatertos obj/third_party/blink/common/common/indexeddb_key.o
+
+Result:
+Targeted object rebuild passed.

@@ -1,0 +1,19 @@
+2026-05-15T08:27:42-05:00
+
+Fix: Added explicit fallback returns for viz copy-output switch helpers.
+
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Why: Clang's -Werror=return-type rejected switch-only helpers in
+components/viz/common/frame_sinks/copy_output_result.cc and
+components/viz/common/frame_sinks/copy_output_request.cc because the compiler
+could not prove all enum values returned.
+
+Change: Added NOTREACHED() fallbacks after the exhausted switches. The format
+string helpers return "Unknown", and the shared-image format helper returns
+SinglePlaneFormat::kRGBA_8888 as a defensive fallback.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/components/viz/common/common/copy_output_result.o obj/components/viz/common/common/copy_output_request.o
+
+Result: passed.

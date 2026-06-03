@@ -1,0 +1,23 @@
+Timestamp: 2026-05-15T07:25:52-05:00
+Blocker: Device-bound session mojom traits failed under -Werror=return-type.
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Files changed:
+- /home/legacyindieradio/chromium-tatertos/src/services/network/public/cpp/device_bound_sessions_mojom_traits.h
+- /home/legacyindieradio/chromium-tatertos/src/services/network/public/cpp/device_bound_sessions_mojom_traits.cc
+
+Why:
+- GCC requires explicit fallback returns for enum conversion switches and the
+  session event details union reader, even when the handled values are intended
+  to be exhaustive.
+
+Fix:
+- Added explicit base/notreached.h coverage for the inline traits header.
+- Added NOTREACHED() plus conservative fallback returns to access type, deletion
+  reason, scope specification type, session error, inclusion result, refresh
+  result, challenge result, event tag, and event union read conversions.
+
+Verification:
+- Ran:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/services/network/public/mojom/url_loader_base/device_bound_sessions.mojom.o obj/services/network/public/mojom/url_loader_base/device_bound_sessions_mojom_traits.o
+- Result: passed.

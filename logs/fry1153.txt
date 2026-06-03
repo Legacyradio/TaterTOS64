@@ -1,0 +1,22 @@
+2026-05-15T06:51:44-0500
+
+Fixed network mojom traits compiler strictness fallbacks.
+
+Blocker classification:
+- compiler strictness, not a TaterTOS API gap.
+
+Why:
+- services/network/public/cpp/proxy_config_mojom_traits.cc had enum conversion
+  switches with NOTREACHED-only/missing fallback returns.
+- services/network/public/cpp/structured_headers_mojom_traits.cc had union tag
+  and read switches without compiler-visible fallback returns.
+
+Fix:
+- Added explicit fallback returns after NOTREACHED in proxy rules and proxy
+  override conversions.
+- Added explicit fallback tag/read results for structured headers union traits.
+- Added direct base/notreached.h includes.
+
+Verification:
+- Passed targeted rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/services/network/public/cpp/proxy_config_mojom_support/proxy_config_mojom_traits.o obj/services/network/public/cpp/structured_headers_mojom_support/structured_headers_mojom_traits.o

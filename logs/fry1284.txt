@@ -1,0 +1,61 @@
+fry1284 - 2026-06-02 15:29:32 CDT - linuxulator dynamic PT_INTERP rung and syscall register preservation
+
+What changed:
+- Added dynamic Linux ELF/PT_INTERP support in src/kernel/proc/linux_elf.c:
+  maps the main ET_EXEC plus its interpreter, sets AT_BASE/AT_ENTRY correctly,
+  and builds the Linux initial stack for the interpreter entry.
+- Added tools/host/ldyn.S, a dynamically linked Linux x86_64 probe that reaches
+  a raw user entry through /lib64/ld-linux-x86-64.so.2.
+- Updated build_iso.sh to build/stage LDYN.LXE plus the host dynamic loader and
+  glibc shared libraries under /lib64 and /usr/lib.
+- Updated src/boot/efi_loader.c and src/boot/efi_handoff.h so the ramdisk packs
+  .so files and has enough file slots for the staged loader/runtime set.
+- Updated the early linuxulator test hook in src/kernel/main.c to launch LDYN.LXE.
+- Fixed src/kernel/proc/syscall.c syscall_entry so Linux-visible registers
+  (RDI, RSI, RDX, R10, R8, R9) survive a syscall and only RAX carries the return.
+- Kept the arch_prctl(ARCH_SET_FS) TCB self-pointer guard for early glibc TLS.
+- Removed the temporary serial-only LINUXSYS TLS debug prints after verification.
+
+Why:
+- Static Linux probes were green, but Claude Code requires the dynamic Linux
+  runtime path: PT_INTERP, ld-linux, libc .so loading, TLS setup, and Linux
+  syscall ABI fidelity.
+- The first dynamic boot after staging reached ld-linux but faulted at
+  RIP=0x600000014231 with CR2=0xffffffff8183a970.
+- Disassembly showed ld-linux loaded a pointer into RDX, called syscall 218
+  (set_tid_address), then used RDX immediately after syscall return.
+- TaterTOS syscall_entry was clobbering Linux user registers while shuffling into
+  the C ABI. Native TaterTOS code tolerated that, but Linux userland expects all
+  GPRs except RAX/RCX/R11 to survive syscall.
+
+Verification:
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+- Bounded QEMU serial verification with the rebuilt ISO.
+- Rebuilt once with narrow serial TLS diagnostics to prove ARCH_SET_FS and
+  set_tid_address state, then removed those diagnostics and rebuilt again.
+- Final cleaned QEMU boot used out/tatertos64v3.iso.
+
+Observed final QEMU evidence:
+- LINUXTEST launched /apps/LHELLO.LXE, /apps/LFILE.LXE, /apps/LMMAP.LXE, and
+  /apps/LDYN.LXE.
+- selftest: 77 passed, 0 failed.
+- [OK] write + SysV stack + auxv reached; calling exit_group(argc)
+- [OK] access/openat/fstat/read/lseek/pread64/newfstatat/close passed
+- [OK] mmap(fd, offset=0) exposed LXTEST.TXT bytes
+- ==== TaterTOS linuxulator: dynamic PT_INTERP probe ====
+- [OK] PT_INTERP loader reached user entry
+- Native smoketest: 15 passed, 0 failed.
+- Native chrome_probe: 12 passed, 0 failed.
+- init completed smoketest and chrome_probe, then spawned /system/GUI.FRY.
+- No LDYN page fault was observed after the syscall register preservation fix.
+
+Notes:
+- The final serial capture still shows the existing native user-mode RIP=0 exit
+  faults after smoketest/chrome_probe; init handles them and continues. This was
+  present before the linuxulator dynamic work.
+- Current linuxulator rung is now green for static Linux ELF launch, file VFS
+  syscalls, file-backed mmap, PT_INTERP loader entry, early glibc TLS, and basic
+  dynamic Linux user entry.
+- Next Claude Code rung is replacing the tiny dynamic probe with a real
+  dynamically linked Linux binary that exercises libc open/read/write/mmap/brk
+  paths more broadly, then expanding missing syscalls from the actual trace.

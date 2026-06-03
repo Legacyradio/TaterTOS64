@@ -61,3 +61,30 @@ vmtest_fixture.txt
 
 # Private application drafts
 NLNET_APPLICATION.md
+DSKEY.TXT
+CLAUDE_ASK.TXT
+
+# Linux test/host binaries (incl. the huge real claude binary) — NEVER commit
+*.lxe
+lhello.lxe
+rclaude.lxe
+
+# AI-agent working dirs and book-builder scratch
+.hermes/
+.taterbook/
+.taterbookignore
+
+# Per-run logs / scratch (keep curated fryNNNN.txt + HANDOFF logs)
+logs/chrome_build_*
+logs/serial_*.log
+logs/*.pid
+logs/*.stderr
+logs/*.stdout
+
+# Secrets / keys (defense in depth)
+*.env
+.env
+*.key
+*.pem
+*_secret*
+hermes-agent/

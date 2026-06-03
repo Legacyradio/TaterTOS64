@@ -1,0 +1,30 @@
+2026-05-15T09:47:35-05:00
+
+Fix: added explicit unreachable fallbacks for media/base video helpers that
+Clang rejected under -Werror=return-type.
+
+Files:
+- chromium-tatertos/src/media/base/video_transformation.cc
+- chromium-tatertos/src/media/base/video_types.cc
+- chromium-tatertos/src/media/base/video_encoder.cc
+- chromium-tatertos/src/media/base/video_util.cc
+- chromium-tatertos/src/media/base/video_frame.cc
+
+Why:
+- The failed build stopped on compiler strictness, not a TaterTOS API gap.
+- The affected functions all switch over closed enum sets but still need
+  explicit returns for the compiler after NOTREACHED().
+- Fallbacks preserve conservative behavior: unknown strings for diagnostics,
+  identity/default video transformation, unknown SkYUVA format/subsampling,
+  Rec.601 YUV constants for unsupported color-space paths, and false for an
+  invalid video-frame configuration.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/media/base/base/video_transformation.o
+  obj/media/base/base/video_types.o
+  obj/media/base/base/video_encoder.o
+  obj/media/base/base/video_util.o
+  obj/media/base/base/video_frame.o

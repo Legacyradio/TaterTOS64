@@ -1,0 +1,105 @@
+=====================================================================
+fry1309 — HANDOFF: running the REAL claude binary in TaterTOS64
+=====================================================================
+DATE: 2026-06-03 05:16 CDT
+GOAL (Zack, explicit): run the REAL Claude Code binary (243 MB ET_EXEC,
+a threaded Bun executable) natively in TaterTOS64 via the linuxulator —
+NOT Hermes, NOT a stand-in. Constraint: TaterTOS must stay a LIVE BOOT
+(install optional); the NVMe disk is ADDITIVE, never required.
+ALWAYS use `grep -a` on serial logs (they contain a NUL byte).
+
+=====================================================================
+DONE + VERIFIED THIS RUN (live QEMU, glibc 2.43, tcg -smp 2)
+=====================================================================
+Runtime/syscall layer is solid:
+- Dynamic glibc linking (ld.so + PT_INTERP), file-backed mmap.
+- THREADS: clone3 + pthread_create + pthread_join (ret=5/10). (fry1287)
+  Fixes: child rax=0; child rsp = cl_args.stack+stack_size; FULL GPR
+  inheritance (parent callee-saved captured in syscall_entry -> gs:24..56
+  -> child clone_ctx -> process_start clone branch iretqs them); re-set
+  FS.BASE via wrmsr AFTER the %fs selector load.
+- XSAVE/FPU/AVX state saved/restored across context switches (CR4.OSXSAVE
+  + XCR0 + per-task fpu_area + xsave64/xrstor64 in context_switch). Killed
+  the intermittent vector-corruption faults. (fry1287 tail)
+- FUTEX: WAIT/WAKE/BITSET/CMP_REQUEUE/WAKE_OP under real contention.
+  (fry1306) Fixes: sched_tick must never return to a task that blocked
+  itself -> fall back to per-CPU idle_task[]; sched_block_futex accepts the
+  running caller even if transiently PROC_WAITING (SMP wake race).
+- ASYNC I/O (bus agent, fry1291): epoll/eventfd/timerfd/signalfd probe
+  passes. (signalfd/epoll_pwait are create/probe-only; no real delivery.)
+- STREAMING ELF LOADER (fry1308, THIS run): linux_elf.c now loads binaries
+  >= LX_STREAM_THRESHOLD (16 MB) by buffering ONLY the ELF header + program
+  headers and reading each PT_LOAD segment on demand from disk straight
+  into the mapped pages (no giant contiguous kernel buffer). Small binaries
+  keep the proven whole-buffer path. VERIFIED: all small probes still pass
+  (hello/libc/async/thread+gap/PT_INTERP, zero faults).
+
+=====================================================================
+THE BLOCKER + WHAT WAS JUST DONE (untested)
+=====================================================================
+The real claude binary is 243 MB. It does NOT fit the boot ramdisk:
+- The EFI ramdisk is built by SCANNING the ISO tree, filtered by
+  ramdisk_should_load_name() (src/boot/efi_loader.c) — only .FRY/.TOT/.TXT/
+  .ICON/.ucode/.ttf/.LXE/.so/.so.{0,1,2,6}/.RUN. (so a real binary MUST be
+  named *.LXE to be picked up.) Each file is read CONTIGUOUSLY below 4 GB
+  (TATER_BOOT_IDENTITY_LIMIT). A 243 MB contiguous alloc below 4 GB fails
+  -> the file is silently skipped. So claude goes on the NVMe, not the
+  ramdisk. The kernel already auto-mounts NVMe at /nvme as a SECONDARY when
+  a ramdisk root exists (main.c ~444 vfs_mount_secondary) — live boot safe.
+
+But the native ToTFS only supported 128 MB: its block bitmap was a SINGLE
+block (32768 bits @ 4 KB blocks). totcopy errored "alloc_blocks_contig:
+no free blocks" on the 243 MB file.
+
+>>> JUST IMPLEMENTED (compiles clean; NOT yet rebuilt/booted): <<<
+ToTFS multi-block block-bitmap (build tools only; kernel reads files via
+inode EXTENTS so no kernel change needed):
+  - tools/mktotfs.c: bitmap_blocks = ceil(total_blocks / (BLK*8)); shift
+    inode_table_start + data_start after it; write N bitmap blocks; record
+    block_bitmap_blocks in the superblock.
+  - tools/totcopy.c: g_block_bmp now 64 blocks; read/write all
+    block_bitmap_blocks; alloc loops scan i<total_blocks (cap removed).
+Both host tools compile clean (gcc -Wall, rc=0). NOT yet exercised.
+
+Also done this run (build/launch plumbing, NVMe path):
+  - build_iso.sh: NVMe image 100->400 MB; STAGE_CLAUDE=1 totcopies claude
+    to /RCLAUDE.LXE on the NVMe; ramdisk claude staging removed.
+  - main.c: launches /nvme/RCLAUDE.LXE ("claude --version"), streamed.
+
+=====================================================================
+NEXT STEPS (resume here)
+=====================================================================
+1. `rm -f out/tater_nvme.img` (force 400 MB recreate), then:
+   CLAUDE_BIN="$(readlink -f "$(command -v claude)")" \
+   STAGE_CLAUDE=1 MTOOLSRC=/dev/null \
+   PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" \
+   /bin/bash build_iso.sh </dev/null
+   Confirm:  ./tools/totcopy out/tater_nvme.img $((2048*512)) --list / | grep RCLAUDE
+   (the ToTFS fix should make this SUCCEED now.)
+2. Boot WITH the NVMe attached + 6G RAM:
+   cp /usr/share/edk2/x64/OVMF_VARS.4m.fd /tmp/v.fd
+   qemu-system-x86_64 -m 6G -machine q35,accel=tcg -cpu max -smp 2 \
+     -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+     -drive if=pflash,format=raw,file=/tmp/v.fd -cdrom out/tatertos64v3.iso \
+     -drive file=out/tater_nvme.img,if=none,id=nvm,format=raw \
+     -device nvme,serial=deadbeef,drive=nvm \
+     -serial file:/tmp/s.log -display none -no-reboot
+   grep -a for "launching REAL claude", the loader rc, and the first
+   "LINUXSYS: unimplemented nr=" beacon / USER FAULT.
+3. If claude LOADS: harvest its first runtime gaps and iterate to green.
+   Expected order: signals (rt_sigaction/sigprocmask are no-op stubs; real
+   DELIVERY missing) -> for actual function, sockets+connect+TLS (claude
+   needs HTTPS to Anthropic) -> JIT exec pages (Bun mmaps RWX) -> the long
+   syscall tail (getdents64, statx, ...). Each via the unimplemented beacon.
+   NOTE: `claude --version` may print without network; full use needs it.
+4. PIE (ET_DYN) support is NOT needed for claude (it's ET_EXEC) but IS
+   needed to run real distro coreutils (env/cat/ls are PIE -> -ENOEXEC now).
+
+=====================================================================
+CLEANUP PENDING
+=====================================================================
+- main.c: LXAPPS /apps-listing diagnostic + REAL coreutils launch hooks
+  (RENV/RCAT/RLS) — harmless, remove when done harvesting.
+- Heavy 243 MB build/boot cycles ~15 min each; ISO ~406 MB.
+- sudo pw 0420. This box is Zack's PRODUCTION SERVER — QEMU only.
+=====================================================================

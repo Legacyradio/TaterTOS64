@@ -1,0 +1,20 @@
+Fry Log 1263 — ui/aura: dangling-else braces
+Timestamp: 2026-05-18 ~22:20 CDT
+
+Scope:
+  Build stopped at [385/20635] with -Wdangling-else in two ui/aura files.
+
+Files fixed:
+  1. ui/aura/client/drag_drop_client.cc:25
+  2. ui/aura/client/event_client.cc:24
+
+  Pattern: if (root_window) DCHECK_EQ(...); return root_window ? ...
+  GCC 15 + -Werror=dangling-else requires braces to avoid ambiguous else.
+
+Fix:
+  Added braces around the if body in both files.
+
+Why:
+  GCC 15 -Wdangling-else warns when an if-without-braces is followed by
+  another statement that could be parsed as an else body. Adding braces
+  resolves the ambiguity.

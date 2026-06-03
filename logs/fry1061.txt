@@ -1,0 +1,1 @@
+STEP/2026-05-13 19:01:08/PATCH_COMPAT_MATRIX: Added CHROMIUM_COMPATIBILITY_MATRIX.md classifying Linux-style APIs exposed during the Chromium port and listing required cleanup actions. WHY: Create a followable API-by-API plan so Chromium work does not continue to expand the OS surface without defined semantics.

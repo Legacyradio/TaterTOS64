@@ -1,0 +1,3 @@
+STEP 1025
+TIME: 2026-05-10 14:44:38
+ACTION: Updated sys/ucontext.h to include all 23 standard x86_64 REG_* definitions (like REG_R8, REG_EFL, etc.). This fixes a C++ template matching error in base/debug/stack_trace_posix.cc involving std::to_array<Register> when compiled on TaterTOS. Resumed the Chromium ninja build.

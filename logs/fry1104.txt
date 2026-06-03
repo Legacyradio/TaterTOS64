@@ -1,0 +1,33 @@
+fry1104 - TaterTOS sys/file.h and Crashpad POSIX file I/O
+timestamp: 2026-05-14T16:30:35-05:00
+
+full build log: logs/chrome_build_20260514_162739.log
+failed counter: [1/31927]
+failed object: obj/third_party/crashpad/crashpad/util/util/file_io_posix.o
+
+blockers:
+  1. TaterTOS did not provide <sys/file.h>, which Crashpad POSIX file I/O
+     includes for flock(), LOCK_SH, LOCK_EX, LOCK_NB, and LOCK_UN.
+  2. After adding <sys/file.h>, the same object exposed a missing visible
+     memfd_create() declaration in the TaterTOS compile path.
+  3. The same file also hit -Werror=return-type after NOTREACHED() in
+     StdioFileHandle().
+
+classification:
+  TaterTOS libc/header API gap plus compiler strictness cleanup.
+
+fix:
+  Added TaterTOS64/src/include/sys/file.h with LOCK_* constants and flock().
+  Added TaterTOS flock() in src/user/libc/posix.c, backed by TaterTOS
+  fcntl(F_SETLK/F_SETLKW) record locks over the full file.
+  Included <sys/memfd.h> for __TATERTOS__ in Crashpad file_io_posix.cc so the
+  existing native TaterTOS memfd_create() declaration is visible.
+  Added a fallback return after NOTREACHED() in StdioFileHandle().
+
+verification:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja \
+    -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos \
+    obj/third_party/crashpad/crashpad/util/util/file_io_posix.o
+
+  result:
+    [1/1] CXX obj/third_party/crashpad/crashpad/util/util/file_io_posix.o

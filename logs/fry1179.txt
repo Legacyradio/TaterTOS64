@@ -1,0 +1,19 @@
+2026-05-15T08:33:58-05:00
+
+Fix: Added viz memory/render-pass strictness fallbacks and corrected color-space token validation.
+
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Why: Clang's -Werror rejected missing fallback returns in
+peak_gpu_memory_callback.cc and render_pass_io.cc. It also rejected dead
+negative checks in ColorSpaceFromDict() because the parsed IDs were uint8_t.
+
+Change: Added NOTREACHED() fallback returns to the peak GPU memory name helpers
+and color-space string helpers. Changed the StringToColorSpace*Id() helpers to
+return int so invalid tokens stay negative until validation succeeds, then the
+existing enum casts run.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/components/viz/common/common/peak_gpu_memory_callback.o obj/components/viz/common/common/render_pass_io.o
+
+Result: passed.

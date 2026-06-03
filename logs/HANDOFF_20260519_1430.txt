@@ -1,0 +1,100 @@
+CHROME PORT HANDOFF — 2026-05-19 ~14:30 CDT
+=============================================
+
+LAST STATE:
+  gn gen + ninja chrome killed at [2180/31824] (6.8%), zero failures.
+  Host toolchain (clang_x64) building tflite/dawn/webrtc protos.
+
+HOW TO RESUME:
+  cd /home/legacyindieradio/chromium-tatertos/src
+  ninja -C out/tatertos chrome 2>&1 | tee /home/legacyindieradio/TaterTOS64/logs/chrome_build_$(date +%Y%m%d_%H%M%S).log
+
+  DO NOT re-run gn gen. The ninja files are regenerated and valid.
+  Full rebuild is 31,824 targets. [2180/31824] completed.
+  Expect no failures for the next several thousand host-toolchain targets.
+
+FRY LOGS THIS SESSION (1268–1275):
+====================================
+
+fry1268 — v8/regexp/regexp-ast.h: remove unsigned >=0 check
+  CharacterRange::Range(base::uc32 from, ...)
+  Removed "0 <= from" from DCHECK — uc32 is unsigned, comparison tautological.
+  GCC 15 -Werror=type-limits.
+
+fry1269 — v8/execution/frames.cc: sign-compare static_assert cast
+  static_assert comparing ArgOffset (uint32_t) with FCIOffset (int).
+  Cast FCIOffset to uint32_t. GCC 15 -Werror=sign-compare.
+
+fry1270 — v8/heap/collection-barrier.cc: parentheses around arithmetic in | operand
+  ~(static_cast<uint8_t>(kind) | (static_cast<uint8_t>(kind) - 1))
+  Added parens around subtraction. GCC 15 -Werror=parentheses.
+
+fry1271 — v8/heap/factory-base.cc: remove unsigned < 0 check
+  Removed "length < 0" from bounds check — length is unsigned.
+  GCC 15 -Werror=type-limits.
+
+fry1272 — v8/heap/memory-reducer.cc: implicit fallthrough (v3)
+  v1: [[fallthrough]] — clang rejected as unreachable.
+  v2: __attribute__((fallthrough)) — clang also rejected.
+  v3: break; after inner switch (all cases return, break is dead code
+  but satisfies GCC's case-boundary annotation without triggering clang).
+  Both GCC 15 -Wimplicit-fallthrough and clang -Wunreachable-code-fallthrough.
+
+fry1273 — v8/heap/safepoint.cc: redundant std::move in return
+  Two return std::move(local) → return local. GCC 15 -Wredundant-move.
+
+fry1274 — sys/mman.h: add MADV_DONTDUMP and MADV_DODUMP
+  TaterOS change! src/include/sys/mman.h
+  Added MADV_DONTDUMP (16) and MADV_DODUMP (17).
+  V8 memory-allocator uses madvise(..., MADV_DODUMP) for sandbox crash dumps.
+
+fry1275 — build/config/tatertos/BUILD.gn: suppress __STDCPP_FLOAT*_T__ (ROOT CAUSE)
+  Chromium build config change!
+  Added -U__STDCPP_FLOAT16_T__ -U__STDCPP_FLOAT32_T__ -U__STDCPP_FLOAT64_T__
+         -U__STDCPP_BFLOAT16_T__ -U__STDCPP_FLOAT128_T__ to cflags_cc.
+  Our C++ shim (<cfloat> → <cstdio> → <type_traits>) triggers GCC 15 to
+  define these C++23 stdfloat macros, which enables fast_float's
+  std::float16_t/float32_t/float64_t/bfloat16_t code paths. We don't have
+  <stdfloat> or those types. Undefining them tells fast_float the truth.
+  This REQUIRED gn gen — config change in BUILD.gn. Triggered full rebuild
+  (31,824 targets).
+
+FILES MODIFIED THIS SESSION:
+================================
+
+Chromium source:
+  v8/src/regexp/regexp-ast.h            — fry1268
+  v8/src/execution/frames.cc            — fry1269
+  v8/src/heap/collection-barrier.cc     — fry1270
+  v8/src/heap/factory-base.cc           — fry1271
+  v8/src/heap/memory-reducer.cc         — fry1272
+  v8/src/heap/safepoint.cc              — fry1273
+  build/config/tatertos/BUILD.gn        — fry1275
+
+TaterOS64:
+  src/include/sys/mman.h                — fry1274
+
+CONTEXT FOR NEXT SESSION:
+==========================
+  - Chrome port target: full `chrome` binary (31,824 targets after gn gen)
+  - Build directory: /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  - gn binary: buildtools/linux64/gn (NOT in PATH)
+  - Toolchain: x86_64-elf-g++ (GCC 15.2.0), -std=c++23, -Werror
+  - Host toolchain: clang++ (bundled in third_party/llvm-build)
+  - planv3.txt rules STRICTLY ENFORCED — no batch fixes, one fix per fry, log everything
+  - DO NOT rm -rf out/tatertos
+  - DO NOT re-run gn gen unless BUILD.gn or .gn/.gni changes
+  - Header changes in TaterOS invalidate cross-compile targets (but not host toolchain)
+  - Build log convention: chrome_build_YYYYMMDD_HHMMSS.log in TaterTOS64/logs/
+  - Fry log convention: fryNNNN.txt in TaterTOS64/logs/
+  - Monitor: grep -oP '\[\d+/\d+\]' <logfile> | tail -1
+  - Common blockers ahead: more GCC 15 strictness (return-type, sign-compare,
+    type-limits, parentheses, implicit-fallthrough), more V8-specific patterns,
+    possibly icu/skia/angle third-party code.
+  - The __STDCPP_FLOAT*_T__ fix was root-cause. Should eliminate an entire class
+    of fast_float/dragonbox template errors. If new float-related errors appear,
+    check if other macros need undefining.
+  - MALLOC MISTAKE TO AVOID: DO NOT consolidate multiple pending patches. Apply
+    one fix, write one fry log, rebuild. The user will correct this sharply.
+
+NEXT FRY: fry1276

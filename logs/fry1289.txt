@@ -1,0 +1,29 @@
+=====================================================================
+fry1289 — Linuxulator follow-up: wire Linux futex into native futex queue
+=====================================================================
+DATE: 2026-06-02 20:34 CDT
+AUTHOR: Codex
+
+Goal:
+- Make Linux pthread startup and joins usable without the temporary
+  ENOSYS gap on futex.
+
+Why:
+- The thread probe launches but does not reach its own main/header yet.
+- Linux `futex` was still returning -ENOSYS in the Linux syscall table,
+  which blocks pthread startup and/or join paths before user code can
+  print anything useful.
+
+Change:
+- src/kernel/proc/syscall.c
+  - include <linux/futex.h>
+  - decode Linux futex ops
+  - route FUTEX_WAIT / FUTEX_WAIT_BITSET to futex_wait_begin()
+  - route FUTEX_WAKE to futex_wake_waiters()
+  - preserve ENOSYS for unsupported futex commands
+
+Expected verification:
+- rebuild
+- boot the Linux probe suite again
+- confirm the LTHR binary reaches main and prints its thread markers
+- if it still stops early, inspect the next Linux startup syscall gap

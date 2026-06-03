@@ -1,0 +1,62 @@
+Fry Log 920 — Chromium port base:base: final push, full rebuild #2
+Timestamp: 2026-05-08 14:20 CDT
+
+CONTEXT: fry919 covered the initial blocker analysis and 18 rounds of
+incremental fixes. Ninja was at 2587/2892 before a mistaken gn gen
+triggered a full rebuild. That rebuild completed with 3 remaining
+failures, now fixed + new full rebuild in progress.
+
+CURRENT BUILD: proc_667bfc75bb5d, pid 1797513, 959/2894 targets.
+
+FIXES SINCE fry919:
+
+  build/config/tatertos/BUILD.gn
+    - Added -Wno-alloc-size-larger-than, -Wno-array-bounds to cflags.
+      GCC 15 warns about these inside libc++ headers (e.g. vector.h
+      array-subscript, allocate.h size validation). These are false
+      positives from Chromium's specific usage patterns — libc++ is
+      correct, GCC is being too strict. Suppress them.
+
+  base/strings/utf_ostream_operators.cc
+    - Changed three wchar_t operator<< definitions from function-style
+      (std::operator<<(...) { ... }) to namespace-block style
+      (namespace std { ostream& operator<<(...) { ... } }).
+      Reason: libc++ uses inline namespace __Cr inside std, and GCC 15
+      enforces that operator overloads for std::__Cr types must be
+      defined inside the enclosing namespace, not as qualified
+      out-of-line definitions.
+
+REMAINING EXPECTATIONS:
+  After this build, only a handful of GCC 15 exhaustiveness
+  (-Werror=return-type on exhaustive switches) issues should remain.
+  These have proven to be one-liner __builtin_unreachable() fixes
+  each. The total should be under 10 remaining files.
+
+FULL CHANGE LOG (TaterTOS64 src/include/):
+  src/include/sys/socket.h   — SOCK_SEQPACKET, SOMAXCONN, SHUT_*,
+                                SO_SNDTIMEO, SO_RCVTIMEO
+  src/include/netinet/in.h   — struct in6_addr, sockaddr_in6,
+                                INET6_ADDRSTRLEN
+  src/include/paths.h         — NEW (minimal _PATH_DEVNULL)
+  src/include/pthread.h       — PTHREAD_STACK_MIN 16384
+  src/include/math.h          — HUGE_VAL, HUGE_VALF, HUGE_VALL
+
+FULL CHANGE LOG (chromium-tatertos/src/):
+  build/build_config.h        — IS_TATERTOS → IS_POSIX
+  build/config/tatertos/BUILD.gn — -Wno flags
+  build/rust/gni_impl/filter_clang_args.py — GCC-only flag filter
+  base/message_loop/message_pump_for_ui.h — MessagePumpForUI fwd decl
+  base/message_loop/message_pump.cc — AIX/TaterTOS NOTREACHED paths
+  base/process/set_process_title.cc — setproctitle exclude
+  base/process/process_metrics.h — SystemMemoryInfo guard
+  base/process/process_metrics_posix.cc — stub impl
+  base/task/current_thread.cc — GetMessagePumpForUI guard
+  base/profiler/register_context_registers.h — ptrauth.h guard
+  base/profiler/module_cache.cc — flat_set find workaround
+  base/profiler/stack_copier.cc — reinterpret_cast const fix
+  base/strings/utf_ostream_operators.cc — namespace fix
+  third_party/perfetto/src/base/regex/* — redundant-move fixes
+  third_party/perfetto/src/*/adhoc_dataframe_builder.cc — redundant-move
+  +10 files with __builtin_unreachable() after exhaustive switches
+
+NEXT: Wait for build, fix whatever remains, commit.

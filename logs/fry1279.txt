@@ -1,0 +1,24 @@
+fry1279 - 2026-06-02 14:21:02 CDT - linuxulator VFS fd syscall rung
+
+What changed:
+- Added Linux open/stat constants to src/kernel/proc/linux_compat.h.
+- Added Linux-to-TaterTOS file descriptor helpers in src/kernel/proc/syscall.c:
+  flag translation, Linux x86_64 struct stat copyout, path stat, fd stat,
+  VFS-backed open, VFS-backed read, and close/release.
+- Replaced the old Linux file-namespace ENOENT stubs with real handlers for:
+  open, openat, read, readv, pread64, lseek, fstat, stat, lstat,
+  newfstatat, access, readlink, and close.
+
+Why:
+- Claude Code is a dynamically linked Linux ELF. The traced startup path needs
+  openat/read/pread64/fstat/lseek/close before the dynamic loader can get
+  anywhere useful. The previous linuxulator only proved write/exit/memory and
+  deliberately returned ENOENT for file namespace syscalls.
+
+Verification:
+- make src/kernel/proc/syscall.o
+- Result: src/kernel/proc/syscall.o compiled cleanly with the cross toolchain.
+
+Notes:
+- File-backed Linux mmap still needs syscall arg6 forwarding for the mmap
+  offset argument before the dynamic loader rung can be completed.

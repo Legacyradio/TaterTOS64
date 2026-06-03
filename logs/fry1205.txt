@@ -1,0 +1,26 @@
+2026-05-15T10:20:12-05:00
+
+Fix: addressed HLS format compiler-strictness failures.
+
+Files:
+- chromium-tatertos/src/media/formats/hls/parse_status.h
+- chromium-tatertos/src/media/formats/hls/multivariant_playlist.cc
+- chromium-tatertos/src/media/formats/hls/media_playlist.cc
+
+Why:
+- The build stopped on -Werror=return-type in
+  ParseStatusTraits::ReadableCodeName(), and -Werror=redundant-move in the
+  media and multivariant playlist parsers.
+- Classification: compiler strictness, not a TaterTOS API/platform gap.
+- The parse status fallback records NOTREACHED() and returns "Unknown".
+- The parser fixes return the existing error object directly, preserving the
+  same error propagation without forcing a redundant move.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/media/formats/formats/playlist_common.o
+  obj/media/formats/formats/playlist.o
+  obj/media/formats/formats/multivariant_playlist.o
+  obj/media/formats/formats/media_playlist.o

@@ -1,0 +1,19 @@
+2026-05-15T22:10:49-05:00
+
+Fix: addressed video renderer and frame pool compiler-strictness failures.
+
+Files:
+- chromium-tatertos/src/media/renderers/video_resource_updater.cc
+- chromium-tatertos/src/media/video/mappable_shared_image_video_frame_pool.cc
+
+Why:
+- The build stopped on -Werror=return-type in video_resource_updater.cc and mappable_shared_image_video_frame_pool.cc because non-void functions used exhaustive switch statements without fallback returns.
+- Classification: compiler strictness/library analysis, not a TaterTOS API/platform gap.
+- Added fallback return values after NOTREACHED() assertions to address the -Werror=return-type issues, aligning with Chromium and TaterTOSv3 strictness rules.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/media/renderers/renderers/video_resource_updater.o
+  obj/media/video/video/mappable_shared_image_video_frame_pool.o

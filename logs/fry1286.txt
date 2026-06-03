@@ -1,0 +1,55 @@
+fry1286 - 2026-06-02 17:30:00 CDT - linuxulator syscall gaps: clock_nanosleep, fcntl, dup/dup2, clock_getres
+
+What changed:
+- Added LGAP.LXE probe (tools/host/lgap.c): exercises nanosleep, fcntl(F_GETFL/F_SETFD),
+  dup2, and clock_getres without threading.
+- Implemented LNX_clock_nanosleep (230): parses struct timespec from user, computes
+  wake time with HPET-based sys_now_ms(), uses existing sched_sleep() for the delay.
+  Absolute-time mode (TIMER_ABSTIME) handled.
+- Implemented LNX_fcntl (72): supports F_GETFD (1), F_SETFD (2), F_GETFL (3),
+  F_SETFL (4) using shared->fd_flags[].
+- Implemented LNX_dup (32): finds first empty fd slot, copies fd_ptrs/kind/flags.
+- Implemented LNX_dup2 (33): closes target fd if open, copies oldfd to newfd.
+- Implemented LNX_clock_getres (229): returns {tv_sec=0, tv_nsec=1000000} (1 ms).
+- Updated linux_compat.h with LNX_clock_nanosleep (230).
+- Updated build_iso.sh and main.c with LGAP.LXE staging and launch.
+
+Why:
+- These syscalls are required by glibc's init path and any real CLI binary
+  (Claude Code, Node.js, curl). They were the non-threading gaps remaining after
+  the LLIBC probe proved the dynamic libc baseline.
+- clock_nanosleep is used by modern glibc (GCC 16.x / glibc 2.40+) instead of
+  the older nanosleep(35) syscall. The LLIBC probe didn't hit it because it
+  didn't call sleep/nanosleep.
+- fcntl is called by glibc init for FD_CLOEXEC setup and by any code that
+  manipulates file descriptor flags.
+- dup2 is used by shell-like operations and pipe setup.
+- clock_getres pairs with clock_gettime and is called by various libc timing
+  functions.
+
+Verification:
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+- QEMU serial: logs/serial_fry1286.log
+
+Observed final QEMU evidence:
+- LINUXTEST launched /apps/LGAP.LXE (pid=8) after LLIBC.
+- All previous probes pass (static, VFS, mmap, PT_INTERP, LLIBC).
+- selftest: 77 passed, 0 failed.
+- LGAP.LXE output:
+  ==== TaterTOS linuxulator: syscall gap probe ====
+  [OK] nanosleep(50ms) passed
+  [OK] fcntl(F_GETFL)=0x0
+  [OK] fcntl(F_SETFD, FD_CLOEXEC) passed
+  [OK] dup2(3, 10)=10
+  [OK] clock_getres(CLOCK_REALTIME)=0.001000000
+  [OK] gap probe complete, calling exit(0)
+- Zero LINUXSYS lines for these syscalls.
+- Native smoketest: 15 passed, 0 failed.
+- Native chrome_probe: 12 passed, 0 failed.
+
+Notes:
+- clone3 (435) implementation is partially complete — the handler creates child
+  threads with correct rip/rsp/fs but the child crashes at RIP=0 after IRETQ.
+  This is under investigation (likely a page table or instruction stream issue).
+- dup2 newfd is bounded by FRY_FD_MAX (64). The probe was adjusted from newfd=100
+  to newfd=10 to stay within limits.

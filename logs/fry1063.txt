@@ -1,0 +1,86 @@
+2026-05-14 00:05:17 CDT
+
+Catch-up log for Chromium/TaterTOS full-build work after fry1062. This entry
+corrects the missed logging checkpoint before any further build-fix loop.
+
+What changed:
+- Added a TaterTOS POSIX-facing net/if.h shim backed by the native
+  tatertos_netif_list() ABI:
+  - src/include/net/if.h declares IF_NAMESIZE, if_nametoindex(), and
+    if_indextoname().
+  - src/user/libc/libc.c implements the lookup functions by enumerating
+    native TaterTOS network interfaces.
+- Added gethostname() support for Chromium net/base:
+  - src/include/unistd.h declares gethostname().
+  - src/user/libc/posix.c implements gethostname() via uname().nodename.
+  - src/user/libc/posix.c now includes sys/syscall.h so existing gettid and
+    getrandom syscall-number uses resolve correctly.
+- Advanced Chromium net/cert platform support for TaterTOS:
+  - net/features.gni now treats TaterTOS as Chrome Root Store-only.
+  - net/cert/internal/system_trust_store.cc routes TaterTOS to the
+    Chrome-only trust store implementation instead of pretending a native
+    system certificate store exists.
+  - net/cert/cert_verify_proc.cc now has a concrete invalid-public-key fallback.
+- Fixed strict return-analysis build blockers exposed by the TaterTOS GCC and
+  Chromium host Clang toolchains:
+  - components/unexportable_keys/service_error.cc
+  - components/unexportable_keys/unexportable_key_task_manager.cc
+  - base/files/file.cc
+  - net/base/ip_address.cc
+  - net/base/isolation_info.cc
+  - net/base/network_isolation_partition.cc
+  - net/base/proxy_chain.cc
+  - net/cert/require_ct_delegate.cc
+  - components/cbor/writer.cc
+  - crypto/unexportable_key_metrics.cc
+- Fixed Chromium container heterogeneous lookup so GCC accepts call sites that
+  use flat_set lookups by compatible key types:
+  - base/containers/flat_tree.h
+  - net/third_party/quiche/src/quiche/quic/core/quic_interval_set.h
+- Fixed QUIC/WebTransport and WebRTC compile blockers reached by the full
+  build:
+  - net/third_party/quiche/src/quiche/quic/core/http/web_transport_only_server_session.cc
+  - net/third_party/quiche/src/quiche/binary_http/binary_http_message.cc
+  - net/third_party/quiche/src/quiche/oblivious_http/common/oblivious_http_header_key_config.cc
+  - third_party/webrtc/net/dcsctp/public/dcsctp_handover_state.cc
+  - third_party/webrtc/p2p/base/port_interface.h
+  - third_party/webrtc/p2p/base/port.cc
+
+Why:
+The full Chromium build is exposing real platform-port gaps and compiler
+strictness mismatches. TaterTOS must get explicit native behavior where the OS
+owns the interface, such as network interface enumeration and hostname lookup,
+and Chromium must route to honest platform architecture, such as Chrome Root
+Store-only certificate verification until TaterTOS has a native system trust
+store. Return-analysis and warning fixes are kept to explicit unreachable
+fallbacks rather than broad warning suppression.
+
+Verification completed before this log:
+- make -C /home/legacyindieradio/TaterTOS64 src/user/libc/posix.o src/user/libc/libc.o passed.
+- make -C /home/legacyindieradio/TaterTOS64 src/kernel/proc/syscall.o src/user/libc/libc.o passed earlier for the netif syscall/libc ABI.
+- ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/third_party/webrtc/rtc_base/network/network.o passed.
+- ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/net/net/ip_endpoint.o obj/net/net/ip_address.o obj/net/net/isolation_info.o passed.
+- ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/net/net/network_isolation_partition.o obj/net/net/network_interfaces.o passed.
+- ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/net/net/cert_verify_proc.o obj/net/net/system_trust_store.o passed after CHROME_ROOT_STORE_ONLY and CHROME_ROOT_STORE_SUPPORTED evaluated true for TaterTOS.
+- ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/components/cbor/cbor/writer.o obj/crypto/crypto/unexportable_key_metrics.o obj/net/net/require_ct_delegate.o passed through their targeted rebuilds.
+
+Current full-build status:
+- Full chrome build was resumed with:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos chrome
+- The build advanced past the cert verifier and Chrome Root Store dependency
+  chain.
+- Current stop point is the net/cookies compile wave:
+  - net/cookies/cookie_base.cc: GCC return-analysis reaches end of
+    CookieBase::GetEffectiveSameSite().
+  - net/cookies/cookie_change_dispatcher.cc: GCC return-analysis reaches end
+    of CookieChangeCauseToString().
+  - net/cookies/cookie_constants.cc: GCC return-analysis reaches end of
+    CookieSameSiteToString().
+  - net/cookies/cookie_deletion_info.cc: GCC -Wdangling-else under -Werror in
+    CookieDeletionInfo::TimeRange::TimeRange().
+  - net/cookies/canonical_cookie.cc: GCC return-analysis reaches end of
+    CanonicalCookieFromStorageCallSiteToString().
+
+Notes:
+- No QEMU logs were read.
+- No SHA-256 hashes were verified because this was not a user-requested rebuild/hash checkpoint.

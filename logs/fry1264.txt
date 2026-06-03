@@ -1,0 +1,20 @@
+Fry Log 1264 — futex constants + window_tree_host return-type
+Timestamp: 2026-05-18 ~22:25 CDT (logged ~00:10 May 19)
+
+Scope:
+  Build stopped at [45/20252] with two blocker classes.
+
+TaterTOS changes:
+  src/include/linux/futex.h
+    - Added FUTEX_WAIT_BITSET (9) and FUTEX_BITSET_MATCH_ANY (0xffffffff).
+      Required by third_party/angle SimpleMutex.cpp which uses these Linux
+      futex constants with the futex wait bitset API.
+
+Chromium changes:
+  ui/aura/window_tree_host.cc:746
+    - return-type on exhaustive switch over Window::OcclusionState.
+      Added default: return false; to cover any future enum values.
+
+Why:
+  angle/SimpleMutex uses futex bitset API that wasn't in our stub.
+  GCC 15 requires all switch paths to return or have unreachable marker.

@@ -1,0 +1,34 @@
+timestamp: 2026-05-14T22:37:37-05:00
+stop: chrome_build_20260514_223525.log at [11/30949]
+failed_objects:
+  obj/cc/paint/paint/paint_shader.o
+  obj/cc/paint/paint/paint_op_buffer.o
+  obj/cc/paint/paint/paint_op.o
+classification: compiler strictness, not a TaterTOS API gap
+
+problem:
+  GCC with -Werror rejected additional cc/paint paths:
+  - PaintShader::HasDiscardableImages() had an impossible enum path without
+    an explicit return.
+  - PaintOp dispatch helpers had exhaustive macro-generated switches without
+    explicit fallback returns.
+  - PaintOpBuffer::AllocatePaintOpSlowPath() used an enum constant in a
+    conditional expression with a size_t branch, tripping -Wextra.
+
+fix:
+  Added NOTREACHED() plus conservative fallback returns after the switch paths,
+  and cast kInitialBufferSize to size_t before combining it with data_.size().
+
+why:
+  These are compiler-contract fixes for TaterTOS64's stricter GCC build. They
+  preserve the intended valid-case behavior and do not suppress warnings or add
+  non-TaterTOS platform behavior.
+
+verification:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/cc/paint/paint/paint_shader.o
+  obj/cc/paint/paint/paint_op_buffer.o
+  obj/cc/paint/paint/paint_op.o
+
+  Result: all three targeted objects rebuilt successfully.

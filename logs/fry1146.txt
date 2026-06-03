@@ -1,0 +1,28 @@
+2026-05-15T06:12:38-0500
+
+Fixed Chromium network public cpp compiler strictness failures.
+
+Blocker classification:
+- compiler strictness, not a TaterTOS API gap.
+
+Why:
+- services/network/public/cpp/net_ipc_param_traits.h used
+  IPC_ENUM_TRAITS_MAX_VALUE for enums whose zero-based values caused GCC to
+  diagnose the generated lower-bound check as always true after casting to an
+  unsigned underlying type.
+- services/network/public/cpp/client_hints.cc had no compiler-visible fallback
+  return after an exhaustive MetaCHType switch.
+- services/network/public/cpp/content_security_policy/content_security_policy.cc
+  had no compiler-visible fallback returns after exhaustive CSPDirectiveName
+  switches.
+
+Fix:
+- Changed RequestPriority and EffectiveConnectionType IPC validation to test
+  the raw serialized int before casting.
+- Added explicit NOTREACHED fallback returns for the client hints delegated
+  third-party parser and CSP helper functions.
+- Added direct base/notreached.h includes where NOTREACHED is used.
+
+Verification:
+- Passed targeted rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/services/network/public/cpp/network_param_mojom_support/net_ipc_param_traits.o obj/services/network/public/cpp/web_platform/client_hints.o obj/services/network/public/cpp/web_platform/content_security_policy.o

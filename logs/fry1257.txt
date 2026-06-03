@@ -1,0 +1,25 @@
+Timestamp: 2026-05-17T16:55:00-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped due to syntax error in V8 header.
+
+Failure:
+1. std-object-sizes.h: "invalid token at start of a preprocessor expression".
+
+Exact compiler error:
+../../v8/src/wasm/std-object-sizes.h:71:68: error: invalid token at start of a preprocessor expression
+
+Classification:
+Compiler strictness/syntax issue in V8.
+
+Fix:
+1. Joined multi-line #if expression into a single line.
+
+Why:
+Some compiler versions or environments have trouble parsing multi-line preprocessor expressions with backslashes, especially if there are hidden characters or inconsistent line endings. Joining the lines resolves the ambiguity.
+
+Verification:
+Build restarted and progressing.
+
+Result:
+Build is now continuing with PID 1921968.

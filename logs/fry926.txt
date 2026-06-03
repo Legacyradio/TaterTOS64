@@ -1,0 +1,71 @@
+Fry Log 926 — Chromium base:base: dlfcn.h, drive_info, process_metrics, fdopendir/opendir
+Timestamp: 2026-05-08 23:15:00 CDT
+
+Scope:
+  Fry 925 cleared libgen.h and grp.h. Build progressed past 2671 to a new
+  batch of four blockers. All four are TaterTOS64-owned implementations.
+
+Build result before fix:
+  ninja -C out/tatertos base:base
+  Stopped at new frontier. Four failures:
+
+  1. native_library_posix.o — fatal error: dlfcn.h: No such file or directory
+  2. drive_info_posix.o — -Werror=return-type: no return statement in
+     function returning non-void (TaterTOS hit no #if branch)
+  3. process_metrics_posix.o — kSystemDefaultMaxFds was not declared
+     (TaterTOS not in the platform guard chain)
+  4. file_util_posix.o — fdopendir was not declared (missing from dirent.h)
+
+Changes:
+  src/include/dlfcn.h (new)
+    - POSIX dynamic linking header: dlopen/dlclose/dlsym/dlerror plus
+      RTLD_* constants.
+
+  src/user/libc/posix.c
+    - Added dlfcn stubs: dlopen returns NULL with descriptive dlerror
+      message, dlclose returns 0, dlsym returns NULL, dlerror returns
+      last error once. TaterTOS64 has no dynamic linker.
+
+  src/include/dirent.h
+    - Added fdopendir(int fd) declaration.
+
+  src/user/libc/posix.c
+    - Added struct _DIR with fd, path, entry buffer, position tracking.
+    - Added opendir(): opens path via open(O_DIRECTORY), reads entries
+      via fry_readdir into buffer, returns DIR*.
+    - Added fdopendir(): returns NULL with errno=ENOSYS — kernel only
+      supports path-based fry_readdir, not fd-based directory reads.
+      Chromium handles NULL return gracefully (closes fd, returns false).
+    - Added readdir(): serves entries from internal buffer, re-reads
+      via fry_readdir when buffer exhausted.
+    - Added closedir(): closes fd, frees DIR.
+    - Added rewinddir(): re-reads entries from kernel, resets position.
+    - Added telldir(), seekdir(), dirfd().
+
+  base/files/drive_info_posix.cc
+    - Added BUILDFLAG(IS_TATERTOS) to the Android/Fuchsia early-return
+      case. TaterTOS64 has no /sys/dev/block.
+
+  base/process/process_metrics_posix.cc
+    - Added BUILDFLAG(IS_TATERTOS) with kSystemDefaultMaxFds = 1024
+      to the platform guard chain.
+
+Why:
+  dlfcn.h, fdopendir, and drive_info are standard POSIX surface exposed
+  by Chromium's base:base POSIX code paths. TaterTOS64 must provide the
+  headers and implementations at compile time. Runtime correctness of
+  fdopendir (returns ENOSYS) and dlopen (returns NULL) is documented.
+
+Verification:
+  Pending: full ninja -C out/tatertos base:base.
+
+Runtime caveats:
+  - fdopendir always returns ENOSYS. Chromium file_util_posix.cc handles
+    NULL gracefully. A future kernel enhancement (fry_readdir_fd) would
+    make fdopendir functional.
+  - dlopen always returns NULL. Chromium LoadNativeLibrary handles this
+    gracefully (returns NULL to caller).
+  - opendir/readdir/closedir now have real implementations using
+    fry_readdir. Previously these symbols were declared but not defined
+    — building base:base would have hit linker errors at the final link
+    stage if no other TU provided them.

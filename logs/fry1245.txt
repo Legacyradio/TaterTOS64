@@ -1,0 +1,32 @@
+Timestamp: 2026-05-17T13:39:39-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped at [274/22973] in the Blink platform Mojom
+target set:
+obj/third_party/blink/public/mojom/mojom_platform/render_accessibility.mojom.o.
+
+Failure:
+ui/accessibility/mojom/ax_tree_id_mojom_traits.h had
+UnionTraits<ax::mojom::AXTreeIDDataView, ui::AXTreeID>::GetTag() reach the
+end of a non-void function, tripping -Werror=return-type.
+
+Exact compiler error:
+../../ui/accessibility/mojom/ax_tree_id_mojom_traits.h:23:3: error: control reaches end of non-void function [-Werror=return-type]
+
+Classification:
+Compiler strictness in Chromium accessibility Mojom trait code. This is not a
+TaterTOS API/platform gap.
+
+Fix:
+Added a final fallback return after the exhaustive AXTreeIDType switch:
+ax::mojom::AXTreeIDDataView::Tag::kUnknown.
+
+Why:
+The switch covers the known AXTreeIDType values, but GCC still requires a
+reachable fallback return when warnings are promoted to errors.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C out/tatertos obj/third_party/blink/public/mojom/mojom_platform/render_accessibility.mojom.o
+
+Result:
+The targeted Blink render_accessibility Mojom object rebuilt successfully.

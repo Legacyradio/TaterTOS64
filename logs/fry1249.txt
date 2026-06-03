@@ -1,0 +1,29 @@
+Timestamp: 2026-05-17T15:00:00-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped at [2/22365] due to unsupported platform errors in stack_util.cc and return-type errors in base64.cc.
+
+Failure:
+1. stack_util.cc: #error "Stack frame size estimation not supported on this platform."
+2. base64.cc: "control reaches end of non-void function" in GetModpPolicy and Base64Decode.
+
+Exact compiler errors:
+../../third_party/blink/renderer/platform/wtf/stack_util.cc:98:2: error: #error "Stack frame size estimation not supported on this platform."
+../../third_party/blink/renderer/platform/wtf/text/base64.cc:123:1: error: control reaches end of non-void function [-Werror=return-type]
+
+Classification:
+Platform support gap in Blink/WTF (stack estimation) and compiler strictness (return types).
+
+Fix:
+1. stack_util.cc: Added defined(__TATERTOS__) to the POSIX/pthread code paths for GetUnderestimatedStackSize and GetStackStartImpl.
+2. base64.cc: Added NOTREACHED() and fallback returns to switch-based functions.
+
+Why:
+1. TaterTOS64v3 provides a compliant pthread implementation (pthread_getattr_np, pthread_attr_getstack), allowing it to reuse the POSIX stack estimation logic.
+2. GCC requires explicit returns in all paths of non-void functions.
+
+Verification:
+Build restarted and progressed beyond the previous failure point.
+
+Result:
+Build is now continuing with PID 1076302.

@@ -1,0 +1,25 @@
+timestamp: 2026-05-14T22:59:20-05:00
+stop: chrome_build_20260514_225603.log at [399/30484]
+failed_object:
+  obj/third_party/webrtc/modules/audio_processing/agc2/input_volume_stats_reporter/input_volume_stats_reporter.o
+classification: compiler strictness, not a TaterTOS API gap
+
+problem:
+  GCC with -Werror rejected the constexpr MetricNamePrefix() switch because it
+  covered known enum values but had no explicit fallback return.
+
+fix:
+  Added a conservative constexpr fallback returning the applied-input-volume
+  histogram prefix.
+
+why:
+  The function is constexpr, so a runtime RTC_DCHECK_NOTREACHED() would be the
+  wrong tool here. The valid enum behavior is unchanged, and the fallback only
+  handles an impossible enum path for TaterTOS64's strict GCC build.
+
+verification:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/third_party/webrtc/modules/audio_processing/agc2/input_volume_stats_reporter/input_volume_stats_reporter.o
+
+  Result: targeted object rebuilt successfully.

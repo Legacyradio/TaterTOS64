@@ -1,0 +1,29 @@
+2026-05-16T16:45:37-05:00
+
+Fix: addressed media capture failures after the Mojo generator pass.
+
+Files:
+- chromium-tatertos/src/media/capture/video/fake_video_capture_device_factory.cc
+- chromium-tatertos/src/media/capture/video/video_capture_device.cc
+- chromium-tatertos/src/media/capture/video/video_capture_buffer_tracker.cc
+
+Why:
+- The build stopped at [581/24353], [585/24353], and [589/24353].
+- fake_video_capture_device_factory.cc hit #error Unsupported platform because
+  TaterTOS did not have a platform branch in fake device API selection.
+  Classification: TaterTOS platform gap.
+- The TaterTOS-only branch uses VideoCaptureApi::UNKNOWN for fake devices,
+  avoiding a false Linux V4L2 claim while keeping fake capture enumeration
+  usable.
+- video_capture_device.cc was rejected by -Werror=return-type in reservation
+  failure mapping. Classification: compiler strictness.
+- video_capture_buffer_tracker.cc was rejected by -Werror=dangling-else.
+  Classification: compiler strictness.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/media/capture/capture_device_specific/fake_video_capture_device_factory.o
+  obj/media/capture/capture_device_specific/video_capture_device.o
+  obj/media/capture/capture_device_specific/video_capture_buffer_tracker.o

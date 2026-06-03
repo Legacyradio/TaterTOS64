@@ -20,6 +20,7 @@
 #include "../../shared/wifi_abi.h"
 #include "../../drivers/net/netcore.h"
 #include <fry_socket.h>
+#include <linux/futex.h>
 #include <sys/prctl.h>
 #include <fry_random.h>
 #include <fry_time.h>
@@ -28,7 +29,9 @@
 #include "../../drivers/smp/smp.h"
 #include <fry_seek.h>
 #include <fry_input.h>
+#include "linux_compat.h"
 
+void kprint(const char *fmt, ...);
 void kprint_write(const char *buf, uint64_t len);
 void kprint_serial_only(const char *fmt, ...);
 void kprint_serial_write(const char *buf, uint64_t len);
@@ -63,14 +66,22 @@ static uint8_t g_first_init_gui_spawn_seen = 0;
 static uint8_t g_first_gui_fb_seen = 0;
 static uint32_t g_spawn_attempt_count = 0;  /* visual spawn tracker */
 
+static int futex_key_for_user_word_ex(struct fry_process *p, uint64_t uaddr,
+                                      int private_key, uint64_t *key_out);
+
 /* Phase 7: kernel clipboard buffer */
 static char g_clipboard_buf[FRY_CLIPBOARD_MAX];
 static uint32_t g_clipboard_len = 0;
 /*
  * SYS_EXIT must not free the currently active process CR3/stack while still
- * executing on them.  Use a dedicated kernel-owned stack for exit teardown.
+ * executing on them.  Use dedicated kernel-owned stacks for exit teardown.
+ * Keep one per CPU because exit teardown can be preempted or happen on more
+ * than one CPU; a shared stack can corrupt the saved kernel context.
  */
-static uint8_t g_sys_exit_stack[16384] __attribute__((aligned(16)));
+#define SYS_EXIT_STACK_CPUS 64u
+#define SYS_EXIT_STACK_BYTES 16384u
+static uint8_t g_sys_exit_stacks[SYS_EXIT_STACK_CPUS][SYS_EXIT_STACK_BYTES]
+    __attribute__((aligned(16)));
 
 #define USER_TOP USER_VA_TOP
 #define PAGE_SIZE 4096ULL
@@ -149,6 +160,7 @@ static struct fry_process *proc_find_group_leader_any(uint32_t tgid) {
 }
 
 static inline void wrmsr(uint32_t msr, uint64_t val);
+static uint64_t sys_now_ms(void);
 
 static inline void write_user_fs_base(uint64_t base) {
     wrmsr(MSR_FS_BASE, base);
@@ -463,6 +475,22 @@ struct timerfd_cb {
     uint8_t used;
 };
 
+static void timerfd_update_expirations(struct timerfd_cb *tm, uint64_t now_ms) {
+    if (!tm || !tm->used || tm->it_value_ms == 0 || tm->deadline_ms == 0)
+        return;
+    if (now_ms < tm->deadline_ms)
+        return;
+    if (tm->it_interval_ms == 0) {
+        tm->expirations++;
+        tm->it_value_ms = 0;
+        tm->deadline_ms = 0;
+        return;
+    }
+    uint64_t count = 1 + ((now_ms - tm->deadline_ms) / tm->it_interval_ms);
+    tm->expirations += count;
+    tm->deadline_ms += count * tm->it_interval_ms;
+}
+
 /*
  * Signalfd — file descriptor that becomes readable when matching signals
  * are pending. TaterTOS does not deliver async signals to user space, but
@@ -635,6 +663,7 @@ static uint16_t poll_check_fd(struct fry_process *p, int32_t fd, uint16_t events
     } else if (kind == FD_TIMERFD) {
         struct timerfd_cb *tm = (struct timerfd_cb *)shared->fd_ptrs[fd];
         if (!tm || !tm->used) return FRY_POLLNVAL;
+        timerfd_update_expirations(tm, sys_now_ms());
         if (tm->expirations > 0) {
             if (events & FRY_POLLIN) revents |= FRY_POLLIN;
         }
@@ -642,14 +671,9 @@ static uint16_t poll_check_fd(struct fry_process *p, int32_t fd, uint16_t events
     } else if (kind == FD_SIGNALFD) {
         struct signalfd_cb *sf = (struct signalfd_cb *)shared->fd_ptrs[fd];
         if (!sf || !sf->used) return FRY_POLLNVAL;
-        /* Check if any signals in the mask are pending for this process */
-        struct fry_process *cp = proc_current();
-        if (cp && cp->shared) {
-            /* TaterTOS doesn't track async pending signals.  For now,
-             * signalfd is always readable (signal-zero semantics) so that
-             * poll()-based event loops calling signalfd don't hang. */
-            if (events & FRY_POLLIN) revents |= FRY_POLLIN;
-        }
+        /* No async signal delivery yet: a signalfd exists, but it is not
+         * readable until real pending-signal tracking lands. Returning readable
+         * here makes Linux epoll loops spin forever. */
         if (events & FRY_POLLOUT) revents |= FRY_POLLOUT;
     } else if (kind == FD_INOTIFY) {
         struct inotify_cb *in = (struct inotify_cb *)shared->fd_ptrs[fd];
@@ -1202,11 +1226,15 @@ static void syscall_thread_exit_finish(uint32_t tid, uint32_t code) {
 
 __attribute__((noreturn))
 static void syscall_exit_on_safe_stack(uint32_t id, uint32_t code,
-                                       void (*finish)(uint32_t, uint32_t)) {
+                                       void (*finish)(uint32_t, uint32_t),
+                                       uint32_t cpu_slot) {
     uint64_t kcr3 = vmm_get_kernel_pml4_phys();
-    uint64_t exit_sp = ((uint64_t)(uintptr_t)&g_sys_exit_stack[sizeof(g_sys_exit_stack)]) & ~0xFULL;
+    if (cpu_slot >= SYS_EXIT_STACK_CPUS) cpu_slot = 0;
+    uint64_t exit_sp = ((uint64_t)(uintptr_t)
+        &g_sys_exit_stacks[cpu_slot][SYS_EXIT_STACK_BYTES]) & ~0xFULL;
 
     __asm__ volatile(
+        "cli\n"
         "mov %0, %%cr3\n"
         "mov %1, %%rsp\n"
         "mov %2, %%edi\n"
@@ -1229,7 +1257,8 @@ static void syscall_exit_current(uint32_t code) {
     if (!cur) {
         for (;;) __asm__ volatile("hlt");
     }
-    syscall_exit_on_safe_stack(process_group_id(cur), code, syscall_exit_group_finish);
+    syscall_exit_on_safe_stack(process_group_id(cur), code,
+                               syscall_exit_group_finish, cur->cpu);
 }
 
 __attribute__((noreturn))
@@ -1241,7 +1270,25 @@ static void syscall_thread_exit_current(uint32_t code) {
     if (cur->pid == cur->tgid) {
         syscall_exit_current(code);
     }
-    syscall_exit_on_safe_stack(cur->pid, code, syscall_thread_exit_finish);
+    if (cur->is_linux && cur->linux_clear_child_tid) {
+        uint64_t private_key = 0;
+        uint64_t shared_key = 0;
+        uint64_t tid_addr = cur->linux_clear_child_tid;
+        if (user_buf_writable(cur, tid_addr, sizeof(uint32_t)) &&
+            futex_key_for_user_word_ex(cur, tid_addr, 1, &private_key) == 0) {
+            *(uint32_t *)(uintptr_t)tid_addr = 0;
+            uint32_t woke_private = sched_wake_futex(private_key, 0x7fffffffU,
+                                                     FUTEX_BITSET_MATCH_ANY, 0);
+            (void)woke_private;
+            if (futex_key_for_user_word_ex(cur, tid_addr, 0, &shared_key) == 0) {
+                sched_wake_futex(shared_key, 0x7fffffffU,
+                                 FUTEX_BITSET_MATCH_ANY, 0);
+            }
+        }
+        cur->linux_clear_child_tid = 0;
+    }
+    syscall_exit_on_safe_stack(cur->pid, code,
+                               syscall_thread_exit_finish, cur->cpu);
 }
 
 /*
@@ -2135,30 +2182,50 @@ static uint64_t sys_now_ms(void) {
     return (hpet_read_counter() * 1000ULL) / freq;
 }
 
-static int futex_key_for_user_word(struct fry_process *p, uint64_t uaddr, uint64_t *key_out) {
+static int futex_key_for_user_word_ex(struct fry_process *p, uint64_t uaddr,
+                                      int private_key, uint64_t *key_out) {
     uint64_t key;
     if (!p || !key_out) return -EINVAL;
     if ((uaddr & 3ULL) != 0) return -EINVAL;
     if (!user_buf_mapped(p, uaddr, sizeof(uint32_t))) return -EFAULT;
+    if (private_key) {
+        struct fry_process_shared *shared = proc_shared_state(p);
+        if (!shared) return -ESRCH;
+        /* Linux FUTEX_PRIVATE_FLAG keys are scoped to one process address
+         * space. Keep the key collision-free for all in-tree process IDs:
+         *   bit 63      = private futex namespace
+         *   bits 62..48 = shared owner pid
+         *   bits 47..2  = canonical user virtual word address
+         */
+        *key_out = 0x8000000000000000ULL |
+                   (((uint64_t)shared->owner_pid & 0x7FFFULL) << 48) |
+                   (uaddr & 0x0000FFFFFFFFFFFCULL);
+        return 0;
+    }
     key = vmm_virt_to_phys_user(p->cr3, uaddr);
     if (!key) return -EFAULT;
     *key_out = key;
     return 0;
 }
 
-static int futex_wait_begin(struct fry_process *cur, uint64_t uaddr,
-                            uint32_t expected, uint64_t timeout_ms) {
+static int futex_wait_begin_ex(struct fry_process *cur, uint64_t uaddr,
+                               uint32_t expected, int has_timeout,
+                               uint64_t timeout_ms, uint32_t bitset,
+                               int private_key) {
     uint64_t key;
     volatile const uint32_t *word;
     uint64_t wake_time_ms;
     int rc;
     if (!cur) return -ESRCH;
-    rc = futex_key_for_user_word(cur, uaddr, &key);
+    if (bitset == 0) return -EINVAL;
+    rc = futex_key_for_user_word_ex(cur, uaddr, private_key, &key);
     if (rc < 0) return rc;
 
     word = (volatile const uint32_t *)(uintptr_t)uaddr;
-    if (timeout_ms == 0) {
+    if (!has_timeout) {
         wake_time_ms = UINT64_MAX;
+    } else if (timeout_ms == 0) {
+        wake_time_ms = sys_now_ms();
     } else {
         wake_time_ms = sys_now_ms();
         if (wake_time_ms > UINT64_MAX - timeout_ms) {
@@ -2168,7 +2235,7 @@ static int futex_wait_begin(struct fry_process *cur, uint64_t uaddr,
         }
     }
 
-    rc = sched_block_futex(cur->pid, word, expected, key, wake_time_ms);
+    rc = sched_block_futex(cur->pid, word, expected, key, wake_time_ms, bitset);
     if (rc < 0) return rc;
     sched_yield();
 
@@ -2177,23 +2244,1480 @@ static int futex_wait_begin(struct fry_process *cur, uint64_t uaddr,
     rc = cur->wait_result;
     cur->wait_result = 0;
     cur->wait_futex_key = 0;
+    cur->wait_futex_bitset = 0;
     cur->wake_time_ms = 0;
     return rc;
 }
 
-static int futex_wake_waiters(struct fry_process *cur, uint64_t uaddr, uint32_t max_wake) {
+static int futex_wait_begin(struct fry_process *cur, uint64_t uaddr,
+                            uint32_t expected, uint64_t timeout_ms) {
+    return futex_wait_begin_ex(cur, uaddr, expected, timeout_ms != 0,
+                               timeout_ms, FUTEX_BITSET_MATCH_ANY, 0);
+}
+
+static int futex_wake_waiters_bitset(struct fry_process *cur, uint64_t uaddr,
+                                     uint32_t max_wake, uint32_t bitset,
+                                     int private_key) {
     uint64_t key;
     int rc;
     if (!cur || max_wake == 0) return 0;
-    rc = futex_key_for_user_word(cur, uaddr, &key);
+    if (bitset == 0) return -EINVAL;
+    rc = futex_key_for_user_word_ex(cur, uaddr, private_key, &key);
     if (rc < 0) return rc;
-    return (int)sched_wake_futex(key, max_wake, 0);
+    return (int)sched_wake_futex(key, max_wake, bitset, 0);
+}
+
+static int futex_wake_waiters(struct fry_process *cur, uint64_t uaddr, uint32_t max_wake) {
+    return futex_wake_waiters_bitset(cur, uaddr, max_wake,
+                                     FUTEX_BITSET_MATCH_ANY, 0);
+}
+
+static int futex_requeue_waiters(struct fry_process *cur, uint64_t uaddr,
+                                 uint32_t wake_count, uint64_t uaddr2,
+                                 uint32_t requeue_count, int do_cmp,
+                                 uint32_t cmp_expected, int private_key) {
+    uint64_t key1, key2;
+    int rc;
+    if (!cur) return -ESRCH;
+    rc = futex_key_for_user_word_ex(cur, uaddr, private_key, &key1);
+    if (rc < 0) return rc;
+    rc = futex_key_for_user_word_ex(cur, uaddr2, private_key, &key2);
+    if (rc < 0) return rc;
+    if (do_cmp && *(volatile const uint32_t *)(uintptr_t)uaddr != cmp_expected)
+        return -EAGAIN;
+    uint32_t woke = sched_wake_futex(key1, wake_count,
+                                     FUTEX_BITSET_MATCH_ANY, 0);
+    uint32_t moved = sched_requeue_futex(key1, key2, requeue_count);
+    return (int)(woke + moved);
+}
+
+static int futex_op_compare(int32_t oldval, int32_t cmpval, uint32_t cmp) {
+    switch (cmp) {
+    case FUTEX_OP_CMP_EQ: return oldval == cmpval;
+    case FUTEX_OP_CMP_NE: return oldval != cmpval;
+    case FUTEX_OP_CMP_LT: return oldval <  cmpval;
+    case FUTEX_OP_CMP_LE: return oldval <= cmpval;
+    case FUTEX_OP_CMP_GT: return oldval >  cmpval;
+    case FUTEX_OP_CMP_GE: return oldval >= cmpval;
+    default: return 0;
+    }
+}
+
+static int futex_wake_op(struct fry_process *cur, uint64_t uaddr1,
+                         uint32_t wake1, uint64_t uaddr2,
+                         uint32_t wake2, uint32_t encoded_op,
+                         int private_key) {
+    uint64_t key1, key2;
+    int rc;
+    uint32_t op = (encoded_op >> 28) & 0xfU;
+    uint32_t cmp = (encoded_op >> 24) & 0xfU;
+    uint32_t oparg = (encoded_op >> 12) & 0xfffU;
+    uint32_t cmparg = encoded_op & 0xfffU;
+    volatile uint32_t *word2;
+    uint32_t old;
+    if (!cur) return -ESRCH;
+    rc = futex_key_for_user_word_ex(cur, uaddr1, private_key, &key1);
+    if (rc < 0) return rc;
+    rc = futex_key_for_user_word_ex(cur, uaddr2, private_key, &key2);
+    if (rc < 0) return rc;
+    if (op & FUTEX_OP_OPARG_SHIFT) oparg = 1U << (oparg & 31U);
+    op &= 0x7U;
+    word2 = (volatile uint32_t *)(uintptr_t)uaddr2;
+    switch (op) {
+    case FUTEX_OP_SET:
+        old = __sync_lock_test_and_set(word2, oparg);
+        break;
+    case FUTEX_OP_ADD:
+        old = __sync_fetch_and_add(word2, oparg);
+        break;
+    case FUTEX_OP_OR:
+        old = __sync_fetch_and_or(word2, oparg);
+        break;
+    case FUTEX_OP_ANDN:
+        old = __sync_fetch_and_and(word2, ~oparg);
+        break;
+    case FUTEX_OP_XOR:
+        old = __sync_fetch_and_xor(word2, oparg);
+        break;
+    default:
+        return -ENOSYS;
+    }
+    uint32_t woke = sched_wake_futex(key1, wake1,
+                                     FUTEX_BITSET_MATCH_ANY, 0);
+    if (futex_op_compare((int32_t)old, (int32_t)cmparg, cmp)) {
+        woke += sched_wake_futex(key2, wake2,
+                                 FUTEX_BITSET_MATCH_ANY, 0);
+    }
+    return (int)woke;
+}
+
+/* =====================================================================
+ * Linux compatibility layer — syscall translation ("linuxulator").
+ *
+ * Routed to from syscall_dispatch() when the current process has is_linux
+ * set. `num` here is a LINUX x86_64 syscall number (a separate namespace
+ * from native TaterTOS numbers). Reuses this file's validated helpers
+ * (user_buf_mapped, syscall_exit_current, sys_now_ms, the page mappers).
+ *
+ * Phase 1 scope: enough mem/info/process syscalls to run a STATIC Linux
+ * ELF (write/exit + memory + identity + time + randomness). File I/O,
+ * threads/futex, and signals are honestly stubbed (-ENOSYS / no-op) and
+ * land in later phases; the default case logs every unimplemented number
+ * so expanding toward glibc/CPython/Bun is a measured iterate-to-green.
+ * =================================================================== */
+
+#define LX_FRAME_MASK 0x000FFFFFFFFFF000ULL
+#define LX_PG 4096ULL
+
+static void lx_setfield(char *dst, const char *src) {
+    int i = 0;
+    while (src[i] && i < 64) { dst[i] = src[i]; i++; }
+    dst[i] = 0;
+}
+
+/* Map one zeroed user page with the given VMM flags; returns 0 or -ENOMEM. */
+static int lx_map_one(uint64_t cr3, uint64_t va, uint64_t flags) {
+    uint64_t pa = pmm_alloc_page();
+    if (!pa) return -ENOMEM;
+    vmm_map_user(cr3, va, pa, flags);
+    uint8_t *kv = (uint8_t *)(uintptr_t)vmm_phys_to_virt(pa);
+    for (int i = 0; i < 4096; i++) kv[i] = 0;
+    return 0;
+}
+
+static void lx_unmap_range(uint64_t cr3, uint64_t base, uint64_t npg) {
+    for (uint64_t i = 0; i < npg; i++) {
+        uint64_t va = base + i * LX_PG;
+        uint64_t f = vmm_virt_to_phys_user(cr3, va) & LX_FRAME_MASK;
+        if (f) { vmm_unmap_user(cr3, va); pmm_free_page(f); }
+    }
+}
+
+static uint32_t lx_to_fry_open_flags(uint64_t lflags) {
+    uint32_t f = (uint32_t)(lflags & LNX_O_ACCMODE);
+    if (lflags & LNX_O_CREAT) f |= O_CREAT;
+    if (lflags & LNX_O_TRUNC) f |= O_TRUNC;
+    if (lflags & LNX_O_APPEND) f |= O_APPEND;
+    if (lflags & LNX_O_NONBLOCK) f |= O_NONBLOCK;
+    if (lflags & LNX_O_CLOEXEC) f |= O_CLOEXEC;
+    if (lflags & LNX_O_DIRECTORY) f |= FRY_O_DIRECTORY;
+    return f;
+}
+
+static uint32_t lx_mode_from_vfs_attr(uint32_t attr) {
+    if (attr & 0x10u) return LNX_S_IFDIR | 0755u;
+    return LNX_S_IFREG | 0644u;
+}
+
+static void lx_put64(uint8_t *p, uint32_t off, uint64_t v) {
+    *(uint64_t *)(uintptr_t)(p + off) = v;
+}
+
+static void lx_put32(uint8_t *p, uint32_t off, uint32_t v) {
+    *(uint32_t *)(uintptr_t)(p + off) = v;
+}
+
+static int lx_copy_stat(struct fry_process *cur, uint64_t dst, uint64_t size,
+                        uint32_t mode) {
+    uint8_t st[144];
+    for (uint32_t i = 0; i < sizeof(st); i++) st[i] = 0;
+
+    lx_put64(st, 0, 1);                                /* st_dev */
+    lx_put64(st, 8, (size ^ ((uint64_t)mode << 32)) | 1); /* st_ino */
+    lx_put64(st, 16, 1);                               /* st_nlink */
+    lx_put32(st, 24, mode);                            /* st_mode */
+    lx_put32(st, 28, 0);                               /* st_uid */
+    lx_put32(st, 32, 0);                               /* st_gid */
+    lx_put64(st, 40, 0);                               /* st_rdev */
+    lx_put64(st, 48, size);                            /* st_size */
+    lx_put64(st, 56, 4096);                            /* st_blksize */
+    lx_put64(st, 64, (size + 511ULL) / 512ULL);        /* st_blocks */
+
+    uint64_t now = sys_now_ms() / 1000ULL;
+    lx_put64(st, 72, now);                             /* st_atim.tv_sec */
+    lx_put64(st, 88, now);                             /* st_mtim.tv_sec */
+    lx_put64(st, 104, now);                            /* st_ctim.tv_sec */
+
+    return copyout(cur, st, dst, sizeof(st));
+}
+
+static int lx_fd_stat_to_user(struct fry_process *cur, int fd, uint64_t dst) {
+    if (!cur) return -ESRCH;
+    struct fry_process_shared *shared = proc_shared_state(cur);
+    if (!shared) return -ESRCH;
+    if (fd == 0 || fd == 1 || fd == 2)
+        return lx_copy_stat(cur, dst, 0, LNX_S_IFCHR | 0666u);
+    if (fd < 3 || fd >= FRY_FD_MAX) return -EBADF;
+    if (!shared->fd_ptrs[fd] || shared->fd_kind[fd] == FD_NONE) return -EBADF;
+    if (shared->fd_kind[fd] == FD_DIR) {
+        struct vfs_stat st;
+        if (!shared->fd_paths[fd][0]) return -EBADF;
+        if (vfs_stat(shared->fd_paths[fd], &st) != 0) return -ENOENT;
+        return lx_copy_stat(cur, dst, st.size, lx_mode_from_vfs_attr(st.attr));
+    }
+    if (shared->fd_kind[fd] != FD_FILE) return -EBADF;
+
+    struct vfs_stat st;
+    if (shared->fd_paths[fd][0] && vfs_stat(shared->fd_paths[fd], &st) == 0)
+        return lx_copy_stat(cur, dst, st.size, lx_mode_from_vfs_attr(st.attr));
+
+    struct vfs_file *vf = (struct vfs_file *)shared->fd_ptrs[fd];
+    return lx_copy_stat(cur, dst, vf ? vf->size : 0, LNX_S_IFREG | 0644u);
+}
+
+static int lx_path_stat_to_user(struct fry_process *cur, int dirfd,
+                                const char *raw_path, uint64_t dst) {
+    char path[FRY_PATH_MAX];
+    struct vfs_stat st;
+    int rpath = resolve_at_path(cur, dirfd, raw_path, path);
+    if (rpath < 0) return rpath;
+    if (vfs_stat(path, &st) != 0) return -ENOENT;
+    return lx_copy_stat(cur, dst, st.size, lx_mode_from_vfs_attr(st.attr));
+}
+
+static int lx_open_path(struct fry_process *cur, int dirfd, const char *raw_path,
+                        uint64_t lflags) {
+    if (!cur) return -ESRCH;
+    struct fry_process_shared *shared = proc_shared_state(cur);
+    if (!shared) return -ESRCH;
+
+    char path[FRY_PATH_MAX];
+    int rpath = resolve_at_path(cur, dirfd, raw_path, path);
+    if (rpath < 0) return rpath;
+
+    uint32_t flags = lx_to_fry_open_flags(lflags);
+    struct vfs_stat st;
+    if (vfs_stat(path, &st) == 0 && (st.attr & 0x10u)) {
+        if ((flags & FRY_O_ACCMODE) != O_RDONLY) return -EISDIR;
+        int fd = fd_alloc(cur);
+        if (fd < 0) return -EMFILE;
+        fd_install(cur, fd, shared->fd_paths[fd], FD_DIR, flags & O_NONBLOCK);
+        int prc = install_fd_path(cur, fd, path);
+        if (prc < 0) return prc;
+        return fd;
+    }
+    if (flags & FRY_O_DIRECTORY) return -ENOTDIR;
+
+    struct vfs_file *f = vfs_open(path);
+    if (!f && (flags & O_CREAT)) {
+        vfs_create(path, 1);
+        f = vfs_open(path);
+    }
+    if (!f) return -ENOENT;
+
+    int fd = fd_alloc(cur);
+    if (fd < 0) {
+        vfs_close(f);
+        return -EMFILE;
+    }
+    fd_install(cur, fd, f, FD_FILE, flags & O_NONBLOCK);
+    int prc = install_fd_path(cur, fd, path);
+    if (prc < 0) {
+        vfs_close(f);
+        return prc;
+    }
+    return fd;
+}
+
+struct lx_epoll_event {
+    uint32_t events;
+    uint64_t data;
+} __attribute__((packed));
+
+#define LX_EPOLLIN   0x00000001u
+#define LX_EPOLLOUT  0x00000004u
+#define LX_EPOLLERR  0x00000008u
+#define LX_EPOLLHUP  0x00000010u
+#define LX_EPOLL_CTL_ADD 1
+#define LX_EPOLL_CTL_DEL 2
+#define LX_EPOLL_CTL_MOD 3
+#define LX_EFD_SEMAPHORE 0x00000001u
+#define LX_TFD_TIMER_ABSTIME 0x00000001u
+#define LX_TFD_TIMER_CANCEL_ON_SET 0x00000002u
+
+static uint32_t lx_epoll_to_fry(uint32_t events) {
+    uint32_t out = 0;
+    if (events & LX_EPOLLIN)  out |= FRY_POLLIN;
+    if (events & LX_EPOLLOUT) out |= FRY_POLLOUT;
+    if (events & LX_EPOLLERR) out |= FRY_POLLERR;
+    if (events & LX_EPOLLHUP) out |= FRY_POLLHUP;
+    return out;
+}
+
+static uint32_t lx_epoll_from_fry(uint32_t events) {
+    uint32_t out = 0;
+    if (events & FRY_POLLIN)  out |= LX_EPOLLIN;
+    if (events & FRY_POLLOUT) out |= LX_EPOLLOUT;
+    if (events & FRY_POLLERR) out |= LX_EPOLLERR;
+    if (events & FRY_POLLHUP) out |= LX_EPOLLHUP;
+    return out;
+}
+
+static int lx_epoll_create_fd(struct fry_process *cur, uint32_t flags) {
+    if (!cur || !proc_shared_state(cur)) return -ESRCH;
+    if (flags & ~LNX_O_CLOEXEC) return -EINVAL;
+    int fd = fd_alloc(cur);
+    if (fd < 0) return -EMFILE;
+    struct epoll_cb *ep = (struct epoll_cb *)kmalloc(sizeof(struct epoll_cb));
+    if (!ep) return -ENOMEM;
+    ep->items = 0;
+    ep->count = 0;
+    ep->lock = 0;
+    fd_install(cur, fd, ep, FD_EPOLL, (flags & LNX_O_CLOEXEC) ? O_CLOEXEC : 0);
+    return fd;
+}
+
+static int lx_epoll_ctl_fd(struct fry_process *cur, int epfd, int op,
+                           int target_fd, uint64_t event_ptr) {
+    struct fry_process_shared *shared = proc_shared_state(cur);
+    if (!shared) return -ESRCH;
+    if (epfd < 3 || epfd >= FRY_FD_MAX || target_fd < 0 ||
+        target_fd >= FRY_FD_MAX) return -EBADF;
+    if (shared->fd_kind[epfd] != FD_EPOLL || !shared->fd_ptrs[epfd])
+        return -EBADF;
+    if (!shared->fd_ptrs[target_fd] || shared->fd_kind[target_fd] == FD_NONE)
+        return -EBADF;
+
+    struct epoll_cb *ep = (struct epoll_cb *)shared->fd_ptrs[epfd];
+    struct lx_epoll_event lev;
+    if (op != LX_EPOLL_CTL_DEL) {
+        if (!event_ptr) return -EFAULT;
+        if (!user_buf_mapped(cur, event_ptr, sizeof(lev))) return -EFAULT;
+        if (copyin(cur, event_ptr, &lev, sizeof(lev)) != 0) return -EFAULT;
+    } else {
+        lev.events = 0;
+        lev.data = 0;
+    }
+
+    while (__sync_lock_test_and_set(&ep->lock, 1)) {}
+    struct epoll_item *item = ep->items;
+    while (item && item->fd != target_fd) item = item->next;
+
+    if (op == LX_EPOLL_CTL_ADD) {
+        if (item) { ep->lock = 0; return -EEXIST; }
+        item = (struct epoll_item *)kmalloc(sizeof(struct epoll_item));
+        if (!item) { ep->lock = 0; return -ENOMEM; }
+        item->fd = target_fd;
+        item->events = lx_epoll_to_fry(lev.events);
+        item->data = lev.data;
+        item->next = ep->items;
+        ep->items = item;
+        ep->count++;
+    } else if (op == LX_EPOLL_CTL_MOD) {
+        if (!item) { ep->lock = 0; return -ENOENT; }
+        item->events = lx_epoll_to_fry(lev.events);
+        item->data = lev.data;
+    } else if (op == LX_EPOLL_CTL_DEL) {
+        struct epoll_item **pp = &ep->items;
+        while (*pp && (*pp)->fd != target_fd) pp = &(*pp)->next;
+        if (!*pp) { ep->lock = 0; return -ENOENT; }
+        struct epoll_item *tmp = *pp;
+        *pp = tmp->next;
+        kfree(tmp);
+        ep->count--;
+    } else {
+        ep->lock = 0;
+        return -EINVAL;
+    }
+    ep->lock = 0;
+    return 0;
+}
+
+static int lx_epoll_wait_fd(struct fry_process *cur, int epfd, uint64_t events_ptr,
+                            int maxevents, int timeout_ms) {
+    struct fry_process_shared *shared = proc_shared_state(cur);
+    if (!shared) return -ESRCH;
+    if (epfd < 3 || epfd >= FRY_FD_MAX) return -EBADF;
+    if (maxevents <= 0 || maxevents > 64) return -EINVAL;
+    if (shared->fd_kind[epfd] != FD_EPOLL || !shared->fd_ptrs[epfd])
+        return -EBADF;
+    if (!user_buf_writable(cur, events_ptr,
+                           (uint64_t)maxevents * sizeof(struct lx_epoll_event)))
+        return -EFAULT;
+
+    struct epoll_cb *ep = (struct epoll_cb *)shared->fd_ptrs[epfd];
+    struct lx_epoll_event out[64];
+    int n = 0;
+    uint64_t start = sys_now_ms();
+    uint64_t wake = (timeout_ms < 0) ? UINT64_MAX : start + (uint64_t)timeout_ms;
+
+    while (n == 0) {
+        while (__sync_lock_test_and_set(&ep->lock, 1)) {}
+        struct epoll_item *item = ep->items;
+        while (item && n < maxevents) {
+            uint16_t rev = poll_check_fd(cur, item->fd, (uint16_t)item->events);
+            if (rev) {
+                out[n].events = lx_epoll_from_fry((uint32_t)rev);
+                out[n].data = item->data;
+                n++;
+            }
+            item = item->next;
+        }
+        ep->lock = 0;
+        if (n > 0 || timeout_ms == 0) break;
+        uint64_t now = sys_now_ms();
+        if (now >= wake) break;
+        sched_block_poll(cur->pid, wake);
+        sched_yield();
+        cur = proc_current();
+        if (!cur) return -ESRCH;
+    }
+
+    if (n > 0 && copyout(cur, out, events_ptr,
+                         (uint64_t)n * sizeof(struct lx_epoll_event)) != 0)
+        return -EFAULT;
+    return n;
+}
+
+static int lx_eventfd_create_fd(struct fry_process *cur, uint64_t initval,
+                                uint32_t flags) {
+    if (!cur || !proc_shared_state(cur)) return -ESRCH;
+    if (flags & ~(LX_EFD_SEMAPHORE | LNX_O_NONBLOCK | LNX_O_CLOEXEC))
+        return -EINVAL;
+    int fd = fd_alloc(cur);
+    if (fd < 0) return -EMFILE;
+    struct eventfd_cb *ev = (struct eventfd_cb *)kmalloc(sizeof(struct eventfd_cb));
+    if (!ev) return -ENOMEM;
+    ev->counter = initval;
+    ev->semaphore = (flags & LX_EFD_SEMAPHORE) != 0;
+    ev->nonblock = (flags & LNX_O_NONBLOCK) != 0;
+    ev->lock = 0;
+    fd_install(cur, fd, ev, FD_EVENTFD,
+               ((flags & LNX_O_NONBLOCK) ? O_NONBLOCK : 0) |
+               ((flags & LNX_O_CLOEXEC) ? O_CLOEXEC : 0));
+    return fd;
+}
+
+static int lx_timerfd_create_fd(struct fry_process *cur, int clockid,
+                                uint32_t flags) {
+    if (!cur || !proc_shared_state(cur)) return -ESRCH;
+    if (clockid != LNX_CLOCK_REALTIME && clockid != LNX_CLOCK_MONOTONIC)
+        return -EINVAL;
+    if (flags & ~(LNX_O_NONBLOCK | LNX_O_CLOEXEC)) return -EINVAL;
+    int fd = fd_alloc(cur);
+    if (fd < 0) return -EMFILE;
+    struct timerfd_cb *tm = (struct timerfd_cb *)kmalloc(sizeof(struct timerfd_cb));
+    if (!tm) return -ENOMEM;
+    tm->used = 1;
+    tm->clockid = clockid;
+    tm->it_value_ms = 0;
+    tm->it_interval_ms = 0;
+    tm->deadline_ms = 0;
+    tm->expirations = 0;
+    tm->nonblock = (flags & LNX_O_NONBLOCK) ? 1 : 0;
+    fd_install(cur, fd, tm, FD_TIMERFD,
+               ((flags & LNX_O_NONBLOCK) ? O_NONBLOCK : 0) |
+               ((flags & LNX_O_CLOEXEC) ? O_CLOEXEC : 0));
+    return fd;
+}
+
+static void lx_timerfd_snapshot(struct timerfd_cb *tm, uint64_t out[4]) {
+    uint64_t now = sys_now_ms();
+    uint64_t remaining_ms = 0;
+    if (tm->it_value_ms > 0 && tm->deadline_ms > now)
+        remaining_ms = tm->deadline_ms - now;
+    out[0] = tm->it_interval_ms / 1000ULL;
+    out[1] = (tm->it_interval_ms % 1000ULL) * 1000000ULL;
+    out[2] = remaining_ms / 1000ULL;
+    out[3] = (remaining_ms % 1000ULL) * 1000000ULL;
+}
+
+static int lx_timerfd_settime_fd(struct fry_process *cur, int fd, uint32_t flags,
+                                 uint64_t new_ptr, uint64_t old_ptr) {
+    struct fry_process_shared *shared = proc_shared_state(cur);
+    if (!shared) return -ESRCH;
+    if (fd < 3 || fd >= FRY_FD_MAX || shared->fd_kind[fd] != FD_TIMERFD)
+        return -EBADF;
+    if (flags & ~(LX_TFD_TIMER_ABSTIME | LX_TFD_TIMER_CANCEL_ON_SET))
+        return -EINVAL;
+    struct timerfd_cb *tm = (struct timerfd_cb *)shared->fd_ptrs[fd];
+    if (!tm || !tm->used) return -EBADF;
+    if (old_ptr) {
+        if (!user_buf_writable(cur, old_ptr, 32)) return -EFAULT;
+        uint64_t oldv[4];
+        lx_timerfd_snapshot(tm, oldv);
+        if (copyout(cur, oldv, old_ptr, 32) != 0) return -EFAULT;
+    }
+    if (!new_ptr) return -EFAULT;
+    uint64_t spec[4]; /* Linux: interval sec,nsec, value sec,nsec */
+    if (!user_buf_mapped(cur, new_ptr, 32)) return -EFAULT;
+    if (copyin(cur, new_ptr, spec, 32) != 0) return -EFAULT;
+    if (spec[1] >= 1000000000ULL || spec[3] >= 1000000000ULL) return -EINVAL;
+
+    uint64_t interval_ms = spec[0] * 1000ULL + spec[1] / 1000000ULL;
+    uint64_t value_ms = spec[2] * 1000ULL + spec[3] / 1000000ULL;
+    uint64_t now = sys_now_ms();
+    tm->it_interval_ms = interval_ms;
+    tm->expirations = 0;
+    if (value_ms == 0) {
+        tm->it_value_ms = 0;
+        tm->deadline_ms = 0;
+        return 0;
+    }
+    if (flags & LX_TFD_TIMER_ABSTIME) {
+        tm->deadline_ms = value_ms;
+        tm->it_value_ms = (tm->deadline_ms > now) ? (tm->deadline_ms - now) : 0;
+        if (tm->deadline_ms <= now) tm->expirations = 1;
+    } else {
+        tm->it_value_ms = value_ms;
+        tm->deadline_ms = now + value_ms;
+    }
+    sched_wake_poll_waiters();
+    return 0;
+}
+
+static int lx_timerfd_gettime_fd(struct fry_process *cur, int fd, uint64_t out_ptr) {
+    struct fry_process_shared *shared = proc_shared_state(cur);
+    if (!shared) return -ESRCH;
+    if (fd < 3 || fd >= FRY_FD_MAX || shared->fd_kind[fd] != FD_TIMERFD)
+        return -EBADF;
+    struct timerfd_cb *tm = (struct timerfd_cb *)shared->fd_ptrs[fd];
+    if (!tm || !tm->used) return -EBADF;
+    if (!user_buf_writable(cur, out_ptr, 32)) return -EFAULT;
+    uint64_t out[4];
+    lx_timerfd_snapshot(tm, out);
+    return copyout(cur, out, out_ptr, 32);
+}
+
+static int lx_signalfd_fd(struct fry_process *cur, int fd, uint64_t mask_ptr,
+                          uint64_t mask_size, uint32_t flags) {
+    struct fry_process_shared *shared = proc_shared_state(cur);
+    if (!shared) return -ESRCH;
+    if (flags & ~(LNX_O_NONBLOCK | LNX_O_CLOEXEC)) return -EINVAL;
+    if (mask_ptr && mask_size < 8) return -EINVAL;
+    uint64_t mask = 0;
+    if (mask_ptr) {
+        if (!user_buf_mapped(cur, mask_ptr, 8)) return -EFAULT;
+        if (copyin(cur, mask_ptr, &mask, 8) != 0) return -EFAULT;
+    }
+    if (fd == -1) {
+        int nfd = fd_alloc(cur);
+        if (nfd < 0) return -EMFILE;
+        struct signalfd_cb *sf = (struct signalfd_cb *)kmalloc(sizeof(struct signalfd_cb));
+        if (!sf) return -ENOMEM;
+        sf->used = 1;
+        sf->mask = mask;
+        sf->nonblock = (flags & LNX_O_NONBLOCK) ? 1 : 0;
+        fd_install(cur, nfd, sf, FD_SIGNALFD,
+                   ((flags & LNX_O_NONBLOCK) ? O_NONBLOCK : 0) |
+                   ((flags & LNX_O_CLOEXEC) ? O_CLOEXEC : 0));
+        return nfd;
+    }
+    if (fd < 3 || fd >= FRY_FD_MAX || shared->fd_kind[fd] != FD_SIGNALFD)
+        return -EBADF;
+    struct signalfd_cb *sf = (struct signalfd_cb *)shared->fd_ptrs[fd];
+    if (!sf || !sf->used) return -EBADF;
+    sf->mask = mask;
+    sf->nonblock = (flags & LNX_O_NONBLOCK) ? 1 : 0;
+    return fd;
+}
+
+static int64_t lx_read_fd(struct fry_process *cur, int fd, uint64_t dst,
+                          uint64_t len) {
+    if (!cur) return -ESRCH;
+    struct fry_process_shared *shared = proc_shared_state(cur);
+    if (!shared) return -ESRCH;
+    if (len && !user_buf_writable(cur, dst, len)) return -EFAULT;
+    if (fd == 0) return 0;
+    if (fd < 3 || fd >= FRY_FD_MAX) return -EBADF;
+    if (!shared->fd_ptrs[fd] || shared->fd_kind[fd] == FD_NONE) return -EBADF;
+    if (shared->fd_kind[fd] == FD_FILE)
+        return vfs_read((struct vfs_file *)shared->fd_ptrs[fd],
+                        (void *)(uintptr_t)dst, (uint32_t)len);
+    if (shared->fd_kind[fd] == FD_EVENTFD) {
+        if (len < 8) return -EINVAL;
+        struct eventfd_cb *ev = (struct eventfd_cb *)shared->fd_ptrs[fd];
+        if (!ev) return -EBADF;
+        while (__sync_lock_test_and_set(&ev->lock, 1)) {}
+        if (ev->counter == 0) {
+            ev->lock = 0;
+            return -EAGAIN;
+        }
+        uint64_t val = ev->semaphore ? 1 : ev->counter;
+        if (ev->semaphore) ev->counter--;
+        else ev->counter = 0;
+        ev->lock = 0;
+        if (copyout(cur, &val, dst, 8) != 0) return -EFAULT;
+        sched_wake_poll_waiters();
+        return 8;
+    }
+    if (shared->fd_kind[fd] == FD_TIMERFD) {
+        if (len < 8) return -EINVAL;
+        struct timerfd_cb *tm = (struct timerfd_cb *)shared->fd_ptrs[fd];
+        if (!tm || !tm->used) return -EBADF;
+        timerfd_update_expirations(tm, sys_now_ms());
+        if (tm->expirations == 0) return -EAGAIN;
+        uint64_t val = tm->expirations;
+        tm->expirations = 0;
+        if (copyout(cur, &val, dst, 8) != 0) return -EFAULT;
+        return 8;
+    }
+    if (shared->fd_kind[fd] == FD_SIGNALFD) {
+        return -EAGAIN;
+    }
+    if (shared->fd_kind[fd] == FD_INOTIFY) {
+        struct inotify_cb *in = (struct inotify_cb *)shared->fd_ptrs[fd];
+        if (!in || !in->used) return -EBADF;
+        if (in->ev_head == in->ev_tail) return -EAGAIN;
+        struct inotify_event_buf *ev = &in->events[in->ev_tail];
+        uint32_t ev_size = 16 + ev->len;
+        if (ev_size > len) ev_size = (uint32_t)len;
+        uint8_t tmp[16 + INOTIFY_NAME_MAX];
+        *(int32_t *)(tmp + 0) = ev->wd;
+        *(uint32_t *)(tmp + 4) = ev->mask;
+        *(uint32_t *)(tmp + 8) = ev->cookie;
+        *(uint32_t *)(tmp + 12) = ev->len;
+        for (uint32_t i = 0; i < ev->len && i < INOTIFY_NAME_MAX && (16 + i) < ev_size; i++)
+            tmp[16 + i] = (uint8_t)ev->name[i];
+        in->ev_tail = (in->ev_tail + 1) % INOTIFY_EVENT_MAX;
+        if (copyout(cur, tmp, dst, ev_size) != 0) return -EFAULT;
+        return ev_size;
+    }
+    return -EBADF;
+}
+
+static int64_t lx_write_fd(struct fry_process *cur, int fd, uint64_t src,
+                           uint64_t len) {
+    if (!cur) return -ESRCH;
+    struct fry_process_shared *shared = proc_shared_state(cur);
+    if (len && !user_buf_mapped(cur, src, len)) return -EFAULT;
+    if (fd == 1 || fd == 2) {
+        kprint_write((const char *)(uintptr_t)src, len);
+        return (int64_t)len;
+    }
+    if (!shared || fd < 3 || fd >= FRY_FD_MAX ||
+        !shared->fd_ptrs[fd] || shared->fd_kind[fd] == FD_NONE)
+        return -EBADF;
+    if (shared->fd_kind[fd] == FD_FILE)
+        return vfs_write((struct vfs_file *)shared->fd_ptrs[fd],
+                         (const void *)(uintptr_t)src, (uint32_t)len);
+    if (shared->fd_kind[fd] == FD_EVENTFD) {
+        if (len < 8) return -EINVAL;
+        struct eventfd_cb *ev = (struct eventfd_cb *)shared->fd_ptrs[fd];
+        if (!ev) return -EBADF;
+        uint64_t val;
+        if (copyin(cur, src, &val, 8) != 0) return -EFAULT;
+        if (val == UINT64_MAX) return -EINVAL;
+        while (__sync_lock_test_and_set(&ev->lock, 1)) {}
+        uint64_t newval = ev->counter + val;
+        if (newval < ev->counter) newval = UINT64_MAX;
+        ev->counter = newval;
+        ev->lock = 0;
+        sched_wake_poll_waiters();
+        return 8;
+    }
+    return -EBADF;
+}
+
+static int lx_close_fd(struct fry_process *cur, int fd) {
+    if (!cur) return -ESRCH;
+    struct fry_process_shared *shared = proc_shared_state(cur);
+    if (!shared) return -ESRCH;
+    if (fd == 0 || fd == 1 || fd == 2) return 0;
+    if (fd < 3 || fd >= FRY_FD_MAX) return -EBADF;
+    if (!shared->fd_ptrs[fd] || shared->fd_kind[fd] == FD_NONE) return -EBADF;
+    if (shared->fd_kind[fd] == FD_FILE)
+        vfs_close((struct vfs_file *)shared->fd_ptrs[fd]);
+    else if (shared->fd_kind[fd] == FD_EPOLL) {
+        struct epoll_cb *ep = (struct epoll_cb *)shared->fd_ptrs[fd];
+        if (ep) {
+            struct epoll_item *item = ep->items;
+            while (item) {
+                struct epoll_item *next = item->next;
+                kfree(item);
+                item = next;
+            }
+            kfree(ep);
+        }
+    } else if (shared->fd_kind[fd] == FD_EVENTFD) {
+        kfree(shared->fd_ptrs[fd]);
+    } else if (shared->fd_kind[fd] == FD_TIMERFD) {
+        struct timerfd_cb *tm = (struct timerfd_cb *)shared->fd_ptrs[fd];
+        if (tm) { tm->used = 0; kfree(tm); }
+    } else if (shared->fd_kind[fd] == FD_SIGNALFD) {
+        struct signalfd_cb *sf = (struct signalfd_cb *)shared->fd_ptrs[fd];
+        if (sf) { sf->used = 0; kfree(sf); }
+    } else if (shared->fd_kind[fd] == FD_INOTIFY) {
+        struct inotify_cb *in = (struct inotify_cb *)shared->fd_ptrs[fd];
+        if (in) { in->used = 0; kfree(in); }
+    }
+    fd_release(cur, fd);
+    return 0;
+}
+
+uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
+                                uint64_t a3, uint64_t a4, uint64_t a5,
+                                uint64_t a6,
+                                struct fry_process *cur) {
+    if (!cur) return (uint64_t)-ESRCH;
+
+    switch (num) {
+
+    case LNX_write: {
+        int fd = (int)a1;
+        uint64_t len = a3;
+        int64_t rc = lx_write_fd(cur, fd, a2, len);
+        return (uint64_t)rc;
+    }
+
+    case LNX_writev: {
+        int fd = (int)a1;
+        int n = (int)a3;
+        if (n < 0) return (uint64_t)-EINVAL;
+        if (n == 0) return 0;
+        if (!user_buf_mapped(cur, a2, (uint64_t)n * 16)) return (uint64_t)-EFAULT;
+        const uint64_t *iov = (const uint64_t *)(uintptr_t)a2; /* {base,len} pairs */
+        uint64_t total = 0;
+        for (int i = 0; i < n; i++) {
+            uint64_t base = iov[i * 2], l = iov[i * 2 + 1];
+            if (!l) continue;
+            int64_t rc = lx_write_fd(cur, fd, base, l);
+            if (rc < 0) return total ? total : (uint64_t)rc;
+            total += (uint64_t)rc;
+            if ((uint64_t)rc < l) break;
+        }
+        return total;
+    }
+
+    case LNX_readv: {
+        int fd = (int)a1;
+        int n = (int)a3;
+        if (n < 0) return (uint64_t)-EINVAL;
+        if (n == 0) return 0;
+        if (!user_buf_mapped(cur, a2, (uint64_t)n * 16)) return (uint64_t)-EFAULT;
+        const uint64_t *iov = (const uint64_t *)(uintptr_t)a2;
+        uint64_t total = 0;
+        for (int i = 0; i < n; i++) {
+            uint64_t base = iov[i * 2], l = iov[i * 2 + 1];
+            if (!l) continue;
+            int64_t rc = lx_read_fd(cur, fd, base, l);
+            if (rc < 0) return (uint64_t)rc;
+            total += (uint64_t)rc;
+            if ((uint64_t)rc < l) break;
+        }
+        return total;
+    }
+
+    case LNX_read: {
+        int fd = (int)a1;
+        uint64_t len = a3;
+        int64_t rc = lx_read_fd(cur, fd, a2, len);
+        return (uint64_t)rc;
+    }
+
+    case LNX_pread64: {
+        int fd = (int)a1;
+        uint64_t len = a3;
+        int64_t off = (int64_t)a4;
+        struct fry_process_shared *shared = proc_shared_state(cur);
+        if (off < 0) return (uint64_t)-EINVAL;
+        if (!shared || fd < 3 || fd >= FRY_FD_MAX ||
+            !shared->fd_ptrs[fd] || shared->fd_kind[fd] != FD_FILE)
+            return (uint64_t)-EBADF;
+        if (len && !user_buf_writable(cur, a2, len)) return (uint64_t)-EFAULT;
+        struct vfs_file *vf = (struct vfs_file *)shared->fd_ptrs[fd];
+        int64_t old = vfs_seek(vf, 0, FRY_SEEK_CUR);
+        if (old < 0) return (uint64_t)-ESPIPE;
+        if (vfs_seek(vf, off, FRY_SEEK_SET) < 0) return (uint64_t)-EINVAL;
+        int rd = vfs_read(vf, (void *)(uintptr_t)a2, (uint32_t)len);
+        vfs_seek(vf, old, FRY_SEEK_SET);
+        return (uint64_t)rd;
+    }
+
+    case LNX_lseek: {
+        int fd = (int)a1;
+        int64_t off = (int64_t)a2;
+        int whence = (int)a3;
+        struct fry_process_shared *shared = proc_shared_state(cur);
+        if (fd == 0 || fd == 1 || fd == 2) return (uint64_t)-ESPIPE;
+        if (!shared || fd < 3 || fd >= FRY_FD_MAX ||
+            !shared->fd_ptrs[fd] || shared->fd_kind[fd] != FD_FILE)
+            return (uint64_t)-EBADF;
+        if (whence != FRY_SEEK_SET && whence != FRY_SEEK_CUR && whence != FRY_SEEK_END)
+            return (uint64_t)-EINVAL;
+        int64_t pos = vfs_seek((struct vfs_file *)shared->fd_ptrs[fd], off, whence);
+        if (pos < 0) return (uint64_t)-EINVAL;
+        return (uint64_t)pos;
+    }
+
+    case LNX_fstat: {
+        int rc = lx_fd_stat_to_user(cur, (int)a1, a2);
+        return (uint64_t)rc;
+    }
+
+    case LNX_brk: {
+        struct fry_process_shared *sh = proc_shared_state(cur);
+        if (!sh) return (uint64_t)-ENOMEM;
+        uint64_t cur_brk = sh->heap_end;
+        uint64_t newbrk = a1;
+        if (newbrk == 0) return cur_brk;
+        if (newbrk < sh->heap_start || newbrk > USER_TOP) return cur_brk;
+        uint64_t old_pg = (cur_brk + 0xFFF) & ~0xFFFULL;
+        uint64_t new_pg = (newbrk + 0xFFF) & ~0xFFFULL;
+        if (new_pg > old_pg) {
+            for (uint64_t va = old_pg; va < new_pg; va += LX_PG) {
+                if (vmm_virt_to_phys_user(cur->cr3, va) & LX_FRAME_MASK) continue;
+                if (lx_map_one(cur->cr3, va,
+                               VMM_FLAG_PRESENT | VMM_FLAG_WRITE | VMM_FLAG_USER | VMM_FLAG_NO_EXECUTE) != 0) {
+                    lx_unmap_range(cur->cr3, old_pg, (va - old_pg) / LX_PG);
+                    return cur_brk;
+                }
+            }
+        } else if (new_pg < old_pg) {
+            lx_unmap_range(cur->cr3, new_pg, (old_pg - new_pg) / LX_PG);
+        }
+        sh->heap_end = newbrk;
+        return newbrk;
+    }
+
+    case LNX_mmap: {
+        uint64_t addr = a1, len = a2, prot = a3, flags = a4;
+        int fd = (int)a5;
+        uint64_t off = a6;
+        if (len == 0) return (uint64_t)-EINVAL;
+        if (off & 0xFFFULL) return (uint64_t)-EINVAL;
+        uint64_t npg = (len + 0xFFF) >> 12;
+        uint64_t mflags = VMM_FLAG_PRESENT | VMM_FLAG_USER;
+        if (prot & LNX_PROT_WRITE) mflags |= VMM_FLAG_WRITE;
+        if (!(prot & LNX_PROT_EXEC)) mflags |= VMM_FLAG_NO_EXECUTE;
+        uint64_t base;
+        if ((flags & LNX_MAP_FIXED) && addr) {
+            base = addr & ~0xFFFULL;
+            lx_unmap_range(cur->cr3, base, npg);   /* replace any existing */
+        } else {
+            cur->linux_mmap_next = (cur->linux_mmap_next - npg * LX_PG) & ~0xFFFULL;
+            base = cur->linux_mmap_next;
+        }
+        for (uint64_t i = 0; i < npg; i++) {
+            uint64_t va = base + i * LX_PG;
+            if (vmm_virt_to_phys_user(cur->cr3, va) & LX_FRAME_MASK) continue;
+            if (lx_map_one(cur->cr3, va, mflags) != 0) {
+                lx_unmap_range(cur->cr3, base, i);
+                return (uint64_t)-ENOMEM;
+            }
+        }
+        if (!(flags & LNX_MAP_ANONYMOUS)) {
+            struct fry_process_shared *shared = proc_shared_state(cur);
+            if (!shared || fd < 3 || fd >= FRY_FD_MAX ||
+                !shared->fd_ptrs[fd] || shared->fd_kind[fd] != FD_FILE) {
+                lx_unmap_range(cur->cr3, base, npg);
+                return (uint64_t)-EBADF;
+            }
+            struct vfs_file *vf = (struct vfs_file *)shared->fd_ptrs[fd];
+            int64_t old = vfs_seek(vf, 0, FRY_SEEK_CUR);
+            if (old < 0) {
+                lx_unmap_range(cur->cr3, base, npg);
+                return (uint64_t)-ESPIPE;
+            }
+            if (vfs_seek(vf, (int64_t)off, FRY_SEEK_SET) < 0) {
+                vfs_seek(vf, old, FRY_SEEK_SET);
+                lx_unmap_range(cur->cr3, base, npg);
+                return (uint64_t)-EINVAL;
+            }
+            uint64_t left = len;
+            for (uint64_t i = 0; i < npg && left > 0; i++) {
+                uint64_t va = base + i * LX_PG;
+                uint64_t pa = vmm_virt_to_phys_user(cur->cr3, va) & LX_FRAME_MASK;
+                if (!pa) {
+                    vfs_seek(vf, old, FRY_SEEK_SET);
+                    lx_unmap_range(cur->cr3, base, npg);
+                    return (uint64_t)-ENOMEM;
+                }
+                uint8_t *kv = (uint8_t *)(uintptr_t)vmm_phys_to_virt(pa);
+                uint32_t chunk = (left > LX_PG) ? (uint32_t)LX_PG : (uint32_t)left;
+                int rd = vfs_read(vf, kv, chunk);
+                if (rd < 0) {
+                    vfs_seek(vf, old, FRY_SEEK_SET);
+                    lx_unmap_range(cur->cr3, base, npg);
+                    return (uint64_t)-EIO;
+                }
+                if ((uint32_t)rd < chunk) {
+                    uint32_t got = (uint32_t)rd;
+                    while (got < chunk) {
+                        int rd2 = vfs_read(vf, kv + got, chunk - got);
+                        if (rd2 <= 0) break;
+                        got += (uint32_t)rd2;
+                    }
+                    if (got < chunk) {
+                        for (uint32_t z = got; z < chunk; z++) kv[z] = 0;
+                    }
+                }
+                left -= chunk;
+            }
+            vfs_seek(vf, old, FRY_SEEK_SET);
+        }
+        return base;
+    }
+
+    case LNX_munmap: {
+        uint64_t base = a1 & ~0xFFFULL;
+        uint64_t npg = (a2 + 0xFFF) >> 12;
+        lx_unmap_range(cur->cr3, base, npg);
+        return 0;
+    }
+
+    case LNX_mprotect: {
+        uint64_t base = a1 & ~0xFFFULL, prot = a3;
+        uint64_t npg = (a2 + 0xFFF) >> 12;
+        uint64_t mflags = VMM_FLAG_PRESENT | VMM_FLAG_USER;
+        if (prot & LNX_PROT_WRITE) mflags |= VMM_FLAG_WRITE;
+        if (!(prot & LNX_PROT_EXEC)) mflags |= VMM_FLAG_NO_EXECUTE;
+        for (uint64_t i = 0; i < npg; i++) {
+            uint64_t va = base + i * LX_PG;
+            uint64_t f = vmm_virt_to_phys_user(cur->cr3, va) & LX_FRAME_MASK;
+            if (!f) continue;
+            vmm_unmap_user(cur->cr3, va);
+            vmm_map_user(cur->cr3, va, f, mflags);
+        }
+        return 0;
+    }
+
+    case LNX_madvise:
+        return 0;
+
+    case LNX_arch_prctl: {
+        int code = (int)a1;
+        uint64_t addr = a2;
+        if (code == LNX_ARCH_SET_FS) {
+            cur->user_fs_base = addr;
+            write_user_fs_base(addr);
+            /*
+             * glibc's x86_64 loader expects tcbhead_t.tcb/self to point at
+             * the thread pointer before it calls set_tid_address(). Linux
+             * userland normally initializes these itself; normalize them here
+             * as a compatibility guard for the early linuxulator bootstrap.
+             */
+            if (addr && user_buf_writable(cur, addr, 24)) {
+                uint64_t *tcb = (uint64_t *)(uintptr_t)addr;
+                tcb[0] = addr;  /* tcbhead_t.tcb */
+                tcb[2] = addr;  /* tcbhead_t.self */
+            }
+            return 0;
+        }
+        if (code == LNX_ARCH_GET_FS) {
+            if (!user_buf_mapped(cur, addr, 8)) return (uint64_t)-EFAULT;
+            *(uint64_t *)(uintptr_t)addr = cur->user_fs_base; return 0;
+        }
+        if (code == LNX_ARCH_GET_GS) {
+            if (!user_buf_mapped(cur, addr, 8)) return (uint64_t)-EFAULT;
+            *(uint64_t *)(uintptr_t)addr = 0; return 0;
+        }
+        return (uint64_t)-EINVAL;
+    }
+
+    case LNX_set_tid_address: {
+        cur->linux_clear_child_tid = a1;
+        return cur->pid;
+    }
+
+    case LNX_set_robust_list:
+        cur->linux_robust_list = a1;
+        return 0;
+
+    case LNX_getpid:
+        return cur->tgid;
+    case LNX_gettid:
+        return cur->pid;
+    case LNX_getppid:
+        return 1;
+    case LNX_getuid:
+    case LNX_geteuid:
+    case LNX_getgid:
+    case LNX_getegid:
+        return 0;
+
+    case LNX_uname: {
+        if (!user_buf_mapped(cur, a1, 6 * 65)) return (uint64_t)-EFAULT;
+        char *u = (char *)(uintptr_t)a1;
+        for (int i = 0; i < 6 * 65; i++) u[i] = 0;
+        lx_setfield(u + 0 * 65, "Linux");
+        lx_setfield(u + 1 * 65, "tatertos");
+        lx_setfield(u + 2 * 65, "5.15.0-tatertos");
+        lx_setfield(u + 3 * 65, "#1 TaterTOS64v3 linuxulator");
+        lx_setfield(u + 4 * 65, "x86_64");
+        lx_setfield(u + 5 * 65, "(none)");
+        return 0;
+    }
+
+    case LNX_getrandom: {
+        uint64_t buf = a1, len = a2;
+        if (len && !user_buf_mapped(cur, buf, len)) return (uint64_t)-EFAULT;
+        if (len) entropy_getbytes((void *)(uintptr_t)buf, (uint32_t)len);
+        return len;
+    }
+
+    case LNX_clock_gettime: {
+        int id = (int)a1;
+        uint64_t ts = a2;
+        if (!user_buf_mapped(cur, ts, 16)) return (uint64_t)-EFAULT;
+        uint64_t ms;
+        if (id == LNX_CLOCK_REALTIME) {
+            int64_t rtc_boot_epoch_sec(void);
+            uint64_t freq = hpet_get_freq_hz();
+            uint64_t up = (freq == 0) ? 0 : (hpet_read_counter() * 1000ULL) / freq;
+            ms = (uint64_t)(rtc_boot_epoch_sec() * 1000LL) + up;
+        } else {
+            ms = sys_now_ms();
+        }
+        uint64_t *t = (uint64_t *)(uintptr_t)ts;
+        t[0] = ms / 1000ULL;
+        t[1] = (ms % 1000ULL) * 1000000ULL;
+        return 0;
+    }
+
+    case LNX_clock_getres: {
+        int id = (int)a1;
+        uint64_t ts = a2;
+        (void)id;   /* 1ms resolution reported for all clocks */
+        if (!user_buf_mapped(cur, ts, 16)) return (uint64_t)-EFAULT;
+        uint64_t *t = (uint64_t *)(uintptr_t)ts;
+        t[0] = 0;
+        t[1] = 1000000ULL;  /* 1 ms resolution from HPET/scheduler tick */
+        return 0;
+    }
+
+    case LNX_getcwd: {
+        uint64_t buf = a1, sz = a2;
+        struct fry_process_shared *sh = proc_shared_state(cur);
+        const char *cwd = (sh && sh->cwd[0]) ? sh->cwd : "/";
+        uint64_t n = 0; while (cwd[n]) n++; n++;
+        if (sz < n) return (uint64_t)-ERANGE;
+        if (!user_buf_mapped(cur, buf, n)) return (uint64_t)-EFAULT;
+        char *d = (char *)(uintptr_t)buf;
+        for (uint64_t i = 0; i < n; i++) d[i] = cwd[i];
+        return n;
+    }
+
+    case LNX_ioctl:
+        /* Honest: no real termios device yet → "not a tty". libc then uses
+         * full buffering and flushes at exit. Real ioctls come with file I/O. */
+        return (uint64_t)-ENOTTY;
+
+    case LNX_prlimit64: {
+        uint64_t old = a4;
+        if (old && user_buf_mapped(cur, old, 16)) {
+            uint64_t *o = (uint64_t *)(uintptr_t)old;
+            o[0] = 0x800000ULL;            /* rlim_cur = 8 MiB stack */
+            o[1] = ~0ULL;                  /* rlim_max = INFINITY */
+        }
+        return 0;
+    }
+
+    /* Signals: accepted as no-ops until the signals phase (phase 3). Lets
+     * glibc init proceed; a static nostdlib binary never calls these. */
+    case LNX_rt_sigaction:
+    case LNX_rt_sigprocmask:
+    case LNX_sigaltstack:
+        return 0;
+
+    case LNX_sched_yield:
+        sched_yield();
+        return 0;
+
+    case LNX_rseq:
+    case LNX_get_robust_list:
+    case LNX_sched_getaffinity:
+        return (uint64_t)-ENOSYS;
+
+    case LNX_futex: {
+        int futex_op = (int)a2;
+        uint32_t op = (uint32_t)futex_op;
+        uint32_t cmd = op & ~(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
+        int private_key = (op & FUTEX_PRIVATE_FLAG) != 0;
+        int frc;
+#define LX_FUTEX_RETURN(expr) do { \
+            frc = (expr); \
+            return (uint64_t)frc; \
+        } while (0)
+
+        if (cmd == FUTEX_WAIT) {
+            int has_timeout = a4 != 0;
+            uint64_t timeout_ms = 0;
+            if (has_timeout) {
+                if (!user_buf_mapped(cur, a4, 16)) return (uint64_t)-EFAULT;
+                uint64_t *ts = (uint64_t *)(uintptr_t)a4;
+                uint64_t sec = ts[0];
+                uint64_t nsec = ts[1];
+                if (nsec >= 1000000000ULL) return (uint64_t)-EINVAL;
+                timeout_ms = sec * 1000ULL + nsec / 1000000ULL;
+            }
+            LX_FUTEX_RETURN(futex_wait_begin_ex(cur, a1, (uint32_t)a3,
+                                                has_timeout, timeout_ms,
+                                                FUTEX_BITSET_MATCH_ANY,
+                                                private_key));
+        }
+
+        if (cmd == FUTEX_WAIT_BITSET) {
+            int has_timeout = a4 != 0;
+            uint64_t timeout_ms = 0;
+            uint32_t bitset = (uint32_t)a6;
+            if (bitset == 0) return (uint64_t)-EINVAL;
+            if (has_timeout) {
+                if (!user_buf_mapped(cur, a4, 16)) return (uint64_t)-EFAULT;
+                uint64_t *ts = (uint64_t *)(uintptr_t)a4;
+                uint64_t sec = ts[0];
+                uint64_t nsec = ts[1];
+                uint64_t target_ms;
+                uint64_t now_ms;
+                if (nsec >= 1000000000ULL) return (uint64_t)-EINVAL;
+                target_ms = sec * 1000ULL + nsec / 1000000ULL;
+                if (op & FUTEX_CLOCK_REALTIME) {
+                    int64_t rtc_boot_epoch_sec(void);
+                    now_ms = (uint64_t)(rtc_boot_epoch_sec() * 1000LL) + sys_now_ms();
+                } else {
+                    now_ms = sys_now_ms();
+                }
+                timeout_ms = (target_ms > now_ms) ? (target_ms - now_ms) : 0;
+            }
+            LX_FUTEX_RETURN(futex_wait_begin_ex(cur, a1, (uint32_t)a3,
+                                                has_timeout, timeout_ms, bitset,
+                                                private_key));
+        }
+
+        if (cmd == FUTEX_WAKE) {
+            LX_FUTEX_RETURN(futex_wake_waiters_bitset(cur, a1, (uint32_t)a3,
+                                                      FUTEX_BITSET_MATCH_ANY,
+                                                      private_key));
+        }
+
+        if (cmd == FUTEX_WAKE_BITSET) {
+            LX_FUTEX_RETURN(futex_wake_waiters_bitset(cur, a1, (uint32_t)a3,
+                                                      (uint32_t)a6,
+                                                      private_key));
+        }
+
+        if (cmd == FUTEX_REQUEUE) {
+            LX_FUTEX_RETURN(futex_requeue_waiters(cur, a1, (uint32_t)a3,
+                                                  a5, (uint32_t)a4, 0, 0,
+                                                  private_key));
+        }
+
+        if (cmd == FUTEX_CMP_REQUEUE) {
+            LX_FUTEX_RETURN(futex_requeue_waiters(cur, a1, (uint32_t)a3,
+                                                  a5, (uint32_t)a4, 1,
+                                                  (uint32_t)a6, private_key));
+        }
+
+        if (cmd == FUTEX_WAKE_OP) {
+            LX_FUTEX_RETURN(futex_wake_op(cur, a1, (uint32_t)a3,
+                                          a5, (uint32_t)a4, (uint32_t)a6,
+                                          private_key));
+        }
+
+        kprint_serial_only("LINUXSYS: futex unsupported cmd=%u op=%x pid=%u\n",
+                           cmd, op, cur->pid);
+#undef LX_FUTEX_RETURN
+        return (uint64_t)-ENOSYS;
+    }
+
+    case LNX_clock_nanosleep: {
+        int clockid = (int)a1;
+        int flags   = (int)a2;
+        uint64_t req = a3;
+        uint64_t rem = a4;
+        if (!user_buf_mapped(cur, req, 16)) return (uint64_t)-EFAULT;
+        if (rem && !user_buf_writable(cur, rem, 16)) return (uint64_t)-EFAULT;
+        if (clockid != LNX_CLOCK_REALTIME && clockid != LNX_CLOCK_MONOTONIC)
+            return (uint64_t)-EINVAL;
+        uint64_t *r = (uint64_t *)(uintptr_t)req;
+        uint64_t sec  = r[0];
+        uint64_t nsec = r[1];
+        if (nsec >= 1000000000ULL) return (uint64_t)-EINVAL;
+        uint64_t now = sys_now_ms();
+        uint64_t target = now + sec * 1000ULL + nsec / 1000000ULL;
+        if (flags & 1 /* TIMER_ABSTIME */) {
+            /* Absolute time — convert to relative for our scheduler */
+            uint64_t ms_now = sec * 1000ULL + nsec / 1000000ULL;
+            if (ms_now <= now) return 0;
+            target = ms_now;
+        }
+        cur->wake_time_ms = target;
+        if (target > now)
+            sched_sleep(cur->pid, (uint64_t)(target - now));
+        else
+            sched_yield();
+        if (rem) {
+            uint64_t *rm = (uint64_t *)(uintptr_t)rem;
+            rm[0] = 0; rm[1] = 0;
+        }
+        return 0;
+    }
+
+    case LNX_fcntl: {
+        int fd = (int)a1;
+        int cmd = (int)a2;
+        uint64_t arg = a3;
+        struct fry_process_shared *shared = proc_shared_state(cur);
+        if (fd < 0 || fd >= FRY_FD_MAX || !shared) return (uint64_t)-EBADF;
+        switch (cmd) {
+        case 1:  /* F_GETFD */
+            return (shared->fd_flags[fd] & 1 /* FD_CLOEXEC */) ? 1 : 0;
+        case 2:  /* F_SETFD */
+            shared->fd_flags[fd] = (shared->fd_flags[fd] & ~1u) | ((uint32_t)arg & 1u);
+            return 0;
+        case 3:  /* F_GETFL */
+            return (uint64_t)(int64_t)shared->fd_flags[fd];
+        case 4:  /* F_SETFL */
+            shared->fd_flags[fd] = (shared->fd_flags[fd] & ~0x3FFF) | ((uint32_t)arg & 0x3FFF);
+            return 0;
+        default:
+            return (uint64_t)-EINVAL;
+        }
+    }
+
+    case LNX_epoll_create: {
+        int size = (int)a1;
+        if (size <= 0) return (uint64_t)-EINVAL;
+        return (uint64_t)lx_epoll_create_fd(cur, 0);
+    }
+
+    case LNX_epoll_create1:
+        return (uint64_t)lx_epoll_create_fd(cur, (uint32_t)a1);
+
+    case LNX_epoll_ctl:
+        return (uint64_t)lx_epoll_ctl_fd(cur, (int)a1, (int)a2, (int)a3, a4);
+
+    case LNX_epoll_wait:
+        return (uint64_t)lx_epoll_wait_fd(cur, (int)a1, a2, (int)a3, (int)a4);
+
+    case LNX_epoll_pwait:
+        /* Signal masks are a no-op until real Linux signal delivery exists. */
+        return (uint64_t)lx_epoll_wait_fd(cur, (int)a1, a2, (int)a3, (int)a4);
+
+    case LNX_eventfd:
+        return (uint64_t)lx_eventfd_create_fd(cur, a1, 0);
+
+    case LNX_eventfd2:
+        return (uint64_t)lx_eventfd_create_fd(cur, a1, (uint32_t)a2);
+
+    case LNX_timerfd_create:
+        return (uint64_t)lx_timerfd_create_fd(cur, (int)a1, (uint32_t)a2);
+
+    case LNX_timerfd_settime:
+        return (uint64_t)lx_timerfd_settime_fd(cur, (int)a1, (uint32_t)a2, a3, a4);
+
+    case LNX_timerfd_gettime:
+        return (uint64_t)lx_timerfd_gettime_fd(cur, (int)a1, a2);
+
+    case LNX_signalfd:
+        return (uint64_t)lx_signalfd_fd(cur, (int)a1, a2, a3, 0);
+
+    case LNX_signalfd4:
+        return (uint64_t)lx_signalfd_fd(cur, (int)a1, a2, a3, (uint32_t)a4);
+
+    case LNX_dup: {
+        int oldfd = (int)a1;
+        struct fry_process_shared *shared = proc_shared_state(cur);
+        if (!shared || oldfd < 0 || oldfd >= FRY_FD_MAX ||
+            !shared->fd_ptrs[oldfd]) return (uint64_t)-EBADF;
+        for (int i = 0; i < FRY_FD_MAX; i++) {
+            if (!shared->fd_ptrs[i]) {
+                shared->fd_ptrs[i]  = shared->fd_ptrs[oldfd];
+                shared->fd_kind[i]  = shared->fd_kind[oldfd];
+                shared->fd_flags[i] = shared->fd_flags[oldfd];
+                return i;
+            }
+        }
+        return (uint64_t)-EMFILE;
+    }
+
+    case LNX_dup2: {
+        int oldfd = (int)a1, newfd = (int)a2;
+        struct fry_process_shared *shared = proc_shared_state(cur);
+        if (!shared || oldfd < 0 || oldfd >= FRY_FD_MAX ||
+            newfd < 0 || newfd >= FRY_FD_MAX ||
+            !shared->fd_ptrs[oldfd]) return (uint64_t)-EBADF;
+        if (oldfd == newfd) return newfd;
+        if (shared->fd_ptrs[newfd]) lx_close_fd(cur, newfd);
+        shared->fd_ptrs[newfd]  = shared->fd_ptrs[oldfd];
+        shared->fd_kind[newfd]  = shared->fd_kind[oldfd];
+        shared->fd_flags[newfd] = shared->fd_flags[oldfd];
+        return newfd;
+    }
+
+    case LNX_open: {
+        char raw_path[FRY_PATH_MAX];
+        if (copy_user_string(cur, a1, raw_path, sizeof(raw_path)) != 0)
+            return (uint64_t)-EFAULT;
+        return (uint64_t)lx_open_path(cur, FRY_AT_FDCWD, raw_path, a2);
+    }
+
+    case LNX_openat: {
+        char raw_path[FRY_PATH_MAX];
+        int dirfd = (int)a1;
+        if (copy_user_string(cur, a2, raw_path, sizeof(raw_path)) != 0)
+            return (uint64_t)-EFAULT;
+        return (uint64_t)lx_open_path(cur, dirfd, raw_path, a3);
+    }
+
+    case LNX_stat:
+    case LNX_lstat: {
+        char raw_path[FRY_PATH_MAX];
+        if (copy_user_string(cur, a1, raw_path, sizeof(raw_path)) != 0)
+            return (uint64_t)-EFAULT;
+        int rc = lx_path_stat_to_user(cur, FRY_AT_FDCWD, raw_path, a2);
+        return (uint64_t)rc;
+    }
+
+    case LNX_newfstatat: {
+        char raw_path[FRY_PATH_MAX];
+        int dirfd = (int)a1;
+        uint32_t flags = (uint32_t)a4;
+        if (flags & ~(FRY_AT_SYMLINK_NOFOLLOW | FRY_AT_NO_AUTOMOUNT | FRY_AT_EMPTY_PATH))
+            return (uint64_t)-EINVAL;
+        if (copy_user_string(cur, a2, raw_path, sizeof(raw_path)) != 0)
+            return (uint64_t)-EFAULT;
+        if ((flags & FRY_AT_EMPTY_PATH) && raw_path[0] == '\0') {
+            int rc = lx_fd_stat_to_user(cur, dirfd, a3);
+            return (uint64_t)rc;
+        }
+        int rc = lx_path_stat_to_user(cur, dirfd, raw_path, a3);
+        return (uint64_t)rc;
+    }
+
+    case LNX_access: {
+        char raw_path[FRY_PATH_MAX];
+        char path[FRY_PATH_MAX];
+        struct vfs_stat st;
+        if (copy_user_string(cur, a1, raw_path, sizeof(raw_path)) != 0)
+            return (uint64_t)-EFAULT;
+        int rpath = resolve_at_path(cur, FRY_AT_FDCWD, raw_path, path);
+        if (rpath < 0) return (uint64_t)rpath;
+        if (vfs_stat(path, &st) != 0) return (uint64_t)-ENOENT;
+        return 0;
+    }
+
+    case LNX_readlink: {
+        char raw_path[FRY_PATH_MAX];
+        char path[FRY_PATH_MAX];
+        struct vfs_stat st;
+        if (a3 == 0) return (uint64_t)-EINVAL;
+        if (!user_buf_writable(cur, a2, a3)) return (uint64_t)-EFAULT;
+        if (copy_user_string(cur, a1, raw_path, sizeof(raw_path)) != 0)
+            return (uint64_t)-EFAULT;
+        int rpath = resolve_at_path(cur, FRY_AT_FDCWD, raw_path, path);
+        if (rpath < 0) return (uint64_t)rpath;
+        if (vfs_stat(path, &st) != 0) return (uint64_t)-ENOENT;
+        return (uint64_t)-EINVAL; /* Existing non-symlink. */
+    }
+
+    case LNX_close: {
+        int rc = lx_close_fd(cur, (int)a1);
+        return (uint64_t)rc;
+    }
+
+    case LNX_exit:
+        syscall_thread_exit_current((uint32_t)a1);
+        return 0;
+
+    case LNX_exit_group:
+        syscall_exit_current((uint32_t)a1);
+        return 0;
+
+    case LNX_clone3: {
+        struct linux_clone_args {
+            uint64_t flags;
+            uint64_t pidfd;
+            uint64_t child_tid;
+            uint64_t parent_tid;
+            uint64_t exit_signal;
+            uint64_t stack;
+            uint64_t stack_size;
+            uint64_t tls;
+            uint64_t set_tid;
+            uint64_t set_tid_size;
+            uint64_t cgroup;
+        } args;
+        uint64_t sz = a2;
+        if (sz < 88 || sz > sizeof(args)) return (uint64_t)-EINVAL;
+        if (!user_buf_mapped(cur, a1, sz)) return (uint64_t)-EFAULT;
+        /* copy from user */
+        const uint64_t *src = (const uint64_t *)(uintptr_t)a1;
+        uint64_t *dst = (uint64_t *)&args;
+        for (uint64_t i = 0; i < 11; i++) dst[i] = src[i];
+
+        /* Only CLONE_THREAD for now */
+        uint64_t flags = args.flags;
+        if (!(flags & 0x00010000 /* CLONE_THREAD */))
+            return (uint64_t)-EINVAL;
+
+        /* Read interrupt frame from current CPU's percpu (GS-relative).
+         * We stored it at %gs:16 in syscall_entry before call syscall_dispatch.
+         * Must read via GS, not via cur->cpu, because the process might have
+         * been migrated by the scheduler before reaching this handler. */
+        uint64_t frame_rsp;
+        __asm__ volatile("movq %%gs:16, %0" : "=r"(frame_rsp));
+        uint64_t *frame = (uint64_t *)(uintptr_t)frame_rsp;
+        uint64_t user_rip = frame[10];
+        uint64_t user_rsp_saved = frame[11];
+
+        /* clone3 semantics differ from legacy clone(2): cl_args.stack points
+         * at the LOWEST address of the stack region and the kernel sets the
+         * child SP to stack + stack_size. (Legacy clone() passed the top
+         * directly.) Using args.stack as-is makes the child's first push land
+         * one slot below the mapped region -> page fault at stack-8. */
+        uint64_t child_rsp = args.stack ? (args.stack + args.stack_size)
+                                        : user_rsp_saved;
+        struct fry_process *child = process_clone_linux_thread(
+            cur, user_rip, child_rsp,
+            args.tls, args.child_tid, args.parent_tid);
+        if (!child) return (uint64_t)-ENOMEM;
+
+        /* Snapshot the FULL parent register set into the child so its first
+         * run (process_start clone path) iretqs with everything restored.
+         * glibc carries the thread fn/arg in callee-saved regs across the
+         * clone syscall. rbx/r12-r15 come from per-CPU scratch (gs:24..56)
+         * captured in syscall_entry; the rest from the interrupt frame. */
+        uint64_t sv_rbx, sv_r12, sv_r13, sv_r14, sv_r15;
+        __asm__ volatile("movq %%gs:24, %0" : "=r"(sv_rbx));
+        __asm__ volatile("movq %%gs:32, %0" : "=r"(sv_r12));
+        __asm__ volatile("movq %%gs:40, %0" : "=r"(sv_r13));
+        __asm__ volatile("movq %%gs:48, %0" : "=r"(sv_r14));
+        __asm__ volatile("movq %%gs:56, %0" : "=r"(sv_r15));
+        child->clone_ctx.rax = 0;            /* clone returns 0 in the child */
+        child->clone_ctx.rbx = sv_rbx;
+        child->clone_ctx.rcx = 0;
+        child->clone_ctx.rdx = frame[5];
+        child->clone_ctx.rsi = frame[6];
+        child->clone_ctx.rdi = frame[7];
+        child->clone_ctx.rbp = frame[8];
+        child->clone_ctx.r8  = frame[3];
+        child->clone_ctx.r9  = frame[2];
+        child->clone_ctx.r10 = frame[4];
+        child->clone_ctx.r11 = frame[9];
+        child->clone_ctx.r12 = sv_r12;
+        child->clone_ctx.r13 = sv_r13;
+        child->clone_ctx.r14 = sv_r14;
+        child->clone_ctx.r15 = sv_r15;
+        child->clone_ctx.rip = user_rip;
+        child->clone_ctx.rsp = child_rsp;
+        child->clone_ctx.rflags = frame[9] | 0x202ULL;
+
+        /* Write child TID notifications */
+        if (args.child_tid && user_buf_writable(cur, args.child_tid, 4))
+            *(uint32_t *)(uintptr_t)args.child_tid = child->pid;
+        if (args.parent_tid && user_buf_writable(cur, args.parent_tid, 4))
+            *(uint32_t *)(uintptr_t)args.parent_tid = child->pid;
+        child->linux_clear_child_tid = args.child_tid;
+
+        sched_add(child->pid);
+        return child->pid;
+    }
+
+    default:
+        kprint("LINUXSYS: unimplemented nr=%lu (a1=%lx a2=%lx a3=%lx) pid=%u\n",
+               (unsigned long)num, (unsigned long)a1, (unsigned long)a2,
+               (unsigned long)a3, cur->pid);
+        return (uint64_t)-ENOSYS;
+    }
 }
 
 uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
-                          uint64_t a4, uint64_t a5) {
+                          uint64_t a4, uint64_t a5, uint64_t a6) {
     struct fry_process *cur = proc_current();
     note_user_boot_progress(cur);
+    if (cur && cur->is_linux)
+        return linux_syscall_dispatch(num, a1, a2, a3, a4, a5, a6, cur);
     switch (num) {
         case SYS_WRITE: {
             int fd = (int)a1;
@@ -2397,17 +3921,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                 if (kind == FD_TIMERFD) {
                     struct timerfd_cb *tm = (struct timerfd_cb *)shared->fd_ptrs[fd];
                     if (!tm || !tm->used) return (uint64_t)-EBADF;
-                    uint64_t freq = hpet_get_freq_hz();
-                    uint64_t now_ms = (hpet_read_counter() * 1000ULL) / freq;
-                    while (tm->it_value_ms > 0 && tm->deadline_ms > 0 && now_ms >= tm->deadline_ms) {
-                        tm->expirations++;
-                        if (tm->it_interval_ms > 0) {
-                            tm->deadline_ms += tm->it_interval_ms;
-                        } else {
-                            tm->it_value_ms = 0;
-                            tm->deadline_ms = 0;
-                        }
-                    }
+                    timerfd_update_expirations(tm, sys_now_ms());
                     if (tm->expirations == 0) {
                         if (tm->nonblock) return (uint64_t)-EAGAIN;
                         return (uint64_t)-EAGAIN;
@@ -2742,10 +4256,14 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             return ctx.pos;
         }
         case SYS_GETTIME: {
+            /* Wall-clock ms = RTC epoch captured at boot + HPET uptime since
+             * boot. Previously returned uptime only, so libc time() read ~1970
+             * and TLS cert validation failed (BR_ERR_X509_EXPIRED). */
+            int64_t rtc_boot_epoch_sec(void);
             uint64_t freq = hpet_get_freq_hz();
-            if (freq == 0) return 0;
-            uint64_t ms = (hpet_read_counter() * 1000ULL) / freq;
-            return ms;
+            uint64_t uptime_ms = (freq == 0) ? 0
+                               : (hpet_read_counter() * 1000ULL) / freq;
+            return (uint64_t)(rtc_boot_epoch_sec() * 1000LL) + uptime_ms;
         }
         case SYS_REBOOT:
             acpi_reset();
@@ -5025,7 +6543,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                 uint64_t rc;
                 copyin(cur, iov_user + (uint64_t)i * sizeof(iov), &iov, sizeof(iov));
                 if (iov.iov_len == 0) continue;
-                rc = syscall_dispatch(SYS_READ, (uint64_t)fd, iov.iov_base, iov.iov_len, 0, 0);
+                rc = syscall_dispatch(SYS_READ, (uint64_t)fd, iov.iov_base, iov.iov_len, 0, 0, 0);
                 if ((int64_t)rc < 0) return done ? done : rc;
                 done += rc;
                 if (rc < iov.iov_len) break;
@@ -5063,7 +6581,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                 uint64_t rc;
                 copyin(cur, iov_user + (uint64_t)i * sizeof(iov), &iov, sizeof(iov));
                 if (iov.iov_len == 0) continue;
-                rc = syscall_dispatch(SYS_WRITE, (uint64_t)fd, iov.iov_base, iov.iov_len, 0, 0);
+                rc = syscall_dispatch(SYS_WRITE, (uint64_t)fd, iov.iov_base, iov.iov_len, 0, 0, 0);
                 if ((int64_t)rc < 0) return done ? done : rc;
                 done += rc;
                 if (rc < iov.iov_len) break;
@@ -6412,6 +7930,16 @@ __asm__(
     "    movq %rsp, %gs:8\n"          // percpu.user_rsp = user RSP
     "    movq %gs:0, %rsp\n"          // RSP = percpu.kstack_top
 
+    // 2b. Snapshot the parent's callee-saved registers into per-CPU scratch
+    //     (gs:24..56) BEFORE they can be touched. The frame below does not
+    //     save rbx/r12-r15, but clone3 children must inherit them (glibc
+    //     stashes the thread fn/arg there across the clone syscall).
+    "    movq %rbx, %gs:24\n"
+    "    movq %r12, %gs:32\n"
+    "    movq %r13, %gs:40\n"
+    "    movq %r14, %gs:48\n"
+    "    movq %r15, %gs:56\n"
+
     // 3. Push user RSP from percpu scratch onto kernel stack.
     //    Uses RAX as temporary (syscall number), recovered afterward.
     "    pushq %rax\n"                 // save syscall number
@@ -6424,7 +7952,21 @@ __asm__(
     "    pushq %rbp\n"
     "    movq %rsp, %rbp\n"
 
-    // 5. Shuffle registers into syscall_dispatch ABI (num,a1,a2,a3,a4,a5).
+    // 5. Preserve user-visible syscall registers before shuffling into the
+    //    C ABI. Linux userland expects syscall to return with all GPRs except
+    //    RAX/RCX/R11 intact; ld-linux relies on RDX surviving set_tid_address.
+    "    pushq %rdi\n"
+    "    pushq %rsi\n"
+    "    pushq %rdx\n"
+    "    pushq %r10\n"
+    "    pushq %r8\n"
+    "    pushq %r9\n"
+
+    // 6. Shuffle registers into syscall_dispatch ABI (num,a1,a2,a3,a4,a5,a6).
+    //    Linux x86_64 passes arg6 in user R9. Put it in the first stack
+    //    argument slot before reusing R9 for the C ABI's sixth register arg.
+    "    subq $16, %rsp\n"
+    "    movq %r9, (%rsp)\n"            // a6 stack arg, 8-byte padding above it
     "    movq %r8,  %r9\n"            // a5
     "    movq %r10, %r8\n"            // a4
     "    movq %rdx, %rcx\n"           // a3
@@ -6434,17 +7976,28 @@ __asm__(
 
     // Allow IRQ-driven timers/scheduler while syscall body runs.
     "    sti\n"
+    "    movq %rsp, %gs:16\n"          // percpu.linux_frame_rsp for clone3
     "    call syscall_dispatch\n"
     "    cli\n"
 
-    // 6. Restore frame and user state.
+    // 7. Restore the saved user-visible registers. Leave RAX as the syscall
+    //    return value from syscall_dispatch.
+    "    addq $16, %rsp\n"
+    "    popq %r9\n"
+    "    popq %r8\n"
+    "    popq %r10\n"
+    "    popq %rdx\n"
+    "    popq %rsi\n"
+    "    popq %rdi\n"
+
+    // 8. Restore frame and user state.
     "    movq %rbp, %rsp\n"
     "    popq %rbp\n"
     "    popq %r11\n"                  // user RFLAGS
     "    popq %rcx\n"                  // user RIP
     "    popq %rsp\n"                  // user RSP  (back to user stack)
 
-    // 7. SWAPGS: restore user GS before returning to user mode.
+    // 9. SWAPGS: restore user GS before returning to user mode.
     "    swapgs\n"
     "    sysretq\n"
 );

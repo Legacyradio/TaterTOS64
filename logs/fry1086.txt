@@ -1,0 +1,34 @@
+2026-05-14 12:22:26 CDT
+
+Fixed the monitored Chromium/TaterTOS build stop from stamp 20260514_121945.
+
+Build status before fix:
+- Monitored log: /home/legacyindieradio/TaterTOS64/logs/chrome_build_20260514_121945.log
+- Local Ninja stop points:
+  - [2/34091] obj/net/dns/dns/host_resolver_mdns_listener_impl.o
+  - [3/34091] obj/net/dns/dns/host_resolver_mdns_task.o
+  - [6/34091] obj/net/dns/dns/host_resolver_system_task.o
+  - [8/34091] obj/net/dns/dns/host_resolver_manager_job.o
+- Logical phase: Chromium net/dns resolver manager and mDNS/system resolver tasks
+
+Why:
+- x86_64-elf-g++ required compiler-visible fallback returns for exhaustive
+  resolver enum/state switches and a resolver-source lambda under
+  -Werror=return-type.
+
+Fix:
+- Added NOTREACHED() fallback returns in:
+  - /home/legacyindieradio/chromium-tatertos/src/net/dns/host_resolver_mdns_listener_impl.cc
+  - /home/legacyindieradio/chromium-tatertos/src/net/dns/host_resolver_mdns_task.cc
+  - /home/legacyindieradio/chromium-tatertos/src/net/dns/host_resolver_system_task.cc
+  - /home/legacyindieradio/chromium-tatertos/src/net/dns/host_resolver_manager_job.cc
+
+Verification:
+- Targeted Chromium object rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/net/dns/dns/host_resolver_mdns_listener_impl.o obj/net/dns/dns/host_resolver_mdns_task.o obj/net/dns/dns/host_resolver_system_task.o obj/net/dns/dns/host_resolver_manager_job.o
+- Completed objects:
+  - [1/4] CXX obj/net/dns/dns/host_resolver_mdns_listener_impl.o
+  - [2/4] CXX obj/net/dns/dns/host_resolver_mdns_task.o
+  - [3/4] CXX obj/net/dns/dns/host_resolver_system_task.o
+  - [4/4] CXX obj/net/dns/dns/host_resolver_manager_job.o
+

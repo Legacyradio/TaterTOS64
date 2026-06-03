@@ -1,0 +1,21 @@
+Timestamp: 2026-05-15T07:57:39-05:00
+Blocker: network cpp attribution and CORS helpers failed under
+-Werror=return-type.
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Files changed:
+- /home/legacyindieradio/chromium-tatertos/src/services/network/public/cpp/attribution_utils.cc
+- /home/legacyindieradio/chromium-tatertos/src/services/network/public/cpp/cors/cors.cc
+
+Why:
+- Attribution support and CORS response/credentials helpers used exhaustive enum
+  switches, but GCC required explicit fallback returns.
+
+Fix:
+- Added base/notreached.h where needed and conservative false fallbacks after
+  NOTREACHED().
+
+Verification:
+- Ran:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/services/network/public/cpp/cpp/attribution_utils.o obj/services/network/public/cpp/cpp/cors.o
+- Result: passed.

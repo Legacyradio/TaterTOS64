@@ -1,0 +1,17 @@
+2026-05-15T09:36:04-05:00
+
+Fix: Added media log and track fallback returns.
+
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Why: Clang's -Werror=return-type rejected MediaLogPropertyKeyToString(),
+TrackTypeToStr(), VideoKindToString(), and AudioKindToString() because the
+compiler could not prove all enum values returned.
+
+Change: Added NOTREACHED() fallbacks returning unknown/empty values consistent
+with existing media defaults.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/media/base/base/media_log_properties.o obj/media/base/base/media_track.o
+
+Result: passed.

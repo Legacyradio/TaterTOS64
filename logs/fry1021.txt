@@ -1,0 +1,3 @@
+STEP 1021
+TIME: 2026-05-10 11:29:03
+ACTION: Added Linux clone() flags (CLONE_*) and clone() function prototype to TaterTOS64 sched.h. This was required because base/process/launch_posix.cc uses Linux-specific namespaces and thread creation functionality that was missing from our POSIX stubs. Resumed the Chromium ninja build.

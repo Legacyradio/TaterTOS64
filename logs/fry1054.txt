@@ -1,0 +1,1 @@
+STEP/2026-05-11 14:45/PATCH_CODEC_COMPARATORS: Added default return case to lambda in codec_comparators.cc. WHY: Satisfy -Werror=return-type for non-standard compilation paths.

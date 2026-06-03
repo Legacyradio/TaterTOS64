@@ -1,0 +1,30 @@
+timestamp: 2026-05-14T23:04:18-05:00
+stop: chrome_build_20260514_230215.log at [16/30047]
+failed_objects:
+  obj/third_party/webrtc/rtc_base/rtc_task_queue_stdlib/task_queue_stdlib.o
+  obj/third_party/webrtc/video/decode_synchronizer/decode_synchronizer.o
+classification: compiler strictness, not a TaterTOS API gap
+
+problem:
+  GCC with -Werror rejected:
+  - TaskQueuePriorityToThreadPriority() because its switch covered known enum
+    values but had no explicit fallback return;
+  - DecodeSynchronizer::CreateSynchronizedFrameScheduler() because it returned
+    std::move(scheduler), blocking normal return-value optimization.
+
+fix:
+  Added RTC_DCHECK_NOTREACHED() plus a normal-priority fallback in
+  task_queue_stdlib.cc. Returned scheduler directly from decode_synchronizer.cc.
+
+why:
+  Valid behavior is unchanged. The first fix makes an impossible enum path
+  explicit; the second lets the compiler perform the intended move/NRVO path
+  without warning. No warning suppression or platform shortcut was added.
+
+verification:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/third_party/webrtc/rtc_base/rtc_task_queue_stdlib/task_queue_stdlib.o
+  obj/third_party/webrtc/video/decode_synchronizer/decode_synchronizer.o
+
+  Result: both targeted objects rebuilt successfully.

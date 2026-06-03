@@ -1,0 +1,16 @@
+Fry Log 1268 — v8/regexp-ast.h: remove unsigned >=0 check
+Timestamp: 2026-05-19 ~13:00 CDT
+
+Scope:
+  Build stopped at [224/19906] with -Werror=type-limits in
+  v8/src/regexp/regexp-ast.h:126.
+
+Fix:
+  CharacterRange::Range(base::uc32 from, ...)
+  Removed "0 <= from" from DCHECK since uc32 is unsigned (uint32_t)
+  and "0 <= unsigned" is always true — GCC 15 -Werror=type-limits.
+  The subsequent DCHECK(from <= to) still validates ordering.
+
+Why:
+  GCC 15 -Werror=type-limits flags tautological unsigned comparisons.
+  The from >= 0 check was redundant for unsigned types.

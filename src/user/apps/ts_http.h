@@ -138,6 +138,12 @@ struct ts_http {
     char method[8];                 /* "GET" or "POST" */
     char *post_body;                /* POST body (malloc'd, NULL for GET) */
     size_t post_body_len;
+    /* Optional API-client overrides (NULL = default browser behavior).
+     * content_type: replaces the default Content-Type for POST.
+     * extra_headers: extra "Name: value\r\n" lines injected before the blank
+     * line (e.g. "Authorization: Bearer xxx\r\n"). Caller owns the strings. */
+    const char *content_type;
+    const char *extra_headers;
 
     /* Connection */
     int sock_fd;
@@ -1274,26 +1280,26 @@ static int ts_http__send_request(struct ts_http *req) {
     }
 
     if (is_post && req->post_body && req->post_body_len > 0) {
+        const char *ctype = req->content_type ? req->content_type
+                          : "application/x-www-form-urlencoded";
+        const char *xtra  = req->extra_headers ? req->extra_headers : "";
         request_len = snprintf(request_buf, sizeof(request_buf),
                                 "POST %s HTTP/1.1\r\n"
                                 "Host: %s\r\n"
-                                "User-Agent: Mozilla/5.0 (TaterTOS64v3) AppleWebKit/537.36 "
-                                "(KHTML, like Gecko) TaterSurf/2.0 Chrome/120.0.0.0\r\n"
-                                "Accept: text/html,application/xhtml+xml,application/xml;"
-                                "q=0.9,application/json,*/*;q=0.8\r\n"
-                                "Accept-Language: en-US,en;q=0.9\r\n"
+                                "User-Agent: TaterTOS64v3\r\n"
+                                "Accept: application/json,*/*;q=0.8\r\n"
                                 "Accept-Encoding: identity\r\n"
                                 "Connection: keep-alive\r\n"
-                                "Content-Type: application/x-www-form-urlencoded\r\n"
+                                "Content-Type: %s\r\n"
                                 "Content-Length: %zu\r\n"
-                                "Sec-Fetch-Dest: document\r\n"
-                                "Sec-Fetch-Mode: navigate\r\n"
-                                "Sec-Fetch-Site: same-origin\r\n"
+                                "%s"
                                 "%s%s%s"
                                 "\r\n",
                                 req_path,
                                 host_hdr,
+                                ctype,
                                 req->post_body_len,
+                                xtra,
                                 cookie_hdr[0] ? "Cookie: " : "",
                                 cookie_hdr[0] ? cookie_hdr : "",
                                 cookie_hdr[0] ? "\r\n" : "");

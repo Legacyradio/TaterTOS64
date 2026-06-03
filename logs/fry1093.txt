@@ -1,0 +1,20 @@
+2026-05-14T12:39:13-05:00
+
+Step: Chromium TaterTOS64v3 WebRTC dcsctp data-tracker blocker cleanup after monitored build 20260514_123737.
+
+Local Ninja failure position:
+- [87/33930] obj/third_party/webrtc/net/dcsctp/rx/data_tracker/data_tracker.o
+
+Logical phase:
+- third_party/webrtc dcsctp receive-side data tracking.
+
+Exact blocker:
+- third_party/webrtc/net/dcsctp/rx/data_tracker.cc had an exhaustive AckState switch that GCC still treated as possible non-void fallthrough under -Werror=return-type.
+
+Fix:
+- Added an explicit "UNKNOWN" fallback return after DataTracker::ToString()'s switch.
+
+Verification:
+- Ran targeted Ninja rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/third_party/webrtc/net/dcsctp/rx/data_tracker/data_tracker.o
+- Result: passed [1/1].

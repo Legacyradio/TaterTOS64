@@ -1,0 +1,24 @@
+2026-05-15T06:44:11-0500
+
+Fixed content settings compiler strictness fallbacks.
+
+Blocker classification:
+- compiler strictness, not a TaterTOS API gap.
+
+Why:
+- components/content_settings/core/common/content_settings_utils.cc had
+  PermissionOption/ContentSetting conversions with NOTREACHED-only or missing
+  fallback returns.
+- components/content_settings/core/common/cookie_settings_base.cc had
+  exhaustive switches in storage access and cookie policy helpers with no
+  compiler-visible fallback returns.
+
+Fix:
+- Added explicit conservative fallbacks after NOTREACHED paths:
+  default content setting, ask permission option, blocked storage access,
+  nonlegacy cookie semantics, and std::nullopt for undefined modifier state.
+- Added a direct base/notreached.h include to content_settings_utils.cc.
+
+Verification:
+- Passed targeted rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/components/content_settings/core/common/common/content_settings_utils.o obj/components/content_settings/core/common/common/cookie_settings_base.o

@@ -1,0 +1,31 @@
+Timestamp: 2026-05-15T04:24:51-05:00
+Stop: [22/29966] CXX obj/ui/gfx/gfx/shadow_util.o
+Related failure:
+- obj/ui/gfx/gfx/render_text_harfbuzz.o
+Classification: compiler strictness, not a TaterTOS API gap.
+
+Problem:
+GCC reported -Werror=return-type in two UI/gfx functions:
+- ShadowDetails::Get(...) overloads in ui/gfx/shadow_util.cc
+- RenderTextHarfBuzz::IsValidDisplayRange() in ui/gfx/render_text_harfbuzz.cc
+
+The switches cover the expected enum cases, but GCC still requires explicit
+non-void fallbacks under -Werror.
+
+Fix:
+Added NOTREACHED() fallbacks:
+- ShadowDetails falls back to Material Design shadow values.
+- IsValidDisplayRange() returns false for any impossible elide behavior.
+
+Why:
+This is a compiler strictness issue. The valid enum cases and behavior are
+unchanged, but the functions now have explicit fallback returns for GCC.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+/home/legacyindieradio/chromium-tatertos/src/out/tatertos
+obj/ui/gfx/gfx/shadow_util.o
+obj/ui/gfx/gfx/render_text_harfbuzz.o
+
+Result:
+Passed; both UI/gfx objects rebuilt successfully.

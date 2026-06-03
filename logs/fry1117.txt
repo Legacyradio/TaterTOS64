@@ -1,0 +1,40 @@
+timestamp: 2026-05-14T22:40:33-05:00
+stop: chrome_build_20260514_223750.log at [51/30929]
+failed_objects:
+  obj/components/variations/variations_mojom/variations.mojom.o
+  obj/components/variations/variations/study_filtering.o
+  obj/components/variations/variations_mojom_shared_cpp_sources/variations.mojom-shared.o
+  obj/components/variations/variations/variations_ids_provider.o
+  obj/components/variations/variations/variations_seed_processor.o
+classification: compiler strictness, not a TaterTOS API gap
+
+problem:
+  GCC with -Werror rejected:
+  - mojo/public/cpp/bindings/lib/validate_params.h because
+    static_assert(validate_enum_func) compares a function NTTP address that is
+    known non-null, triggering -Waddress.
+  - components/variations/study_filtering.cc and
+    components/variations/variations_seed_processor.cc because exhaustive enum
+    switches lacked explicit fallback returns.
+
+fix:
+  Replaced the direct function-pointer static_assert with a template trait that
+  still rejects nullptr at compile time without an address comparison. Added
+  NOTREACHED() plus conservative false returns after the variations switches.
+
+why:
+  The Mojo fix belongs in the shared validator template, not generated files,
+  so all generated Mojo users keep the same contract. The variations changes
+  make impossible enum paths explicit for the TaterTOS64 GCC build without
+  suppressing warnings or adding non-TaterTOS platform behavior.
+
+verification:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/components/variations/variations_mojom/variations.mojom.o
+  obj/components/variations/variations/study_filtering.o
+  obj/components/variations/variations_mojom_shared_cpp_sources/variations.mojom-shared.o
+  obj/components/variations/variations/variations_ids_provider.o
+  obj/components/variations/variations/variations_seed_processor.o
+
+  Result: all five targeted objects rebuilt successfully.

@@ -1,0 +1,19 @@
+Timestamp: 2026-05-15T07:30:59-05:00
+Blocker: WebRTC override ice_connection.cc failed under -Werror=return-type.
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+File changed:
+- /home/legacyindieradio/chromium-tatertos/src/third_party/webrtc_overrides/p2p/base/ice_connection.cc
+
+Why:
+- ConvertFromWebrtcWriteState() handled every known WebRTC write state, but GCC
+  still required an explicit fallback return for the non-void converter.
+
+Fix:
+- Added base/notreached.h and a NOTREACHED() fallback returning the initial write
+  state.
+
+Verification:
+- Ran:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/third_party/webrtc_overrides/bridge_ice_controller/ice_connection.o
+- Result: passed.

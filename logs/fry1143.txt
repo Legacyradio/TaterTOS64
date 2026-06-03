@@ -1,0 +1,30 @@
+2026-05-15T05:56:37-05:00
+
+Stop:
+- Full Chromium TaterTOS build stopped in WebRTC event-log encoding at
+  [65/27722] obj/third_party/webrtc/logging/rtc_event_log_impl_encoder/rtc_event_log_encoder_legacy.o
+  with a parallel failure at
+  [74/27722] obj/third_party/webrtc/logging/rtc_event_log_impl_encoder/rtc_event_log_encoder_new_format.o.
+
+Classification:
+- Compiler strictness, not a TaterTOS API gap.
+
+Why:
+- rtc_event_log_encoder_legacy.cc had an exhaustive enum switch without a
+  compiler-visible fallback return for IceCandidateType.
+- rtc_event_log_encoder_new_format.cc cast to pointer result types like
+  `const RtcEventFoo* const`; GCC treats the top-level const on a cast result
+  as ignored and, under `-Werror=ignored-qualifiers`, rejects it.
+
+Fix:
+- Added an RTC_DCHECK_NOTREACHED fallback returning UNKNOWN_CANDIDATE_TYPE in
+  the legacy encoder.
+- Removed the ignored top-level const from new-format pointer cast result
+  types while preserving constness of the pointed-to event objects.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja \
+    -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos \
+    obj/third_party/webrtc/logging/rtc_event_log_impl_encoder/rtc_event_log_encoder_legacy.o \
+    obj/third_party/webrtc/logging/rtc_event_log_impl_encoder/rtc_event_log_encoder_new_format.o

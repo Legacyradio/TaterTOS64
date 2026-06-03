@@ -1,0 +1,43 @@
+fry1105 - Crashpad POSIX privilege, signal, mmap, and fd table surface
+timestamp: 2026-05-14T16:32:56-05:00
+
+full build log: logs/chrome_build_20260514_163049.log
+failed counters:
+  [2/31917] obj/third_party/crashpad/crashpad/util/util/drop_privileges.o
+  [5/31917] obj/third_party/crashpad/crashpad/util/util/signals.o
+  [6/31917] obj/third_party/crashpad/crashpad/util/util/scoped_mmap.o
+  [10/31917] obj/third_party/crashpad/crashpad/util/util/close_multiple.o
+
+blockers:
+  drop_privileges.cc needed setresgid() and setresuid().
+  signals.cc needed POSIX SI_* si_code constants.
+  scoped_mmap.cc followed the Linux lss raw-syscall path because this build
+  still defines __linux__, but TaterTOS does not use Crashpad's lss source.
+  close_multiple.cc needed getdtablesize().
+
+classification:
+  TaterTOS POSIX/libc API gaps plus one TaterTOS-specific upstream routing fix.
+
+fix:
+  Added setresuid(), setresgid(), and getdtablesize() declarations to
+  TaterTOS <unistd.h>.
+  Added TaterTOS libc implementations for getuid/geteuid/getgid/getegid,
+  setresuid/setresgid, getdtablesize, and _SC_OPEN_MAX sysconf handling.
+  Added SI_USER, SI_QUEUE, SI_TIMER, SI_MESGQ, SI_ASYNCIO, and SI_SIGIO to
+  TaterTOS <signal.h>.
+  Changed Crashpad scoped_mmap.cc so __TATERTOS__ does not enter the Linux lss
+  raw-syscall path; it uses the normal mmap/munmap/mprotect functions.
+
+verification:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja \
+    -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos \
+    obj/third_party/crashpad/crashpad/util/util/drop_privileges.o \
+    obj/third_party/crashpad/crashpad/util/util/signals.o \
+    obj/third_party/crashpad/crashpad/util/util/scoped_mmap.o \
+    obj/third_party/crashpad/crashpad/util/util/close_multiple.o
+
+  result:
+    [1/4] CXX obj/third_party/crashpad/crashpad/util/util/drop_privileges.o
+    [2/4] CXX obj/third_party/crashpad/crashpad/util/util/scoped_mmap.o
+    [3/4] CXX obj/third_party/crashpad/crashpad/util/util/signals.o
+    [4/4] CXX obj/third_party/crashpad/crashpad/util/util/close_multiple.o

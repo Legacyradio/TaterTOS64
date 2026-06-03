@@ -1,0 +1,1 @@
+STEP/2026-05-11 12:05/PATCH_WEBRTC_INITIAL: Added #ifdef guards to PhysicalSocket::SetOption and PhysicalSocket::UpdatePacketContext in physical_socket_server.cc. WHY: Adapt WebRTC to handle the absence of Linux-specific IPV6_TCLASS and IP_TOS features now that they are removed from system headers.

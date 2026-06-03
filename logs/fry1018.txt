@@ -1,0 +1,4 @@
+fry1018
+blocker: base sys_info_posix.cc missing CPU_ALLOC/CPU_FREE etc., and file_util_posix.cc missing fallocate/posix_fadvise.
+patch: added dynamic CPU set allocation macros to sched.h and fallocate/posix_fadvise to fcntl.h.
+build: resumed chromium-tatertos ninja build.

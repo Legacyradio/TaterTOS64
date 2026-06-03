@@ -1,0 +1,19 @@
+Timestamp: 2026-05-15T07:37:15-05:00
+Blocker: ui/base clipboard custom_data_helper.cc failed under
+-Werror=redundant-move.
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+File changed:
+- /home/legacyindieradio/chromium-tatertos/src/ui/base/clipboard/custom_data_helper.cc
+
+Why:
+- Returning local values with std::move() disabled normal return-value handling
+  and GCC treats that as fatal under the current warnings.
+
+Fix:
+- Returned the local std::u16string and unordered_map values directly.
+
+Verification:
+- Ran:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/ui/base/clipboard/clipboard/custom_data_helper.o
+- Result: passed.

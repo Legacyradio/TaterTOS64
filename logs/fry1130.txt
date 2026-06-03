@@ -1,0 +1,27 @@
+Timestamp: 2026-05-15T04:04:49-05:00
+Stop: [391/30592] CXX obj/components/variations/variations/client_filterable_state.o
+Classification: TaterTOS API/port gap in Chromium variations platform mapping.
+
+Problem:
+components/variations/client_filterable_state.cc had no BUILDFLAG(IS_TATERTOS)
+case in ClientFilterableState::GetCurrentPlatform(), so it reached
+#error Unknown platform and then failed -Werror=return-type.
+
+Fix:
+Added an explicit TaterTOS branch that returns Study::PLATFORM_LINUX.
+
+Why:
+The variations seed protocol currently has no TaterTOS platform enum. Returning
+the Linux bucket is the same compatibility model Chromium already uses for
+unsupported POSIX-adjacent platforms such as BSD and Solaris, but the TaterTOS
+choice is now explicit and does not depend on the toolchain's __linux__
+compatibility define.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+/home/legacyindieradio/chromium-tatertos/src/out/tatertos
+obj/components/variations/variations/client_filterable_state.o
+
+Result:
+Passed; obj/components/variations/variations/client_filterable_state.o rebuilt
+successfully.

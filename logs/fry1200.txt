@@ -1,0 +1,19 @@
+2026-05-15T09:51:25-05:00
+
+Fix: added an explicit unreachable fallback return to
+VideoCaptureDeviceDescriptor::GetCaptureApiTypeString().
+
+Files:
+- chromium-tatertos/src/media/capture/video/video_capture_device_descriptor.cc
+
+Why:
+- The failed build stopped on -Werror=return-type.
+- Classification: compiler strictness, not a TaterTOS API/platform gap.
+- VideoCaptureApi is a closed persisted enum with an UNKNOWN case; the fallback
+  records an impossible path with NOTREACHED() and returns "Unknown".
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/media/capture/capture_base/video_capture_device_descriptor.o

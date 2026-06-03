@@ -1,0 +1,30 @@
+2026-05-14 11:50:43 CDT
+
+Fixed the monitored Chromium/TaterTOS build stop from stamp 20260514_114756.
+
+Build status before fix:
+- Monitored log: /home/legacyindieradio/TaterTOS64/logs/chrome_build_20260514_114756.log
+- Exit: 1 at 2026-05-14T11:48:56-05:00
+- Local Ninja stop point: [3/34288] obj/net/net/socket_options.o
+- Logical phase: Chromium net/socket
+
+Why:
+- Chromium net/socket/socket_options.cc requires IPV6_V6ONLY for SetIPv6Only().
+- TaterTOS exposed IPPROTO_IPV6 but did not expose or handle the IPV6_V6ONLY
+  socket option yet.
+- This was a TaterTOS POSIX/socket surface gap, not a Chromium workaround.
+
+Fix:
+- Added IPV6_V6ONLY to TaterTOS netinet/in.h.
+- Added IPPROTO_IPV6 and IPV6_V6ONLY to fry_socket.h for kernel/libc shared
+  socket constants.
+- Added an ipv6_v6only field to struct fry_socket.
+- Taught SYS_GETSOCKOPT and SYS_SETSOCKOPT to handle level IPPROTO_IPV6,
+  option IPV6_V6ONLY by reading/storing the socket flag.
+
+Verification:
+- Targeted Chromium object rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/net/net/socket_options.o
+- Completed object:
+  - [1/1] CXX obj/net/net/socket_options.o
+

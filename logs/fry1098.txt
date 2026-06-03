@@ -1,0 +1,20 @@
+2026-05-14T15:55:47-05:00
+
+Step: Chromium TaterTOS64v3 WebRTC common_audio min/max blocker cleanup after monitored build 20260514_154349.
+
+Local Ninja failure position:
+- [445/33700] obj/third_party/webrtc/common_audio/common_audio_c/min_max_operations.o
+
+Logical phase:
+- third_party/webrtc common_audio C signal-processing helpers.
+
+Exact blocker:
+- third_party/webrtc/common_audio/signal_processing/min_max_operations.c mixed signed abs() output with an unsigned INT_MAX + 1 ternary branch, which GCC rejects under -Werror=sign-compare.
+
+Fix:
+- Cast the abs() branch to uint32_t so both ternary branches have the intended unsigned type.
+
+Verification:
+- Ran targeted Ninja rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/third_party/webrtc/common_audio/common_audio_c/min_max_operations.o
+- Result: passed [1/1].

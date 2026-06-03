@@ -1,0 +1,18 @@
+Fry Log 1274 — sys/mman.h: add MADV_DONTDUMP and MADV_DODUMP
+Timestamp: 2026-05-19 ~13:35 CDT
+
+Scope:
+  Build stopped at [12/19550] with MADV_DODUMP not declared in
+  v8/src/heap/memory-allocator.cc:160.
+
+TaterTOS changes:
+  src/include/sys/mman.h
+    - Added MADV_DONTDUMP (16) and MADV_DODUMP (17).
+      V8 uses madvise(..., MADV_DODUMP) to mark committed heap
+      chunks as dumpable in core dumps after the sandbox reservation
+      was marked MADV_DONTDUMP. Constants from Linux 3.4+.
+
+Why:
+  V8's memory-allocator uses madvise flags for sandbox crash dump
+  behavior. Our mman.h stub was missing these Linux-specific MADV_
+  flags.

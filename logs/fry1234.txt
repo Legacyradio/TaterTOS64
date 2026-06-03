@@ -1,0 +1,26 @@
+Timestamp: 2026-05-16T17:02:45-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped at [15/23443] on
+obj/v8/v8_libplatform/default-thread-isolated-allocator.o.
+
+Failure:
+v8/src/libplatform/default-thread-isolated-allocator.cc defined
+KernelHasPkruFix(), but the helper was unused when PKEY_DISABLE_WRITE is not
+available, producing -Werror=unused-function.
+
+Classification:
+Compiler strictness around platform-conditional code. The underlying pkey/PKU
+feature is Linux-specific and remains unavailable on TaterTOS through the
+existing PkeyAlloc() return -1 path; this fix does not add Linux API behavior
+to TaterTOS.
+
+Fix:
+Guarded KernelHasPkruFix() with #ifdef PKEY_DISABLE_WRITE, matching the only
+call site inside PkeyAlloc().
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C out/tatertos obj/v8/v8_libplatform/default-thread-isolated-allocator.o
+
+Result:
+Targeted object rebuild passed.

@@ -1,0 +1,22 @@
+2026-05-14T16:13:50-05:00
+
+Step: Chromium TaterTOS64v3 Skia platform-detection blocker cleanup after monitored build 20260514_160807.
+
+Local Ninja failure position:
+- [208/32733] obj/skia/skia/SkCTFont.o
+
+Logical phase:
+- Skia core/utils compilation.
+
+Exact blocker:
+- third_party/skia/src/utils/mac/SkCTFont.cpp was compiled with Skia's SK_BUILD_FOR_MAC path active and failed on missing Apple ApplicationServices.framework headers.
+- The compiler command did not explicitly define SK_BUILD_FOR_MAC; Skia's include/private/base/SkFeatures.h auto-detection fell through to Mac because the TaterTOS x86_64-elf toolchain does not define Skia's usual Unix macros.
+
+Fix:
+- Added __TATERTOS__ to Skia's platform auto-detection as a Unix/POSIX-style target so it defines SK_BUILD_FOR_UNIX instead of falling through to SK_BUILD_FOR_MAC.
+- This avoids Apple framework dependencies without adding fake Apple headers or Linux framework shims.
+
+Verification:
+- Ran targeted Ninja rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/skia/skia/SkCTFont.o
+- Result: passed [1/1].

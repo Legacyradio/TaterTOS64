@@ -1,0 +1,8 @@
+Timestamp: 2026-05-15T04:46:12-05:00
+Fix: Enabled TaterTOS64 entropy-backed std::random_device and declared sincosf.
+Stop: [46/29334] obj/third_party/tflite/tflite_kernels/random_ops.o
+Classification: TaterTOS libc/C++ runtime API gap.
+Why: TFLite random_ops uses Eigen/TSL Box-Muller helpers that call sincosf(), and uses std::random_device("/dev/urandom") to seed mt19937_64 when TensorFlow seeds are unspecified. TaterTOS libc already implemented sincosf() but did not declare it in math.h, and Chromium's libc++ config disabled random_device for TaterTOS even though TaterTOS has a kernel getrandom/getentropy entropy path.
+Change: Declared sincosf() in TaterTOS math.h. Enabled _LIBCPP_HAS_RANDOM_DEVICE for TaterTOS in buildtools/third_party/libc++/__config_site, and selected libc++'s existing getentropy() random_device backend for __tatertos__ in third_party/libc++/src/include/__config.
+Verification: make -C /home/legacyindieradio/TaterTOS64 src/user/libc/math.o
+Verification: /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/third_party/tflite/tflite_kernels/random_ops.o

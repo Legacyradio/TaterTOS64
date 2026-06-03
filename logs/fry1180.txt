@@ -1,0 +1,18 @@
+2026-05-15T08:37:26-05:00
+
+Fix: Resolved google_apis Gaia/OAuth2 compiler strictness failures.
+
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Why: Clang's -Werror rejected a missing fallback return in
+InvalidCredentialsReasonToString() and redundant std::move() calls in
+OAuth2AccessTokenManager::StartRequestForClientWithContext().
+
+Change: Added a defensive "unknown" return after the NUM_REASONS NOTREACHED()
+path. Returned the local unique_ptr directly so the compiler can apply normal
+move elision without triggering -Wredundant-move.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/google_apis/google_apis/google_service_auth_error.o obj/google_apis/google_apis/oauth2_access_token_manager.o
+
+Result: passed.

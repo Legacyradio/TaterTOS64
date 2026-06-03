@@ -1,0 +1,26 @@
+Fry Log 922 — base:base 4 remaining failures (POSIX constants)
+Timestamp: 2026-05-08 19:35 CDT
+
+Build 28: EXIT_CODE=1, 4 failures. All are the same class — missing POSIX constants and functions in TaterTOS64 headers.
+
+FAILURES:
+  obj/base/base/file_posix.o
+  obj/base/base/condition_variable_posix.o  
+  obj/base/base/lock_impl_posix.o
+  obj/base/base/platform_thread_posix.o
+
+MISSING DECLARATIONS NEEDED IN TATERTOS64 HEADERS:
+  unistd.h:   pwrite, ftruncate64 (alias for ftruncate)
+  fcntl.h:    O_NDELAY (alias for O_NONBLOCK), F_UNLCK/F_RDLCK/F_WRLCK, struct flock
+  sys/time.h: futimes (already has utimes)
+  pthread.h:  pthread_condattr_setclock, pthread_mutexattr_setprotocol, PTHREAD_PRIO_INHERIT
+
+OTHER FIXES THIS BUILD:
+  build/config/tatertos/BUILD.gn — added -Wno-unknown-pragmas
+    (GCC doesn't understand #pragma clang diagnostic)
+
+PLATFORM_THREAD_CAST:
+  platform_thread_posix.cc:274 — cast pthread_t→int64_t needs
+    static_cast<int64_t>(reinterpret_cast<uintptr_t>(thread))
+
+THATS IT. Clean state after these fixes.

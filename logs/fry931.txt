@@ -1,0 +1,24 @@
+Fry Log 931 — Chromium base:base: 2726/2890, mincore + return-type
+Timestamp: 2026-05-09 01:30:00 CDT
+
+Scope:
+  Fry 930 cleared O_ACCMODE, TakeError values, and partition_alloc return-type.
+  Build reached 2726/2890 — 17 further, 164 targets remain.
+
+Build result before fix:
+  memory_pressure_level_proto.o: GCC 15 -Werror=return-type
+  process_memory_dump.o: mincore was not declared
+
+Changes:
+  src/include/unistd.h
+    - Added mincore() declaration.
+
+  src/user/libc/posix.c
+    - Added mincore(): marks all pages as resident (vec[i]=1).
+      TaterTOS64 has no swap — pages are always in memory.
+
+  base/trace_event/memory_pressure_level_proto.cc
+    - Added __builtin_unreachable() after exhaustive switch.
+
+Verification:
+  Pending: ninja -C out/tatertos base:base

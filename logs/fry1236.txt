@@ -1,0 +1,33 @@
+Timestamp: 2026-05-16T17:11:06-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped at [84/23335] through [91/23335] in
+services/webnn/public/cpp.
+
+Failures:
+- ml_number.cc: MLNumber::IsGreaterThan() reached the end under
+  -Werror=return-type.
+- webnn_errors.cc: DataTypeToString() reached the end under
+  -Werror=return-type.
+- operand_descriptor.cc: OperandDescriptor::GetBitsPerElement() reached the end
+  under -Werror=return-type.
+- graph_validation_utils.cc: Pool2dKind and ReduceKind tensor-constraint lambdas
+  reached the end under -Werror=return-type.
+
+Classification:
+Compiler strictness. These are not TaterTOS API/platform gaps.
+
+Fix:
+Added explicit NOTREACHED() fallback returns to the affected exhaustive enum
+switches and lambdas:
+- false for unsupported MLNumber comparisons
+- "unknown" for unexpected OperandDataType diagnostic strings
+- 0 bits for unexpected OperandDataType element size
+- existing pool/reduce tensor constraints for impossible validation-kind
+  fallthroughs
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C out/tatertos obj/services/webnn/public/cpp/cpp/ml_number.o obj/services/webnn/public/cpp/cpp/webnn_errors.o obj/services/webnn/public/cpp/cpp/operand_descriptor.o obj/services/webnn/public/cpp/cpp/graph_validation_utils.o
+
+Result:
+Targeted object rebuild passed.

@@ -365,8 +365,17 @@ void e1000_init(void) {
     for (int i = 0; i < NUM_RX_DESC; i++) {
         g_rx_bufs[i] = (uint8_t *)alloc_dma(&g_rx_bufs_phys[i], BUF_SIZE);
         if (!g_rx_bufs[i]) { kprint("E1000: RX buf alloc failed\n"); return; }
-        g_rx_ring[i].addr = g_rx_bufs_phys[i];
-        g_rx_ring[i].status = 0;
+        /* Zero the WHOLE descriptor. The DMA page from pmm is not zeroed, and
+         * QEMU's e1000 RX path preserves the descriptor's errors/length fields
+         * (it only sets status/length/special) — so an uninitialized errors
+         * byte (e.g. 0xaf) makes rx_poll's `!err` check drop valid frames and
+         * DHCP/everything fails. Must start clean. */
+        g_rx_ring[i].addr     = g_rx_bufs_phys[i];
+        g_rx_ring[i].length   = 0;
+        g_rx_ring[i].checksum = 0;
+        g_rx_ring[i].status   = 0;
+        g_rx_ring[i].errors   = 0;
+        g_rx_ring[i].special  = 0;
     }
 
     e_write(E1000_RDBAL, (uint32_t)(g_rx_ring_phys));

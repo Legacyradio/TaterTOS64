@@ -1,0 +1,20 @@
+Timestamp: 2026-05-15T07:54:30-05:00
+Blocker: GPU IPC mojom traits failed under -Werror=return-type.
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Files changed:
+- /home/legacyindieradio/chromium-tatertos/src/gpu/ipc/common/constants_mojom_traits.cc
+- /home/legacyindieradio/chromium-tatertos/src/gpu/ipc/common/context_type_mojom_traits.h
+
+Why:
+- Error, context-lost reason, command-buffer namespace, and context-type enum
+  conversions relied on exhaustive switches. GCC required explicit fallback
+  returns, including inline code compiled through generated mojom sources.
+
+Fix:
+- Added NOTREACHED() plus conservative fallback values for each conversion path.
+
+Verification:
+- Ran:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/gpu/ipc/common/mojom_traits/constants_mojom_traits.o obj/gpu/ipc/common/gpu_channel_mojom/gpu_channel.mojom.o
+- Result: passed.

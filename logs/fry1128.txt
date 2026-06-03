@@ -1,0 +1,32 @@
+Timestamp: 2026-05-15T03:46:29-05:00
+Stop: [399/31040] CXX obj/third_party/crashpad/crashpad/util/util/range_set.o
+Related failures:
+- obj/third_party/crashpad/crashpad/util/util/metrics.o
+- obj/third_party/crashpad/crashpad/util/util/uuid.o
+Classification: TaterTOS API/port gap in Crashpad OS selection.
+
+Problem:
+Crashpad's misc utilities had no TaterTOS OS mapping. address_types.h reached
+#error "Unhandled OS type", metrics.cc never defined METRICS_OS_NAME for
+TaterTOS, and uuid.cc reached #error Port in UUID::InitializeWithNew().
+
+Fix:
+Added explicit BUILDFLAG(IS_TATERTOS) handling in Crashpad:
+- address_types.h now uses 64-bit VMAddress/VMSize for TaterTOS64.
+- metrics.cc now emits the Crashpad histogram suffix "TaterTOS".
+- uuid.cc now uses the existing base::RandBytes UUID generation path.
+
+Why:
+This is a real Crashpad port gap. TaterTOS64 has a 64-bit address space and a
+native getrandom-backed entropy path, so it should get its own platform branch
+instead of falling through to unported code or being mislabeled as Linux.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+/home/legacyindieradio/chromium-tatertos/src/out/tatertos
+obj/third_party/crashpad/crashpad/util/util/range_set.o
+obj/third_party/crashpad/crashpad/util/util/metrics.o
+obj/third_party/crashpad/crashpad/util/util/uuid.o
+
+Result:
+Passed; all three Crashpad objects rebuilt successfully.

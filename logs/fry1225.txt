@@ -1,0 +1,21 @@
+2026-05-16T13:32:36-05:00
+
+Fix: addressed additional persistent cache and fido compiler-strictness failures.
+
+Files:
+- chromium-tatertos/src/components/persistent_cache/sqlite/vfs_util.h
+- chromium-tatertos/src/device/fido/public/cable_discovery_data.cc
+- chromium-tatertos/src/components/persistent_cache/sqlite/sqlite_backend_impl.cc
+
+Why:
+- The build stopped on -Werror=return-type in multiple files where non-void functions used exhaustive switch statements without fallback returns. Added appropriate fallback returns.
+- Repaired file corruption (stray character at the end of sqlite_backend_impl.cc) caused by previous edit collisions.
+- Classification: compiler strictness/library analysis, not a TaterTOS API/platform gap.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/components/persistent_cache/persistent_cache/backend_storage_delegate.o
+  obj/device/fido/public/public/cable_discovery_data.o
+  obj/components/persistent_cache/persistent_cache/sqlite_backend_impl.o

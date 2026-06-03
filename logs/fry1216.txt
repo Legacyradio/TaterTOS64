@@ -1,0 +1,19 @@
+2026-05-15T23:23:02-05:00
+
+Fix: addressed cc scroll jank metrics compiler-strictness failures.
+
+Files:
+- chromium-tatertos/src/cc/metrics/scroll_jank_v4_histogram_emitter.cc
+- chromium-tatertos/src/cc/metrics/scroll_jank_v4_tracing_recorder.cc
+
+Why:
+- The build stopped on -Werror=int-in-bool-context in scroll_jank_v4_histogram_emitter.cc due to a static_assert using a product of integers directly as a boolean. Fixed by explicitly comparing the product to zero.
+- The build stopped on -Werror=return-type in both files where non-void functions used exhaustive switch statements without fallback returns. Added fallback returns to ensure all control paths are covered.
+- Classification: compiler strictness/library analysis, not a TaterTOS API/platform gap.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/cc/cc/scroll_jank_v4_histogram_emitter.o
+  obj/cc/cc/scroll_jank_v4_tracing_recorder.o

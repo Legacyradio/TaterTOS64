@@ -1,0 +1,24 @@
+2026-05-15T05:43:02-05:00
+
+Stop:
+- Full Chromium TaterTOS build stopped at
+  [561/28534] obj/ui/events/events_base/gesture_event_details.o.
+
+Classification:
+- Compiler/language strictness, not a TaterTOS API gap.
+
+Why:
+- gesture_event_details.cc specializes base::kCanSafelyConvertToByteSpan for
+  ui::GestureEventDetails::Details, but the nested Details union was private.
+  The compiler rejected naming that private type from the base namespace
+  specialization.
+
+Fix:
+- Made the nested Details union type name public while keeping the actual
+  Details data_ member private, preserving encapsulation of gesture state.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja \
+    -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos \
+    obj/ui/events/events_base/gesture_event_details.o

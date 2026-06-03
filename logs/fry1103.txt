@@ -1,0 +1,29 @@
+fry1103 - TaterTOS uchar.h restrict prototypes in C++ mode
+timestamp: 2026-05-14T16:27:26-05:00
+
+full build log: logs/chrome_build_20260514_162557.log
+failed counter: [6/31942]
+failed object: obj/third_party/crashpad/crashpad/util/util/strlcpy.o
+
+blocker:
+  Crashpad includes libc++ <uchar.h>, which includes TaterTOS <uchar.h>.
+  TaterTOS declared mbrtoc16/c16rtomb/mbrtoc32/c32rtomb with the C keyword
+  restrict. In C++ mode, restrict is not a standard keyword and TaterTOS did
+  not define it, so the prototypes failed to parse.
+
+classification:
+  TaterTOS libc/header C++ compatibility gap.
+
+fix:
+  Updated TaterTOS64/src/include/uchar.h to spell the restrict qualifier as
+  __restrict in the conversion function prototypes. GCC accepts __restrict in
+  both C and C++ modes, so the header remains usable from Chromium C++ without
+  adding Linux-specific behavior or muting diagnostics.
+
+verification:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja \
+    -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos \
+    obj/third_party/crashpad/crashpad/util/util/strlcpy.o
+
+  result:
+    [1/1] CXX obj/third_party/crashpad/crashpad/util/util/strlcpy.o

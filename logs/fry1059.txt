@@ -1,0 +1,1 @@
+STEP/2026-05-11 16:00/PATCH_SCTP_RESPONSE: Added default return to ToString in reconfiguration_response_parameter.cc. WHY: Satisfy -Werror=return-type for non-standard compilation paths.

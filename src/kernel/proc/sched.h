@@ -14,9 +14,12 @@ void sched_sleep(uint32_t pid, uint64_t ms);
 void sched_block(uint32_t pid);
 int sched_block_futex(uint32_t pid, volatile const uint32_t *word,
                       uint32_t expected, uint64_t key,
-                      uint64_t wake_time_ms);
+                      uint64_t wake_time_ms, uint32_t bitset);
 void sched_wake(uint32_t pid);
-uint32_t sched_wake_futex(uint64_t key, uint32_t max_wake, int32_t result);
+uint32_t sched_wake_futex(uint64_t key, uint32_t max_wake,
+                          uint32_t bitset, int32_t result);
+uint32_t sched_requeue_futex(uint64_t key_from, uint64_t key_to,
+                             uint32_t max_requeue);
 void sched_block_poll(uint32_t pid, uint64_t wake_time_ms);
 uint32_t sched_wake_poll_waiters(void);
 struct fry_process *sched_current(void);

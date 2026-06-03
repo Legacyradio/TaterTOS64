@@ -1,0 +1,18 @@
+2026-05-15T08:44:53-05:00
+
+Fix: Added autofill common enum-switch fallback returns.
+
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Why: Clang's -Werror=return-type rejected exhausted switch helpers in
+autofill_util.cc and label_source_util.cc because the compiler could not prove
+all enum values returned.
+
+Change: Added NOTREACHED() fallbacks. IsAtMemoryTriggerSource() conservatively
+returns false for an unexpected trigger source, and LabelSourceToString()
+returns "NoLabel" for an unexpected label source.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/components/autofill/core/common/common/autofill_util.o obj/components/autofill/core/common/common/label_source_util.o
+
+Result: passed.

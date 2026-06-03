@@ -1,0 +1,20 @@
+2026-05-14T12:33:43-05:00
+
+Step: Chromium TaterTOS64v3 WebRTC RTP packetizer blocker cleanup after monitored build 20260514_123147.
+
+Local Ninja failure position:
+- [60/34051] obj/third_party/webrtc/modules/rtp_rtcp/rtp_rtcp/rtp_format.o
+
+Logical phase:
+- third_party/webrtc modules/rtp_rtcp packetization.
+
+Exact blocker:
+- third_party/webrtc/modules/rtp_rtcp/source/rtp_format.cc had an exhaustive PacketizationFormat switch that GCC still treated as possible non-void fallthrough under -Werror=return-type.
+
+Fix:
+- Added an explicit nullptr fallback return after the switch in RtpPacketizer::Create().
+
+Verification:
+- Ran targeted Ninja rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/third_party/webrtc/modules/rtp_rtcp/rtp_rtcp/rtp_format.o
+- Result: passed [1/1].

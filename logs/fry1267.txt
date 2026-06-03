@@ -1,0 +1,28 @@
+Fry Log 1267 (updated) — ax_position.h: 10 total return-type fixes
+Timestamp: 2026-05-19 ~03:15 CDT
+
+Scope:
+  6 errors in first pass, 5 more + 1 fallthrough in second pass.
+  All in ui/accessibility/ax_position.h template header.
+
+Fixes (second pass):
+  1. CreatePositionAtStartOfAnchor switch on AXPositionKind (3 cases)
+     → return CreateNullPosition(); after switch
+
+  2. CreatePositionAtEndOfAnchor switch on AXPositionKind (3 cases)
+     → return CreateNullPosition(); after switch
+
+  3. CreateParentPosition inner switch on MoveDirection (2 cases + NOTREACHED)
+     NOTREACHED isn't noreturn → added return CreateNullPosition();
+     after inner switch (before TEXT_POSITION case falls through)
+
+  4. CreateParentPosition outer switch closing
+     → return CreateNullPosition(); after outer switch
+
+  5. GetText switch on AXEmbeddedObjectBehavior (3 cases)
+     → return std::u16string(); after switch
+
+Why:
+  ax_position.h has many exhaustive switch statements that GCC 15
+  doesn't recognize as exhaustive. Adding explicit returns after
+  each switch body ensures all code paths return a value.

@@ -1,0 +1,19 @@
+2026-05-16T11:49:43-05:00
+
+Fix: addressed attribution reporting compiler-strictness failures.
+
+Files:
+- chromium-tatertos/src/components/attribution_reporting/aggregatable_trigger_config.cc
+- chromium-tatertos/src/components/attribution_reporting/aggregatable_utils.cc
+
+Why:
+- The build stopped on -Werror=return-type in aggregatable_trigger_config.cc and aggregatable_utils.cc where non-void functions used exhaustive switch statements without fallback returns. Added fallback returns to ensure all control paths are covered.
+- Fixed a syntax error in aggregatable_trigger_config.cc (stray character at the end of the file).
+- Classification: compiler strictness/library analysis, not a TaterTOS API/platform gap.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/components/attribution_reporting/attribution_reporting/aggregatable_trigger_config.o
+  obj/components/attribution_reporting/attribution_reporting/aggregatable_utils.o

@@ -134,6 +134,20 @@ struct fry_process_shared {
  *   - Cleaned up on process exit via syscall_vm_process_exit().
  *   - Shared anonymous VM objects are refcounted; last unmap frees backing.
  */
+
+/*
+ * Full user register snapshot for a clone()/clone3() child. On Linux a clone
+ * child inherits a copy of the parent's registers at the syscall point (with
+ * rax=0, rsp=new stack). glibc relies on this — it stashes the thread fn/arg
+ * in callee-saved registers across the clone syscall. process_start restores
+ * this whole set via iretq for clone children (is_clone_child).
+ */
+struct linux_clone_ctx {
+    uint64_t rax, rbx, rcx, rdx, rsi, rdi, rbp;
+    uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
+    uint64_t rip, rsp, rflags;
+};
+
 struct fry_process {
     uint32_t pid;
     uint32_t tgid;
@@ -152,9 +166,13 @@ struct fry_process {
     uint64_t user_rsp;
     uint64_t user_rip;
     uint64_t user_arg;
+    uint64_t user_rax;     /* value of RAX at user entry. 0 for _start and for
+                              clone() children (clone returns 0 in the child).
+                              Zero-initialized by proc_alloc for all processes. */
     uint64_t user_fs_base;
     uint64_t wake_time_ms;
     uint64_t wait_futex_key;
+    uint32_t wait_futex_bitset;
     uint32_t wait_pid;
     int32_t wait_result;
     uint8_t is_kernel;
@@ -162,12 +180,25 @@ struct fry_process {
     uint8_t no_new_privs;
     uint8_t dumpable;
     uint8_t thp_disabled;
-    uint8_t _prctl_pad[3];
+    uint8_t is_linux;      /* 1 = Linux-personality process: syscalls route
+                              through linux_syscall_dispatch (linuxulator) */
+    uint8_t is_clone_child; /* 1 = first run restores full GPRs from clone_ctx */
+    uint8_t _prctl_pad[1];
+    /* Linux-personality per-thread bookkeeping (set via Linux syscalls). */
+    uint64_t linux_clear_child_tid; /* set_tid_address — futex-wake on exit */
+    uint64_t linux_robust_list;     /* set_robust_list head */
+    uint64_t linux_mmap_next;       /* bump pointer for anonymous mmap() */
+    struct linux_clone_ctx clone_ctx; /* full register set for a clone child */
     uint64_t timer_slack_ns;
     uint64_t kernel_stack_phys;
     uint32_t kernel_stack_pages;
     void (*kentry)(void *arg);
     void *karg;
+    /* Extended FPU/SSE/AVX state, saved/restored across context switches via
+     * XSAVE/XRSTOR. 64-byte aligned (required by XSAVE). Sized for x87+SSE+AVX
+     * (~832B); 1024 leaves headroom. The aligned(64) makes the whole PCB
+     * 64-aligned so &procs[i].fpu_area stays aligned. */
+    uint8_t fpu_area[1024] __attribute__((aligned(64)));
 };
 
 extern struct fry_process procs[PROC_MAX];
@@ -176,6 +207,11 @@ int process_init(void);
 struct fry_process *process_create_user(uint64_t cr3, uint64_t entry, uint64_t user_rsp, const char *name);
 struct fry_process *process_create_user_thread(struct fry_process *parent, uint64_t entry,
                                                uint64_t arg, uint64_t user_rsp);
+struct fry_process *process_clone_linux_thread(struct fry_process *parent,
+                                                uint64_t user_rip, uint64_t user_rsp,
+                                                uint64_t tls,
+                                                uint64_t child_tid_addr,
+                                                uint64_t parent_tid_addr);
 struct fry_process *process_create_kernel(void (*entry)(void *), void *arg, const char *name);
 struct fry_process *proc_current(void);
 void proc_set_current(struct fry_process *p);

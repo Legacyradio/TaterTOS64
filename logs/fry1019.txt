@@ -1,0 +1,4 @@
+fry1019
+blocker: base sys_info_posix.cc missing HUGETLBFS_MAGIC/RAMFS_MAGIC and drive_info_posix.cc missing linux/kdev_t.h.
+patch: added magic constants to linux/magic.h and created linux/kdev_t.h with MAJOR/MINOR macros.
+build: resumed chromium-tatertos ninja build.

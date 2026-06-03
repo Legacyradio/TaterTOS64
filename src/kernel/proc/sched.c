@@ -15,6 +15,7 @@
 #include "../../include/tater_trace.h"
 
 void kprint(const char *fmt, ...);
+void kprint_serial_only(const char *fmt, ...);
 extern struct fry_handoff *g_handoff;
 
 /*
@@ -25,6 +26,11 @@ extern struct fry_handoff *g_handoff;
 struct percpu_data {
     uint64_t kstack_top;    /* offset 0: kernel stack for current process */
     uint64_t user_rsp;      /* offset 8: scratch for user RSP in syscall_entry */
+    uint64_t linux_frame_rsp; /* offset 16: interrupt-frame RSP for clone3 */
+    /* offsets 24..56: parent callee-saved regs captured in syscall_entry so
+     * clone3 children can inherit them (rbx,r12,r13,r14,r15 in order). The
+     * syscall_entry frame does not otherwise save these. */
+    uint64_t linux_clone_saved[5];
 } __attribute__((aligned(16)));
 
 #define MAX_CPUS 64
@@ -42,6 +48,9 @@ struct runqueue {
 
 static struct runqueue rq[MAX_CPUS];
 static struct fry_process *current[MAX_CPUS];
+/* Per-CPU idle task — the always-runnable fallback so a task that blocks
+ * itself (PROC_WAITING) is never left running when its runqueue is empty. */
+static struct fry_process *idle_task[MAX_CPUS];
 /*
  * The BSP boot thread starts life on the linker-defined bootstrap stack, not
  * on a scheduler-owned kernel stack. Keep a bookkeeping-only context for that
@@ -199,9 +208,53 @@ static struct fry_process *remove_from_runqueue(uint32_t pid) {
     return 0;
 }
 
+/* ---- Extended FPU/SSE/AVX state (XSAVE) management ---------------------
+ * Without saving vector state across context switches, concurrent glibc
+ * processes corrupt each other's XMM/YMM registers -> intermittent crashes
+ * in libc string/math code. Required for any real threaded Linux binary. */
+static uint64_t g_xcr0_mask = 0;   /* 0 = XSAVE not enabled (graceful fallback) */
+
+static void fpu_enable_cpu(void) {
+    uint32_t a, b, c, d;
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(1u), "c"(0u));
+    if (!(c & (1u << 26))) return;     /* CPUID.1:ECX.XSAVE absent -> stay disabled */
+    uint64_t cr0;
+    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+    cr0 &= ~((1UL << 2) | (1UL << 3));  /* clear EM (no x87 emulation) + TS (no lazy) */
+    cr0 |=  (1UL << 1);                 /* set MP */
+    __asm__ volatile("mov %0, %%cr0" : : "r"(cr0) : "memory");
+    uint64_t cr4;
+    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+    cr4 |= (1UL << 9) | (1UL << 10) | (1UL << 18); /* OSFXSR | OSXMMEXCPT | OSXSAVE */
+    __asm__ volatile("mov %0, %%cr4" : : "r"(cr4) : "memory");
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0xDu), "c"(0u));
+    (void)b; (void)d;
+    uint64_t mask = ((uint64_t)a & 0x7ULL) | 0x1ULL; /* x87 + SSE + AVX, as supported */
+    __asm__ volatile("xsetbv" : : "a"((uint32_t)mask), "d"(0u), "c"(0u));
+    g_xcr0_mask = mask;
+}
+
+static inline void fpu_save(struct fry_process *p) {
+    if (!g_xcr0_mask) return;
+    __asm__ volatile("xsave64 (%0)"
+                     : : "r"(p->fpu_area), "a"((uint32_t)g_xcr0_mask), "d"(0u)
+                     : "memory");
+}
+
+static inline void fpu_restore(struct fry_process *p) {
+    if (!g_xcr0_mask) return;
+    __asm__ volatile("xrstor64 (%0)"
+                     : : "r"(p->fpu_area), "a"((uint32_t)g_xcr0_mask), "d"(0u)
+                     : "memory");
+}
+
 __attribute__((noinline))
 static void context_switch(struct fry_process *from, struct fry_process *to) {
     if (from == to) return;
+    /* Save outgoing vector state, load incoming — BEFORE the GPR/stack swap.
+     * (Doing it after the swap would run in the wrong task's frame.) */
+    fpu_save(from);
+    fpu_restore(to);
     __asm__ volatile(
         "pushfq\n"
         "push %%rax\n"
@@ -251,10 +304,13 @@ static void idle_loop(void *arg) {
 }
 
 static void init_boot_context(uint32_t cpu, uint64_t stack_top) {
+    /* Enable XSAVE/AVX state management on this CPU before it can schedule. */
+    fpu_enable_cpu();
     struct fry_process *boot = &boot_contexts[cpu];
     for (uint32_t i = 0; i < sizeof(*boot); i++) {
         ((uint8_t *)boot)[i] = 0;
     }
+    *(uint32_t *)(boot->fpu_area + 24) = 0x1f80u; /* MXCSR default (exceptions masked) */
     boot->state = PROC_RUNNING;
     boot->cpu = (uint8_t)cpu;
     boot->is_kernel = 1;
@@ -288,6 +344,7 @@ int sched_init(void) {
             irqf = irq_save_disable();
             spin_lock(&g_sched_lock);
             idle->cpu = i;
+            idle_task[i] = idle;
             rq_push(&rq[i], idle);
             current[i] = idle;
             spin_unlock(&g_sched_lock);
@@ -432,6 +489,7 @@ void sched_sleep(uint32_t pid, uint64_t ms) {
     p->wait_pid = 0;
     p->wait_tid = 0;
     p->wait_futex_key = 0;
+    p->wait_futex_bitset = 0;
     p->wait_result = 0;
     spin_unlock(&g_sched_lock);
     irq_restore(irqf);
@@ -455,7 +513,7 @@ void sched_block(uint32_t pid) {
 
 int sched_block_futex(uint32_t pid, volatile const uint32_t *word,
                       uint32_t expected, uint64_t key,
-                      uint64_t wake_time_ms) {
+                      uint64_t wake_time_ms, uint32_t bitset) {
     uint64_t irqf = irq_save_disable();
     int rc = 0;
     spin_lock(&g_sched_lock);
@@ -464,12 +522,30 @@ int sched_block_futex(uint32_t pid, volatile const uint32_t *word,
     } else {
         struct fry_process *p = remove_from_runqueue(pid);
         if (!p) {
+            /* The caller is the current (running) task. Accept it whether it
+             * is marked RUNNING or transiently WAITING: under SMP futex
+             * contention a concurrent wake on another CPU can flip the
+             * caller's state to WAITING right as it re-enters here. We just
+             * re-block it on the new key (a stale wait is superseded).
+             * Without this, glibc gets -ESRCH from a wait that must block and
+             * aborts with "futex facility returned an unexpected error". */
+            for (uint32_t i = 0; i < PROC_MAX; i++) {
+                if (procs[i].pid == pid &&
+                    (procs[i].state == PROC_RUNNING ||
+                     procs[i].state == PROC_WAITING)) {
+                    p = &procs[i];
+                    break;
+                }
+            }
+        }
+        if (!p) {
             rc = -ESRCH;
         } else {
             p->state = PROC_WAITING;
             p->wait_pid = 0;
             p->wait_tid = 0;
             p->wait_futex_key = key;
+            p->wait_futex_bitset = bitset;
             p->wait_result = 0;
             p->wake_time_ms = wake_time_ms;
         }
@@ -496,6 +572,7 @@ void sched_wake(uint32_t pid) {
     }
     p->state = PROC_RUNNING;
     p->wake_time_ms = 0;
+    p->wait_futex_bitset = 0;
     p->wait_result = 0;
     uint32_t count = smp_cpu_count();
     uint32_t bsp = smp_bsp_index();
@@ -519,6 +596,7 @@ void sched_block_poll(uint32_t pid, uint64_t wake_time_ms) {
     p->wait_pid = 0;
     p->wait_tid = 0;
     p->wait_futex_key = 0;
+    p->wait_futex_bitset = 0;
     p->wait_poll = 1;
     p->wait_result = 0;
     p->wake_time_ms = wake_time_ms;
@@ -547,7 +625,8 @@ uint32_t sched_wake_poll_waiters(void) {
     return woke;
 }
 
-uint32_t sched_wake_futex(uint64_t key, uint32_t max_wake, int32_t result) {
+uint32_t sched_wake_futex(uint64_t key, uint32_t max_wake,
+                          uint32_t bitset, int32_t result) {
     uint64_t irqf = irq_save_disable();
     uint32_t woke = 0;
     uint32_t count;
@@ -564,13 +643,35 @@ uint32_t sched_wake_futex(uint64_t key, uint32_t max_wake, int32_t result) {
     for (uint32_t i = 0; i < PROC_MAX && woke < max_wake; i++) {
         if (procs[i].state != PROC_WAITING) continue;
         if (procs[i].wait_futex_key != key) continue;
+        if ((procs[i].wait_futex_bitset & bitset) == 0) continue;
         procs[i].wait_futex_key = 0;
+        procs[i].wait_futex_bitset = 0;
         wake_runnable_locked(&procs[i], count, bsp, result);
         woke++;
     }
     spin_unlock(&g_sched_lock);
     irq_restore(irqf);
     return woke;
+}
+
+uint32_t sched_requeue_futex(uint64_t key_from, uint64_t key_to,
+                             uint32_t max_requeue) {
+    uint64_t irqf = irq_save_disable();
+    uint32_t moved = 0;
+    if (max_requeue == 0 || key_from == 0 || key_to == 0 || key_from == key_to) {
+        irq_restore(irqf);
+        return 0;
+    }
+    spin_lock(&g_sched_lock);
+    for (uint32_t i = 0; i < PROC_MAX && moved < max_requeue; i++) {
+        if (procs[i].state != PROC_WAITING) continue;
+        if (procs[i].wait_futex_key != key_from) continue;
+        procs[i].wait_futex_key = key_to;
+        moved++;
+    }
+    spin_unlock(&g_sched_lock);
+    irq_restore(irqf);
+    return moved;
 }
 
 void sched_tick(void) {
@@ -582,9 +683,22 @@ void sched_tick(void) {
     uint32_t bsp = smp_bsp_index();
     struct runqueue *q = &rq[cpu];
     if (!q->head) {
-        spin_unlock(&g_sched_lock);
-        irq_restore(irqf);
-        return;
+        /* Empty runqueue. If the current task blocked itself (PROC_WAITING,
+         * e.g. a futex/poll wait), it must NOT keep running — make this CPU's
+         * idle task runnable and fall through to switch to it. Otherwise the
+         * blocked task continues and a later wait sees a non-RUNNING current
+         * task -> -ESRCH (glibc futex: "unexpected error code"). */
+        struct fry_process *cur0 = current[cpu];
+        struct fry_process *idle = idle_task[cpu];
+        if (cur0 && cur0->state != PROC_RUNNING && idle && idle != cur0) {
+            idle->state = PROC_RUNNING;
+            idle->cpu = (uint8_t)cpu;
+            rq_push(q, idle);
+        } else {
+            spin_unlock(&g_sched_lock);
+            irq_restore(irqf);
+            return;
+        }
     }
 
     // Wake sleepers
@@ -598,6 +712,7 @@ void sched_tick(void) {
             procs[i].wake_time_ms <= now) {
             if (procs[i].wait_futex_key != 0) {
                 procs[i].wait_futex_key = 0;
+                procs[i].wait_futex_bitset = 0;
                 wake_runnable_locked(&procs[i], count, bsp, -ETIMEDOUT);
                 continue;
             }
@@ -616,9 +731,28 @@ void sched_tick(void) {
 
     struct fry_process *next = q->head;
     if (!next || next == cur) {
-        spin_unlock(&g_sched_lock);
-        irq_restore(irqf);
-        return;
+        /* No other runnable task queued. If the current task is still
+         * RUNNING, just keep running it. But if it blocked itself
+         * (PROC_WAITING etc., e.g. a futex/poll wait), it MUST NOT keep
+         * running — fall back to this CPU's idle task. Otherwise the blocked
+         * task continues and a later wait sees a non-RUNNING "current" and
+         * fails with -ESRCH (glibc futex: "unexpected error code"). */
+        if (cur && cur->state == PROC_RUNNING) {
+            spin_unlock(&g_sched_lock);
+            irq_restore(irqf);
+            return;
+        }
+        struct fry_process *idle = idle_task[cpu];
+        if (!idle || idle == cur) {
+            spin_unlock(&g_sched_lock);
+            irq_restore(irqf);
+            return;
+        }
+        remove_from_runqueue(idle->pid);  /* ensure single rq presence */
+        idle->state = PROC_RUNNING;
+        idle->cpu = (uint8_t)cpu;
+        rq_push(q, idle);
+        next = q->head;
     }
 
     current[cpu] = next;

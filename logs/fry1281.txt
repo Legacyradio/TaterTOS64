@@ -1,0 +1,24 @@
+fry1281 - 2026-06-02 14:27:40 CDT - linuxulator syscall arg6 and file-backed mmap
+
+What changed:
+- Widened linux_syscall_dispatch() to accept Linux syscall arg6.
+- Widened syscall_dispatch() to carry a sixth syscall argument while keeping
+  native TaterTOS syscall behavior intact.
+- Updated the syscall_entry register shuffle to save user R9 as the first C
+  stack argument before reusing R9 for arg5.
+- Updated internal native readv/writev dispatcher calls for the new signature.
+- Replaced the Linux file-backed mmap ENOSYS path with VFS-backed private page
+  mapping using the sixth mmap offset argument.
+
+Why:
+- Claude Code is a dynamically linked Linux ELF. The dynamic loader maps shared
+  objects with mmap(fd, ..., offset), and Linux passes that offset as syscall
+  arg6. Without arg6 forwarding, file-backed mmap cannot be correct.
+
+Verification:
+- make src/kernel/proc/syscall.o
+- Result: src/kernel/proc/syscall.o compiled cleanly with the cross toolchain.
+
+Notes:
+- Runtime QEMU serial verification still needs explicit permission under
+  planv3's no-QEMU-logs rule.

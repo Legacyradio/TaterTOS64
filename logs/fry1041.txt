@@ -1,0 +1,1 @@
+STEP/2026-05-11 12:00/REVERT_HEADERS: Removed Linux-specific socket options (IP_TOS, IP_RECVTOS, IPV6_TCLASS, IPV6_RECVTCLASS, TCP_KEEP*, SO_TIMESTAMP) from netinet/in.h, netinet/tcp.h, and sys/socket.h. WHY: Enforce Rule 3 (No Linux code in OS) and maintain architectural purity for TaterTOS64.

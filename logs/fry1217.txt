@@ -1,0 +1,17 @@
+2026-05-15T23:48:45-05:00
+
+Fix: addressed cc scheduler settings redundant-move compiler strictness failure.
+
+Files:
+- chromium-tatertos/src/cc/scheduler/scheduler_settings.cc
+
+Why:
+- The build stopped on -Werror=redundant-move in scheduler_settings.cc where std::move was unnecessarily used on a local unique_ptr being returned.
+- Removed the std::move call to allow the compiler to perform Return Value Optimization (RVO) directly.
+- Classification: compiler strictness/library analysis, not a TaterTOS API/platform gap.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/cc/cc/scheduler_settings.o

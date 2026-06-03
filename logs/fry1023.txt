@@ -1,0 +1,3 @@
+STEP 1023
+TIME: 2026-05-10 12:49:24
+ACTION: Added MADV_REMOVE to sys/mman.h to fix compilation error in base/memory/discardable_shared_memory.cc. Added SYS_rt_tgsigqueueinfo and SYS_gettid to sys/syscall.h to fix compilation errors in base/debug/stack_trace_posix.cc. Resumed the Chromium ninja build.

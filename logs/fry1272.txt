@@ -1,0 +1,17 @@
+Fry Log 1272 — v8/heap/memory-reducer.cc: implicit fallthrough in switch (v3 final)
+Timestamp: 2026-05-19 ~13:40 CDT
+
+Scope:
+  Build stopped at [18/19580] with -Werror=implicit-fallthrough= (GCC).
+  v1 [[fallthrough]] rejected by clang as unreachable.
+  v2 __attribute__((fallthrough)) also rejected by clang as unreachable.
+
+Fix (v3): Added break; after inner switch. All inner cases (kPossibleGarbage,
+  kTimer, kMarkCompact) return, so break is dead code but satisfies GCC's
+  case-boundary annotation requirement without triggering clang's
+  unreachable-fallthrough check.
+
+Why:
+  Both [[fallthrough]] and __attribute__((fallthrough)) trigger clang's
+  -Wunreachable-code-fallthrough when all inner switch branches return.
+  break; is the only construct that satisfies both compilers here.

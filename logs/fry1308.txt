@@ -1,0 +1,25 @@
+=====================================================================
+fry1308 — stream large ELF binaries from disk (enable real claude)
+=====================================================================
+DATE: 2026-06-03 ~00:40 CDT
+GOAL: run the REAL 243MB claude binary. Two blockers found (fry1307):
+ (A) the EFI ramdisk loads each root file contiguously below 4GB -> 243MB
+     can't be staged in the ramdisk.
+ (B) the Linux ELF loader (lx_read_image) buffers the WHOLE file via
+     pmm_alloc_pages(size) -> a 243MB contiguous KERNEL alloc, same wall.
+
+Design (respects Zack's LIVE-BOOT constraint: NVMe is ADDITIVE, never
+required; ramdisk stays the root):
+ (A) Storage: the kernel already auto-mounts NVMe at /nvme as a secondary
+     when a ramdisk root is present (main.c ~444 vfs_mount_secondary). So:
+       - bump NVMe ToTFS image (100MB -> ~400MB),
+       - totcopy claude -> /RCLAUDE.LXE on the NVMe (gated STAGE_CLAUDE=1),
+       - attach the NVMe drive in QEMU,
+       - launch /nvme/RCLAUDE.LXE. interp (/lib64/ld-linux) + NEEDED libs
+         (/usr/lib/*.so) still load from the ramdisk root.
+ (B) Loader: refactor linux_elf.c to STREAM. Keep the vfs_file open; read
+     only the ELF header + program headers into small buffers; map each
+     PT_LOAD by vfs_seek(p_offset)+vfs_read in chunks DIRECTLY into the
+     mapped user pages (no whole-file buffer). PT_INTERP path read via a
+     small seek+read. MUST stay correct for the existing small probes.
+Steps logged below.

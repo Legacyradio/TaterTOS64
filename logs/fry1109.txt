@@ -1,0 +1,26 @@
+fry1109 - WebRTC GoogCC bandwidth limited cause fallback
+
+Timestamp: 2026-05-14T22:02:49-05:00
+Build stop: [139/31521]
+Failed object: obj/third_party/webrtc/modules/congestion_controller/goog_cc/goog_cc/goog_cc_network_control.o
+Failed source: third_party/webrtc/modules/congestion_controller/goog_cc/goog_cc_network_control.cc
+Classification: compiler strictness / portability cleanup, not a TaterTOS API gap
+
+Problem:
+GCC, under -Werror, rejected GetBandwidthLimitedCause() because its
+exhaustive-looking LossBasedState switch had no explicit fallback return.
+
+Fix:
+Added RTC_DCHECK_NOTREACHED() and a conservative
+BandwidthLimitedCause::kDelayBasedLimited fallback return after the switch.
+This matches the existing kDelayBasedEstimate case and ProbeController's
+default bandwidth-limited cause.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja \
+  -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos \
+  obj/third_party/webrtc/modules/congestion_controller/goog_cc/goog_cc/goog_cc_network_control.o
+
+Result:
+[1/1] CXX obj/third_party/webrtc/modules/congestion_controller/goog_cc/goog_cc/goog_cc_network_control.o
+

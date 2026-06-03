@@ -1,0 +1,36 @@
+Fry Log 929 — Chromium base:base: signal detail codes, thread_delegate exclusion
+Timestamp: 2026-05-09 00:30:00 CDT
+
+Scope:
+  Fry 928 cleared launch_posix, module_cache, and stack_copier_signal.
+  Build reached 2680+ and hit two new categories.
+
+Build result before fix:
+  stack_trace_posix.o: BUS_ADRALN, BUS_ADRERR, BUS_OBJERR, FPE_FLTDIV,
+    FPE_FLTINV, FPE_FLTOVF, FPE_FLTRES, FPE_FLTSUB, FPE_FLTUND,
+    FPE_INTDIV, FPE_INTOVF, ILL_BADSTK, ILL_COPROC, ILL_ILLOPN,
+    ILL_ILLADR, ILL_ILLTRP, ILL_PRVOPC, ILL_PRVREG, SEGV_MAPERR,
+    SEGV_ACCERR — all not declared
+  thread_delegate_posix.o: RegisterContext has no member 'gregs',
+    REG_RBP/REG_RBX/REG_R12-15/REG_RSP not declared,
+    SamplingProfilerThreadToken has no member 'pthread_id'
+
+Changes:
+  src/include/signal.h
+    - Added all POSIX signal detail codes (si_code values for SIGBUS,
+      SIGFPE, SIGILL, SIGSEGV). These are standard values used by
+      Chromium's stack trace signal handler decoder.
+
+  base/BUILD.gn
+    - Moved thread_delegate_posix.cc/.h into the is_tatertos-excluded
+      block alongside stack_copier_signal. Both use Linux-specific
+      ucontext/gregs[] structures. Merged duplicate exclusion blocks
+      into one.
+
+Why:
+  signal detail codes are standard POSIX constants that must be in
+  <signal.h>. thread_delegate_posix relies on Linux register context
+  structures (gregs[], REG_RBP, etc.) that don't exist on TaterTOS64.
+
+Verification:
+  Pending: ninja -C out/tatertos base:base

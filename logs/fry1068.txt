@@ -1,0 +1,28 @@
+2026-05-14 02:00:47 CDT
+
+Fixed the next Chromium net/http compile blockers from the monitored full
+build.
+
+What changed:
+- net/http/http_connection_info.cc:
+  - Added explicit GCC-only fallbacks after exhaustive HttpConnectionInfo and
+    HttpConnectionInfoCoarse switches.
+  - Added a GCC-only return for the deprecated SPDY2 NOTREACHED path.
+- net/http/http_cache.cc:
+  - Changed GetHighestPriority() to iterate raw_ptr containers by const
+    reference, avoiding a raw_ptr copy warning under -Werror.
+- net/http/http_cache_transaction.cc:
+  - Added base/notreached.h.
+  - Added an explicit GCC-only fallback after the exhaustive
+    NoVarySearchUseResult switch.
+
+Why:
+The TaterTOS target GCC build enforces return-path and range-loop-copy warnings
+as errors. These fixes avoid broad warning suppression and preserve normal
+Chromium logic while giving GCC concrete unreachable paths.
+
+Verification:
+- ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/net/net/http_connection_info.o obj/net/net/http_cache.o obj/net/net/http_cache_transaction.o passed.
+
+Next:
+- Resume the monitored full chrome build from this point.

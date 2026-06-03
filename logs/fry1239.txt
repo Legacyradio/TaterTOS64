@@ -1,0 +1,24 @@
+Timestamp: 2026-05-16T17:19:36-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped at [15/23183] on
+obj/third_party/blink/common/common/manifest.o.
+
+Failure:
+third_party/blink/common/manifest/manifest.cc had two LaunchHandler boolean
+helpers reach the end of non-void functions under -Werror=return-type:
+- TargetsExistingClients()
+- NeverNavigateExistingClients()
+
+Classification:
+Compiler strictness. This is not a TaterTOS API/platform gap.
+
+Fix:
+Added explicit false fallbacks after the exhaustive ClientMode switches,
+matching the conservative behavior for default/new navigation modes.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C out/tatertos obj/third_party/blink/common/common/manifest.o
+
+Result:
+Targeted object rebuild passed.

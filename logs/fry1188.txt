@@ -1,0 +1,18 @@
+2026-05-15T09:05:53-05:00
+
+Fix: Added sqlite_vfs fallback returns.
+
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Why: Clang's -Werror=return-type rejected ClientToTag() in metrics_util.cc and
+SharedLocks::ShmLock() in shared_locks.cc because the compiler could not prove
+all enum values returned. FileTypeToTag() also had a NOTREACHED() default
+without an explicit return.
+
+Change: Added defensive fallbacks: empty file-type tag, ".Unknown" client tag,
+and SQLITE_IOERR_LOCK after an unexpected lock operation.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/components/sqlite_vfs/sqlite_vfs/metrics_util.o obj/components/sqlite_vfs/sqlite_vfs/shared_locks.o
+
+Result: passed.

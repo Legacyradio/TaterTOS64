@@ -1,0 +1,37 @@
+Fry Log 1290 — Linuxulator follow-up: Linux futex bridge verified
+=================================================================
+DATE: 2026-06-02 21:12 CDT
+AUTHOR: Codex
+
+Goal:
+- Verify the Linux thread probe after wiring Linux futex into the native
+  futex queue and removing the temporary LD_BIND_NOW crutch.
+
+Changes:
+- src/kernel/proc/process.c
+  - removed forced LD_BIND_NOW=1 injection from process_launch_linux()
+- src/kernel/proc/syscall.c
+  - included <linux/futex.h>
+  - routed Linux FUTEX_WAIT / FUTEX_WAIT_BITSET to futex_wait_begin()
+  - routed Linux FUTEX_WAKE to futex_wake_waiters()
+  - preserved ENOSYS for unsupported futex commands
+
+Verification:
+- build_iso.sh completed cleanly
+- out/tatertos64v3.iso produced successfully
+- serial_fry1290.log shows:
+  - LTHR launched successfully
+  - `==== TaterTOS linuxulator: thread + gap probe ====`
+  - `[OK] writev reached`
+  - `[OK] pthread_create #1 returned`
+  - `[OK] thread 1 started`
+  - `[OK] thread 1 done, counter=5`
+  - gap probe continued through nanosleep/fcntl/dup2/clock_getres
+
+Result:
+- The Linux thread probe now reaches user code and completes its thread
+  path. The futex bridge is working well enough for this rung.
+
+Next:
+- move to the next real Claude Code blocker only if a new booted binary
+shows one

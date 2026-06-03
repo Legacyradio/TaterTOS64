@@ -1,0 +1,15 @@
+Fry Log 1273 — v8/heap/safepoint.cc: redundant std::move in return
+Timestamp: 2026-05-19 ~13:30 CDT
+
+Scope:
+  Build stopped at [11/19557] with -Werror=redundant-move in
+  v8/src/heap/safepoint.cc:307 and :320.
+
+Fix:
+  Removed std::move() from two return statements returning local
+  IsolateSafepointScope objects — NRVO applies automatically.
+
+Why:
+  GCC 15 -Werror=redundant-move flags std::move() on local variables
+  in return statements since the compiler already applies move
+  semantics via NRVO.

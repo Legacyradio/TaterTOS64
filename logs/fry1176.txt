@@ -1,0 +1,22 @@
+Timestamp: 2026-05-15T08:23:13-05:00
+Blocker: metrics histogram controller and viz BeginFrameArgs failed under fatal
+GCC warnings.
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Files changed:
+- /home/legacyindieradio/chromium-tatertos/src/components/metrics/histogram_controller.cc
+- /home/legacyindieradio/chromium-tatertos/src/components/viz/common/frame_sinks/begin_frame_args.cc
+
+Why:
+- GetPingHistogramName() had no fallback return after its enum switch.
+- BeginFrameArgs::AsValue() returned a local unique_ptr with std::move(), which
+  GCC reports as a redundant move.
+
+Fix:
+- Added base/notreached.h and a fallback histogram name.
+- Returned the local unique_ptr directly.
+
+Verification:
+- Ran:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/components/metrics/metrics_component/histogram_controller.o obj/components/viz/common/common/begin_frame_args.o
+- Result: passed.

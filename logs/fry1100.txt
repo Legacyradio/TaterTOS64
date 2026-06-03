@@ -1,0 +1,21 @@
+2026-05-14T16:07:53-05:00
+
+Step: Chromium TaterTOS64v3 WebRTC SCTP data transport blocker cleanup after monitored build 20260514_160240.
+
+Local Ninja failure position:
+- [327/33052] obj/third_party/webrtc/media/rtc_data_dcsctp_transport/dcsctp_transport.o
+
+Logical phase:
+- third_party/webrtc SCTP data-channel transport.
+
+Exact blockers:
+- third_party/webrtc/media/sctp/dcsctp_transport.cc had an exhaustive DataMessageType switch that GCC still treated as possible non-void fallthrough.
+- third_party/webrtc/net/dcsctp/public/dcsctp_socket.h had exhaustive ErrorKind and SendStatus string helper switches that GCC still treated as possible non-void fallthrough.
+
+Fix:
+- Added explicit fallback returns after the affected switches.
+
+Verification:
+- Ran targeted Ninja rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/third_party/webrtc/media/rtc_data_dcsctp_transport/dcsctp_transport.o
+- Result: passed [1/1].

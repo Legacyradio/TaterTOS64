@@ -1,0 +1,17 @@
+2026-05-15T22:42:11-05:00
+
+Fix: addressed cc picture layer redundant-move compiler strictness failure.
+
+Files:
+- chromium-tatertos/src/cc/layers/picture_layer_impl.cc
+
+Why:
+- The build stopped on -Werror=redundant-move in picture_layer_impl.cc where std::move was unnecessarily used on local returned variables and a const reference.
+- Removed the std::move calls to allow the compiler to perform Return Value Optimization (RVO) and avoid copying issues.
+- Classification: compiler strictness/library analysis, not a TaterTOS API/platform gap.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/cc/cc/picture_layer_impl.o

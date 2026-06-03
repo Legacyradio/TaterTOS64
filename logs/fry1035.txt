@@ -1,0 +1,3 @@
+STEP 1035
+TIME: 2026-05-10 23:21:13
+ACTION: Added SYS_exit_group to <sys/syscall.h> and SI_KERNEL to <signal.h>. Restored the inclusion of <ucontext.h> in <signal.h> now that circular dependencies are resolved via the bits/types headers. This fixes compilation errors in base/debug/stack_trace_posix.cc where ucontext_t and related constants were no longer visible. Resumed the Chromium ninja build.

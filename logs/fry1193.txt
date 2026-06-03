@@ -1,0 +1,15 @@
+2026-05-15T09:26:47-05:00
+
+Fix: Added media bitrate fallback return.
+
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Why: Clang's -Werror=return-type rejected Bitrate::ToString() because the
+compiler could not prove all enum values returned.
+
+Change: Added a NOTREACHED() fallback returning "Unknown".
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/media/base/base/bitrate.o
+
+Result: passed.

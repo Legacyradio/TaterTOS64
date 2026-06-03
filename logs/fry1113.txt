@@ -1,0 +1,27 @@
+fry1113 - gfx display color space index fallback
+
+Timestamp: 2026-05-14T22:21:38-05:00
+Build stop: [33/31080]
+Failed object: obj/ui/gfx/color_space/display_color_spaces.o
+Failed source: ui/gfx/display_color_spaces.cc
+Classification: compiler strictness / portability cleanup, not a TaterTOS API gap
+
+Problem:
+GCC, under -Werror, rejected GetIndex() because its exhaustive-looking
+ContentColorUsage switch had no explicit fallback return.
+
+Fix:
+Added NOTREACHED() and return 0 after the switch.
+
+Why:
+The fallback is unreachable for valid enum values. Returning 0 maps to the
+kSRGB/no-alpha bucket, which is the conservative default display color usage.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja \
+  -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos \
+  obj/ui/gfx/color_space/display_color_spaces.o
+
+Result:
+[1/1] CXX obj/ui/gfx/color_space/display_color_spaces.o
+

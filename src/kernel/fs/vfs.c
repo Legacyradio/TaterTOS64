@@ -243,6 +243,29 @@ static int rd_write(struct vfs_file *f, const void *buf, uint32_t len) {
     (void)f; (void)buf; (void)len;
     return -1;
 }
+static int64_t rd_seek(struct vfs_file *f, int64_t offset, int whence) {
+    if (!f || !g_rd_hdr) return -1;
+    struct rd_file_state *s = (struct rd_file_state *)f->private;
+    if (s->entry_idx >= g_rd_hdr->count) return -1;
+    struct ramdisk_entry *e = &g_rd_hdr->entries[s->entry_idx];
+    int64_t new_pos;
+    switch (whence) {
+    case 0:
+        new_pos = offset;
+        break;
+    case 1:
+        new_pos = (int64_t)s->pos + offset;
+        break;
+    case 2:
+        new_pos = (int64_t)e->size + offset;
+        break;
+    default:
+        return -1;
+    }
+    if (new_pos < 0) return -1;
+    s->pos = (uint64_t)new_pos;
+    return new_pos;
+}
 static int rd_close(struct vfs_file *f) { (void)f; return 0; }
 static int rd_readdir(void *fs_data, const char *path,
                       int (*cb)(const char *name, uint64_t size, uint32_t attr, void *ctx),
@@ -318,6 +341,7 @@ static int rd_mount_packed(void) {
     rd_ops.close   = rd_close;
     rd_ops.readdir = rd_readdir;
     rd_ops.stat    = rd_stat;
+    rd_ops.seek    = rd_seek;
     vfs_mount("/", &rd_ops, 0);
     kprint("VFS: ramdisk mounted (%u files)\n", (unsigned)g_rd_hdr->count);
     return 0;

@@ -1,0 +1,19 @@
+2026-05-15T22:32:48-05:00
+
+Fix: addressed cc layer and input compiler-strictness failures.
+
+Files:
+- chromium-tatertos/src/cc/layers/layer_impl.cc
+- chromium-tatertos/src/cc/input/input_handler.cc
+
+Why:
+- The build stopped on -Werror=return-type in layer_impl.cc and input_handler.cc where non-void functions lacked fallback returns after exhaustive switch statements.
+- Added NOTREACHED() assertions and appropriate fallback returns.
+- Classification: compiler strictness/library analysis, not a TaterTOS API/platform gap.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/cc/cc/layer_impl.o
+  obj/cc/cc/input_handler.o

@@ -1,0 +1,35 @@
+fry1114 - Skia reinitializes attribute guard for GCC
+
+Timestamp: 2026-05-14T22:25:49-05:00
+Build stop: [75/31038]
+Failed object: obj/cc/paint/paint/color_filter.o
+Failed source: third_party/skia/include/private/base/SkTemplates.h
+Classification: compiler strictness / portability cleanup, not a TaterTOS API gap
+
+Problem:
+GCC, under -Werror, rejected Skia's raw [[clang::reinitializes]] annotations
+because the Clang-scoped attribute is ignored by GCC and treated as an error.
+
+Fix:
+Added a SK_REINITIALIZES macro in SkTemplates.h that expands to
+[[clang::reinitializes]] only when compiling with Clang and the attribute is
+reported as supported. Other compilers see an empty annotation.
+
+Why:
+This preserves the original annotation for supported Clang builds and avoids
+presenting a Clang-only attribute to the TaterTOS GCC build. It is a narrow
+third-party portability guard, not a global warning suppression or OS shortcut.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja \
+  -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos \
+  obj/cc/paint/paint/color_filter.o
+
+Result:
+ninja: no work to do.
+
+Note:
+The targeted compile was interrupted from the client side, but no Ninja process
+remained afterward and the repeated targeted Ninja check found the object up to
+date with the patched header.
+

@@ -1,0 +1,18 @@
+2026-05-15T08:30:55-05:00
+
+Fix: Added explicit fallback returns for viz quad helpers.
+
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Why: Clang's -Werror=return-type rejected two switch-only paths in viz common:
+ContentFrameIntervalTypeToString() in frame_interval_inputs.cc and
+QuadList::InsertCopyBeforeDrawQuad() in quad_list.cc.
+
+Change: ContentFrameIntervalTypeToString() now uses NOTREACHED() and returns
+"unknown" after the exhausted switch. InsertCopyBeforeDrawQuad() now returns
+end() after the NOTREACHED() invalid/cannot-copy material path.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/components/viz/common/common/frame_interval_inputs.o obj/components/viz/common/common/quad_list.o
+
+Result: passed.

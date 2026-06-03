@@ -1,0 +1,22 @@
+2026-05-14T12:45:28-05:00
+
+Step: Chromium TaterTOS64v3 ipcz return-path blocker cleanup after monitored build 20260514_124338.
+
+Local Ninja failure positions:
+- [6/33782] obj/third_party/ipcz/src/impl_chromium/link_type.o
+- [15/33782] obj/third_party/ipcz/src/impl_chromium/local_router_link.o
+
+Logical phase:
+- third_party/ipcz link typing and local router-link state.
+
+Exact blockers:
+- third_party/ipcz/src/ipcz/link_type.cc had an exhaustive LinkType switch that GCC still treated as possible non-void fallthrough.
+- third_party/ipcz/src/ipcz/local_router_link.cc had an exhaustive LinkSide switch that GCC still treated as possible non-void fallthrough.
+
+Fix:
+- Added explicit fallback returns after both switches: "unknown" for LinkType::ToString() and nullptr for SharedState::GetRouter().
+
+Verification:
+- Ran targeted Ninja rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/third_party/ipcz/src/impl_chromium/link_type.o obj/third_party/ipcz/src/impl_chromium/local_router_link.o
+- Result: passed [2/2].

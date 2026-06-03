@@ -1,0 +1,41 @@
+Timestamp: 2026-05-15T03:52:31-05:00
+Stop: [31/30632] CXX obj/third_party/crashpad/crashpad/util/util/close_multiple.o
+Related failures:
+- obj/third_party/crashpad/crashpad/util/util/drop_privileges.o
+- obj/third_party/crashpad/crashpad/util/util/symbolic_constants_posix.o
+Classification: TaterTOS API/port gap in Crashpad POSIX utilities.
+
+Problem:
+Crashpad's POSIX utility code had no TaterTOS handling for three platform
+surfaces:
+- close_multiple.cc expected a platform fd directory such as /proc/self/fd.
+- drop_privileges.cc stopped at #error Port this function to your system.
+- symbolic_constants_posix.cc did not map TaterTOS signal names and compared a
+  one-entry table against NSIG=64.
+
+Fix:
+Added explicit TaterTOS handling:
+- close_multiple.cc skips the fd-directory optimization and uses the existing
+  sysconf/getdtablesize/OPEN_MAX fallback, which TaterTOS libc provides.
+- drop_privileges.cc uses TaterTOS setresgid/setresuid. TaterTOS is single-user
+  root today, and those libc calls accept the all-zero identity.
+- symbolic_constants_posix.cc uses the Linux-number-compatible signal name table
+  because TaterTOS signal.h deliberately assigns the same POSIX subset values
+  and keeps NSIG at 64.
+
+Why:
+These are real TaterTOS port gaps. TaterTOS should not require /proc to close
+descriptors, should not fall through to unported Crashpad code, and should have
+signal names matching its own signal.h constants.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+/home/legacyindieradio/chromium-tatertos/src/out/tatertos
+obj/third_party/crashpad/crashpad/util/util/close_multiple.o
+obj/third_party/crashpad/crashpad/util/util/drop_privileges.o
+obj/third_party/crashpad/crashpad/util/util/symbolic_constants_posix.o
+
+Result:
+Passed. drop_privileges.o and symbolic_constants_posix.o rebuilt successfully
+on the first targeted attempt; close_multiple.o rebuilt successfully after the
+TaterTOS fd-directory branch was fully preprocessor-excluded.

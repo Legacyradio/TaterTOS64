@@ -1,0 +1,140 @@
+Fry Log 919 — Chromium port base:base: fry918 blockers resolved + build fixes
+Timestamp: 2026-05-08 13:30 CDT
+
+STATUS: Active build iteration full rebuild in progress (~192/2894 targets).
+Incremental build was at 2587/2892 before a mistaken `gn gen` wiped
+the incremental state. Lesson learned — do not re-run gn gen on a
+working build. Reverted the cflags change that caused it.
+
+=======================================
+RESOLUTION OF fry918 BLOCKERS
+=======================================
+
+1. base/logging.h: std::ostringstream incomplete type
+   STATUS: CONFIRMED NOT A REAL ISSUE. The libc++ include chain works
+   correctly. __config_site is found via -Ibuildtools/third_party/libc++.
+   Tested compilation with exact cflags from base.ninja — succeeds.
+
+2. serde_core unused imports
+   STATUS: CONFIRMED NOT A REAL ISSUE. .rlib already exists and was
+   built successfully. The existing cfg_attr permits unused imports on
+   non-unix/non-windows platforms already. Rustc flags include -Awarnings.
+
+3. utf_ostream_operators.h wstring_view
+   STATUS: CONFIRMED NOT A REAL ISSUE. _LIBCPP_HAS_WIDE_CHARACTERS=1
+   for tatertos in the generated __config_site. Compilation succeeds.
+
+=======================================
+BUILD FIXES (source-only, no cflags changes)
+=======================================
+
+TaterTOS64 header additions:
+
+  src/include/sys/socket.h
+    - SOCK_SEQPACKET, SOMAXCONN, SHUT_RD/SHUT_WR/SHUT_RDWR
+    - SO_SNDTIMEO, SO_RCVTIMEO
+
+  src/include/netinet/in.h
+    - struct in6_addr { uint8_t s6_addr[16]; }
+    - struct sockaddr_in6 (sin6_family/port/flowinfo/addr/scope_id)
+    - INET_ADDRSTRLEN, INET6_ADDRSTRLEN
+
+  src/include/paths.h (NEW)
+    - _PATH_DEVNULL "/dev/null"
+
+  src/include/pthread.h
+    - PTHREAD_STACK_MIN 16384
+
+  src/include/math.h
+    - HUGE_VAL, HUGE_VALF, HUGE_VALL using __builtin_huge_val*()
+
+Chromium source patches (in chromium-tatertos/src/):
+
+  build/build_config.h
+    - Added defined(OS_TATERTOS) to OS_POSIX group (line 146)
+      Needed so IS_POSIX=1 for TaterTOS — many POSIX paths depend on it.
+
+  base/message_loop/message_pump_for_ui.h
+    - Added forward declaration of class MessagePumpForUI alongside AIX
+    - Added IS_TATERTOS to the AIX guard for no-UI-message-pump
+
+  base/message_loop/message_pump.cc
+    - Added IS_TATERTOS to AIX NOTREACHED() guard (no UI MessagePump)
+    - Added return nullptr after NOTREACHED() for GCC 15 flow analysis
+    - Added __builtin_unreachable() after switch for same reason
+
+  base/message_loop/message_pump_for_io.h — TBD
+
+  base/process/set_process_title.cc
+    - Added !IS_TATERTOS to setproctitle guard (no setproctitle on TaterTOS)
+
+  base/process/process_metrics.h
+    - Added IS_TATERTOS to SystemMemoryInfo guard (need the struct+function)
+
+  base/process/process_metrics_posix.cc
+    - Added IS_TATERTOS to GetMallocUsage guard
+    - Added GetSystemMemoryInfo stub returning zeroed struct + true
+
+  base/task/current_thread.cc
+    - GetMessagePumpForUI(): guard static_cast with IS_TATERTOS → return nullptr
+
+  base/profiler/register_context_registers.h
+    - Guard #include <ptrauth.h> with ARCH_CPU_ARM64 && IS_APPLE
+      (Apple pointer auth header, TaterTOS doesn't have it)
+
+  base/profiler/module_cache.cc
+    - Replace flat_set::find(address) with manual std::find_if loop
+      (libc++ flat_set doesn't support heterogenous lookup)
+
+  base/profiler/stack_copier.cc
+    - Remove 'const' from reinterpret_cast<const uintptr_t> →
+      reinterpret_cast<uintptr_t> (GCC 15 warning)
+
+  build/rust/gni_impl/filter_clang_args.py
+    - Added -Wno-alloc-size-larger-than, -Wno-array-bounds to filtered-out
+      flags (these are GCC-only, cause bindgen failures with clang)
+
+Perfetto source patches (third_party/perfetto/):
+
+  src/base/regex/regex_re2.h:58
+  src/base/regex/regex.cc:78
+  src/trace_processor/core/dataframe/adhoc_dataframe_builder.cc:109
+    - Removed std::move() in return statements (GCC 15 redundant-move)
+
+=======================================
+GCC 15 EXHAUSTIVENESS FIXES
+=======================================
+
+GCC 15 is stricter than clang about exhaustive switch coverage. It
+warns -Werror=return-type when a switch covers all enum values but
+has no explicit default/return after the switch block. Fixed so far:
+
+  base/base64.cc           — default: __builtin_unreachable()
+  base/metrics/histogram.cc — __builtin_unreachable() after switch
+  base/metrics/sparse_histogram.cc — removed 4 redundant std::move()
+  base/process/current_process.cc — 2x __builtin_unreachable()
+  base/task/common/operations_controller.cc — __builtin_unreachable()
+  base/task/common/task_annotator.cc — __builtin_unreachable()
+  base/task/sequence_manager/thread_controller.cc — 2x __builtin_unreachable()
+  base/task/task_traits.cc — __builtin_unreachable()
+  base/task/thread_pool/task_tracker.cc — 3x __builtin_unreachable()
+  base/threading/hang_watcher.cc — __builtin_unreachable()
+
+=======================================
+CURRENT BUILD STATE
+=======================================
+
+Full rebuild in progress (gn gen was mistakenly re-run, invalidating
+all cached .o files). Once this completes, any remaining errors will
+be fixed in a batch pass. The previous incremental build was at
+2587/2892 — only ~300 targets remained.
+
+=======================================
+KEY LESSON
+=======================================
+
+Never re-run gn gen on a working build directory just to pick up
+benign cflag changes. The two -Wno- flags added and then reverted
+were just warning suppressions — they would not have broken anything
+and could have been added later. The gn gen cost 20+ minutes of
+rebuild time and reset all progress.

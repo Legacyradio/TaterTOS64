@@ -1,0 +1,19 @@
+2026-05-15T22:17:07-05:00
+
+Fix: addressed gfx animation redundant-move and cc tiling changes-meaning compiler failures.
+
+Files:
+- chromium-tatertos/src/ui/gfx/animation/keyframe/keyframed_animation_curve.cc
+- chromium-tatertos/src/cc/tiles/picture_layer_tiling.h
+
+Why:
+- The build stopped on -Werror=redundant-move in keyframed_animation_curve.cc due to explicit std::move calls on local returned values. These were removed, allowing the compiler to perform Return Value Optimization (RVO) directly.
+- The build stopped on -Werror=changes-meaning in picture_layer_tiling.h where using Tile = Tile; conflicted with class Tile defined elsewhere. It was updated to explicitly alias using Tile = cc::Tile;.
+- Classification: compiler strictness/library analysis, not a TaterTOS API/platform gap.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/cc/cc/rasterize_and_record_benchmark_impl.o
+  obj/ui/gfx/animation/keyframe/keyframe/keyframed_animation_curve.o

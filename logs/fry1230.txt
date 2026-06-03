@@ -1,0 +1,27 @@
+Timestamp: 2026-05-16T16:51:10-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped at [117/23763] on
+obj/services/viz/public/mojom/mojom/copy_output_result_mojom_traits.o.
+
+Failure:
+services/viz/public/cpp/compositing/copy_output_result_mojom_traits.cc had two
+enum ToMojom() helpers that reached the end of a non-void function under
+-Werror=return-type:
+- CopyOutputResult::Destination -> mojom::CopyOutputResultDestination
+- CopyOutputResult::Error -> mojom::CopyOutputResultError
+
+Classification:
+Compiler strictness. This is not a TaterTOS API/platform gap.
+
+Fix:
+Added explicit NOTREACHED() fallback returns to both ToMojom() functions.
+The fallbacks preserve conservative transport defaults:
+- kSystemMemory for unexpected CopyOutputResult::Destination values
+- kUnknown for unexpected CopyOutputResult::Error values
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C out/tatertos obj/services/viz/public/mojom/mojom/copy_output_result_mojom_traits.o
+
+Result:
+Targeted object rebuild passed.

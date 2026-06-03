@@ -1,0 +1,29 @@
+Timestamp: 2026-05-15T07:45:29-05:00
+Blocker: GPU command buffer client failed because gpu::SurfaceHandle did not
+support TaterTOS, with additional strict fallback warnings in shared image
+client code.
+Classification: TaterTOS platform integration gap for SurfaceHandle; compiler
+strictness for the shared-image fallback returns.
+
+Files changed:
+- /home/legacyindieradio/chromium-tatertos/src/gpu/ipc/common/surface_handle.h
+- /home/legacyindieradio/chromium-tatertos/src/gpu/command_buffer/client/shared_image_interface.cc
+- /home/legacyindieradio/chromium-tatertos/src/gpu/command_buffer/client/client_shared_image.cc
+
+Why:
+- TaterTOS already defines gfx::AcceleratedWidget, but gpu::SurfaceHandle did
+  not include TaterTOS in the accelerated-widget platform set.
+- GCC also required explicit returns after NOTREACHED() in shared image fallback
+  methods and switch paths.
+
+Fix:
+- Added BUILDFLAG(IS_TATERTOS) to the GPU accelerated SurfaceHandle branch,
+  preserving a TaterTOS-specific platform path instead of pretending to be
+  Linux.
+- Added conservative nullptr/empty/lost fallbacks for unreachable shared image
+  client paths.
+
+Verification:
+- Ran:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/gpu/command_buffer/client/client_sources/shared_image_interface.o obj/gpu/command_buffer/client/client_sources/client_shared_image.o obj/gpu/command_buffer/client/client_sources/shared_image_pool.o
+- Result: passed.

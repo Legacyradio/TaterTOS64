@@ -1,0 +1,30 @@
+fry1107 - WebRTC video frame sampler GCC return fallback
+
+Date: 2026-05-14
+Build stop: [104/31673]
+Failed object: obj/third_party/webrtc/video/corruption_detection/video_frame_sampler/video_frame_sampler.o
+Failed source: third_party/webrtc/video/corruption_detection/video_frame_sampler.cc
+Classification: compiler strictness / portability cleanup, not a TaterTOS API gap
+
+Problem:
+GCC, under -Werror, rejected six non-void methods in I420FrameSampler and
+NV12FrameSampler because their exhaustive ChannelType switches had no explicit
+fallback return.
+
+Fix:
+Added RTC_DCHECK_NOTREACHED() and return 0 after each switch in:
+- I420FrameSampler::GetSampleValue()
+- I420FrameSampler::width()
+- I420FrameSampler::height()
+- NV12FrameSampler::GetSampleValue()
+- NV12FrameSampler::width()
+- NV12FrameSampler::height()
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja \
+  -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos \
+  obj/third_party/webrtc/video/corruption_detection/video_frame_sampler/video_frame_sampler.o
+
+Result:
+[1/1] CXX obj/third_party/webrtc/video/corruption_detection/video_frame_sampler/video_frame_sampler.o
+

@@ -1,0 +1,30 @@
+2026-05-15T06:27:22-0500
+
+Fixed liburlpattern strictness failures and TaterTOS Rust Symphonia SIMD codegen failure.
+
+Blocker classification:
+- liburlpattern: compiler strictness, not a TaterTOS API gap.
+- Symphonia/RustFFT: TaterTOS Rust target/backend SIMD codegen gap, not a
+  libc/API gap.
+
+Why:
+- third_party/liburlpattern/part.cc, tokenize.cc, and pattern.cc had
+  exhaustive enum switches without compiler-visible fallback returns.
+- third_party/rust/symphonia_core/v0_6 was compiled with opt-simd-avx,
+  opt-simd-neon, opt-simd-sse, and rustfft, which drove rustc/LLVM for
+  x86_64-unknown-tatertos into:
+  "Do not know how to split the result of this operator!"
+
+Fix:
+- Added fallback returns for liburlpattern enum stringify/length helpers.
+- Added TaterTOS-only GN feature gates that remove Symphonia/RustFFT SIMD
+  features for is_tatertos while keeping codec support enabled through the
+  crate's scalar no-SIMD implementation.
+
+Verification:
+- Passed targeted liburlpattern rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/third_party/liburlpattern/liburlpattern/part.o obj/third_party/liburlpattern/liburlpattern/tokenize.o obj/third_party/liburlpattern/liburlpattern/pattern.o
+- Passed targeted Rust rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/third_party/rust/symphonia_core/v0_6/lib/libsymphonia_core_lib.rlib
+- Passed top-level Symphonia rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/third_party/rust/symphonia/v0_6/lib/libsymphonia_lib.rlib

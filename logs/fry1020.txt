@@ -1,0 +1,4 @@
+fry1020
+blocker: base launch_posix.cc missing linux clone() flags (CLONE_*) and clone() function prototype.
+patch: added CLONE_* macros and clone() to TaterTOS64 sched.h.
+build: resumed chromium-tatertos ninja build.

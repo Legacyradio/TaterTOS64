@@ -1,0 +1,3 @@
+STEP 1026
+TIME: 2026-05-10 15:51:51
+ACTION: Patched third_party/ffmpeg/BUILD.gn to exclude -pthread flag when building for TaterTOS. x86_64-elf-gcc does not support -pthread and fails with an error. TaterTOS is detected as a POSIX system, which triggered the flag addition in ffmpeg's build configuration. Resumed the Chromium ninja build.

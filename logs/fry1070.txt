@@ -1,0 +1,25 @@
+2026-05-14 09:24:46 CDT
+
+Fixed the next Chromium HTTP stream-pool compile blockers.
+
+What changed:
+- net/http/http_stream_pool_attempt_manager.cc:
+  - Added explicit GCC-only fallbacks after exhaustive switches in
+    CanAttemptResultToString(), TcpBasedAttemptStateToString(),
+    InitialAttemptStateToString(), IsStalledByPoolLimit(), and
+    IsTcpBasedAttemptReady().
+- net/http/http_stream_pool_tcp_based_attempt.cc:
+  - Added an explicit GCC-only fallback after the exhaustive
+    StreamSocketCloseReason switch in GetHistogramSuffixForTcpBasedAttemptCancel().
+
+Why:
+The TaterTOS target GCC build still requires concrete returns after enum
+switches even when Chromium's NOTREACHED/CHECK patterns express the intended
+unreachable state. These are narrow fallbacks with no Linux or Windows path
+being introduced.
+
+Verification:
+- ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/net/net/http_stream_pool_attempt_manager.o obj/net/net/http_stream_pool_tcp_based_attempt.o passed.
+
+Next:
+- Resume the monitored full chrome build from this point.

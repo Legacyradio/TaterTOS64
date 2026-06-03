@@ -1,0 +1,1 @@
+STEP/2026-05-11 12:20/PATCH_WEBRTC_CONSTANTS: Guarded SCM_TIMESTAMP and IP_MTU_DISCOVER in physical_socket_server.cc with #ifdef. WHY: Resolve compilation errors caused by the removal of these Linux-specific constants from the TaterTOS64 OS headers.

@@ -1,0 +1,29 @@
+2026-05-13 19:15:29 CDT
+
+Implemented a native TaterTOS network-interface enumeration path for the
+Chromium WebRTC port instead of returning an empty POSIX result or adding
+Linux/BSD ifaddrs compatibility to the OS.
+
+What changed:
+- Added public TaterTOS netif ABI in src/include/tatertos/netif.h.
+- Added SYS_NETIF_LIST and libc wrapper tatertos_netif_list().
+- Implemented SYS_NETIF_LIST from existing netcore, WiFi, i219, and e1000
+  state so userspace can see lo0 plus the configured physical interface.
+- Split WebRTC rtc_base/network.cc so WEBRTC_TATERTOS uses tatertos_netif_list()
+  and does not compile the POSIX getifaddrs/<net/if.h> path.
+- Guarded the POSIX/Windows IPv6 helper out of the TaterTOS build because the
+  native TaterTOS path currently reports IPv4 interface state only.
+
+Why:
+Chromium's WebRTC BasicNetworkManager needs real interface enumeration, but
+TaterTOS should not grow Linux/BSD network-interface headers just to satisfy
+that compile path. The correct port boundary is a small TaterTOS-native ABI
+backed by real kernel/network state, with Chromium adapting to that ABI under
+WEBRTC_TATERTOS.
+
+Verification:
+- git diff --check in TaterTOS64 passed.
+- git diff --check in chromium-tatertos/src passed.
+- git diff --check in chromium-tatertos/src/third_party/webrtc passed.
+- make -C /home/legacyindieradio/TaterTOS64 src/kernel/proc/syscall.o src/user/libc/libc.o passed/up to date.
+- ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/third_party/webrtc/rtc_base/network/network.o passed.

@@ -1,0 +1,1 @@
+STEP/2026-05-11 14:30/PATCH_OS_DLFCN: Added RTLD_DEFAULT and RTLD_NEXT to dlfcn.h. WHY: Resolve Chromium compilation error in V8 (platform-posix.cc) where these standard handles were expected.

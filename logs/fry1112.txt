@@ -1,0 +1,37 @@
+fry1112 - WebRTC congestion/pacing return fallback cleanup
+
+Timestamp: 2026-05-14T22:19:33-05:00
+Build stop: [170/31259]
+Failed objects:
+- obj/third_party/webrtc/modules/congestion_controller/goog_cc_scream_network_controller/goog_cc_scream_network_controller/goog_cc_scream_network_controller.o
+- obj/third_party/webrtc/modules/pacing/pacing/bitrate_prober.o
+Failed sources:
+- third_party/webrtc/modules/congestion_controller/goog_cc_scream_network_controller/goog_cc_scream_network_controller.h
+- third_party/webrtc/modules/pacing/bitrate_prober.cc
+Classification: compiler strictness / portability cleanup, not a TaterTOS API gap
+
+Problem:
+GCC, under -Werror, rejected two exhaustive-looking switches in non-void
+functions because they had no explicit fallback returns.
+
+Fix:
+- Added RTC_DCHECK_NOTREACHED() and return false after the
+  GoogCcScreamNetworkController::SupportsEcnAdaptation() mode switch.
+- Added RTC_DCHECK_NOTREACHED() and return false after the
+  BitrateProber::ReadyToSetActiveState() state switch.
+
+Why:
+Both fallbacks are unreachable for valid enum values. Returning false is the
+conservative behavior: disable ECN adaptation for an impossible controller mode
+and avoid activating probing for an impossible probing state.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja \
+  -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos \
+  obj/third_party/webrtc/modules/congestion_controller/goog_cc_scream_network_controller/goog_cc_scream_network_controller/goog_cc_scream_network_controller.o \
+  obj/third_party/webrtc/modules/pacing/pacing/bitrate_prober.o
+
+Result:
+[1/2] CXX obj/third_party/webrtc/modules/congestion_controller/goog_cc_scream_network_controller/goog_cc_scream_network_controller/goog_cc_scream_network_controller.o
+[2/2] CXX obj/third_party/webrtc/modules/pacing/pacing/bitrate_prober.o
+

@@ -1,0 +1,25 @@
+2026-05-14 01:53:12 CDT
+
+Fixed the Chromium HTTP auth Kerberos/GSSAPI platform gate for TaterTOS.
+
+What changed:
+- net/features.gni now excludes is_tatertos from use_kerberos.
+- This also disables use_external_gssapi for the TaterTOS target, so Chromium
+  does not compile the POSIX GSSAPI path that requires <gssapi.h>.
+
+Why:
+TaterTOS does not currently provide a Kerberos/GSSAPI userspace ABI, headers,
+configuration, or credential store. Compiling Chromium's POSIX GSSAPI backend
+would be a fake Linux/POSIX shortcut. The correct architecture is to leave
+Kerberos disabled for TaterTOS until the OS has a real native or intentionally
+ported GSSAPI implementation.
+
+Verification:
+- ninja regenerated build files after the GN change.
+- out/tatertos/gen/net/net_buildflags.h now has:
+  BUILDFLAG_INTERNAL_USE_KERBEROS() (0)
+  BUILDFLAG_INTERNAL_USE_EXTERNAL_GSSAPI() (0)
+- ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/net/net/http_auth_handler_factory.o passed.
+
+Next:
+- Resume the monitored full chrome build from this point.

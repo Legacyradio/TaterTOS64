@@ -1,0 +1,3 @@
+STEP 1037
+TIME: 2026-05-11 08:30:50
+ACTION: Fixed a type-limit compilation error in WebRTC's rtp_video_layers_allocation_extension.cc. The code was comparing a uint8_t against 255, which is always false and triggered a failure due to -Werror=type-limits. Added a static_cast<int> to satisfy the compiler and ensure the logical check remains functionally identical. Resumed the Chromium ninja build.

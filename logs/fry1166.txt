@@ -1,0 +1,20 @@
+Timestamp: 2026-05-15T07:42:26-05:00
+Blocker: unexportable_keys mojom traits failed under -Werror=return-type.
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+File changed:
+- /home/legacyindieradio/chromium-tatertos/src/components/unexportable_keys/mojom/unexportable_keys_mojom_traits.cc
+
+Why:
+- Signature algorithm, background task priority, and service error enum
+  conversions relied on exhaustive switches, but GCC required explicit fallback
+  returns.
+
+Fix:
+- Added NOTREACHED() plus conservative fallback return values for the ToMojom
+  and FromMojom conversion paths.
+
+Verification:
+- Ran:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/components/unexportable_keys/mojom/mojom/unexportable_keys_mojom_traits.o
+- Result: passed.

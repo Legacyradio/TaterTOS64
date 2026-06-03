@@ -1,0 +1,1 @@
+STEP/2026-05-11 12:40/PATCH_MESSAGE_PUMP: Removed unreachable [[fallthrough]] after NOTREACHED() in message_pump.cc. WHY: Fix -Werror=unreachable-code-fallthrough in host toolchain (clang_x64) where NOTREACHED() is terminal.

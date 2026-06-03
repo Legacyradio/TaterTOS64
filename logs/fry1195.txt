@@ -1,0 +1,17 @@
+2026-05-15T09:33:02-05:00
+
+Fix: Added media demuxer/decryptor/encoder fallback returns.
+
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Why: Clang's -Werror=return-type rejected demuxer stream string helpers,
+Decryptor::GetStatusName(), and EncoderStatusCodeToString() because the
+compiler could not prove all enum values returned.
+
+Change: Added NOTREACHED() fallbacks returning existing unknown/error strings
+or a conservative encoder status message.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/media/base/base/demuxer_stream.o obj/media/base/base/decryptor.o obj/media/base/base/encoder_status.o
+
+Result: passed.

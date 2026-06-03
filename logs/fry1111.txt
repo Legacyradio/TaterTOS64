@@ -1,0 +1,27 @@
+fry1111 - cc rendering stats redundant move cleanup
+
+Timestamp: 2026-05-14T22:16:22-05:00
+Build stop: [12/31280]
+Failed object: obj/cc/debug/debug/rendering_stats.o
+Failed source: cc/debug/rendering_stats.cc
+Classification: compiler strictness / portability cleanup, not a TaterTOS API gap
+
+Problem:
+GCC, under -Werror, rejected RenderingStats::AsTraceableData() because it
+returned std::move(record_data) for a local std::unique_ptr.
+
+Fix:
+Returned record_data directly.
+
+Why:
+Returning the local unique_ptr directly preserves move semantics and satisfies
+GCC's -Wredundant-move diagnostic.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja \
+  -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos \
+  obj/cc/debug/debug/rendering_stats.o
+
+Result:
+[1/1] CXX obj/cc/debug/debug/rendering_stats.o
+

@@ -1,0 +1,26 @@
+fry1282 - 2026-06-02 14:32:25 CDT - linuxulator file-backed mmap probe and clean ISO rebuild
+
+What changed:
+- Added tools/host/lmmap.S, an unmodified static Linux x86_64 ELF probe for openat + mmap(fd, offset=0) + munmap + close.
+- Updated build_iso.sh to build and stage lmmap.lxe as LMMAP.LXE in the ISO tree, FAT images, /apps, and ToTFS.
+- Updated src/kernel/main.c to launch LMMAP.LXE after LFILE.LXE when /LXTEST.RUN is present.
+
+Why:
+- Claude Code's Linux dynamic-loader path maps shared libraries with file-backed mmap and passes the file offset in syscall arg6.
+- The mmap probe gives a narrow runtime target for that exact ABI surface before attempting the full Claude binary.
+
+Verification:
+- bash -n build_iso.sh
+- gcc -nostdlib -static -no-pie -o lmmap.lxe tools/host/lmmap.S
+- make src/kernel/main.o src/kernel/proc/syscall.o
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+- Clean rebuild completed and produced out/tatertos64v3.iso.
+- out/isodir contains apps/LHELLO.LXE, apps/LFILE.LXE, apps/LMMAP.LXE, LHELLO.LXE, LFILE.LXE, LMMAP.LXE, LXTEST.RUN, and LXTEST.TXT.
+- out/efiboot.img root contains LHELLO.LXE, LFILE.LXE, LMMAP.LXE, LXTEST.RUN, and LXTEST.TXT.
+- out/efiboot.img /apps contains LHELLO.LXE, LFILE.LXE, and LMMAP.LXE.
+- out/tatertos64v3.iso root contains LHELLO.LXE, LFILE.LXE, LMMAP.LXE, LXTEST.RUN, and LXTEST.TXT.
+- out/tatertos64v3.iso /apps contains LHELLO.LXE, LFILE.LXE, and LMMAP.LXE.
+
+Notes:
+- Runtime QEMU serial verification has not been run in this log entry because planv3 says QEMU logs are off limits unless expressly stated.
+- Next explicit runtime check should boot the ISO and confirm LHELLO, LFILE, and LMMAP all print their OK lines.

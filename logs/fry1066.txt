@@ -1,0 +1,31 @@
+2026-05-14 01:21:24 CDT
+
+Fixed the next Chromium net compile blockers reached by the monitored full
+build.
+
+What changed:
+- net/disk_cache/simple/simple_version_upgrade.h:
+  - Added base/notreached.h.
+  - Added an explicit GCC-only fallback after the exhaustive
+    SimpleCacheConsistencyResult switch in IsOK().
+- net/first_party_sets/first_party_set_entry.cc:
+  - Added an explicit GCC-only fallback after the exhaustive SiteType switch in
+    SiteTypeToString().
+- net/disk_cache/simple/simple_synchronous_entry.cc:
+  - Removed the impossible size_t < 0 check from ReadFromFileOrPrefetched()
+    while keeping the signed offset < 0 guard.
+- net/filter/filter_source_stream.cc:
+  - Added braces around a DCHECK guarded by an if to satisfy GCC
+    -Wdangling-else under -Werror.
+
+Why:
+The monitored full build advanced past cookies and exposed another set of
+target-GCC strict warning failures. These changes provide concrete unreachable
+fallbacks or remove impossible unsigned checks without adding broad warning
+suppression or Linux-specific behavior.
+
+Verification:
+- ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/net/net/simple_backend_impl.o obj/net/net/first_party_set_entry.o obj/net/net/simple_synchronous_entry.o obj/net/net/filter_source_stream.o passed.
+
+Next:
+- Resume the monitored full chrome build from this point.

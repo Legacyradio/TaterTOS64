@@ -1,0 +1,26 @@
+Fry Log 1259 — cc/mojo_embedder: parentheses + exhaustive switch fixes
+Timestamp: 2026-05-18 ~19:45 CDT
+
+Scope:
+  Build stopped at [19909/41707] with two blocker classes in cc/mojo_embedder.
+
+Chromium changes:
+
+  1. cc/mojo_embedder/async_layer_tree_frame_sink.cc:95
+     -Werror=parentheses on CHECK(manual_begin_frame_ && auto_needs_begin_frame_ || !manual_begin_frame_)
+     Fix: added parentheses around the && subexpression:
+       CHECK((manual_begin_frame_ && auto_needs_begin_frame_) || !manual_begin_frame_);
+
+  2. cc/mojo_embedder/viz_layer_context.cc
+     -Werror=return-type on 3 exhaustive switch statements that clang
+     doesn't recognize as exhaustive:
+       - SerializeTimingStepPosition (line 1159)
+       - SerializeAnimationDirection (line 1280)
+       - SerializeAnimationFillMode (line 1296)
+     Fix: added default: NOTREACHED(); to each switch.
+     NOTREACHED() is already used elsewhere in this file (lines 1197, 1242, 1358).
+
+Why:
+  GCC 15/clang -Werror treats missing default cases in exhaustive switches
+  as potential return-type violations. NOTREACHED() is the standard
+  Chromium pattern for unreachable defaults.

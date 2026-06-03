@@ -1,0 +1,25 @@
+timestamp: 2026-05-14T22:55:51-05:00
+stop: chrome_build_20260514_225347.log at [131/30624]
+failed_object:
+  obj/services/tracing/public/cpp/cpp/tracing_sampler_profiler.o
+classification: compiler strictness, not a TaterTOS API gap
+
+problem:
+  GCC with -Werror rejected UnwinderTypeToString() because its switch covered
+  known enum values but had no explicit fallback return.
+
+fix:
+  Added base/notreached.h and a NOTREACHED() fallback returning the existing
+  unknown-unwinder label.
+
+why:
+  This preserves all valid enum behavior and makes the impossible path explicit
+  for TaterTOS64's strict GCC build. No warning suppression or platform shortcut
+  was added.
+
+verification:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/services/tracing/public/cpp/cpp/tracing_sampler_profiler.o
+
+  Result: targeted object rebuilt successfully.

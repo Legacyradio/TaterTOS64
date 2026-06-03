@@ -1,0 +1,34 @@
+fry1102 - Crashpad PDB signature multi-character literals
+timestamp: 2026-05-14T16:25:42-05:00
+
+full build log: logs/chrome_build_20260514_161408.log
+failed counter: [1098/33049]
+failed object: obj/third_party/crashpad/crashpad/util/util/pdb_structures.o
+
+blocker:
+  ../../third_party/crashpad/crashpad/util/misc/pdb_structures.h used
+  multi-character character constants for PDB/CodeView signatures:
+    '01BN'
+    'SDSR'
+    'BpEL'
+  The TaterTOS Chromium build uses -Werror, so GCC's -Wmultichar diagnostic
+  became fatal.
+
+classification:
+  compiler strictness / portability cleanup.
+  This was not a TaterTOS API gap.
+
+fix:
+  Replaced the implementation-defined multi-character literals with explicit
+  uint32_t constants preserving the same little-endian byte signatures:
+    0x3031424e  // "NB10"
+    0x53445352  // "RSDS"
+    0x4270454c  // "LEpB"
+
+verification:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja \
+    -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos \
+    obj/third_party/crashpad/crashpad/util/util/pdb_structures.o
+
+  result:
+    [1/1] CXX obj/third_party/crashpad/crashpad/util/util/pdb_structures.o

@@ -1,0 +1,59 @@
+=====================================================================
+fry1277 — Linux compatibility layer (linuxulator), Phase 1
+=====================================================================
+START: 2026-06-02 13:22 CDT
+AUTHOR: Claude (fresh instance; picks up handoff_tatertos_linux_compat)
+GOAL (this log): Run an UNMODIFIED static Linux x86_64 ELF inside
+TaterTOS64 — proof point #1 on the ladder (static hello -> dynamic
+glibc -> CPython -> Bun -> Claude Code). Do it by adding a Linux
+"personality": a per-process flag + a parallel syscall translation
+table, plus a Linux ELF loader + SysV initial-stack builder. The
+Linux binaries live in the FS as data; NO Linux source enters the
+kernel (planv3 rule 3 respected — this is original translation code,
+same posture as FreeBSD's linuxulator / WSL1).
+
+---------------------------------------------------------------------
+STEP 0 — Recon findings (why this design is correct, not hand-waving)
+---------------------------------------------------------------------
+- Native syscall entry (src/kernel/proc/syscall.c ~6406) uses the
+  `syscall` instruction via MSR_LSTAR -> syscall_entry (swapgs/sysretq).
+  This is the SAME instruction Linux x86_64 binaries use.
+- The register shuffle in syscall_entry produces:
+      syscall_dispatch(num=rax, a1=rdi, a2=rsi, a3=rdx, a4=r10, a5=r8)
+  => byte-for-byte the Linux x86_64 syscall ABI for args 1..5. The
+  6th Linux arg (r9) is currently clobbered (`movq %r8,%r9`) before
+  capture -> a6 is LOST. Phase 1 only uses anonymous mmap (offset
+  ignored) so a6 unneeded now; plumb a6 in the dynamic-linking phase
+  (file-backed mmap). DOCUMENTED, deferred — not a corner cut.
+- TaterTOS native syscall NUMBERS differ from Linux numbers; this is
+  irrelevant because a Linux process gets an entirely separate
+  dispatch keyed by Linux numbers. Full isolation via personality flag.
+- Native ELF loader (proc/elf.c) loads FRY-wrapped ELF, maps PT_LOAD,
+  but sets NO argv/envp/auxv (rsp = TOP-8). A Linux binary needs the
+  full SysV initial stack (argc/argv/envp/auxv + AT_RANDOM). That is
+  exactly what the new loader adds. Native elf.c left UNTOUCHED.
+- Reusable kernel helpers confirmed: vmm_create_address_space,
+  vmm_map_user, vmm_virt_to_phys_user, vmm_phys_to_virt, pmm_alloc_page;
+  user_buf_mapped(), proc_shared_state(), kprint_write(),
+  syscall_exit_current(), sys_now_ms(), rtc_boot_epoch_sec(),
+  entropy_getbytes(). errno values already match Linux (ENOSYS=38 etc).
+- Boot flow (main.c ~527): process_init -> sched_init -> syscall_init
+  -> launch INIT.FRY. Inject a marker-gated Linux self-test right
+  after syscall_init so production boots are untouched.
+
+---------------------------------------------------------------------
+STEP 1 — Plan for this log (files)
+---------------------------------------------------------------------
+NEW  src/kernel/proc/linux_compat.h   — __NR_* numbers + decls
+NEW  src/kernel/proc/linux_elf.c      — elf_load_linux() + SysV stack
+EDIT src/kernel/proc/process.h        — is_linux + linux thread fields
+EDIT src/kernel/proc/process.c        — process_launch_linux()
+EDIT src/kernel/proc/syscall.c        — route Linux procs -> new
+                                        linux_syscall_dispatch() (defined
+                                        in-file to reuse static helpers)
+EDIT src/kernel/main.c                — marker-gated boot self-test
+EDIT Makefile                         — add linux_elf.o
+EDIT build_iso.sh                     — copy LHELLO.LXE + LXTEST.RUN
+NEW  tools/host/lhello.S              — static Linux ELF test (write+exit_group;
+                                        also reads argc/auxv to prove stack)
+(log build + QEMU results below as they happen)

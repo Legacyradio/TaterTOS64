@@ -1,0 +1,28 @@
+Timestamp: 2026-05-16T17:17:07-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped at [2/23194], [7/23194], and [9/23194] in
+third_party/blink/common/interest_group.
+
+Failures:
+- ad_display_size_utils.cc: ConvertAdSizeUnitToString() reached the end under
+  -Werror=return-type.
+- devtools_serialization.cc: SerializeIntoValue(InterestGroup::ExecutionMode)
+  reached the end under -Werror=return-type.
+- interest_group.cc: TrustedBiddingSignalsSlotSizeModeToString() reached the
+  end under -Werror=return-type.
+
+Classification:
+Compiler strictness. These are not TaterTOS API/platform gaps.
+
+Fix:
+Added explicit conservative fallbacks after the exhaustive switches:
+- empty unit string for unexpected ad size units
+- default base::Value for unexpected execution mode serialization
+- empty string_view for unexpected slot-size mode
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C out/tatertos obj/third_party/blink/common/common/ad_display_size_utils.o obj/third_party/blink/common/common/devtools_serialization.o obj/third_party/blink/common/common/interest_group.o
+
+Result:
+Targeted object rebuild passed.

@@ -1,0 +1,80 @@
+=====================================================================
+fry1306 — futex scheduler fix (real pthread contention works)
+=====================================================================
+DATE: 2026-06-02 ~23:10 CDT
+AUTHOR: Claude (took over after the bus/Codex agent rate-limited mid-futex).
+Context: the bus agent wrote fry logs only through 1291 (async I/O done);
+its futex attempts (serial_fry1292..1305) were NOT fry-logged. This log
+records the futex ROOT CAUSE + FIX I landed. Use grep -a on serial logs
+(they contain a NUL byte; plain grep mis-detects binary).
+
+---------------------------------------------------------------------
+STATE INHERITED
+---------------------------------------------------------------------
+- My XSAVE/FPU context-switch fix (fry1287 tail): DONE + verified — vector
+  state saved/restored across switches; intermittent glibc faults gone.
+- Async I/O (bus agent, fry1291): DONE — eventfd/epoll, timerfd/epoll,
+  signalfd "async I/O probe complete, 15 passed".
+- futex (bus agent, serial 1292-1305): BLOCKED — glibc FUTEX_WAIT*
+  returned -ESRCH from sched_block_futex; glibc aborts ("futex facility
+  returned an unexpected error"); USER FAULT vec=13 at libc.
+- An orphaned, STOPPED (state T) build_iso.sh from the cut-off agent was
+  left holding a hung mmd; killed it before proceeding.
+
+---------------------------------------------------------------------
+ROOT CAUSE (proved via a sched_futex_miss diagnostic)
+---------------------------------------------------------------------
+Diagnostic showed: the FUTEX_WAIT caller was current[cpu] AND already
+PROC_WAITING (state=2). sched_block_futex searches for RUNNING (or rq
+membership), finds neither -> -ESRCH. Two bugs let a WAITING task keep
+running / re-enter:
+  A) sched_yield() == sched_tick(), and sched_tick RETURNED without
+     switching when the runqueue was empty (top `if (!q->head) return`) or
+     when next==cur. So a task that set itself PROC_WAITING and yielded,
+     but whose CPU had nothing else queued at that instant, kept running.
+     Its next futex wait then saw a non-RUNNING "current" -> -ESRCH.
+  B) SMP race: a thread on the other CPU waking the caller (-> RUNNING) at
+     the same moment the caller re-enters sched_block_futex flips the
+     caller's state to WAITING transiently.
+
+---------------------------------------------------------------------
+FIX (src/kernel/proc/sched.c)
+---------------------------------------------------------------------
+1. Per-CPU idle fallback: track idle_task[MAX_CPUS] (set in sched_init).
+   In sched_tick, when the current task is NOT PROC_RUNNING (it blocked
+   itself) and there is no other runnable task, switch to this CPU's idle
+   task instead of returning. Applied in BOTH the empty-runqueue branch and
+   the next==cur/next==NULL branch. A blocked task can now never keep
+   running. Benefits all blocking paths (futex, poll, ...), not just futex.
+2. sched_block_futex accepts the caller whether RUNNING or transiently
+   WAITING (it is always the current/running task) and re-blocks on the new
+   key — a stale wait is superseded. No more -ESRCH for a real wait.
+
+---------------------------------------------------------------------
+VERIFIED (clean ISO, tcg -smp 2, 3 boots, grep -a)
+---------------------------------------------------------------------
+- pthread_create x2 -> threads run -> counter=5,10 -> pthread_join #1 ret=5,
+  #2 ret=10 -> "thread+gap probe complete, exit(0)". Real multi-threaded
+  futex contention + join WORKS.
+- LFUTEX probe: FUTEX_WAIT/EAGAIN, zero-timeout/ETIMEDOUT, WAIT_BITSET/
+  WAKE_BITSET, CMP_REQUEUE, WAKE_OP all pass.
+- 3 boots: futex-errors=0, vec13-faults=0 (was a guaranteed crash before).
+- No regression: hello/VFS/mmap/dynamic(PT_INTERP)/libc/async-I/O all green.
+
+---------------------------------------------------------------------
+DIAGNOSTICS REMOVED THIS PASS
+---------------------------------------------------------------------
+- sched.c sched_futex_miss dump; syscall.c LXDBG futex_neg / postyield.
+- Kept (cleaned to a permanent one-liner): "LINUXSYS: futex unsupported
+  cmd=.. op=.." so a real binary hitting an unimplemented futex op is
+  visible during iterate-to-green.
+
+---------------------------------------------------------------------
+WHERE THIS LEAVES THE ROAD TO REAL CLAUDE CODE (~5/10)
+---------------------------------------------------------------------
+DONE: static+dynamic ELF, glibc/ld.so, file mmap, threads (clone3), XSAVE
+stability, async I/O (epoll/eventfd/timerfd/signalfd), futex. NEXT toward
+the Bun/Claude-Code binary: real signal DELIVERY (signalfd/epoll_pwait are
+create/probe only), sockets+connect+TLS for a Linux process, JIT exec
+pages, getdents64/statx and the long syscall tail, then throw a real
+node/bun (or claude) binary at it and iterate to green.

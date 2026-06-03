@@ -1,0 +1,31 @@
+2026-05-14 09:43:17 CDT
+
+Fixed the next Chromium net/log and net/nqe compile blockers.
+
+Build status:
+- Monitored full build stamp: 20260514_093300.
+- Local Ninja stop points:
+  - [20/34397] obj/net/net/trace_net_log_observer.o
+  - [29/34397] obj/net/net/network_quality_estimator.o
+- Logical phase: Chromium net, after HTTP stream-pool, now net logging and
+  network-quality-estimator objects.
+
+What changed:
+- net/log/trace_net_log_observer.cc:
+  - Added base/notreached.h.
+  - Added an explicit GCC-only fallback in the NetLogEventPhase lambda.
+- net/nqe/network_quality_estimator.cc:
+  - Added explicit GCC-only fallbacks for ProtocolSourceToObservationSource(),
+    CategoryToString(), and GetRTTEstimateInternal().
+
+Why:
+The TaterTOS target GCC build requires concrete return paths for enum switches
+and lambdas under -Werror. These are narrow unreachable fallbacks, not platform
+shortcuts.
+
+Verification:
+- ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/net/net/trace_net_log_observer.o passed as part of the two-object target rebuild.
+- ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/net/net/network_quality_estimator.o passed after correcting the invalid RTT fallback.
+
+Next:
+- Resume the monitored full chrome build from this point.

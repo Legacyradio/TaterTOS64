@@ -1,0 +1,30 @@
+Timestamp: 2026-05-15T04:18:52-05:00
+Stop: [18/29993] CXX obj/ui/gfx/gfx/image_util.o
+Classification: compiler strictness, not a TaterTOS API gap.
+
+Problem:
+GCC reported -Werror=dangling-reference in ui/gfx/image/image_util.cc where
+three functions bound a const ImageSkiaRep& through
+image.AsImageSkia().GetRepresentation(1.0f). The compiler treats the temporary
+ImageSkia returned by AsImageSkia() as possibly expiring before the reference is
+used.
+
+Fix:
+Kept the ImageSkia object alive in a local variable before binding the
+ImageSkiaRep reference in:
+- ResizedImageForMaxDimensions()
+- JPEG1xEncodedDataFromSkiaRepresentation()
+- ResizedImage()
+
+Why:
+The behavior is unchanged, but the lifetime is now explicit enough for GCC with
+-Werror. This is a warning policy/strictness issue, not missing TaterTOS
+functionality.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+/home/legacyindieradio/chromium-tatertos/src/out/tatertos
+obj/ui/gfx/gfx/image_util.o
+
+Result:
+Passed; obj/ui/gfx/gfx/image_util.o rebuilt successfully.

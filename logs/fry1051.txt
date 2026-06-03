@@ -1,0 +1,1 @@
+STEP/2026-05-11 13:55/PATCH_CHAR_ITERATOR_V3: Refactored ICU macro calls to use local int32_t variables for indices and lengths. WHY: Correctly handle lvalue modifications (CBU16_PREV, CBU16_SET_CP_LIMIT) and resolve sign-compare/type-limit warnings by isolating ICU logic from size_t members.

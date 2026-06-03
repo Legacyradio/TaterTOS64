@@ -1,0 +1,1 @@
+STEP/2026-05-11 12:25/PATCH_WEBRTC_UNUSED: Wrapped the EcnFromDs function definition in physical_socket_server.cc with #if defined(IPV6_TCLASS) && defined(IP_TOS). WHY: Silence the -Werror=unused-function warning on TaterTOS64 where its call sites are already guarded.

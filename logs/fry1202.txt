@@ -1,0 +1,28 @@
+2026-05-15T10:04:53-05:00
+
+Fix: addressed media/filters compiler-strictness failures from the chrome
+monitor pass.
+
+Files:
+- chromium-tatertos/src/media/filters/audio_renderer_algorithm.cc
+- chromium-tatertos/src/media/base/media_serializers.h
+- chromium-tatertos/src/media/filters/decoder_stream.cc
+
+Why:
+- The build stopped on -Werror=return-type in AudioRendererAlgorithm::FillBuffer
+  and media color-space serializers, plus -Werror=redundant-move in
+  DecoderStream::OnBuffersReady.
+- Classification: compiler strictness, not a TaterTOS API/platform gap.
+- The switch fallbacks use NOTREACHED() and conservative values: zero rendered
+  frames for an impossible fill mode, and "INVALID" for impossible serialized
+  color-space enum paths.
+- The decoder stream change removes std::move from a const refptr reference,
+  preserving the existing ownership behavior while satisfying the compiler.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/media/filters/filters/audio_renderer_algorithm.o
+  obj/media/filters/filters/decrypting_demuxer_stream.o
+  obj/media/filters/filters/decoder_stream.o

@@ -1,0 +1,66 @@
+Fry Log 924 — Chromium base:base next blocker: fnmatch and Unix credential socket surface
+Timestamp: 2026-05-08 22:13:01 CDT
+
+Scope:
+  Continued the Chromium base:base rerun after Fry 923. The previous
+  important_file_writer_cleaner.o blocker was confirmed cleared. The new first
+  blocker appeared in base/files/file_enumerator_posix.cc, followed by a
+  Unix-domain socket credential surface compile blocker.
+
+Build result before fix:
+  cd /home/legacyindieradio/chromium-tatertos/src
+  ninja -C out/tatertos base:base
+
+  Progressed to 2660/2892 before stopping.
+
+  First failure:
+    obj/base/base/file_enumerator_posix.o
+    ../../base/files/file_enumerator_posix.cc:9:10:
+    fatal error: fnmatch.h: No such file or directory
+
+  Second failure:
+    obj/base/base/unix_domain_socket.o
+    Missing SO_PASSCRED, SCM_CREDENTIALS, and struct ucred from the TaterTOS
+    socket headers.
+
+Changes:
+  src/include/fnmatch.h
+    - Added POSIX fnmatch declarations and FNM_* constants.
+
+  src/user/libc/posix.c
+    - Added a TaterTOS-owned fnmatch implementation supporting *, ?, bracket
+      classes/ranges, backslash escaping, FNM_NOESCAPE, FNM_PATHNAME,
+      FNM_PERIOD, FNM_LEADING_DIR, and FNM_CASEFOLD.
+
+  src/include/sys/socket.h
+    - Added SO_PASSCRED, SCM_CREDENTIALS, and struct ucred.
+
+  src/include/fry_socket.h
+    - Added SO_PASSCRED for the kernel/userspace socket ABI.
+
+  src/kernel/proc/process.h
+    - Added per-socket passcred storage.
+
+  src/kernel/proc/syscall.c
+    - Accepted getsockopt/setsockopt(SO_PASSCRED).
+    - Initialized passcred for AF_UNIX socketpair endpoints.
+
+Why:
+  Chromium base requires the standard fnmatch header for POSIX file
+  enumeration. Chromium's UnixDomainSocket code also compiles the Linux-style
+  credential-passing path on non-Apple POSIX targets. The immediate compile
+  blocker was the missing public ABI surface.
+
+Verification:
+  cd /home/legacyindieradio/chromium-tatertos/src
+  ninja -C out/tatertos obj/base/base/file_enumerator_posix.o obj/base/base/unix_domain_socket.o
+
+  Result:
+    passed. Both target objects compiled.
+
+Runtime caveat:
+  SO_PASSCRED is now accepted and stored, but full SCM_CREDENTIALS ancillary
+  delivery through recvmsg is still not implemented. If a later runtime smoke
+  depends on receiving peer credentials, recvmsg/sendmsg ancillary support must
+  be completed rather than treated as done.
+

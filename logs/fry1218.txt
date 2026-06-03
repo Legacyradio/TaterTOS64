@@ -1,0 +1,24 @@
+2026-05-16T01:28:57-05:00
+
+Fix: addressed cc tiling and paint compiler-strictness failures.
+
+Files:
+- chromium-tatertos/src/cc/tiles/frame_viewer_instrumentation.cc
+- chromium-tatertos/src/cc/tiles/raster_tile_priority_queue.cc
+- chromium-tatertos/src/cc/tiles/gpu_image_decode_cache.cc
+- chromium-tatertos/src/cc/tiles/image_decode_cache.h
+- chromium-tatertos/src/cc/tiles/gpu_image_decode_cache.h
+- chromium-tatertos/src/cc/paint/paint_image.h
+
+Why:
+- The build stopped on -Werror=redundant-move in frame_viewer_instrumentation.cc, raster_tile_priority_queue.cc, and gpu_image_decode_cache.cc due to unnecessary std::move calls on returned local variables or const references. These were removed to allow for RVO or avoid redundant copies.
+- The build stopped on -Werror=return-type in image_decode_cache.h, gpu_image_decode_cache.h, and paint_image.h where non-void functions lacked fallback returns after exhaustive switch statements. Added appropriate fallback returns.
+- Classification: compiler strictness/library analysis, not a TaterTOS API/platform gap.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/cc/cc/frame_viewer_instrumentation.o
+  obj/cc/cc/raster_tile_priority_queue.o
+  obj/cc/cc/gpu_image_decode_cache.o

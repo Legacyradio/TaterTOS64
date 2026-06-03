@@ -1,0 +1,25 @@
+2026-05-15T10:16:02-05:00
+
+Fix: added explicit unreachable fallback returns for MP4 format parsing helpers
+that Clang rejected under -Werror=return-type.
+
+Files:
+- chromium-tatertos/src/media/formats/mp4/track_run_iterator.cc
+- chromium-tatertos/src/media/formats/mp4/box_definitions.cc
+
+Why:
+- The build stopped on missing returns in TrackRunIterator encryption metadata
+  helpers and TrackTypeName().
+- Classification: compiler strictness, not a TaterTOS API/platform gap.
+- Invalid track types are already unreachable for protection scheme lookup; the
+  fallback returns an existing audio protection scheme reference after
+  NOTREACHED() to satisfy the non-null reference return.
+- Invalid sample encryption checks return false, and invalid track type names
+  return "invalid".
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/media/formats/formats/track_run_iterator.o
+  obj/media/formats/formats/box_definitions.o

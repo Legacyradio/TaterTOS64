@@ -1,0 +1,28 @@
+2026-05-14T12:29:40-05:00
+
+Step: Chromium TaterTOS64v3 net/dns blocker cleanup after monitored build 20260514_122511.
+
+Local Ninja failure positions:
+- [1/34071] obj/net/dns/dns/address_sorter_posix.o
+- [3/34071] obj/net/dns/dns/dns_config_service_posix.o
+- [9/34071] obj/net/dns/dns/mapped_host_resolver.o
+
+Logical phase:
+- Chromium net/dns resolver configuration, address sorting, and host mapping.
+
+Exact blockers:
+- address_sorter_posix.cc entered Chromium's Linux netlink address tracker path because the build exposes BUILDFLAG(IS_LINUX), then failed on linux/rtnetlink.h under TaterTOS.
+- dns_config_service_posix.cc needed a real POSIX resolver state: __res_state, MAXNS/MAXDNSRCH, RES_* option constants, and res_ninit/res_nclose declarations.
+- mapped_host_resolver.cc had two exhaustive switch/branch paths that GCC still treated as potentially falling through in non-void functions.
+
+Fix:
+- Kept Linux netlink out of TaterTOS address sorting with an explicit !defined(__TATERTOS__) guard.
+- Added a TaterTOS address-sorter path using getifaddrs/freeifaddrs, which is backed by the native tatertos_netif_list() ABI, not Linux netlink.
+- Expanded TaterTOS <resolv.h> with a minimal resolver state and resolver option constants expected by Chromium.
+- Added libc res_ninit/res_nclose implementations. res_ninit populates nameservers from tatertos_netif_list() dns_server values and initializes standard recursive resolver defaults.
+- Added explicit NOTREACHED() fallback returns in mapped_host_resolver.cc.
+
+Verification:
+- Ran targeted Ninja rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/net/dns/dns/address_sorter_posix.o obj/net/dns/dns/dns_config_service_posix.o obj/net/dns/dns/mapped_host_resolver.o
+- Result: passed [3/3].

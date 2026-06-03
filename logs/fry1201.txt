@@ -1,0 +1,27 @@
+2026-05-15T09:58:37-05:00
+
+Fix: added explicit unreachable fallback returns to CDM color/conversion
+helpers that Clang rejected under -Werror=return-type.
+
+Files:
+- chromium-tatertos/src/media/cdm/cdm_helpers.cc
+- chromium-tatertos/src/media/cdm/cdm_type_conversion.cc
+
+Why:
+- The failed build stopped in cdm_helpers.cc on a missing return from the
+  cdm::ColorRange to gfx::ColorSpace::RangeID switch.
+- Classification: compiler strictness, not a TaterTOS API/platform gap.
+- cdm_type_conversion.cc had the same NOTREACHED-without-return pattern in
+  adjacent CDM interface conversion helpers, so it was fixed in the same pass.
+- Fallbacks map unexpected CDM values to existing invalid/unknown/error/default
+  values used by the same conversion layer.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/media/cdm/cdm/cdm_helpers.o
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  phony/media/cdm/cdm_type_conversion

@@ -1,0 +1,1 @@
+STEP/2026-05-11 12:30/VERIFY_AND_RESUME: Successfully compiled physical_socket_server.o and network_monitor.o via targeted Ninja calls, then resumed the full background build. WHY: Empirically confirm that the architectural adaptation fixed the blockers and move the port forward.

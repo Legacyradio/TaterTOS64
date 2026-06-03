@@ -1,0 +1,19 @@
+Timestamp: 2026-05-15T07:39:43-05:00
+Blocker: ui/gfx IPC traits failed under -Werror=type-limits.
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+File changed:
+- /home/legacyindieradio/chromium-tatertos/src/ui/gfx/ipc/gfx_param_traits_macros.h
+
+Why:
+- IPC_ENUM_TRAITS_MAX_VALUE generated a lower-bound check that GCC considered
+  tautological for gfx::SelectionBound::Type.
+
+Fix:
+- Replaced the SelectionBound enum macro with IPC_ENUM_TRAITS_VALIDATE using the
+  signed IPC integer value and explicit LEFT..LAST bounds.
+
+Verification:
+- Ran:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/ui/gfx/ipc/ipc/gfx_param_traits.o
+- Result: passed.

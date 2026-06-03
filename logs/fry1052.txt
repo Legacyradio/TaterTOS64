@@ -1,0 +1,1 @@
+STEP/2026-05-11 14:10/PATCH_V8_PKEY: Guarded PROT_GROWSDOWN in memory-protection-key.cc. WHY: Fix compilation error on TaterTOS64 which correctly lacks Linux-specific protection extensions.

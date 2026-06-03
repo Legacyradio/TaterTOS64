@@ -1,0 +1,25 @@
+Fry Log 1266 — gin/: return-type fixes in exhaustive switches
+Timestamp: 2026-05-19 ~02:30 CDT
+
+Scope:
+  Build stopped at [952/21123]. v8-template.h double-cast fix worked.
+  New blockers: gin/ return-type errors.
+
+Chromium changes:
+
+  1. gin/v8_platform_page_allocator.cc:56
+     Switch on v8::PageAllocator::Permission (6 cases).
+     Added default: return kInaccessible.
+
+  2. gin/v8_platform.cc:81
+     Switch on v8::TaskPriority (3 cases).
+     Added default: return USER_VISIBLE.
+
+  3. gin/v8_platform.cc:167
+     Switch on v8::BlockingType (2 cases).
+     Added default: return MAY_BLOCK.
+
+Why:
+  GCC 15 -Werror=return-type doesn't recognize all-cased enums as
+  exhaustive. Adding default with sensible fallback values satisfies
+  the compiler.

@@ -1,0 +1,19 @@
+Fry Log 1261 — cld_3: CLD_FALLTHROUGH not defined for GCC
+Timestamp: 2026-05-18 ~21:48 CDT
+
+Scope:
+  Build stopped at [17/21780]. viz_layer_context, async_layer_tree_frame_sink,
+  and discardable_memory all compiled clean after fry1260 fixes. New blocker:
+  third_party/cld_3 utf8statetable.cc had 6 -Wimplicit-fallthrough errors
+  because CLD_FALLTHROUGH only had a clang path.
+
+Fix:
+  third_party/cld_3/src/src/script_span/utf8statetable.cc:169-173
+  Added __GNUC__ branch to CLD_FALLTHROUGH macro:
+    #elif defined(__GNUC__)
+    #define CLD_FALLTHROUGH __attribute__((fallthrough))
+
+Why:
+  CLD_FALLTHROUGH was defined as [[clang::fallthrough]] for clang and
+  nothing for all other compilers. GCC 15 with -Werror needs
+  __attribute__((fallthrough)) to suppress implicit-fallthrough warnings.

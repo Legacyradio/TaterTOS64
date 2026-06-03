@@ -1,0 +1,14 @@
+Fry Log 1269 — v8/execution/frames.cc: sign-compare static_assert cast
+Timestamp: 2026-05-19 ~13:05 CDT
+
+Scope:
+  Build stopped at [77/19702] with -Werror=sign-compare in
+  v8/src/execution/frames.cc:1300.
+
+Fix:
+  static_assert comparing ArgOffset (returns uint32_t) with
+  FCIOffset (returns int). Cast FCIOffset to uint32_t.
+
+Why:
+  GCC 15 -Werror=sign-compare flags uint32_t == int comparison
+  even in static_assert context.

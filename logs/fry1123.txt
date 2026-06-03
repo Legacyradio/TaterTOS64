@@ -1,0 +1,29 @@
+timestamp: 2026-05-14T23:01:59-05:00
+stop: chrome_build_20260514_225932.log at [20/30076]
+failed_objects:
+  obj/third_party/webrtc/modules/video_coding/h26x_packet_buffer/h26x_packet_buffer.o
+  obj/third_party/webrtc/modules/video_coding/webrtc_vp8_temporal_layers/default_temporal_layers.o
+classification: compiler strictness, not a TaterTOS API gap
+
+problem:
+  GCC with -Werror rejected two WebRTC video-coding helpers whose switches
+  covered known values but had no explicit fallback returns:
+  - BeginningOfIdr() for H264 packetization type
+  - BufferToIndex() for VP8 buffer references
+
+fix:
+  Added RTC_DCHECK_NOTREACHED()/false fallback for the H264 helper and an
+  explicit RTC_CHECK_NOTREACHED()/0 fallback for the VP8 buffer index helper.
+
+why:
+  Valid behavior is unchanged. These fallbacks only make impossible enum paths
+  explicit for TaterTOS64's strict GCC build; no warning suppression or platform
+  shortcut was added.
+
+verification:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/third_party/webrtc/modules/video_coding/h26x_packet_buffer/h26x_packet_buffer.o
+  obj/third_party/webrtc/modules/video_coding/webrtc_vp8_temporal_layers/default_temporal_layers.o
+
+  Result: both targeted objects rebuilt successfully.

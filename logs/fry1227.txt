@@ -1,0 +1,25 @@
+2026-05-16T16:28:38-05:00
+
+Fix: added explicit fallback returns for FIDO public enum/string helpers.
+
+Files:
+- chromium-tatertos/src/device/fido/public/fido_constants.cc
+- chromium-tatertos/src/device/fido/public/fido_transport_protocol.cc
+
+Why:
+- The build stopped at [83/24304] and [85/24304] on -Werror=return-type in
+  FIDO public enum conversion helpers.
+- Classification: compiler strictness, not a TaterTOS API/platform gap.
+- The CTAP request/response helpers now record NOTREACHED() and return
+  "Unknown" for impossible enum paths.
+- CredentialTypeToString() now falls back to the only valid credential type
+  string after NOTREACHED().
+- FidoTransportProtocol conversions now return empty string_view or kAny after
+  the deprecated/unreachable transport path.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/device/fido/public/public/fido_constants.o
+  obj/device/fido/public/public/fido_transport_protocol.o

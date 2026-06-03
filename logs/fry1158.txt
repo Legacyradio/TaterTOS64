@@ -1,0 +1,20 @@
+2026-05-15T07:10:29-0500
+
+Fixed GPU test config TaterTOS OS classification gap.
+
+Blocker classification:
+- TaterTOS platform integration gap, not compiler strictness.
+
+Why:
+- gpu/config/gpu_test_config.cc had no BUILDFLAG(IS_TATERTOS) branch and
+  stopped with #error "unknown os".
+
+Fix:
+- Added kOsTaterTOS as a distinct GPU test OS bit.
+- Returned kOsTaterTOS from GetCurrentOS() for BUILDFLAG(IS_TATERTOS).
+- Included kOsTaterTOS in validation and added a "tatertos" expectations
+  parser token.
+
+Verification:
+- Passed targeted rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/gpu/config/config/gpu_test_config.o obj/gpu/config/config/gpu_test_expectations_parser.o

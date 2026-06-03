@@ -1,0 +1,3 @@
+STEP 1024
+TIME: 2026-05-10 13:30:13
+ACTION: Modified base/synchronization/cancelable_event.h to fall back to WaitableEvent instead of raw sem_t when compiled for TaterTOS. This fixes the missing Signal() and TimedWait() methods on NativeHandle in cancelable_event_default.cc. Resumed the Chromium ninja build.

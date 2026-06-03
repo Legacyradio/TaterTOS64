@@ -1,0 +1,28 @@
+Timestamp: 2026-05-15T04:13:53-05:00
+Stop: [190/30192] CXX obj/ui/gfx/gfx/decorated_text.o
+Classification: TaterTOS API/port gap in Chromium native UI handle typing.
+
+Problem:
+ui/gfx/native_ui_types.h had no TaterTOS branch for gfx::AcceleratedWidget.
+The TaterTOS build enables Aura, which supplies NativeView/NativeWindow, but it
+does not enable Ozone, so the Ozone AcceleratedWidget typedef was not available
+and the header reached #error unknown platform.
+
+Fix:
+Added an explicit BUILDFLAG(IS_TATERTOS) AcceleratedWidget typedef using the
+same 32-bit integer handle shape as Chromium's Ozone path, with zero as
+kNullAcceleratedWidget.
+
+Why:
+This is a TaterTOS UI port gap. Enabling broad Ozone behavior just to pick up a
+typedef would change the build surface substantially. A narrow TaterTOS native
+handle branch matches the current Aura-on-TaterTOS configuration and keeps the
+platform choice explicit.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+/home/legacyindieradio/chromium-tatertos/src/out/tatertos
+obj/ui/gfx/gfx/decorated_text.o
+
+Result:
+Passed; obj/ui/gfx/gfx/decorated_text.o rebuilt successfully.

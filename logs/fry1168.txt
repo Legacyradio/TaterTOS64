@@ -1,0 +1,22 @@
+Timestamp: 2026-05-15T07:50:47-05:00
+Blocker: GLES2 interface failed because std::unique_ptr<RasterScopedAccess>
+was destroyed with RasterScopedAccess incomplete.
+Classification: compiler/C++ type-completeness strictness, not a TaterTOS
+API/platform gap.
+
+File changed:
+- /home/legacyindieradio/chromium-tatertos/src/gpu/command_buffer/client/gles2_interface.cc
+
+Why:
+- gles2_interface.h forward-declares RasterScopedAccess, but the .cc returns a
+  concrete std::unique_ptr<RasterScopedAccess> value. libc++ checks the pointee
+  type completeness when instantiating the default deleter.
+
+Fix:
+- Included gpu/command_buffer/client/client_shared_image.h in the .cc so
+  RasterScopedAccess is complete at the return site.
+
+Verification:
+- Ran:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/gpu/command_buffer/client/gles2_interface/gles2_interface.o
+- Result: passed.

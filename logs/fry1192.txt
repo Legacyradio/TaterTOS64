@@ -1,0 +1,17 @@
+2026-05-15T09:23:59-05:00
+
+Fix: Added media audio latency/parameters fallback returns.
+
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Why: Clang's -Werror=return-type rejected AudioLatency::ToString() and
+FormatToString() in media/base because the compiler could not prove all enum
+values returned.
+
+Change: Added NOTREACHED() fallbacks returning existing safe defaults:
+"LatencyUnknown" and "UNKNOWN".
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/media/base/base/audio_latency.o obj/media/base/base/audio_parameters.o
+
+Result: passed.

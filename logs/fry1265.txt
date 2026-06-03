@@ -1,0 +1,29 @@
+Fry Log 1265 (updated) — window.cc + v8-template.h fixes
+Timestamp: 2026-05-19 ~00:45 CDT
+
+Scope:
+  Build stopped at [930/21124] with errors in gin/converter.o and
+  gin/function_template.o — both caused by v8-template.h casts.
+  Also window.cc errors from prior run (now fixed).
+
+Chromium changes:
+
+  1. ui/aura/window.cc — 3 errors (from prior build, now verified):
+     - Line 753: dangling-else → added braces around DCHECK
+     - Line 1413: redundant-move → removed std::move()
+     - Line 1512: return-type → added default: return "unknown"
+
+  2. v8/include/v8-template.h — 4 cast-function-type errors (TWO attempts):
+     First attempt: reinterpret_cast<Type>(value) — FAILED. GCC 15 still
+     rejects direct reinterpret_cast between function pointer types.
+     
+     Second attempt (CORRECTED): double-cast through void(*)().
+     Lines 762, 775, 893, 906:
+       reinterpret_cast<Type>(reinterpret_cast<void(*)()>(value))
+     
+     This is the standard GCC workaround for -Wcast-function-type.
+
+Why:
+  GCC 15 -Wcast-function-type rejects ANY cast between incompatible
+  function pointer types, including reinterpret_cast. The double-cast
+  through void(*)() is the only portable workaround without pragmas.

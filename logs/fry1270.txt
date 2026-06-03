@@ -1,0 +1,14 @@
+Fry Log 1270 — v8/heap/collection-barrier.cc: parentheses around arithmetic in | operand
+Timestamp: 2026-05-19 ~13:10 CDT
+
+Scope:
+  Build stopped at [27/19627] with -Werror=parentheses in
+  v8/src/heap/collection-barrier.cc:57.
+
+Fix:
+  Added parentheses around (static_cast<uint8_t>(kind) - 1) in the
+  expression ~(kind | kind - 1) inside fetch_and() call.
+
+Why:
+  GCC 15 -Werror=parentheses wants explicit grouping when arithmetic
+  (-) is used as operand of bitwise OR (|).

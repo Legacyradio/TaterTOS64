@@ -1,0 +1,15 @@
+2026-05-15T09:39:16-05:00
+
+Fix: Added media renderer fallback return.
+
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Why: Clang's -Werror=return-type rejected GetRendererName() because the
+compiler could not prove all RendererType values returned.
+
+Change: Added a NOTREACHED() fallback returning "UnknownRenderer".
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/media/base/base/renderer.o
+
+Result: passed.

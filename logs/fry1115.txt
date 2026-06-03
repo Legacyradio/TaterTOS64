@@ -1,0 +1,35 @@
+timestamp: 2026-05-14T22:35:10-05:00
+stop: chrome_build_20260514_222549.log at [751/31709]
+failed_objects:
+  obj/cc/paint/paint/filter_operations.o
+  obj/cc/paint/paint/paint_flags.o
+  obj/cc/paint/paint/paint_image.o
+  obj/cc/paint/paint/image_transfer_cache_entry.o
+classification: compiler strictness, not a TaterTOS API gap
+
+problem:
+  GCC with -Werror rejected several cc/paint switches whose valid enum cases
+  returned, but whose impossible/default paths were not made explicit:
+  - FilterOperations::AllowsLCDText()
+  - PaintFlags::FilterQualityToSkSamplingOptions()
+  - PaintImage aux-image helpers
+  - NumberOfPlanesForYUVDecodeFormat()
+
+fix:
+  Added base/notreached.h where needed and inserted NOTREACHED() plus
+  conservative fallback return values after the impossible switch paths.
+
+why:
+  This keeps the valid Chromium behavior unchanged while making the compiler
+  contract explicit for TaterTOS64's stricter GCC build. No warning suppression,
+  Linux/Windows branch, or platform shortcut was added.
+
+verification:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/cc/paint/paint/filter_operations.o
+  obj/cc/paint/paint/paint_flags.o
+  obj/cc/paint/paint/paint_image.o
+  obj/cc/paint/paint/image_transfer_cache_entry.o
+
+  Result: all four targeted objects rebuilt successfully.

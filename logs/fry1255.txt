@@ -1,0 +1,26 @@
+Timestamp: 2026-05-17T16:35:00-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped due to return-type errors in cc/animation.
+
+Failure:
+1. scroll_offset_animation_curve_factory.cc: "control reaches end of non-void function" in GetDurationBehaviorFromScrollType.
+2. scroll_offset_animations_impl.cc: "control reaches end of non-void function" in IsAnimating.
+
+Exact compiler errors:
+../../cc/animation/scroll_offset_animation_curve_factory.cc:24:1: error: control reaches end of non-void function [-Werror=return-type]
+
+Classification:
+Compiler strictness in cc/animation.
+
+Fix:
+1. Added NOTREACHED() and fallback returns to all affected functions in both files.
+
+Why:
+GCC requires explicit returns in all paths of non-void functions.
+
+Verification:
+Build restarted and progressing.
+
+Result:
+Build is now continuing with PID 1742376.

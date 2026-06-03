@@ -1,0 +1,22 @@
+2026-05-15T06:16:15-0500
+
+Fixed Chromium network web platform compiler strictness failures.
+
+Blocker classification:
+- compiler strictness, not a TaterTOS API gap.
+
+Why:
+- services/network/public/cpp/permissions_policy/permissions_policy.cc had an
+  exhaustive PermissionsPolicyFeatureDefault switch with no compiler-visible
+  fallback return.
+- services/network/public/cpp/content_security_policy/csp_source.cc and
+  csp_source_list.cc used single-line DCHECK_EQ guards that expand in a way
+  GCC diagnoses as ambiguous dangling else under -Werror.
+
+Fix:
+- Added a NOTREACHED fallback return to GetFeatureValueForOrigin.
+- Added braces around the opaque fenced frame DCHECK_EQ guards.
+
+Verification:
+- Passed targeted rebuild:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/services/network/public/cpp/web_platform/permissions_policy.o obj/services/network/public/cpp/web_platform/csp_source.o obj/services/network/public/cpp/web_platform/csp_source_list.o

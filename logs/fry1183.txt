@@ -1,0 +1,16 @@
+2026-05-15T08:48:08-05:00
+
+Fix: Added leveldb_proto client-list fallback return.
+
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Why: Clang's -Werror=return-type rejected
+SharedProtoDatabaseClientList::ProtoDbTypeToString() because the LAST sentinel
+case called NOTREACHED() without an explicit return.
+
+Change: Added a defensive "Unknown" return after the exhausted switch.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/components/leveldb_proto/leveldb_proto/shared_proto_database_client_list.o
+
+Result: passed.

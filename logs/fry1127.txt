@@ -1,0 +1,38 @@
+Timestamp: 2026-05-15T03:33:16-05:00
+Stop: [500/31574] CXX obj/net/net/unix_domain_server_socket_posix.o
+Classification: TaterTOS API gap / peer-credential socket API mismatch.
+
+Problem:
+Chromium's POSIX unix-domain server socket code selected the BSD getpeereid()
+credential path for TaterTOS because TaterTOS was neither Linux/Fuchsia nor a
+known SO_PEERCRED platform in that file. TaterTOS does not declare getpeereid().
+At the same time, TaterTOS public socket headers already exposed Linux-shaped
+peer credential types and constants: struct ucred and SO_PEERCRED.
+
+Fix:
+Added BUILDFLAG(IS_TATERTOS) to Chromium's SO_PEERCRED credential path in
+net/socket/unix_domain_server_socket_posix.{h,cc}. This keeps the TaterTOS port
+on a TaterTOS-supported credential API shape instead of importing BSD
+getpeereid().
+
+Completed the matching TaterTOS kernel side for the supported AF_UNIX socketpair
+case by adding AF_UNIX/SO_PEERCRED/fry_ucred definitions to fry_socket.h,
+recording peer credentials in struct fry_socket, and returning those credentials
+from getsockopt(SOL_SOCKET, SO_PEERCRED) for connected AF_UNIX descriptors.
+
+Why:
+This is a real platform API gap, not compiler strictness. TaterTOS should not
+pretend to have getpeereid(), and Chromium should not fall into the BSD path.
+Using SO_PEERCRED matches the API already advertised by TaterTOS64v3 headers and
+keeps the behavior TaterTOS-exclusive.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+/home/legacyindieradio/chromium-tatertos/src/out/tatertos
+obj/net/net/unix_domain_server_socket_posix.o
+
+make -C /home/legacyindieradio/TaterTOS64 kernel
+
+Result:
+Passed. Chromium rebuilt obj/net/net/unix_domain_server_socket_posix.o, and the
+TaterTOS kernel rebuilt syscall.o and linked kernel.elf successfully.

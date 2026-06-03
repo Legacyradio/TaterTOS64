@@ -1,0 +1,24 @@
+2026-05-15T05:38:51-05:00
+
+Stop:
+- Full Chromium TaterTOS build stopped at
+  [549/29092] obj/third_party/xnnpack/operators_x64/binary-elementwise-nd.o.
+
+Classification:
+- TaterTOS libc/API gap.
+
+Why:
+- XNNPACK uses the C99 floating-point classification macro `isnormal()` from
+  <math.h>. TaterTOS math.h already exposed `isnan`, `isinf`, `isfinite`,
+  `signbit`, and `fpclassify` via compiler builtins, but did not expose
+  `isnormal`, so C compilation saw an implicit function declaration.
+
+Fix:
+- Added `isnormal(x)` to TaterTOS math.h in both C and C++ include modes,
+  backed by `__builtin_isnormal(x)`.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja \
+    -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos \
+    obj/third_party/xnnpack/operators_x64/binary-elementwise-nd.o

@@ -1,0 +1,25 @@
+Timestamp: 2026-05-16T16:54:47-05:00
+
+Blocker:
+Chromium TaterTOS64 build stopped at [144/23637] on
+obj/ui/accessibility/ax_base/ax_enum_util.o.
+
+Failure:
+ui/accessibility/ax_enum_util.cc had three enum ToString() helpers that reached
+the end of a non-void function under -Werror=return-type:
+- ax::mojom::ScrollAlignment
+- ax::mojom::HighlightType
+- ax::mojom::IsPopup
+
+Classification:
+Compiler strictness. This is not a TaterTOS API/platform gap.
+
+Fix:
+Added the file's existing fallback behavior, return "", after each affected
+switch.
+
+Verification:
+/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C out/tatertos obj/ui/accessibility/ax_base/ax_enum_util.o
+
+Result:
+Targeted object rebuild passed.

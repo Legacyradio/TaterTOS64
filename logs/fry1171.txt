@@ -1,0 +1,23 @@
+Timestamp: 2026-05-15T08:00:48-05:00
+Blocker: network cpp loading params, local network access, and IP address space
+helpers failed under -Werror=return-type.
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Files changed:
+- /home/legacyindieradio/chromium-tatertos/src/services/network/public/cpp/loading_params.cc
+- /home/legacyindieradio/chromium-tatertos/src/services/network/public/cpp/local_network_access_check_result.cc
+- /home/legacyindieradio/chromium-tatertos/src/services/network/public/cpp/ip_address_space_util.cc
+
+Why:
+- Enum switch helpers were intended to be exhaustive but still required explicit
+  fallback returns under GCC with warnings as errors.
+
+Fix:
+- Added base/notreached.h where needed and conservative fallback returns for
+  data pipe sizing, local network access result conversion, and transport-info
+  address-space conversion.
+
+Verification:
+- Ran:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/services/network/public/cpp/cpp/loading_params.o obj/services/network/public/cpp/cpp/local_network_access_check_result.o obj/services/network/public/cpp/cpp/ip_address_space_util.o
+- Result: passed.

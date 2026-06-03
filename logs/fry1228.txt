@@ -1,0 +1,31 @@
+2026-05-16T16:35:21-05:00
+
+Fix: addressed media Mojo build failures after the FIDO pass.
+
+Files:
+- chromium-tatertos/src/media/mojo/mojom/video_aspect_ratio_mojom_traits.h
+- chromium-tatertos/src/mojo/public/tools/bindings/generators/cpp_templates/module.cc.tmpl
+- chromium-tatertos/src/mojo/public/tools/bindings/generators/mojom_cpp_generator.py
+
+Why:
+- The build stopped at [38/24212], [46/24212], and [47/24212] on media Mojo
+  objects.
+- video_aspect_ratio_mojom_traits.h was rejected by -Werror=return-type.
+- Generated decryptor.mojom.cc was rejected by -Werror=redundant-move when the
+  async waiter assigned a const scoped_refptr response parameter with
+  std::move().
+- Classification: compiler strictness / generator strictness, not a TaterTOS
+  API/platform gap.
+- The VideoAspectRatio traits now use NOTREACHED() fallbacks and reject invalid
+  incoming enum values in Read().
+- The Mojo C++ generator now exposes the existing move-only classifier to Jinja
+  and only emits std::move() for async waiter response parameters whose Mojom
+  kind is move-only.
+
+Verification:
+- Targeted rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/media/mojo/mojom/mojom/audio_decoder.mojom.o
+  obj/media/mojo/mojom/mojom/demuxer_stream.mojom.o
+  obj/media/mojo/mojom/mojom/decryptor.mojom.o

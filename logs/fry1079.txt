@@ -1,0 +1,36 @@
+2026-05-14 12:01:37 CDT
+
+Fixed the monitored Chromium/TaterTOS build stop from stamp 20260514_115901.
+
+Build status before fix:
+- Monitored log: /home/legacyindieradio/TaterTOS64/logs/chrome_build_20260514_115901.log
+- Exit: 1 at 2026-05-14T12:00:09-05:00
+- Local Ninja stop points:
+  - [17/34250] obj/net/net/spdy_http_stream.o
+  - [18/34250] obj/net/net/spdy_write_queue.o
+  - [26/34250] obj/net/net/spdy_session.o
+- Logical phase: Chromium net/spdy
+
+Why:
+- x86_64-elf-g++ rejected ambiguous single-line if/else-adjacent code under
+  -Werror=dangling-else.
+- It also required a compiler-visible fallback return for
+  SpdySession::AvailabilityStateToString() under -Werror=return-type.
+- This was compiler strictness cleanup, not a TaterTOS native interface gap.
+
+Fix:
+- Added explicit braces in:
+  - /home/legacyindieradio/chromium-tatertos/src/net/spdy/spdy_http_stream.cc
+  - /home/legacyindieradio/chromium-tatertos/src/net/spdy/spdy_write_queue.cc
+  - /home/legacyindieradio/chromium-tatertos/src/net/spdy/spdy_session.cc
+- Added explicit base/notreached.h include and fallback return in:
+  - /home/legacyindieradio/chromium-tatertos/src/net/spdy/spdy_session.cc
+
+Verification:
+- Targeted Chromium object rebuild passed:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/net/net/spdy_http_stream.o obj/net/net/spdy_write_queue.o obj/net/net/spdy_session.o
+- Completed objects:
+  - [1/3] CXX obj/net/net/spdy_write_queue.o
+  - [2/3] CXX obj/net/net/spdy_http_stream.o
+  - [3/3] CXX obj/net/net/spdy_session.o
+

@@ -1,0 +1,100 @@
+Fry Log 935 — Chromium base:base: BUILD COMPLETE (2890/2890)
+Timestamp: 2026-05-09 03:15:00 CDT
+
+Scope:
+  FINAL FRY LOG. Chromium //base:base cross-compiled successfully for
+  TaterTOS64. 2890 targets, 0 failures.
+
+Path from fry924 (2660/2892) to fry935 (2890/2890):
+  fry924: fnmatch, SO_PASSCRED                    2660
+  fry925: libgen.h, grp.h                         2671
+  fry926: dlfcn.h, drive_info, kSystemDefaultMaxFds, dirent suite   (batch)
+  fry927: NZERO, _PC_NAME_MAX, pathconf           2680
+  fry928: launch_posix, module_cache, stack_copier  2680+
+  fry929: signal detail codes, thread_delegate     2709
+  fry930: O_ACCMODE, TakeError, return-type        2709
+  fry931: mincore, return-type, -Wno flags         2745
+  fry932: strict_cast, redundant-move              2745
+  fry933: redundant-move x4                        2835
+  fry934: PosixSharedMemory guard                  2889
+  fry935: IOV_MAX, redundant-move                  **2890/2890 PASS**
+
+Final blockers cleared in fry935:
+  src/include/limits.h
+    - Added IOV_MAX = 1024 (POSIX scatter/gather I/O vector limit).
+
+  third_party/perfetto/src/tracing/service/tracing_service_impl.cc
+    - Removed std::move() from return endpoint (GCC 15 -Werror=redundant-move).
+
+Build configuration changes applied during this session:
+  build/config/tatertos/BUILD.gn
+    - Added -Wno-deprecated-copy to cflags_cc (GCC 15 false positive on
+      Chromium classes with user-declared destructors).
+    - Added -Wno-uninitialized to cflags_cc (libc++ std::function internal
+      buffer issue).
+
+  base/BUILD.gn
+    - Excluded stack_copier_signal.cc/.h from TaterTOS (linux/futex.h).
+    - Excluded thread_delegate_posix.cc/.h from TaterTOS (Linux ucontext).
+
+  base/memory/platform_shared_memory_region.h
+    - Added IS_TATERTOS to TakeError guard for kFcntlFailed/etc.
+
+  base/tracing/perfetto_platform.cc
+    - Changed strict_cast to static_cast for PlatformThreadId conversion.
+
+  base/files/drive_info_posix.cc
+    - Added IS_TATERTOS to early-return case.
+
+  base/process/process_metrics_posix.cc
+    - Added kSystemDefaultMaxFds = 1024 for IS_TATERTOS.
+
+  base/process/launch_posix.cc
+    - Added kFDDir = "/fd" for IS_TATERTOS.
+
+  base/allocator/partition_alloc_support.cc
+    - Added __builtin_unreachable() after exhaustive switch.
+
+  base/trace_event/memory_pressure_level_proto.cc
+    - Added __builtin_unreachable() after exhaustive switch.
+
+  third_party/perfetto/src/trace_processor/export_json.cc
+    - Removed std::move() from return (redundant-move).
+
+  third_party/perfetto/src/trace_processor/util/json_value.cc
+    - Removed std::move() from return x3 (redundant-move).
+
+  third_party/perfetto/src/trace_processor/util/trace_blob_view_reader.cc
+    - Removed std::move() from return (redundant-move).
+
+  third_party/perfetto/src/tracing/ipc/posix_shared_memory.h
+    - Added defined(__tatertos__) to platform guard.
+
+New TaterTOS64 libc headers/implementations created:
+  src/include/libgen.h          — basename/dirname
+  src/include/grp.h             — group database
+  src/include/dlfcn.h           — dynamic linking (Dl_info, dladdr)
+  src/user/libc/posix.c:
+    - basename(), dirname()
+    - getgrnam(), getgrgid(), getgrent(), setgrent(), endgrent()
+    - opendir(), fdopendir(), readdir(), closedir(), rewinddir(),
+      telldir(), seekdir(), dirfd() — struct _DIR
+    - dlopen(), dlclose(), dlsym(), dlerror(), dladdr()
+    - fork(), execvp(), setpgid()
+    - pathconf(), fpathconf()
+    - mincore()
+
+  src/include/signal.h          — BUS_*, FPE_*, ILL_*, SEGV_* detail codes
+  src/include/fry_fcntl.h       — O_ACCMODE
+  src/include/limits.h          — NZERO, IOV_MAX
+  src/include/unistd.h          — fork, execvp, setpgid, mincore, pathconf,
+                                   fpathconf, _PC_* constants
+
+Result:
+  obj/base/libbase.a — 2890 targets compiled.
+  ninja -C out/tatertos base:base — EXIT_CODE=0.
+
+Runtime caveats (documented, not blocking):
+  - fdopendir returns ENOSYS (kernel needs fd-based directory reads)
+  - dlopen always returns NULL (no dynamic linker)
+  - SO_PASSCRED accepted/stored, SCM_CREDENTIALS delivery not implemented

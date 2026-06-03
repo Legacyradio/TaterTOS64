@@ -1,0 +1,30 @@
+timestamp: 2026-05-14T23:08:13-05:00
+stop: chrome_build_20260514_230434.log at [14/30022]
+failed_object:
+  obj/ui/events/dom_keycode_converter/keycode_converter.o
+classification: TaterTOS API gap / Linux header dependency
+
+problem:
+  ui/events/keycodes/dom/keycode_converter.cc entered the Linux build path and
+  included <linux/input.h>, which is not available in the TaterTOS64 userspace
+  headers. The deeper cause was build/build_config.h checking __linux__ before
+  __TATERTOS__; the current cross compile defines both, so TaterTOS was being
+  misclassified as Linux in compile-time build flags.
+
+fix:
+  Updated build/build_config.h to prefer __TATERTOS__ before __linux__.
+  Added a BUILDFLAG(IS_TATERTOS) keycode-converter mapping that uses DOM/USB
+  native keycodes directly instead of Linux evdev/XKB keycodes.
+
+why:
+  This removes a Linux-only header dependency and makes the path TaterTOS64
+  exclusive instead of papering over the missing header. The native keycode
+  choice matches TaterTOS input semantics better than evdev because TaterTOS
+  currently exposes its own fry_input/TaterWin key ABI, not Linux evdev.
+
+verification:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C
+  /home/legacyindieradio/chromium-tatertos/src/out/tatertos
+  obj/ui/events/dom_keycode_converter/keycode_converter.o
+
+  Result: targeted object rebuilt successfully.

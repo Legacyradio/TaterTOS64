@@ -1,0 +1,69 @@
+2026-06-02T21:05:14-05:00
+Step: Linuxulator async-I/O syscall rung for real Claude Code path.
+
+What changed:
+- Added Linux epoll/eventfd/timerfd/signalfd syscall handling in
+  src/kernel/proc/syscall.c, using the existing TaterTOS fd model underneath.
+- Added Linux event translation for epoll_event, including the Linux x86_64
+  packed 12-byte epoll_event ABI and FRY_POLL* <-> Linux EPOLL* bit mapping.
+- Extended Linux fd read/write/close handling for eventfd, timerfd, signalfd,
+  epoll, and inotify-owned objects.
+- Added tools/host/lasync.c, a dynamically linked host-built Linux probe for:
+  eventfd + epoll readiness, timerfd + epoll readiness, and signalfd4 empty
+  nonblocking read.
+- Added LASYNC.LXE packaging and marker-gated boot launch through build_iso.sh
+  and src/kernel/main.c.
+
+Why:
+- Bun/Node/Claude Code rely on Linux async-I/O surfaces. epoll, eventfd,
+  timerfd, and signalfd are the next concrete syscall rung after dynamic glibc,
+  file-backed mmap, thread clone3, and the syscall gap probe.
+- The first boot after adding LASYNC exposed a real timerfd readiness bug:
+  timerfd expirations were computed on read(), but epoll readiness checked only
+  tm->expirations. That made epoll_wait(timerfd) return 0 after the timer had
+  elapsed.
+- Fixed that by adding timerfd_update_expirations() and calling it from
+  poll_check_fd() and timerfd read paths so epoll and read observe the same
+  timer state.
+
+Verification:
+- Host probe:
+  gcc -no-pie -o /tmp/lasync.lxe tools/host/lasync.c
+  /tmp/lasync.lxe
+  Result: passed on host before packaging.
+- Fast kernel object check:
+  x86_64-elf-gcc -ffreestanding -fno-stack-protector -mno-red-zone \
+    -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -Isrc/include \
+    -Isrc/kernel -c src/kernel/proc/syscall.c -o /tmp/syscall_fry1291.o
+  Result: passed.
+- Clean rebuild per planv3:
+  make clean
+  /bin/bash build_iso.sh
+  Result: passed; out/tatertos64v3.iso produced and LASYNC.LXE copied into
+  the image.
+- QEMU serial validation:
+  timeout 180s qemu-system-x86_64 -m 4G -machine q35,accel=tcg -cpu max \
+    -smp 2 -drive if=pflash,format=raw,readonly=on,\
+file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=OVMF_VARS_fry1292.fd \
+    -cdrom out/tatertos64v3.iso -vga std \
+    -serial file:logs/serial_fry1292.log -display none
+  Evidence from logs/serial_fry1292.log:
+  - LINUXTEST: launching /apps/LASYNC.LXE
+  - PROC: linux launch ok path=/apps/LASYNC.LXE pid=10
+  - [OK] eventfd + epoll readiness passed
+  - [OK] timerfd + epoll readiness passed
+  - [OK] signalfd4 create + empty nonblock read passed
+  - [OK] async I/O probe complete
+  - Results: 15 passed, 0 failed
+  - --- chrome_probe: 12 passed, 0 failed ---
+  - SPAWN_OK path=/system/GUI.FRY pid=19 parent=11
+
+Notes:
+- signalfd is intentionally create/read-empty only for now; real Linux signal
+  delivery is still a later rung.
+- epoll_pwait currently ignores the supplied signal mask until signal delivery
+  exists.
+- The serial still shows existing rip=0 user faults after native smoketest and
+  chrome_probe exit; those were pre-existing process-exit artifacts and did not
+  block boot, GUI launch, or this Linux async-I/O validation.

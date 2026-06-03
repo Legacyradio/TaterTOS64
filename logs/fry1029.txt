@@ -1,0 +1,3 @@
+STEP 1029
+TIME: 2026-05-10 16:47:07
+ACTION: Correcting sys/ucontext.h to use TaterTOS-specific architecture-agnostic register names instead of Linux-specific REG_* macros, in alignment with Rule 3 (No Linux/Windows code inside the OS). Created tatertos_ucontext.h with the canonical TaterTOS register structure and updated sys/ucontext.h to map these to the gregs array. This ensures the OS headers remain clean of external OS conventions while still providing the necessary POSIX compatibility for the Chromium port. Resumed the Chromium ninja build.

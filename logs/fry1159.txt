@@ -1,0 +1,23 @@
+Timestamp: 2026-05-15T07:15:33-05:00
+Blocker: Chromium network cpp_base failed under -Werror=return-type.
+Classification: compiler strictness, not a TaterTOS API/platform gap.
+
+Files changed:
+- /home/legacyindieradio/chromium-tatertos/src/services/network/public/cpp/cross_origin_opener_policy.cc
+- /home/legacyindieradio/chromium-tatertos/src/services/network/public/cpp/data_element.cc
+
+Why:
+- GCC does not accept the enum switches as total when warnings are fatal.
+- IsAccessFromCoopPage(), CoopAccessReportTypeToString(), and DataElement::Clone()
+  could reach the end of a non-void function from the compiler's view.
+
+Fix:
+- Added NOTREACHED() fallbacks with conservative return values for the COOP helper
+  functions.
+- Added DataElement::Clone() fallback returns that preserve the existing strict
+  behavior for non-copyable chunked data pipes while satisfying the compiler.
+
+Verification:
+- Ran:
+  /home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C /home/legacyindieradio/chromium-tatertos/src/out/tatertos obj/services/network/public/cpp/cpp_base/cross_origin_opener_policy.o obj/services/network/public/cpp/cpp_base/data_element.o
+- Result: passed.

@@ -1,0 +1,1 @@
+STEP/2026-05-11 13:45/PATCH_CHAR_ITERATOR_V2: Cast both index and length to int32_t in ICU macros. WHY: Resolve both -Werror=type-limits and -Werror=sign-compare by ensuring all macro inputs are signed.

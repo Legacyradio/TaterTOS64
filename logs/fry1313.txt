@@ -1,0 +1,141 @@
+=====================================================================
+fry1313 - pid-12 Tater Bridge syscall trace for Claude silent hang
+=====================================================================
+DATE: 2026-06-03 19:35:32 CDT
+GOAL: Follow the fry1312 instruction: stop blind long QEMU boots and add
+narrow temporary Tater Bridge syscall tracing for the real Claude process
+(pid 12) to find the first post-/dev/urandom blocker.
+
+TERMINOLOGY:
+  The Linux-compatible ABI layer is Tater Bridge. Older source comments,
+  serial strings, and Fry logs may still say linuxulator; those are legacy
+  labels only. The changes here are native TaterTOS64v3 syscall/VFS/VM
+  instrumentation.
+
+---------------------------------------------------------------------
+TRACE CHANGE
+---------------------------------------------------------------------
+Patched src/kernel/proc/syscall.c:
+  - renamed the existing Linux syscall dispatcher body to
+    linux_syscall_dispatch_impl()
+  - added a wrapper linux_syscall_dispatch() that traces pid 12 / tgid 12
+  - logged selected syscall entries and returns with:
+      TBTRACE enter pid=... tgid=... nr=... name a1=... a6=...
+      TBTRACE ret   pid=... tgid=... nr=... name rc=...
+  - traced mmap/mprotect/munmap, open/openat/read/pread64, close, futex,
+    clone/clone3, signal setup, epoll/timerfd/eventfd/signalfd, getrandom,
+    ioctl, socket-ish calls, exits, and negative returns for unselected
+    syscalls.
+
+WHY:
+  fry1312 showed Claude launched and then produced no fault, no version
+  output, and no unimplemented-syscall beacon before timeout. The trace is
+  intentionally pid-scoped so the existing probe suite remains readable.
+
+---------------------------------------------------------------------
+BUILD / BOOT
+---------------------------------------------------------------------
+Targeted build:
+  make src/kernel/proc/syscall.o kernel
+
+Result:
+  exit 0
+  syscall.o compiled and kernel.elf linked.
+
+Clean STAGE_CLAUDE rebuild:
+  CLAUDE_BIN="$(readlink -f "$(command -v claude)")" \
+  STAGE_CLAUDE=1 MTOOLSRC=/dev/null \
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" \
+  /bin/bash build_iso.sh
+
+Result:
+  exit 0
+  out/tatertos64v3.iso rebuilt
+  out/tater_nvme.img rebuilt
+  /RCLAUDE.LXE staged on the NVMe image
+
+QEMU boot:
+  cp /usr/share/edk2/x64/OVMF_VARS.4m.fd /tmp/v_fry1313_trace.fd
+  timeout 420 qemu-system-x86_64 -m 6G -machine q35,accel=tcg -cpu max -smp 2 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=/tmp/v_fry1313_trace.fd \
+    -cdrom out/tatertos64v3.iso \
+    -drive file=out/tater_nvme.img,if=none,id=nvm,format=raw \
+    -device nvme,serial=deadbeef,drive=nvm \
+    -serial file:/tmp/s_fry1313_trace.log -display none -no-reboot
+
+Result:
+  timeout exit 124
+  serial file: /tmp/s_fry1313_trace.log
+  serial lines: 399
+
+---------------------------------------------------------------------
+EVIDENCE
+---------------------------------------------------------------------
+Claude still launches:
+  LINUXTEST: launching REAL claude --version (from /nvme)
+  PROC: linux launch ok path=/nvme/RCLAUDE.LXE pid=12 entry=60000001f300 rsp=7ffffffffe00 brk=eaa7000
+
+Selftest still passes with devfs:
+  selftest: 85 passed, 0 failed
+
+/dev/urandom is fixed in the traced boot:
+  TBTRACE enter pid=12 tgid=12 nr=257 openat ... a2=2d9ee3 ...
+  TBTRACE ret   pid=12 tgid=12 nr=257 openat rc=3
+  TBTRACE enter pid=12 tgid=12 nr=0 read a1=3 ... a3=80
+  TBTRACE ret   pid=12 tgid=12 nr=0 read rc=80
+
+The old crash is absent:
+  - no 0xBBADBEEF fault
+  - no rip=0x60a9b84 fault
+  - no /dev/urandom ENOENT path
+
+Last syscall line before timeout:
+  TBTRACE enter pid=12 tgid=12 nr=9 mmap a1=0 a2=2000000000 a3=3 a4=4022 a5=ffffffff a6=0
+
+There is no matching return for that mmap.
+
+Decoded request:
+  - length = 0x2000000000 = 128 GiB
+  - prot   = 0x3 = PROT_READ | PROT_WRITE
+  - flags  = 0x4022 = MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE
+  - fd     = -1
+  - offset = 0
+
+Claude/JSC successfully completed earlier smaller anonymous mappings with
+flags 0x4022, including 0x240000, 0x40000000, 0x40010000, and 0x10000.
+The hang is size-specific: the current Tater Bridge mmap path eagerly
+allocates/maps every page, so a 128 GiB MAP_NORESERVE reservation turns
+into a massive page-allocation loop instead of a sparse virtual-address
+reservation.
+
+Other observed syscall tail items returned and are not the hang:
+  - nr=96 returned -ENOSYS repeatedly (gettimeofday on Linux x86_64)
+  - nr=99 returned -ENOSYS (sysinfo)
+  - nr=157 returned -ENOSYS (prctl)
+  - nr=436 returned -ENOSYS (close_range)
+  - ioctl(TIOCGWINSZ-style requests) returned -ENOTTY
+
+One existing FUTEX_WAKE_BITSET probe reported a failure during this traced
+boot. Treat that as a trace/timing perturbation until reproduced without
+serial tracing; it is not the Claude pid-12 blocker because the final pid
+12 line is the huge mmap entry.
+
+---------------------------------------------------------------------
+CONCLUSION / NEXT
+---------------------------------------------------------------------
+The immediate next blocker is Tater Bridge mmap reservation semantics for
+large anonymous private MAP_NORESERVE mappings. JSC is reserving a 128 GiB
+address-space cage. Linux reserves virtual address space sparsely here;
+Tater Bridge currently tries to back it eagerly.
+
+Next fix:
+  - teach LNX_mmap to recognize anonymous private MAP_NORESERVE reservations
+    and record a sparse VM reservation instead of allocating every page
+  - keep this native to TaterTOS64v3 VM metadata; do not import Linux kernel
+    behavior or code
+  - rebuild clean with STAGE_CLAUDE=1
+  - boot once with the same pid-12 trace and confirm the 128 GiB mmap returns
+    instead of hanging
+  - then harvest the next real Claude blocker
+=====================================================================

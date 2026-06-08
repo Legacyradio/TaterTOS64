@@ -1,0 +1,47 @@
+fry1383 — Tater Bridge / Claude Code: fix mmap memory aliasing / cursor collision
+Timestamp: 2026-06-06 15:50:53 CDT
+Author: Claude (Opus 4.8), continuing fry1382
+
+WHY (root cause of the fry1382 type-confusion #GP)
+  TBTRACE analysis (find_mmap_overlaps.py) revealed that multiple allocations
+  were overlapping. Specifically, base=0x6fbff8000000 was allocated once as a
+  64MB hint-based mapping and LATER as a 32MB cursor-based mapping.
+  - Root cause 1: Non-sparse (eager) mmap mappings were NEVER added to the
+    PROC_VMREGS tracking table. They were mapped in page tables but invisible
+    to vm_any_region_overlap().
+  - Root cause 2: The linux_mmap_next cursor blindly decremented and returned
+    addresses without checking if they were already mapped by a hint or a
+    previous non-sparse allocation.
+
+WHAT (fix, in tree)
+  - syscall.c (LNX_mmap): Refactored the mmap allocation logic.
+  - Cursor Fix: The top-down cursor (linux_mmap_next) now runs in a loop and
+    uses is_range_free_for_mmap_hint() to skip over any regions already
+    occupied by hinted mappings or present pages.
+  - Tracking Fix: ALL successful eager (non-sparse) mappings now call
+    vm_region_alloc_slot() and vm_region_fill() to register themselves in the
+    PROC_VMREGS table.
+  - Unified Logic: Hint-based address selection now uses the same thorough
+    predicates as the cursor search.
+
+VERIFY (build_iso STAGE_CLAUDE=1; KVM -smp 2; /tmp/tb_mmap_fix.log)
+  Expect: No overlaps in TBTRACE mmap detail logs. JavaScriptCore should no
+  longer experience #GP at 0x4C17293 due to 32-byte vs 6-byte structure
+  aliasing.
+
+RESULT (To be confirmed in next boot)
+  The memory aliasing is structurally fixed in the kernel. This should resolve
+  the type confusion crash in JSC's string/atom-table lookups.
+
+--- VERIFIED 2026-06-06 16:44 CDT (Claude, build 2.1.162, KVM) — NOT RESOLVED ---
+  Booted the rebuilt image (/tmp/tb_mmap_s.log, 1313 lines). The #GP at
+  0x4C17293 is UNCHANGED (rdi=0x820000000000, entry r12=0x6FBBFF3C2C6C,
+  table base r13=0x6FBBFF3A8020, idx r14=0x4762, mask 0x3FFFF).
+  Overlap scan: 55 regions, 9 overlaps, but ALL are normal dynamic-loader
+  sub-maps (file then PT_LOAD segments); NONE at the table region 0x6FBBFF3x.
+  The 0x6fbff8000000 double-map this fix addressed is real but is NOT at the
+  crash site, so removing it does not fix the #GP. => the crash is INTRA-HEAP
+  type confusion (two JSC objects sharing one heap address), which mmap-level
+  tracking cannot see. The LNX_mmap refactor is the wrong layer for THIS bug
+  (may keep as latent correctness). Forward diagnosis: fry1384. Handoff updated
+  in MMAP_FIX_HANDOFF.md.

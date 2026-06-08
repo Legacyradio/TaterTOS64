@@ -1,0 +1,46 @@
+=====================================================================
+fry1332 - Build verification after Linux signal-delivery changes
+2026-06-04 09:59:12 CDT
+=====================================================================
+
+Completed verification step:
+- Ran the handoff-approved incremental build recipe:
+  CLAUDE_BIN="$(readlink -f "$(command -v claude)")" \
+  STAGE_CLAUDE=1 MTOOLSRC=/dev/null \
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" \
+  /bin/bash build_iso.sh
+
+Result:
+- PASS. Kernel compiled and linked with the signal changes in:
+  - src/kernel/proc/process.h
+  - src/kernel/proc/process.c
+  - src/kernel/proc/sched.h
+  - src/kernel/proc/sched.c
+  - src/kernel/proc/linux_compat.h
+  - src/kernel/proc/syscall.c
+- Real Claude binary staged onto NVMe ToTFS:
+  /home/legacyindieradio/.local/share/claude/versions/2.1.162
+  -> /RCLAUDE.LXE
+  size=244000464 bytes
+- Final ISO produced:
+  /home/legacyindieradio/TaterTOS64/out/tatertos64v3.iso
+
+Warnings observed:
+- Existing warning in src/kernel/proc/syscall.c:
+  'slots' may be used uninitialized in vm_unmap_region_range.
+- Existing app/libc/driver unused-function and comment warnings.
+- No compiler or linker error from the new signal-delivery code.
+
+Why:
+- This proves the new signal state, scheduler wake path, signal syscall
+  handlers, rt_sigreturn helper, and syscall-exit delivery scaffolding are
+  buildable before spending time on the slower QEMU boot verification.
+
+Next:
+- Boot the ISO with QEMU -smp 2 and inspect serial output for:
+  - rt_sigaction storing sig30 handler,
+  - tgkill(pid28 -> tid29 sig30) queueing TBSIG,
+  - TBSCHED signal-wake returning futex wait as -EINTR,
+  - TBSIG deliver into the sig30 handler,
+  - rt_sigreturn or the next blocker after JSC GC suspend.
+=====================================================================

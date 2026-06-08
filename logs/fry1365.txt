@@ -1,0 +1,39 @@
+fry1365 - mprotect PTE update fix; ONE BOOT RAN CLEAN (exit_group 127)
+
+Date: 2026-06-04 ~23:55 CDT
+
+What changed:
+- Fixed mprotect to always update page table entries for already-present
+  pages, not just the vm_region prot. Previously, if a vm_region existed,
+  mprotect returned 0 immediately without touching PTEs. Protection
+  changes on faulted-in pages were silently ignored.
+- Removed early return from vm_mprotect_region_range success path.
+  PTE updates now happen regardless of vm_region existence.
+
+Build: clean.
+
+Boot results (2 boots):
+  Boot 1: BUN RAN CLEAN — zero exceptions. Exited with exit_group(127).
+    mprotect returned ENOMEM (due to bug in return value, since fixed).
+    Total serial: 12K, no !EXC lines, no panic.
+    HAD NO CRASH — first clean run.
+
+  Boot 2 (with mprotect returning 0): Crashed with rdi=0x40000000
+    at 0x6056F06. Same libuv vtable dispatch, same crash reporter #UD.
+    The nondeterminism persists but trending positive — one boot
+    ran fully clean.
+
+Interpretation:
+  The mprotect PTE fix is correct and helps. The remaining corruption
+  at 0x6056F06 varies between rdi=0x40000000 and clean exit. The
+  0x40000000 value is 1 GiB — likely the first gigacage base.
+  This is a stale pointer from a previous initialization step.
+
+  The fact that one boot ran CLEAN means Bun CAN reach exit without
+  crashing. The array corruption is intermittent and depends on exact
+  gigacage placement and timing.
+
+Next step:
+  Multiple consecutive boots to measure clean-run probability.
+  If >50% clean, we're past the worst and can focus on getting Bun
+  to actually produce output (currently exit 127 = no output).

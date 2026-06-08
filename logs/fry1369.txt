@@ -1,0 +1,41 @@
+fry1369 - 300s boot confirms Bun runs indefinitely, GC loops forever
+
+Date: 2026-06-05 ~01:30 CDT
+
+What changed:
+- Reverted MADV_DONTNEED unmapping experiment (caused new crashes).
+- Ran 300-second boot to test whether Bun eventually exits GC loop.
+
+Boot result:
+  140K output, 5 TBSKIP hits, 0 exceptions, 0 exit_group, 0 writes.
+  Bun ran the full 300 seconds without crashing but never produced
+  output. GC futex/madvise traffic continued to the timeout.
+
+  Worker thread (pid=4) consistently waits on futex 0x6fbff800e880
+  with CLOCK_REALTIME + FUTEX_WAIT_BITSET + timeout, gets ETIMEDOUT
+  ~47% of the time (43/91 futex calls). Main thread (pid=3) wakes
+  futex 0x6fbff800e880 but worker waits on 0x6fbff800e8c8 — these
+  are adjacent but different addresses (72 bytes apart).
+
+  This is JSC's parking lot: workers park at safepoints, main thread
+  coordinates. The addresses differ because they're different parking
+  lot slots. Bun seems to be stuck in an infinite initialization
+  loop where workers and main thread never fully synchronize.
+
+Conclusion:
+  Bun is mechanically stable (zero crashes across 300s) but never
+  reaches JavaScript execution. The GC coordination loop consumes
+  all CPU without making forward progress toward the event loop.
+
+  This is a fundamental liveness issue — either our futex
+  implementation doesn't match Linux semantics in edge cases, or
+  Bun's initialization requires an event (signal, timer, I/O) that
+  never fires.
+
+Next work (next session):
+  - Compare Linux strace with Tater Bridge trace to identify where
+    the control flow diverges.
+  - Implement epoll_wait properly so Bun's event loop can start.
+  - Check if Bun expects a SIGCHLD or timerfd event that never arrives.
+  - Or pivot: try a simpler JavaScript runtime first (Node.js) to
+    validate the Linux ABI surface before tackling Bun's complexity.

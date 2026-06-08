@@ -1,0 +1,120 @@
+fry1388 — Tater Bridge / Claude Code: the giant stack frame is GARBAGE (corrupt
+CodeBlock), NOT a legit reservation. Root-caused to a zeroed numCalleeLocals.
+Plus: fixed a latent freestanding-kernel build bug (no memcpy/memset) and added
+totcopy --get.
+Timestamp: 2026-06-07 ~11:40 CDT
+Author: Claude (Opus 4.8), continuing fry1387. CLAUDE_BIN=2.1.162 (now only on
+the NVMe image: out/tater_nvme_MASTER_2162.img; 2.1.162 was deleted from
+~/.local/share/claude/versions — only 2.1.163/167/168 remain on host).
+
+CONTEXT / GROUND TRUTH RE-ESTABLISHED
+  Booted the existing 17:21 ISO+NVMe (2.1.162 baked in) to reproduce fry1387:
+  - socket() (nr=41) returns -38 (-ENOSYS) early (L1963/1996) but Bun TOLERATES
+    it and keeps running. Socket is NOT the crash.
+  - The KILL is the fry1387 frontier: #PF RIP=0x3F4CFB6 CR2=0x7FFFFBFFFFF8
+    (=USER_VA_TOP-64MB-8), the JSC stack-frame zero loop hitting the 64MB cap.
+    Signal delivery works (kernel delivers SIGSEGV -> Bun handler 0x4c21d90 ->
+    "Bun has crashed" -> UD2 #UD at 0x2B05212).
+  NOTE: the Linux socket dispatch genuinely has NO case LNX_socket (only a name
+  string @3350 + trace-filter @3404) -> default -ENOSYS @5429. BUT the *native*
+  TaterTOS layer has a full TCP/UDP stack (g_sockets/tcp_connect/SYS_SOCKET...
+  "Phase 4"). Networking task = wire the LNX_* socket ABI onto that native stack
+  (+TLS bearssl +DNS +auth). Deferred until the crash below is fixed.
+
+BUILD BUG FIXED (latent, would block every future edit to syscall.c)
+  The kernel has NO memcpy/memset/memmove definition; it relied on GCC -O2 never
+  emitting those libcalls in -ffreestanding. Editing the huge proc/syscall.c TU
+  shifted inlining budgets and GCC emitted 3 memcpy calls in syscall_dispatch ->
+  link error "undefined reference to memcpy". FIX: new src/kernel/kmem.c
+  (memcpy/memset/memmove/memcmp) + Makefile object + a dedicated rule with
+  -fno-tree-loop-distribute-patterns -fno-builtin so the loops are not recompiled
+  into self-referential calls. Kernel links clean; robust to future codegen.
+
+TOOL: totcopy --get
+  Added `totcopy <img> <off> --get <src_path> <host_file>` to extract files OUT
+  of a ToTFS image (tools/totcopy.c do_get). Used to pull RCLAUDE.LXE (the exact
+  2.1.162 ELF, 244000464 bytes, entry 0x24aa400, NOT stripped) for disassembly.
+
+LEGIT-vs-GARBAGE: DECISIVELY GARBAGE
+  Raised the main-stack grow cap 64MB->512MB + bucketed TBBIGFRAME depth logging.
+  Result: the zero loop walked the FULL 512MB to the new cap and faulted again
+  (CR2=0x7FFFDFFFFFF8 = USER_VA_TOP-512MB-8). It is UNBOUNDED -> not a legit JSC
+  reservation. (rsp stays pinned the whole walk; the loop decrements rdx, not rsp.)
+
+DISASSEMBLY of 0x3F4CFB6 (JSC JIT-compiled function prologue)
+  3f4cf96: mov 0x10(%rbp),%rsi   ; rsi = CodeBlock      (CallFrame[+0x10])
+  3f4cf9a: mov 0x14(%rsi),%eax   ; eax = CodeBlock->m_numCalleeLocals
+  3f4cf9d: shl $0x3,%rax         ; *8 = frame bytes
+  3f4cfa1: neg %rax ; 3f4cfa4: add %rbp,%rax   ; newSP = rbp - size
+  3f4cf58/5c: rdx=[CodeBlock+0x48]=VM ; cmp newSP,[VM+0x60] (soft stack limit)
+  3f4cfa7: mov %rsp,%rdx ; 3f4cfaa: mov %rax,%rsp ; newSP committed
+  3f4cfad: cmp %rdx,%rsp ; je done
+  3f4cfb2: sub $8,%rdx ; 3f4cfb6: movq $0,(%rdx) ; jmp   ; zero locals down
+  -> If numCalleeLocals is too SMALL (0) while old_rsp<rbp (callee-saved already
+     pushed), newSP=rbp>old_rsp and the loop decrements rdx forever -> runaway.
+
+CODEBLOCK DUMP (irqdesc.c fry1389 one-time dump on first deep stack fault)
+  TBBFDUMP rip=0x3F4CFB6 rbp=0x7FFFFFFE2570 cb=0x6FBFF50F42C0 numLocals=0x0
+           vm=0x6FBFF5400000 softLimit=0x7FFFFFB02FC0 ret=0x3F6817C
+           callerfp=0x7FFFFFFE2630
+  - cb = 0x6FBFF50F42C0 -> VALID JSC heap pointer (0x6f.. gigacage).
+  - callerfp 0x7FFFFFFE2630 > rbp -> valid ascending frame chain (rbp/cb real).
+  - softLimit 0x7FFFFFB02FC0 -> SANE (~5MB below stack top). Our stack reporting
+    is NOT the bug; JSC's overflow guard is fine.
+  - numLocals = 0  <-- THE CORRUPTION. A live function's CodeBlock cannot have 0
+    callee locals here. The numCalleeLocals field ([cb+0x14]) has been ZEROED on
+    the heap while the CodeBlock is still live -> prologue computes a 0-size frame
+    -> infinite downward zero loop -> stack walk-off.
+
+DIAGNOSIS
+  HEAP CORRUPTION: a live JSC CodeBlock's numCalleeLocals field is zeroed. Same
+  CLASS as the fry1385/86 #GP (intra-heap UAF/aliasing in the 0x6f.. cage). The
+  fry1386 MADV_DONTNEED-zeroing fix is range-correct (page-aligned, end rounded
+  up exactly like Linux madvise; clamps to region intersection — syscall.c:2432
+  + 4573), so DONTNEED is NOT over-zeroing. The zeroing of this page comes from
+  a DIFFERENT vm op or an allocator aliasing bug (mmap/munmap/mremap/MADV_FREE/
+  brk handing the CodeBlock's page to two objects, or unmapping it so a later
+  read demand-faults a fresh zero page).
+
+NEXT (instrumented hunt — drives next session)
+  1. Trace, for the Claude tgid, EVERY vm op (DONTNEED / MADV_FREE / munmap /
+     mremap / brk) whose range covers the CodeBlock page (this boot:
+     0x6FBFF50F4000). Confirm the address is stable across boots first (re-run
+     TBBFDUMP). Find the op that zeros/unmaps the live page.
+  2. Also log the mmap/demand-page that FIRST produced that page and the alloc of
+     the CodeBlock, to catch a free->reuse / double-hand-out (aliasing).
+  3. If aliasing: fix the kernel vm bookkeeping that returns an overlapping or
+     moved address bmalloc mishandles. If a stray unmap: fix the op that drops
+     the live mapping.
+  THEN: networking (wire LNX_socket ABI -> native stack + TLS + DNS + auth).
+
+TREE STATE (uncommitted on eff81672, this session adds)
+  - Makefile: + src/kernel/kmem.o, + dedicated kmem.o rule.
+  - src/kernel/kmem.c: NEW (mem primitives).
+  - src/kernel/proc/syscall.c: lx_try_grow_stack cap 64MB->512MB (DIAGNOSTIC,
+    revert to 64MB once fixed) + TBBIGFRAME bucketed logging (replaced per-page
+    TBSTACKGROW).
+  - src/kernel/irq/irqdesc.c: TBBFDUMP one-time CodeBlock-chain dump on first
+    deep stack fault (diagnostic; strip when done).
+  - tools/totcopy.c: + --get extractor.
+  - out/tater_nvme_MASTER_2162.img: PRISTINE 2.1.162 NVMe (RCLAUDE.LXE). Restore
+    it over out/tater_nvme.img after every build_iso (mktotfs reformats and,
+    without STAGE_CLAUDE=1, wipes claude).
+
+BUILD/RUN (KVM)
+  Kernel: . tools/host/env.sh; export MTOOLSRC=/dev/null PATH="/opt/cross/bin:
+    /usr/bin:/bin:/usr/sbin:/sbin:$PATH" STAGE_CLAUDE=0 CLAUDE_BIN=""; make kernel
+  ISO:    /bin/bash build_iso.sh </dev/null ; cp out/tater_nvme_MASTER_2162.img
+          out/tater_nvme.img
+  Boot:   cp /usr/share/edk2/x64/OVMF_VARS.4m.fd /tmp/v.fd; timeout 220 \
+    qemu-system-x86_64 -m 6G -machine q35,accel=kvm -cpu host -smp 2 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=/tmp/v.fd -cdrom out/tatertos64v3.iso \
+    -drive file=out/tater_nvme.img,if=none,id=nvm,format=raw -device nvme,serial=deadbeef,drive=nvm \
+    -serial file:/tmp/X.log -display none -no-reboot
+  grep -a (serial has NUL bytes). Reap: pkill -9 -x qemu-system-x86_64.
+
+STATUS: hang fixed (1379); signal-FPU (1381); #GP fixed (1386); giant frame is
+  GARBAGE = a live CodeBlock with numCalleeLocals zeroed (heap corruption, this
+  log). Build now robust (kmem.c). Next: trace the vm op zeroing the live page,
+  then networking. ~9/10 "binary runs"; "prints reply" still gated on this + net.

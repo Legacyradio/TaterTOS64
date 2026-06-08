@@ -1,0 +1,38 @@
+=====================================================================
+fry1334 - Rename linuxulator labels to Tater Bridge and advance Claude probe
+2026-06-04 10:10:48 CDT
+=====================================================================
+
+Completed code step:
+- Replaced user-facing/runtime "linuxulator" branding with "Tater Bridge"
+  in the active code paths:
+  - src/kernel/main.c comments and serial prefix now use TBRIDGE.
+  - src/kernel/proc/syscall.c uname release field now reports
+    "#1 TaterTOS64v3 Tater Bridge".
+  - src/kernel/fs/tbridgefs.c comment now describes Tater Bridge process maps.
+  - src/kernel/proc/process.c and process.h comments now refer to Tater Bridge.
+  - build_iso.sh helper names now use tbridge_* instead of linuxulator_*.
+  - build_iso.sh LXTEST.TXT content now says "Tater Bridge VFS probe".
+- Advanced the real Claude boot probe from:
+  claude --version
+  to:
+  claude --help
+
+Why:
+- Zack clarified the subsystem should be named Tater Bridge, not linuxulator.
+  The old naming was still visible in serial/log-facing strings and build
+  helper names.
+- claude --version is verified in fry1333. The next controlled rung is
+  claude --help because it exercises CLI parsing and help rendering without
+  requiring auth, terminal interactivity, network, or update/install paths yet.
+
+Verification:
+- Ran `bash -n build_iso.sh`: pass.
+- Searched the touched runtime/build paths for linuxulator/Linuxulator,
+  LINUXTEST, and invalid "Tater Bridge" shell identifiers: no remaining hits.
+
+Next:
+- Rebuild/stage the ISO and boot QEMU -smp 2.
+- Verify serial output for the new TBRIDGE label and whether real
+  claude --help prints usage text or exposes the next syscall/runtime gap.
+=====================================================================

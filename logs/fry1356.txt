@@ -1,0 +1,65 @@
+fry1356 - int3→SIGSEGV fallback added; getdents64 verified; Bun advances to new crash
+
+Date: 2026-06-04 ~22:05 CDT
+
+What changed:
+- Added #BP→SIGTRAP→SIGSEGV fallback in lx_deliver_signal_from_exception.
+  When vector 3 (#BP/int3) maps to SIGTRAP (sig=5) and no SIGTRAP handler
+  is installed, the code now tries SIGSEGV (sig=11) before killing the
+  process. This allows runtimes like Bun that install SIGSEGV but not
+  SIGTRAP to catch assertion traps.
+
+Why:
+- fry1355 showed stable int3 blocker at 0x60EA0A7 (Bun assertion code
+  0x1BC) with no SIGTRAP handler. Earlier boots got further by routing
+  int3 differently. The fallback ensures Bun's crash reporter catches
+  assertion traps and produces diagnostics.
+
+Build verification:
+- make src/kernel/proc/syscall.o: passed (pre-existing warning only)
+- make kernel: passed
+- Full staged build_iso.sh with STAGE_CLAUDE=1: passed
+
+Boot result:
+- The int3→SIGSEGV fallback was NOT exercised in this boot.
+  Bun's execution path changed (likely due to getdents64 working and
+  zoneinfo reads succeeding), and it bypassed the int3 assertion entirely.
+
+Verified getdents64:
+  TBTRACE enter pid=3 tgid=3 nr=217 getdents64 a1=b a2=eaa8df0 a3=8000
+  TBTRACE ret pid=3 tgid=3 nr=217 getdents64 rc=18
+  → Returned one 18-byte Linux dirent64 entry for /usr/share/zoneinfo/.
+
+Timezone reads:
+  /usr/share/zoneinfo/ opened (fd=b)
+  /usr/share/zoneinfo/UTC opened and read successfully
+  /etc/localtime redirects work
+
+New live blocker:
+  1. Bun iterates an object list in libuv code (0x6056F06):
+     mov (%rdi),%rax with rdi=0xFFFFFFFFFFFFFFFF → #PF
+     The array uses -1 as a sentinel, not NULL.
+     RIP=0x6056F06, vec=14, CR2=0xFFFFFFFFFFFFFFFF
+
+  2. SIGSEGV delivered correctly to Bun's handler at 0x4c21d90:
+     TBSIG exc-deliver pid=3 tgid=3 sig=11 vec=14 handler=4c21d90 sp=7ffffffe1a88
+
+  3. Bun's crash reporter hits #UD at RIP=0x2B05212:
+     vec=6 (#UD), err=0, no SIGILL handler → process killed
+     USER FAULT: pid=3 tid=3 vec=6 err=0x0 rip=0x2b05212
+
+  0x2B05212 falls in Bun's read-only data segment (0x200000-0x42A92B4,
+  flags=R, not executable). The crash reporter appears to jump to a
+  data address — possible causes: corrupted siginfo/ucontext, bad
+  function pointer in signal frame, or libuv/Bun SIGSEGV handler
+  expecting different signal frame layout.
+
+Next work:
+- The int3→SIGSEGV fallback is built but not yet needed. Bun bypassed
+  the old int3 path naturally.
+- Current blocker is Bun's crash reporter crashing with #UD after
+  SIGSEGV delivery. Need to:
+  1. Verify siginfo/ucontext layout matches what Bun's handler expects
+  2. Or check if Bun's SIGSEGV handler is crashing because of missing
+     /proc entries or vmreg data it needs for the crash report
+- The 0x40000000 fault from fry1354 was not reproduced in this boot.

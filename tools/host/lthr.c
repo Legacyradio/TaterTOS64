@@ -45,7 +45,7 @@ int main(int argc, char **argv) {
     /* Force unbuffered output so we see diagnostics even if we crash */
     setvbuf(stdout, NULL, _IONBF, 0);
 
-    printf("==== TaterTOS linuxulator: thread + gap probe ====\n");
+    printf("==== Tater Bridge: thread + gap probe ====\n");
 
     /* 1. pthread_create → clone syscall */
     pthread_t t1, t2;

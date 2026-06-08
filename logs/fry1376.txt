@@ -1,0 +1,60 @@
+fry1376 — Tater Bridge / Claude Code: reframe — not a deadlock in the kernel,
+a userspace spin of the main thread; plus throughput wins (KVM + trace gate)
+Timestamp: 2026-06-06 11:51:11 CDT
+Author: Claude (Opus 4.8), continuing fry1374/1375
+
+SUMMARY
+  The blocker is NOT a kernel futex bug and NOT mere slowness. The Bun/JSC main
+  thread (pid=3) enters a pure-userspace infinite loop holding the JSC heap lock
+  (0x63ad6e0); all worker threads (pid 4,5,...) then starve, parked on that lock
+  with 10s condvar-timeout retry loops. It is a lock-ordering / spin hang at the
+  app/threading level, surfaced by our environment.
+
+EVIDENCE
+  - 100s TCG run: 2477 serial lines. 300s TCG run: 2616 lines (+139 in +200s) ->
+    forward progress nearly stops after ~guest-50s.
+  - pid=3 last syscalls before going silent (300s log L2563-2591):
+      mmap(2 MiB anon) -> pread64(/proc/self/statm)=20 -> madvise -> pread64=20.
+    After that pid=3 makes ZERO further syscalls for the rest of the run. No
+    faults, no TBSKIP recurrence (TBSKIP only fired 3-5x early at L948-952).
+    => clean userspace spin, not a fault loop, not a syscall block.
+  - Workers loop forever: condvar wait (6fbff40xxxxx) -> 10s timeout (rc=-110,
+    elapsed~10008ms) -> try JSC lock 0x63ad6e0 (current=2) -> block -> repeat.
+  - Lock word 0x63ad6e0 stuck at 2 once pid=3 goes silent (pid=3 held it last).
+
+FALSE LEAD (owned): /etc/localtime. The final pread was on fd=11, but fd 11 was
+  reused; its last opener was /proc/self/statm (L1172), NOT /etc/localtime. The
+  20-byte read is a normal statm poll. (Separately noted but NOT pursued: the
+  kernel serves /usr/share/zoneinfo/UTC as the POSIX string "UTC0\n"
+  [tbridgefs.c:437], which is not a binary TZif; harmless here, possibly worth a
+  real minimal TZif later, but it is not this bug.)
+
+RULED OUT THIS SESSION
+  - Kernel futex primitives are atomically correct (sched_block_futex re-checks
+    *word under g_sched_lock at sched.c:587; sched_wake_futex under same lock).
+    futex-wake-miss is benign (waiter re-checks and returns EAGAIN).
+  - Page hygiene correct (lx_map_one zeroes; vm_commit_private_pages zeroes).
+  - MADV_DONTNEED-on-sparse: real latent no-op bug, FIXED (fry1374/1375), but not
+    this crash; kept as a correctness fix.
+
+THROUGHPUT WINS (reusable, committed to tree)
+  1. KVM works on this host (/dev/kvm is 0666, host has vmx). Use:
+       -machine q35,accel=kvm -cpu host   (drop accel=tcg)
+     ~5x faster: 90s wall -> ~77s guest, vs TCG 300s wall -> ~58s guest.
+  2. Per-syscall TBTRACE was 97% of serial output (1562/2616 lines) and forces a
+     UART busy-wait per syscall. Added master switch g_tb_trace_syscalls (default
+     0 = OFF) in syscall.c; targeted TBFUTEX/TBSCHED/TBSKIP/TBWATCH markers stay
+     on. Flip to 1 for full per-syscall tracing.
+
+NEXT INSTRUMENT (the right one)
+  Locate WHERE pid=3 spins in userspace. Add periodic userspace-RIP sampling of
+  the Claude tgid from the timer IRQ (log rip when a process has burned N ticks
+  with no syscall), to identify the spin site (expected: a WTF/JSC adaptive
+  spinlock or a busy-wait on a value a starved worker should set). Then decide
+  whether it is a scheduling/visibility issue (e.g., a thread not being run, a
+  futex value not becoming visible across CPUs) vs. a genuine app expectation we
+  are violating. Run under KVM with g_tb_trace_syscalls=0.
+
+OPEN: butterfly corruption (TBSKIP, 0xff/0x40000000) origin still unknown; it is
+  early and absorbed by the workaround, but may be the seed of the later spin.
+  Backward source-watchpoint chase remains a parallel lead.

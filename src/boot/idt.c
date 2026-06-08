@@ -42,6 +42,12 @@ void idt_init(void) {
         set_idt_entry(i, isr_stub_table[i], 0x8E);
     }
 
+    /* User-mode software exceptions must be callable from CPL3. Bun/JSC uses
+     * int3 breakpoints for runtime traps; if #BP stays DPL0, int3 becomes a
+     * #GP with error code 0x1a instead of vector 3/SIGTRAP. */
+    idt[3].type_attr = 0xEE;  // #BP, DPL3 interrupt gate
+    idt[4].type_attr = 0xEE;  // #OF, DPL3 interrupt gate
+
     // Use IST stacks for critical faults (#DF = 8, #GP = 13, #PF = 14).
     idt[8].ist = 1;   // IST1
     idt[13].ist = 2;  // IST2

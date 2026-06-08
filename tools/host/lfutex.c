@@ -127,7 +127,7 @@ static int join_zero(pthread_t t, const char *name) {
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
-    printf("==== TaterTOS linuxulator: futex probe ====\n");
+    printf("==== Tater Bridge: futex probe ====\n");
 
     volatile uint32_t mismatch = 1;
     errno = 0;

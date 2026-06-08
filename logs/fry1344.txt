@@ -1,0 +1,35 @@
+fry1344 - /proc/self/maps now enumerates actual vm_regions
+timestamp: 2026-06-04 11:25:00 CDT
+
+What changed:
+- src/kernel/fs/tbridgefs.c: /proc/self/maps now dynamically enumerates all
+  used vm_regions for the current process instead of returning a single
+  hardcoded stack line.
+- Added #include "../proc/process.h" for proc_current() and vm_region access.
+- Added maps_regenerate() function that fills a static 4096-byte buffer with
+  standard /proc/self/maps format lines for each vm_region.
+- node_text() now calls maps_regenerate() for TBRIDGEFS_NODE_MAPS and returns
+  the generated buffer.
+
+Why:
+- fry1343 showed JSC reads /proc/self/maps to discover its address space
+  and compute cage bases. The old implementation returned only 51 bytes
+  (a single [stack] line), making JSC think nearly the entire address space
+  was free. JSC then computed cage addresses that collided with actual
+  mappings or pointed to unmapped memory.
+- The new implementation lists every active vm_region: stack, heap, mmap'd
+  library segments, and the gigacage reservations themselves. This gives
+  JSC an accurate view of which address ranges are occupied, so its cage
+  base computation should pick free addresses.
+
+Format: each line follows standard Linux /proc/self/maps format:
+  <base_hex>-<end_hex> <rwxp> <offset> 00:00 0 [optional label]
+
+The hardcoded [stack] line is always appended last so glibc's
+__pthread_getattr_np stack detection still works.
+
+Limitations:
+- File-backed mappings show offset=00000000 (no file offset tracking yet).
+- No [vdso], [vvar], or [heap] labels — just the [stack] line.
+- Buffer is 4096 bytes; extremely large maps (256+ regions) may truncate.
+- Regenerated on every node_text() call — the buffer is static and shared.

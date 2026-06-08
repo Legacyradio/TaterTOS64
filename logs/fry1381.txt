@@ -1,0 +1,53 @@
+fry1381 — Tater Bridge / Claude Code: preserve FPU/SSE/AVX across signal delivery
+Timestamp: 2026-06-06 14:08:01 CDT
+Author: Claude (Opus 4.8), continuing fry1379/1380
+
+WHY (root cause of the fry1380 deterministic #GP)
+  fry1379 fixed the kernel clobbering user vectors in INTERRUPT context
+  (-mgeneral-regs-only). The fry1380 #GP (deref of non-canonical 0xC20000000000
+  from a JSC table) is the TWIN bug in the SIGNAL path:
+  - lx_fill_ucontext (syscall.c) memzeros the ucontext and saves ONLY the 18
+    general-purpose regs (mcontext.gregs). It does NOT save FPU/SSE/AVX state,
+    and rt_sigreturn restored only GP regs.
+  - JSC code uses XMM directly: the hash-table rehash near 0x5835CE9 does
+    `movups %xmm0,(...)` / `movups %xmm1,(...)` to zero/copy entries.
+  - Bun/JSC delivers signals during normal operation (SIGSEGV reporter; JSC GC
+    stop-the-world uses sig30 to suspend threads). When a signal is delivered
+    mid-`movups`, the handler (glibc/Bun, which use SSE/AVX) runs and clobbers
+    xmm0/xmm1; sigreturn restores only GP -> the interrupted rehash resumes with
+    garbage in xmm -> writes garbage (e.g. high-16 = 0xC200) into table entries
+    -> later lookup reconstructs a non-canonical 48-bit pointer -> #GP at
+    0x4C17293 (`mov 0x4(%rdi),%eax`). Deterministic, smp 1 and 2 (still has
+    multiple Bun threads + GC signals).
+
+WHAT (fix, in tree)
+  - sched.c: new exported lx_fpu_save_area(uint8_t*) / lx_fpu_restore_area(const
+    uint8_t*) — xsave64/xrstor64 with g_xcr0_mask (guarded; no-op if XSAVE off).
+  - process.h: added per-thread `uint8_t sig_fpu_area[1024] __aligned(64)` to
+    fry_process (separate from fpu_area used by context switches); declared the
+    two helpers.
+  - syscall.c: call lx_fpu_save_area(cur->sig_fpu_area) when BUILDING a signal
+    frame (both paths: exception-delivered ~line 1589, and sysret-delivered
+    ~line 1665); call lx_fpu_restore_area(cur->sig_fpu_area) in
+    lx_rt_sigreturn_sys after restoring GP regs.
+  - syscall.c: g_tb_jsc_slot_watch[4] set to all-0 (diagnostic DR watchpoints
+    DISABLED) for a clean post-fix run.
+
+LIMITATION (note for next session)
+  Single per-thread sig_fpu_area does NOT handle NESTED signals (a 2nd signal
+  during a handler overwrites the saved state). If nesting corruption appears,
+  move the FPU save into the sigframe on the user stack (nest-safe), with a
+  64-byte-aligned fpstate slot, like Linux's uc_mcontext.fpregs.
+
+VERIFY (build_iso STAGE_CLAUDE=1; KVM -smp 2; /tmp/tb_sigfpu_s.log)
+  Expect: #GP at 0x4C17293 GONE; Bun proceeds past the atom-table lookup. Next
+  watch for: HTTPS egress (sockets/TLS/DNS to the Anthropic API) + auth, which
+  are the remaining gates to an actual printed reply (see handoff memory).
+
+RESULT (2026-06-06 ~14:14 CDT, /tmp/tb_sigfpu_s.log)
+  Fix is in and signals flow (TBSIG deliver sig=30 GC stop-the-world to worker
+  pid=5, with sigreturn). BUT the #GP at 0x4C17293 PERSISTS. The bad rdi high-16
+  CHANGED across builds (0xC200 -> 0x8220) => it is varying garbage, not a fixed
+  JSC constant. So the signal-FPU fix is correct/kept but is NOT the cause of
+  this #GP. r9=0x0074007300000000 (UTF-16 "s","t") confirms WTF-8/string code;
+  #GP entry addr stable r12=r8=0x6FBBFF3C2C6C. Root cause pinned in fry1382.

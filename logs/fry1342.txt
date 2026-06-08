@@ -1,0 +1,37 @@
+fry1342 - LNX_mmap hint handling: honor addr when usable, fall back to cursor
+timestamp: 2026-06-04 10:55:00 CDT
+
+What changed:
+- src/kernel/proc/syscall.c: LNX_mmap now honors non-MAP_FIXED addr hints
+  when the hint range is valid and free, falling back to the shared top-down
+  cursor only when the hint is unusable.
+- src/kernel/proc/syscall.c: lx_sparse_range_available() floor lowered from
+  VM_USER_BASE (0x100000000000, 16 TB) to 0x10000 (Linux mmap_min_addr
+  equivalent) so sparse anon reservations at JSC cage addresses like
+  0x12000000000 pass the availability check.
+
+Why:
+- Claude/JSC uses mmap hints for its gigacage reservation at addresses like
+  0x12000000000. The old code completely ignored the addr hint on non-MAP_FIXED
+  calls and always allocated from the top-down cursor. JSC's internally
+  computed cage pointers then faulted because nothing was mapped at the
+  expected address.
+- lx_sparse_range_available rejected hints below VM_USER_BASE (16 TB), but
+  JSC's cage at 0x12000000000 (1.2 TB) is well within the 48-bit user VA
+  space. The floor is now 0x10000 to match Linux mmap_min_addr semantics
+  while still rejecting NULL-page mappings.
+
+Implementation detail:
+- New else-if branch between MAP_FIXED and cursor-fallback: page-aligns the
+  hint, validates bounds (>= 0x10000, no overflow, <= VM_USER_LIMIT, no
+  region overlap), and uses the hint when all checks pass. Falls through
+  to the existing cursor logic otherwise.
+- Sparse reservation path (MAP_NORESERVE + anon + private + >= 4 GB) is
+  unchanged — it runs after base is determined, so hint-based sparse
+  reservations work automatically.
+
+Expected effect:
+- JSC's mmap(0x12000000000, ..., MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE)
+  should now return 0x12000000000 and register a sparse vm_region covering
+  the cage, so the first access at 0x12000000004 demand-faults instead of
+  producing pml4[2]=0x0.

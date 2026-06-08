@@ -1,0 +1,81 @@
+fry1353 - Tater Bridge prompt-mode siginfo + exception cleanup
+Date: 2026-06-04 15:35 CDT
+
+Context:
+- Resumed after reboot and fry1352. Prompt-only mode launches the real
+  Claude Code binary from /nvme/RCLAUDE.LXE with:
+    claude -p "say hello from TaterTOS in 10 words"
+- Previous verified state:
+    Bun printed "Segmentation fault at address 0x0"
+    then hit #UD at RIP 0x2b05212
+    then serial flooded PTE CHAIN va=0x0 cr3=0x0.
+
+Changes:
+- src/kernel/proc/syscall.c:
+  - Added Linux siginfo_t filling for exception-delivered signals.
+  - For SIGSEGV, use CR2 as si_addr and SEGV_MAPERR as si_code.
+  - For SIGILL/#UD, use ILL_ILLOPN.
+  - Sysret-delivered queued signals still get a zero/default siginfo payload.
+- src/kernel/irq/irqdesc.c:
+  - Removed incorrect __attribute__((noreturn)) from exc_unix_signal().
+    That function returns the Unix signal number; leaving noreturn there was
+    undefined behavior in the user-exception kill path.
+  - Fixed the exception exit trampoline operand width by moving tgid/code into
+    %edi/%esi with explicit 32-bit moves.
+  - Added a defensive guard before PTE-chain dumping if the current task's CR3
+    is already zero.
+
+Build verification:
+- make src/kernel/proc/syscall.o: passed before the full build.
+- make src/kernel/irq/irqdesc.o:
+  - First failed after removing noreturn because inline asm used a 64-bit
+    operand with %esi.
+  - Passed after changing the trampoline to movl %k2/%k3 into %edi/%esi.
+- Full clean staged ISO build passed:
+    make clean
+    CLAUDE_BIN="$(readlink -f "$(command -v claude)")" STAGE_CLAUDE=1 \
+    MTOOLSRC=/dev/null PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" \
+    /bin/bash build_iso.sh
+
+Latest artifacts:
+- kernel.elf:           2026-06-04 15:32:19 CDT, 2501984 bytes
+- out/tater_nvme.img:   2026-06-04 15:32:56 CDT, 419430400 bytes
+- out/tatertos64v3.iso: 2026-06-04 15:32:58 CDT, 162686976 bytes
+- /RCLAUDE.LXE in NVMe ToTFS: inode 25, 244000464 bytes, 59571 blocks
+
+Boot command:
+  cp /usr/share/edk2/x64/OVMF_VARS.4m.fd /tmp/v.fd
+  truncate -s 0 /tmp/s.log
+  qemu-system-x86_64 -m 6G -machine q35,accel=tcg -cpu max,la57=off -smp 2 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=/tmp/v.fd \
+    -cdrom out/tatertos64v3.iso \
+    -drive file=out/tater_nvme.img,if=none,id=nvm,format=raw \
+    -device nvme,serial=deadbeef,drive=nvm \
+    -serial file:/tmp/s.log -display none -no-reboot
+
+Boot evidence:
+- Loader and process launch still succeed:
+    LINUXELF: load done entry=60000001f300 rsp=7ffffffffde0 brk=eaa7000
+    PROC: linux launch ok path=/nvme/RCLAUDE.LXE pid=3 entry=60000001f300 rsp=7ffffffffde0 brk=eaa7000
+    TBRIDGE: claude launch rc=3
+    TBRIDGE: prompt-only mode; skipping kernel selftest and INIT.FRY
+- Siginfo is now correct enough for Bun to report the real fault address:
+    panic(main thread): Segmentation fault at address 0x6FDDE92A2030
+- #UD still occurs in Bun's crash path:
+    !EXC vec=0000000000000006 ... RIP=0000000002B05212 ... CR2=00006FDDE92A2030
+    USER FAULT: pid=3 tid=3 vec=6 err=0x0 rip=0x2b05212 cr2=0x6fdde92a2030
+- Serial log stopped at 85 lines after this; the old PTE CHAIN va=0x0 cr3=0x0
+  flood is gone in this run.
+
+Result:
+- Fixed the misleading siginfo address and the post-#UD PTE flood.
+- Current blocker is now cleanly isolated as Bun/Claude faulting at
+  0x6FDDE92A2030, followed by Bun's intentional ud2 at 0x2b05212 in the crash
+  reporter path. Claude does not yet print the prompt response.
+
+Next:
+- Trace why the first #GP/SIGSEGV is raised at RIP 0x60EA0A7 with
+  CR2=0x6FDDE92A2030.
+- Keep temporary LINUXELF breadcrumbs until that first crash path is understood,
+  then remove or gate them.

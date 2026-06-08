@@ -1,0 +1,20 @@
+2026-06-04 03:38 CDT  Fry 1323 — clone3 syscall-frame capture fix
+(authored by Codex during the agent-bus session; recorded here for the
+required per-step log — change verified in-tree by Claude.)
+
+WHAT CHANGED (src/kernel/proc/syscall.c, clone3 path):
+- The clone3 handler read the syscall-entry frame (for the child's resume
+  RIP/RSP) via per-CPU GS scratch (%gs:16). Interrupts are enabled while
+  syscall_dispatch runs, so another task on the same CPU could overwrite
+  percpu.linux_frame_rsp before clone3 snapshotted it.
+- Fix: read the frame from THIS task's kernel stack instead:
+    frame_rsp = cur->kernel_stack_top - 12*sizeof(uint64_t)
+    frame layout: [a6,pad,r9,r8,r10,rdx,rsi,rdi,rbp,r11,rcx,user_rsp]
+    user_rip = frame[10] (rcx), user_rsp = frame[11].
+
+WHY: with the racy per-CPU read, the child thread resumed at a bogus RIP
+(observed USER FAULT tid=28 rip=0x400b57, inside claude .rodata, not
+executable code). Reading the deterministic per-task frame fixes it.
+
+VERIFIED: child thread now resumes at a valid glibc RIP (0x6fffffef920d);
+no startup fault on the clone3 child. Multithreaded Bun execution works.

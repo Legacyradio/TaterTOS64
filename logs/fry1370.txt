@@ -1,0 +1,96 @@
+fry1370 - futex diagnostics show timeout math sane; --version still hangs under Tater Bridge
+
+Date: 2026-06-05 ~08:12 CDT
+
+What changed:
+- Added diagnostic-only tracing around the Bun/JSC liveness loop.
+- src/kernel/proc/syscall.c:
+  - wait-yield logs now include current ms, wake_time, and delta.
+  - wait-return logs include elapsed ms and actual futex value.
+  - futex wake path logs wake return code.
+  - FUTEX_WAIT logs relative timeout input.
+  - FUTEX_WAIT_BITSET logs absolute timeout conversion, realtime flag,
+    target_ms, now_ms, and rel_ms.
+- src/kernel/proc/sched.c:
+  - added capped TBSCHED futex-timeout logs for Claude futex waits.
+  - added capped TBSCHED futex-wake-miss logs for Claude private futex keys.
+  - wake-miss logs include current Claude futex waiters for comparison.
+- Temporarily launched `claude --version` under Tater Bridge, then restored
+  the normal prompt launch:
+    claude -p "say hello from TaterTOS in 10 words"
+
+Build:
+- `make src/kernel/proc/syscall.o src/kernel/proc/sched.o` passed.
+- `make kernel` passed.
+- Full staged `build_iso.sh` with `STAGE_CLAUDE=1` passed for the diagnostic
+  prompt build.
+- Full staged `build_iso.sh` with `STAGE_CLAUDE=1` passed again after
+  restoring prompt launch args, so the final artifact is prompt-mode again.
+- Final artifacts:
+    out/tatertos64v3.iso
+    out/tater_nvme.img with /RCLAUDE.LXE staged from
+    /home/legacyindieradio/.local/share/claude/versions/2.1.162
+
+Prompt boot with diagnostics:
+- QEMU run: 120 seconds, ended by timeout, not by guest crash.
+- Serial log: /tmp/tb_futex_s.log
+- Log size: 208029 bytes
+- Counts:
+    0 exceptions
+    4 TBSKIP hits
+    0 writes
+    0 exit_group
+    52 TBFUTEX timeout-abs logs
+    41 TBSCHED futex-timeout logs
+    80 capped TBSCHED futex-wake-miss logs
+    timerfd_create/timerfd_settime present
+    no epoll_wait/epoll_pwait/signalfd observed
+
+Key Tater Bridge observation:
+- Worker pid=4 repeatedly executes:
+    FUTEX_WAIT_BITSET_PRIVATE | FUTEX_CLOCK_REALTIME
+    uaddr=0x6fbff800e8c8, expected=0, actual=0
+    rel_ms about 97-100 ms
+    result ETIMEDOUT
+- Scheduler timeout logs line up with the computed wake_time.
+- That makes the basic absolute-timeout conversion and scheduler timeout
+  wake path look sane for this parking-lot wait.
+
+Host Linux comparison:
+- Ran the same unmodified Claude Code binary on Linux with:
+    /home/legacyindieradio/.local/share/claude/versions/2.1.162 --version
+- Host output:
+    2.1.162 (Claude Code)
+- Host Linux writes and exits 0 in about 0.14 seconds.
+- Host Linux also shows the same early JSC parking-lot shape:
+    futex(...e8c8, FUTEX_WAIT_BITSET_PRIVATE|FUTEX_CLOCK_REALTIME, ...)
+      -> ETIMEDOUT after about 100 ms
+    futex(...e880, FUTEX_WAKE_PRIVATE, 1) -> 0
+
+Tater Bridge --version probe:
+- Temporarily changed the launch args to:
+    claude --version
+- QEMU run: 60 seconds, ended by timeout.
+- Serial log: /tmp/tb_version_s.log
+- Result: no write, no exit_group, same GC/futex/madvise liveness loop.
+- The source was restored to prompt launch afterward.
+
+Conclusion:
+- The adjacent e8c8/e880 100 ms parking-lot futex pattern is normal Linux
+  behavior and is not enough by itself to explain the hang.
+- The bug is not prompt/auth/network specific. `claude --version` hangs before
+  output under Tater Bridge, while host Linux exits immediately.
+- Current narrowed blocker: base Bun/JSC/CLI startup liveness after the first
+  normal parking-lot timeout. Most likely areas are clone3/TLS/child_tid or
+  parent_tid handoff, futex wake value/state transitions, or a timer/eventfd
+  readiness path before CLI output.
+
+Next work:
+- Compare host and Tater Bridge traces immediately after the normal first
+  100 ms parking-lot timeout.
+- Instrument clone3/TLS/parent_tid/child_tid handoff and JSC worker wake
+  transitions.
+- Track futex wake calls that return 1 on Linux and determine why equivalent
+  Tater Bridge wakes miss or do not move Bun forward.
+- Keep timerfd/eventfd/epoll as a later check; bounded Tater Bridge runs still
+  show no epoll_wait.

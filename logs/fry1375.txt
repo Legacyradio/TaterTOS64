@@ -1,0 +1,50 @@
+fry1375 — Tater Bridge / Claude Code: DONTNEED fix result + corrected diagnosis
+Timestamp: 2026-06-06 11:27:55 CDT
+Author: Claude (Opus 4.8), continuing fry1374
+
+WHAT I CHANGED
+  syscall.c vm_madvise_dontneed(): removed the region-level
+  `if (!r->committed) continue;` short-circuit in the threaded
+  (proc_shared_state_const) branch. Rationale in fry1374: sparse NORESERVE
+  gigacage registers committed=0, so DONTNEED was a silent no-op for it.
+
+RESULT — NEGATIVE (fix is correct, but NOT this bug)
+  Rebuilt kernel + restaged + booted (QEMU/TCG, 100s). Serial: /tmp/tb_fix_s.log
+  (2477 lines). TBSKIP count UNCHANGED: 5 before, 5 after. TBWATCH jsc-slot
+  UNCHANGED: 2 before, 2 after. The butterfly corruption is identical.
+
+  Why my fry1374 root cause was WRONG: the MADV_DONTNEED sweep in the pre-fix
+  trace covered 0x26e1fdc0000..0x26e1fe70000, but the corrupt memmove SOURCE is
+  0x26e1ff83ee0 — ABOVE that range. The source's 0xff was never in the DONTNEED
+  sweep, so DONTNEED behavior cannot explain it. The sweep was an adjacent-region
+  red herring. (The DONTNEED fix itself remains correct vs. the Linux contract
+  and the in-code comment that already worried about it; KEPT pending Zack's
+  call, but it is not the blocker. Revert is harmless.)
+
+CORRECTED DIAGNOSIS — the real blocker is the JSC futex deadlock (matches the
+prior handoff: "futex word transitions, 0x63ad6e0").
+  0x63ad6e0 is a 3-state JSC mutex (0 free / 1 locked / 2 locked+waiters);
+  threads FUTEX_WAIT while word==2 (a2=0x80 private-wait, val=2), unlock does
+  FUTEX_WAKE 1 (a2=0x81). End-of-run state in BOTH boots: pid 3,4,5 all parked
+  on 0x63ad6e0 with wake_time=infinity and no further wake -> hang.
+
+KERNEL FUTEX PRIMITIVES ARE CORRECT (ruled out lost-wakeup in the kernel):
+  - sched_block_futex (sched.c:530): under g_sched_lock, checks *word!=expected
+    -> EAGAIN, else enqueues WAITING with wait_futex_key AND re-checks *word
+    under the same lock (line 587). Atomic vs wake.
+  - sched_wake_futex (sched.c:703): under g_sched_lock, wakes WAITING procs with
+    matching key+bitset. Atomic vs block.
+  - "futex-wake-miss" is benign: wake arrives before waiter enqueues; waiter
+    then re-checks the word and returns EAGAIN instead of sleeping.
+
+WHERE IT ACTUALLY GOES WRONG (next instrument)
+  pid=3 was woken (L2193), took the lock, then FUTEX_WAKE'd at L2203 (= unlock).
+  Yet pid 4/5 subsequently FUTEX_WAIT on word==2 and nobody releases. So the
+  fault is in the lock-holder handoff / word-value transitions of 0x63ad6e0, not
+  the kernel queue. Need a trace of EVERY write to the 0x63ad6e0 word (value
+  before/after) + which thread currently holds the lock, to catch either:
+    (a) a holder that exits/blocks-elsewhere without releasing, or
+    (b) a word stuck at 2 when it should be 0 (a transition the unlocker missed).
+
+STATUS: paused for direction. Two open decisions: keep-or-revert DONTNEED fix;
+proceed with the 0x63ad6e0 word-transition trace.

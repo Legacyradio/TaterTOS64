@@ -1,39 +1,76 @@
-2026-05-17 14:13:58-05:00
-
 Handoff:
-Chromium TaterTOS64 stopped on Blink use-counter Mojom traits code shortly
-after restarting from the AXTreeID fix.
+Claude Code on Tater Bridge is still narrowed to Bun/JSC startup liveness,
+not a loader crash and not a currently missing syscall.
 
-Stopped at:
-[31/22690]
+Goal:
+Run the unmodified Linux Claude Code CLI binary (v2.1.162, Bun-based) inside
+TaterTOS64 through Tater Bridge, without modifying Anthropic's provided binary.
 
-Failed object:
-obj/third_party/blink/public/mojom/mojom_platform/use_counter_feature_mojom_traits.o
+Current verified state:
+fry1373 added rseq state, real guard-page handling, and corrected madvise
+semantics. The final prompt artifact builds and boots, but Claude still does
+not reach stdout or exit.
 
-Root cause:
-third_party/blink/common/use_counter/use_counter_feature_mojom_traits.cc had
-IsReservedFeature() reach the end of a non-void bool function under
--Werror=return-type.
+Implemented in the latest step:
+- Minimal Linux rseq registration/update for each Tater Bridge thread.
+- rseq and set_robust_list trace coverage.
+- MADV_GUARD_INSTALL now marks pages PROT_NONE and removes present PTEs.
+- MADV_DONTNEED is now region-aware:
+    skip sparse/reserved mappings without walking huge empty ranges
+    zero anonymous committed pages
+    do not zero file-private mappings
+- Final launcher remains:
+    claude -p "say hello from TaterTOS in 10 words"
 
-Exact compiler error:
-../../third_party/blink/common/use_counter/use_counter_feature_mojom_traits.cc:41:1: error: control reaches end of non-void function [-Werror=return-type]
+Build result:
+- `make src/kernel/proc/syscall.o` passed.
+- Full staged `build_iso.sh` passed with:
+    CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.162
+    STAGE_CLAUDE=1
+- Final artifacts:
+    out/tatertos64v3.iso
+    out/tater_nvme.img with /RCLAUDE.LXE staged
 
-Fix:
-Added a final fallback return false after the exhaustive UseCounterFeatureType
-switch.
+Final probe:
+- `/tmp/tb_madv_file_s.log`
+  180s prompt-mode boot, `-smp 2`; timed out.
+  Counts:
+    2 clone3 calls
+    4 TBSKIP bad-ptr hits
+    0 exceptions
+    0 stdout writes
+    0 exit_group
+    0 unknown syscalls
+    5 TBFUTEX wait-block-fail lines
+    41 TBSCHED futex-timeout lines
+    4 rt_sigsuspend entries
+    0 epoll_wait / epoll_pwait
+    6 rseq trace lines
+    6 set_robust_list trace lines
 
-Verification:
-/home/legacyindieradio/chromium-tatertos/src/third_party/ninja/ninja -C out/tatertos obj/third_party/blink/public/mojom/mojom_platform/use_counter_feature_mojom_traits.o
+Important corrections:
+- Host Linux creates about nine clone3 workers before printing
+  `2.1.162 (Claude Code)`.
+- Tater Bridge worker threads now register rseq and robust-list successfully.
+- The adjacent JSC parking-lot futex pattern is normal Linux behavior by
+  itself. Host also uses 0x63ad6e0 and the e8c8/e880 parking-lot slots.
 
-Result:
-The targeted Blink use_counter_feature Mojom traits object rebuilt
-successfully.
-
-Log:
-TaterTOS64/logs/fry1246.txt
+Live blocker:
+Claude/Bun is mechanically stable but still never reaches CLI output under
+Tater Bridge. The remaining repeated divergence is after the second clone3:
+host proceeds into more worker creation and output, while Tater stays in the
+two-worker GC/madvise/futex cycle with TBSKIP bad-ptr hits.
 
 Next:
-The monitor was restarted with
-setsid -f bash /home/legacyindieradio/TaterTOS64/tools/chromium_build_monitor.sh
-and the current monitor log is chrome_build_20260517_141440_monitor.log.
-Ninja PID observed as 959522.
+1. Instrument writes to the bad JSC slot array backing pointer:
+     array base around 0x40563080000 in the final run
+     r14 slots 0x3f8, 0x7f8, 0xff8, 0xff9
+2. Trace 0x63ad6e0 futex word transitions with old value/new value/caller.
+3. Compare host vs Tater immediately after the second clone3.
+
+Primary logs:
+TaterTOS64/logs/fry1373.txt
+TaterTOS64/logs/fry1372.txt
+TaterTOS64/logs/fry1371.txt
+TaterTOS64/logs/fry1370.txt
+TaterTOS64/logs/fry1369.txt

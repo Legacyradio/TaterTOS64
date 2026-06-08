@@ -1,0 +1,23 @@
+fry1348 - correct Unix signal mapping for CPU exceptions
+timestamp: 2026-06-04 12:25:00 CDT
+
+What changed:
+- src/kernel/irq/irqdesc.c: exc_kill_current_user now maps exception vectors
+  to their correct Unix signals via exc_unix_signal().
+  Old: hardcoded exit code 139 (128+SIGSEGV) for ALL exceptions.
+  New: #DE→SIGFPE(8), #DB→SIGTRAP(5), #BP→SIGTRAP(5), #UD→SIGILL(4),
+       #NP→SIGBUS(7), #PF→SIGSEGV(11), #GP→SIGSEGV(11), etc.
+
+Why:
+- The int3 (#BP, vec=3) at 0x60ea0a7 was killed with exit code 139 (SIGSEGV),
+  but it should be 133 (SIGTRAP). Bun likely has a SIGTRAP handler that
+  prints diagnostic info before exiting. We need the correct signal so Bun
+  knows what happened.
+- This is a prerequisite for proper signal delivery from exception context
+  (modifying the IRET frame to jump to the signal handler instead of killing).
+
+Note:
+- This only fixes the exit code. Full signal delivery from exception context
+  requires modifying the IRET frame to jump to the user's signal handler,
+  which is a larger infrastructure change (do_signal + setup_rt_frame).
+- For now, the process still dies but with the correct signal number.

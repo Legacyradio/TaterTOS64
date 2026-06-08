@@ -1,0 +1,33 @@
+fry1336 - Tater Bridge Claude help boot verification
+Timestamp: 2026-06-04 10:17:19 CDT
+
+What was verified:
+- Booted the rebuilt ISO under QEMU with -smp 2 after the visible Tater Bridge
+  rename.
+- Serial output now uses the TBRIDGE launcher label.
+- The real Claude Code binary was launched from NVMe:
+  TBRIDGE: launching REAL claude --help (from /nvme)
+  TBRIDGE: claude launch rc=12
+- The kernel selftest still passed:
+  selftest: 106 passed, 0 failed
+- Signal delivery is no longer the blocker. The log shows repeated SIG30
+  delivery and rt_sigreturn cycles, including:
+  TBSIG deliver pid=25 tgid=12 sig=30 ...
+  TBSIG sigreturn pid=25 tgid=12 ...
+
+New blocker:
+- Claude now reaches Bun CLI stdio setup and fails on a missing fcntl command:
+  TBTRACE enter pid=12 tgid=12 nr=72 fcntl a1=1 a2=406 a3=0 ...
+  TBTRACE ret pid=12 tgid=12 nr=72 fcntl rc=ffffffffffffffea
+  error: EINVAL: invalid argument, fcntl
+  TypeError: undefined is not an object (evaluating 'process.stdout.isTTY')
+  TBTRACE enter pid=12 tgid=12 nr=231 exit_group a1=1 ...
+
+Why:
+- The previous handoff blocker was signal delivery. This run proves that the
+  signal path now advances through JSC's GC suspend/resume machinery and moves
+  the next real compatibility gap to Linux fcntl(F_DUPFD_CLOEXEC) on stdout.
+
+Next:
+- Implement Linux fcntl command 0x406 / F_DUPFD_CLOEXEC for Tater Bridge fd
+  entries, rebuild, and rerun the same Claude --help probe.

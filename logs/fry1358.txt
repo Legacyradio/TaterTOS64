@@ -1,0 +1,66 @@
+fry1358 - /proc/self/exe added; int3→SIGSEGV fallback verified working
+
+Date: 2026-06-04 ~22:30 CDT
+
+What changed:
+- Added /proc/self/exe to tbridgefs (TBRIDGEFS_NODE_PROC_EXE, target /nvme/RCLAUDE.LXE).
+- Added readlink("/proc/self/exe") support in syscall.c LNX_readlink handler.
+- Added "readlink" to syscall trace name table and filter.
+- Added "exe" entry to /proc/self/ readdir.
+
+Why:
+- Bun needs /proc/self/exe to locate its binary for crash reporting and
+  resource loading. fry1357 showed nr=89 (readlink) returning ENOENT.
+
+Build verification:
+- make src/kernel/proc/syscall.o src/kernel/fs/tbridgefs.o: passed
+- make kernel: passed
+- Full staged build_iso.sh: passed
+
+Boot result:
+- /proc/self/exe was NOT accessed in this boot — Bun hit the int3
+  assertion before reaching the readlink code path. The infrastructure
+  is in place for when Bun gets further.
+
+- INT3→SIGSEGV FALLBACK VERIFIED WORKING:
+  !EXC vec=3 err=0 RIP=0x60EA0A8 (Bun assertion code 0x1BC)
+  TBSIG exc-deliver pid=3 tgid=3 sig=11 vec=3 handler=287a9b0 sp=625d468 oldrip=60ea0a8
+  → #BP (int3) mapped to SIGSEGV (sig=11), delivered to Bun handler at 0x287a9b0.
+
+- DIFFERENT HANDLER ADDRESS: 0x287a9b0 (was 0x4c21d90 in fry1357).
+  Bun has multiple signal handler installations during startup.
+
+- Bun crash reporter output:
+  "panic(main thread): Segmentation fault at address 0x60EA0A8"
+
+- Crash reporter crashes recursively:
+  1. Jumps to 0x6FDDEB221F27 inside the 64 MiB sparse mmap region
+     (0x6fddeb22e000 + 0x1F27). This is the JSC gigacage.
+  2. Dereferences CR2=0x2 (NULL+2) → #PF
+  3. SIGSEGV delivered again (recursive crash)
+  4. "panic: Segmentation fault at address 0x2"
+  5. "panicked during a panic. Aborting."
+  6. #UD at 0x2B05212 (data segment) → process killed
+
+- The old 0x40000000 fault was NOT reproduced in any of the recent boots.
+- libgcc_s.so.1 loads successfully.
+
+Key findings:
+1. int3→SIGSEGV fallback is operational.
+2. Bun's crash reporter executes and prints diagnostic messages.
+3. The recursive crash in the gigacage suggests Bun's crash reporter
+   tries to use JSC data structures stored in the sparse MAP_NORESERVE
+   region during initialization crash handling, but those structures
+   aren't fully initialized yet.
+4. The assertion code 0x1BC (444) remains the root blocker.
+
+Next work:
+- Determine what assertion 0x1BC means. Possibilities:
+  a) Missing /proc/self/auxv (AT_SYSINFO_EHDR)
+  b) Missing VDSO
+  c) JSC initialization failure due to syscall behavior difference
+  d) Missing /proc/sys/kernel/random/boot_id or entropy source
+- The port is advancing: we have working syscalls (getdents64, readlink,
+  sigaction, mmap, openat, read, close), signal delivery (including
+  exception-to-signal with fallback), library loading (6 shared libs),
+  procfs (maps, exe, cgroup, stat), and zoneinfo.

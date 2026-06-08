@@ -26,7 +26,7 @@ static int fail(const char *what) {
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
-    printf("==== TaterTOS linuxulator: async I/O probe ====\n");
+    printf("==== Tater Bridge: async I/O probe ====\n");
 
     int efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     if (efd < 0) return fail("eventfd2");

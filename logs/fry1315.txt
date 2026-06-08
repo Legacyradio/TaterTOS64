@@ -1,0 +1,135 @@
+=====================================================================
+fry1315 - focused futex trace for real Claude thread stall
+=====================================================================
+DATE: 2026-06-03 20:50:06 CDT
+GOAL: Follow fry1314's next step: instrument the real Claude futex stall
+after clone3 so the next timeout tells us whether waits are queued, keyed,
+and woken correctly.
+
+---------------------------------------------------------------------
+TEMP TRACE CHANGE
+---------------------------------------------------------------------
+Patched src/kernel/proc/syscall.c:
+  - added TBFUTEX wait-begin logs for tgid 12:
+      pid/tgid, uaddr, futex key, private/shared namespace, expected value,
+      actual user word value, timeout mode, timeout_ms, bitset
+  - added TBFUTEX wait-yield and wait-return logs
+  - added TBFUTEX wake-call logs for tgid 12 wake operations
+
+Patched src/kernel/proc/sched.c:
+  - added TBSCHED futex-block logs for pid/tgid 12:
+      scheduler state, actual/expected user word, key, wake_time, bitset
+  - added TBSCHED futex-wake logs when a pid/tgid 12 waiter is woken
+
+WHY:
+  fry1314 showed both Claude threads were stuck in futex waits after clone3,
+  but the old trace only showed syscall entry. This pass proves whether the
+  wait was accepted, whether the expected value matched, and whether any
+  wake reached either waiter.
+
+---------------------------------------------------------------------
+BUILD / BOOT
+---------------------------------------------------------------------
+Targeted build:
+  make src/kernel/proc/syscall.o src/kernel/proc/sched.o kernel
+
+Result:
+  exit 0
+  syscall.o and sched.o compiled; kernel.elf linked
+
+Known warning:
+  src/kernel/proc/syscall.c:2058:13: warning: 'slots' may be used uninitialized [-Wmaybe-uninitialized]
+
+Clean STAGE_CLAUDE rebuild:
+  CLAUDE_BIN="$(readlink -f "$(command -v claude)")" \
+  STAGE_CLAUDE=1 MTOOLSRC=/dev/null \
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" \
+  /bin/bash build_iso.sh
+
+Result:
+  exit 0
+  out/tatertos64v3.iso rebuilt
+  out/tater_nvme.img rebuilt
+  /RCLAUDE.LXE staged as inode 25, size 244000464, 59571 blocks, 1 extent
+
+QEMU boot:
+  cp /usr/share/edk2/x64/OVMF_VARS.4m.fd /tmp/v_fry1315_futex.fd
+  timeout 420 qemu-system-x86_64 -m 6G -machine q35,accel=tcg -cpu max -smp 2 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=/tmp/v_fry1315_futex.fd \
+    -cdrom out/tatertos64v3.iso \
+    -drive file=out/tater_nvme.img,if=none,id=nvm,format=raw \
+    -device nvme,serial=deadbeef,drive=nvm \
+    -serial file:/tmp/s_fry1315_futex.log -display none -no-reboot
+
+Result:
+  timeout exit 124
+  serial file: /tmp/s_fry1315_futex.log
+  serial lines: 461
+
+---------------------------------------------------------------------
+EVIDENCE
+---------------------------------------------------------------------
+Claude still launches and old blockers remain fixed:
+  LINUXTEST: launching REAL claude --version (from /nvme)
+  PROC: linux launch ok path=/nvme/RCLAUDE.LXE pid=12 ...
+  selftest: 85 passed, 0 failed
+  no 0xBBADBEEF
+  no /dev/urandom failure
+  128 GiB MAP_NORESERVE mmap still returns
+
+Before the stall, Claude makes several private FUTEX_WAKE calls. They
+return 0 because no matching waiter is queued yet:
+  TBFUTEX wake-call pid=12 tgid=12 uaddr=629815c key=800c00000629815c private=1 max=2147483647 bitset=ffffffff
+  TBFUTEX wake-call pid=12 tgid=12 uaddr=6298168 key=800c000006298168 private=1 max=2147483647 bitset=ffffffff
+  TBFUTEX wake-call pid=12 tgid=12 uaddr=63a7d68 key=800c0000063a7d68 private=1 max=2147483647 bitset=ffffffff
+  TBFUTEX wake-call pid=12 tgid=12 uaddr=63a7e84 key=800c0000063a7e84 private=1 max=2147483647 bitset=ffffffff
+  TBFUTEX wake-call pid=12 tgid=12 uaddr=63a7d64 key=800c0000063a7d64 private=1 max=2147483647 bitset=ffffffff
+  TBFUTEX wake-call pid=12 tgid=12 uaddr=63a2468 key=800c0000063a2468 private=1 max=2147483647 bitset=ffffffff
+
+clone3 creates child pid 24:
+  TBTRACE enter pid=12 tgid=12 nr=435 clone3 ...
+  TBTRACE ret   pid=12 tgid=12 nr=435 clone3 rc=18
+
+Final parent wait:
+  TBTRACE enter pid=12 tgid=12 nr=202 futex a1=6fdf77a15ce8 a2=109 a3=18 a4=0 a5=0 a6=ffffffff
+  TBFUTEX wait-begin pid=12 tgid=12 uaddr=6fdf77a15ce8 key=58213ce8 private=0 expected=24 actual=24 timeout=0 timeout_ms=0 bitset=ffffffff
+  TBSCHED futex-block pid=12 tgid=12 state=1 word=0x6fdf77a15ce8 actual=24 expected=24 key=58213ce8 wake_time=18446744073709551615 bitset=ffffffff
+
+Decoded:
+  - op 0x109 = FUTEX_WAIT_BITSET | FUTEX_CLOCK_REALTIME
+  - no FUTEX_PRIVATE_FLAG, so this is a shared futex key
+  - expected value 24 matches actual value 24
+  - no timeout pointer, so it waits indefinitely
+  - wait is accepted and queued
+
+Final child wait:
+  TBTRACE enter pid=24 tgid=12 nr=202 futex a1=6fdf77a29880 a2=80 a3=2 a4=0 a5=0 a6=3
+  TBFUTEX wait-begin pid=24 tgid=12 uaddr=6fdf77a29880 key=800c6fdf77a29880 private=1 expected=2 actual=2 timeout=0 timeout_ms=0 bitset=ffffffff
+  TBSCHED futex-block pid=24 tgid=12 state=1 word=0x6fdf77a29880 actual=2 expected=2 key=800c6fdf77a29880 wake_time=18446744073709551615 bitset=ffffffff
+
+Decoded:
+  - op 0x80 = FUTEX_WAIT | FUTEX_PRIVATE_FLAG
+  - expected value 2 matches actual value 2
+  - no timeout
+  - wait is accepted and queued
+
+No TBSCHED futex-wake line appears after either final wait.
+
+---------------------------------------------------------------------
+CONCLUSION / NEXT
+---------------------------------------------------------------------
+This is not an immediate futex keying failure and not an EAGAIN/ESRCH
+path. Both waits are accepted with matching values and then no wake occurs
+before QEMU timeout. That points to thread startup/handshake state, not a
+raw wait syscall rejection.
+
+Next trace needed:
+  - log clone3 args for tgid 12:
+      flags, stack, stack_size, tls, child_tid, parent_tid, exit_signal
+  - log the child_tid/parent_tid values written by Tater Bridge
+  - correlate parent wait uaddr=6fdf77a15ce8 with child_tid/parent_tid
+  - if parent is waiting on child_tid for thread exit/startup, verify the
+    child starts on the expected path and whether clear_child_tid/wake would
+    ever fire
+=====================================================================

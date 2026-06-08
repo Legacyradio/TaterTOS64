@@ -1,0 +1,51 @@
+fry1343 - mmap hint fix verified; new blocker at JSC structure ID check (0x1c000000000)
+timestamp: 2026-06-04 11:10:00 CDT
+
+What changed:
+- Rebuilt ISO with fry1342 mmap hint changes.
+- Booted QEMU with -cpu max,la57=off.
+
+Evidence:
+- The mmap hint fix in fry1342 works:
+  - JSC called mmap(a1=0x3d9a3c00000, len=0x40000000, flags=MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE)
+  - Tater Bridge honored the hint, returned rc=0x3d9a3c00000
+  - This is the first gigacage reservation succeeding with the correct address
+
+- Selftest passed: 106 passed, 0 failed
+
+- New crash: same instruction (0x4c17293: mov eax, [rdi+4]) but different address:
+  - rdi = 0x000001C000000000
+  - cr2 = 0x000001C000000004
+  - pml4[3] = 0x0
+
+- Disassembly of 0x4c17270-0x4c172ae (function uv_wtf8_to_utf16+0x184b70):
+  - This is a JSC structure-ID check: loads DWORD [rdi+4], compares with rdx
+  - rdi and rsi are null-checked first (both non-null, so crash path taken)
+  - Function signature looks like: bool checkStructure(JSCell* cell, ...)
+
+- No mmap call in the trace maps anything at 0x1c000000000.
+  The value is NOT from a Tater Bridge mmap return — it's computed internally
+  by JSC/Bun, likely from JSC's NaN-boxing/pointer-encoding scheme.
+
+- JSC has multiple gigacages:
+  - Cage at 0x3d9a3c00000 (1 GB, MAP_NORESERVE, now honored) — likely one cage
+  - Address 0x1c000000000 — completely separate, likely the primitive gigacage
+    or APIGigacage used for JSValue encoding
+
+Conclusion:
+- The fry1342 mmap hint fix is correct and working.
+- The next blocker is a separate JSC cage/pointer-encoding address that was
+  never established via mmap. JSC is encoding 0x1c000000000 into its JSValue
+  pointers and expecting memory to exist there.
+- This is either:
+  a) A second gigacage that needs its own mmap (but no mmap call tried to
+     create it — the call may be missing due to another syscall gap)
+  b) A hardcoded JSC constant that needs the kernel to pre-map that range
+  c) A JSC pointer-encoding artifact where the base is computed from available
+     address space (possibly reading /proc/self/maps or using a fixed formula)
+
+Next step:
+- Find where 0x1c000000000 is computed in the JSC/Bun startup sequence.
+  May need to trace backward from the crash: add a breakpoint-like trace at
+  the caller of the function containing 0x4c17293, or search the serial log
+  for any mmap/mprotect/brk that references 0x1c... addresses.

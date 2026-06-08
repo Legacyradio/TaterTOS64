@@ -1,0 +1,151 @@
+=====================================================================
+fry1314 - sparse MAP_NORESERVE reservation for Claude/JSC cage mmap
+=====================================================================
+DATE: 2026-06-03 19:48:03 CDT
+GOAL: Fix the fry1313 blocker where real Claude entered a 128 GiB
+anonymous private MAP_NORESERVE mmap and never returned because Tater
+Bridge eagerly allocated every page.
+
+TERMINOLOGY:
+  The Linux-compatible ABI layer is Tater Bridge. This fix is native
+  TaterTOS64v3 VM/syscall behavior. No Linux kernel code was imported.
+
+---------------------------------------------------------------------
+FIX
+---------------------------------------------------------------------
+Patched src/kernel/proc/linux_compat.h:
+  - renamed the file comment to Tater Bridge terminology
+  - added LNX_MAP_NORESERVE = 0x4000
+
+Patched src/kernel/proc/syscall.c:
+  - added a Linux-prot-to-FRY-prot helper for VM metadata paths
+  - added sparse reservation support for large Linux mmap requests that are:
+      MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE
+      non-MAP_FIXED
+      >= 4 GiB
+  - sparse reservations are recorded as native fry_vm_region entries:
+      FRY_MAP_PRIVATE | FRY_MAP_ANON | FRY_MAP_RESERVE
+      FRY_VM_REGION_ANON_PRIVATE
+      committed = 0
+  - no user pages are allocated for the sparse reservation
+  - MAP_FIXED now first tries vm_unmap_region_range() so fixed submaps
+    carve holes out of an existing sparse reservation before eager mapping
+  - munmap first tries vm_unmap_region_range() so sparse reservation ranges
+    can be removed without walking millions of unmapped pages
+  - mprotect first tries vm_mprotect_region_range() so committed subranges
+    of a sparse reservation can be handled by the native VM path
+
+WHY:
+  Linux treats the JSC 128 GiB MAP_NORESERVE request as virtual address
+  reservation. Tater Bridge was treating it as immediate physical backing.
+  That is wrong for large runtime cages and caused the QEMU timeout at the
+  syscall entry line.
+
+---------------------------------------------------------------------
+BUILD
+---------------------------------------------------------------------
+Targeted build:
+  make src/kernel/proc/syscall.o kernel
+
+Result:
+  exit 0
+  syscall.o compiled and kernel.elf linked
+
+Known warning observed:
+  src/kernel/proc/syscall.c:2056:13: warning: 'slots' may be used uninitialized [-Wmaybe-uninitialized]
+
+This warning predates this mmap fix and is in vm_unmap_region_range().
+
+Clean STAGE_CLAUDE rebuild:
+  CLAUDE_BIN="$(readlink -f "$(command -v claude)")" \
+  STAGE_CLAUDE=1 MTOOLSRC=/dev/null \
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" \
+  /bin/bash build_iso.sh
+
+Result:
+  exit 0
+  out/tatertos64v3.iso rebuilt
+  out/tater_nvme.img rebuilt
+  /RCLAUDE.LXE staged on the NVMe image:
+    inode 25, size 244000464, 59571 blocks, 1 extent
+
+---------------------------------------------------------------------
+QEMU VALIDATION
+---------------------------------------------------------------------
+Boot command:
+  cp /usr/share/edk2/x64/OVMF_VARS.4m.fd /tmp/v_fry1314_trace.fd
+  timeout 420 qemu-system-x86_64 -m 6G -machine q35,accel=tcg -cpu max -smp 2 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=/tmp/v_fry1314_trace.fd \
+    -cdrom out/tatertos64v3.iso \
+    -drive file=out/tater_nvme.img,if=none,id=nvm,format=raw \
+    -device nvme,serial=deadbeef,drive=nvm \
+    -serial file:/tmp/s_fry1314_trace.log -display none -no-reboot
+
+Result:
+  timeout exit 124
+  serial file: /tmp/s_fry1314_trace.log
+  serial lines: 452
+
+Selftest:
+  selftest: 85 passed, 0 failed
+
+Old blockers remain fixed:
+  - no /dev/urandom failure
+  - no 0xBBADBEEF fault
+  - no rip=0x60a9b84 fault
+  - no hang at the 128 GiB mmap entry
+
+Key proof that this fix worked:
+  TBTRACE enter pid=12 tgid=12 nr=9 mmap a1=0 a2=2000000000 a3=3 a4=4022 a5=ffffffff a6=0
+  TBTRACE ret   pid=12 tgid=12 nr=9 mmap rc=6fdf7fa1b000
+
+Claude/JSC then continued through reservation trimming and follow-up VM
+calls:
+  TBTRACE enter pid=12 tgid=12 nr=11 munmap a1=6fdf7fa1b000 a2=805e5000 ...
+  TBTRACE ret   pid=12 tgid=12 nr=11 munmap rc=0
+  TBTRACE enter pid=12 tgid=12 nr=11 munmap a1=6ff000000000 a2=f7fa1b000 ...
+  TBTRACE ret   pid=12 tgid=12 nr=11 munmap rc=0
+  TBTRACE enter pid=12 tgid=12 nr=28 madvise a1=6fe000000000 a2=1000000000 a3=4 ...
+  TBTRACE ret   pid=12 tgid=12 nr=28 madvise rc=0
+  TBTRACE enter pid=12 tgid=12 nr=28 madvise a1=6fe000000000 a2=1000000000 a3=10 ...
+  TBTRACE ret   pid=12 tgid=12 nr=28 madvise rc=0
+  TBTRACE enter pid=12 tgid=12 nr=10 mprotect a1=6fef53b78000 a2=ac488000 a3=0 ...
+  TBTRACE ret   pid=12 tgid=12 nr=10 mprotect rc=0
+
+This confirms the fry1313 hang was the eager allocation path.
+
+---------------------------------------------------------------------
+NEXT FRONTIER
+---------------------------------------------------------------------
+The traced boot now reaches clone3-created thread startup:
+  TBTRACE enter pid=12 tgid=12 nr=435 clone3 ...
+  TBTRACE ret   pid=12 tgid=12 nr=435 clone3 rc=1c
+
+Then it times out with both Claude threads in futex waits:
+  TBTRACE enter pid=12 tgid=12 nr=202 futex a1=6fdf77a15ce8 a2=109 a3=1c a4=0 a5=0 a6=ffffffff
+  TBTRACE enter pid=28 tgid=12 nr=202 futex a1=6fdf77a29880 a2=80 a3=2 a4=0 a5=0 a6=3
+
+No matching return appears for either futex before timeout.
+
+Interpretation:
+  - mmap/JSC reservation is fixed and Claude gets deeper into startup.
+  - Next blocker is a real Claude thread/futex wait after clone3, not the
+    old futex selftest path.
+  - Need decode the two futex operations and inspect whether the child is
+    blocked on a lock that parent should wake, whether Tater Bridge is
+    missing a wake/timeout/robust-list/cleartid detail, or whether an
+    earlier -ENOSYS changes runtime state enough to deadlock.
+
+Other syscall tail still visible and returning:
+  - nr=96 returns -ENOSYS repeatedly (gettimeofday)
+  - nr=99 returns -ENOSYS (sysinfo)
+  - nr=157 returns -ENOSYS (prctl)
+  - nr=334 returns -ENOSYS
+  - nr=436 returns -ENOSYS (close_range)
+
+Recommended next step:
+  Add focused futex trace detail for tgid 12: decoded futex op, user value
+  at uaddr, wait queue insert/wake events, scheduler block/wake transitions,
+  and CLONE_CHILD_CLEARTID / child_tid behavior for pid 28.
+=====================================================================

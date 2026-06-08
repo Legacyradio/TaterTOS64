@@ -1,0 +1,45 @@
+2026-06-04 03:52 CDT  Fry 1328 — demand paging VERIFIED; new blocker: real
+                      signal delivery (JSC GC thread-suspend deadlock)
+
+VERIFIED (fry1327 demand paging):
+- claude's gigacage write at 0x6fde01000000 NO LONGER faults. lx_try_demand_page
+  commits zero pages on touch inside the MAP_NORESERVE anon region.
+- claude now runs the FULL Bun/JSC runtime far deeper: serial log 1576 lines
+  (was 745). Heavy madvise/mprotect/mmap, multiple worker threads spawned
+  (tid 28 and tid 29), extensive futex coordination. selftest 106/0. No abort,
+  no USER FAULT. The 128 GB reservation runs fine on the few-GB VM — only
+  touched pages are backed.
+
+NEW BLOCKER — deadlock on signal-based thread suspension:
+- claude installs handlers via rt_sigaction incl. sig 0x1e=30 (line 423:
+  pid=12 nr=13 rt_sigaction a1=1e). 30 is JSC's thread-suspend signal
+  (stop-the-world for conservative GC stack scanning).
+- pid 28 -> tgkill(tgid=12, tid=29, sig=30) returns rc=0 but our kernel
+  NO-OPS the signal (records handlers, never delivers). See syscall.c
+  comment "Signal masks are a no-op until real Linux signal delivery exists."
+- Result: tid 29 never runs its sig-30 handler (never parks/acks), and
+  pid 12 + pid 29 block FOREVER in futex_wait on 0x63ad6e0 (expected=2,
+  infinite timeout, no waker). Log frozen at 1576 lines, qemu alive = hung.
+
+ROOT CAUSE: thread-directed signal DELIVERY is unimplemented. rt_sigaction /
+rt_sigprocmask are recorded-but-inert; tgkill/kill don't make a signal
+pending or invoke the handler.
+
+NEXT (task #9 — LARGE feature): implement real signal delivery.
+  1. rt_sigaction: actually store handler/flags/mask/restorer per (proc,sig).
+  2. tgkill/kill/tkill: mark signal pending on the target thread; if it is
+     blocked (e.g. futex_wait), make that wait interruptible (-EINTR) so it
+     returns to the kernel exit path.
+  3. On kernel->user return for a thread with a pending, unblocked,
+     handled signal: build a signal frame (siginfo + ucontext + saved GPRs/
+     FPU) on the target's user stack, set RIP=handler, RDI/RSI/RDX=
+     sig/info/ucontext, push the restorer (sa_restorer / vdso) return addr.
+  4. rt_sigreturn: restore the saved context from the frame.
+  5. Default actions for sigs without handlers (term/ignore/core) per POSIX.
+  This touches scheduler (interruptible blocks), syscall entry/exit, and
+  user-stack frame construction. It is the largest remaining linuxulator
+  piece and was flagged "missing" in the original handoff.
+
+STATUS: claude now executes the entire Bun/JSC startup and only stalls on
+signal-based GC thread suspension. ~8.5-9 / 10 toward "claude --version runs".
+Checkpoint before building out signal delivery (big change).

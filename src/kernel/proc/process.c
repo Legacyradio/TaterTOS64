@@ -158,6 +158,7 @@ static void process_start(struct fry_process *p) {
 
     __asm__ volatile("mov %0, %%cr3" : : "r"(p->cr3));
     write_user_fs_base(p->user_fs_base);
+    tb_program_jsc_slot_watchpoints_for(p);
 
     if (p->is_linux && p->is_clone_child) {
         /*
@@ -386,6 +387,7 @@ struct fry_process *process_create_user_thread(struct fry_process *parent, uint6
     p->dumpable = parent->dumpable;
     p->thp_disabled = parent->thp_disabled;
     p->timer_slack_ns = parent->timer_slack_ns;
+    p->linux_sig_blocked = parent->linux_sig_blocked;
     copy_name(p->name, parent->name);
 
     if (alloc_kernel_stack(p) != 0) {
@@ -427,7 +429,7 @@ struct fry_process *process_clone_linux_thread(struct fry_process *parent,
     p->timer_slack_ns= parent->timer_slack_ns;
     p->is_linux      = parent->is_linux;
     p->is_clone_child = 1;   /* first run restores full GPRs from clone_ctx */
-    p->linux_mmap_next = parent->linux_mmap_next;
+    p->linux_sig_blocked = parent->linux_sig_blocked;
     copy_name(p->name, parent->name);
 
     if (alloc_kernel_stack(p) != 0) {
@@ -715,7 +717,7 @@ int process_launch_args(const char *path, const char **argv, uint32_t argc,
 
 /*
  * Launch an UNMODIFIED Linux x86_64 ELF as a Linux-personality process.
- * Loads via the linuxulator ELF loader (bare ELF + SysV stack), tags the
+ * Loads via the Tater Bridge ELF loader (bare ELF + SysV stack), tags the
  * process is_linux so its syscalls route through linux_syscall_dispatch,
  * and seeds the program break + anonymous-mmap arena.
  */
@@ -743,12 +745,12 @@ int process_launch_linux(const char *path,
     }
 
     p->is_linux = 1;
-    p->linux_mmap_next = LX_MMAP_BASE;
     {
         struct fry_process_shared *sh = proc_shared(p);
         if (sh) {
             sh->heap_start = brk;
             sh->heap_end = brk;
+            sh->linux_mmap_next = LX_MMAP_BASE;
         }
     }
     if (cur) p->cpu = cur->cpu;

@@ -1,0 +1,52 @@
+2026-06-04 03:38 CDT  Fry 1325 — root-caused claude's silent SIGABRT: empty /proc/self/maps
+
+CONTEXT (carried from Codex fry1322/1323, verified by Claude):
+- fry1322: synthetic /proc & /sys nodes added (Tater Bridge). selftest 105/0.
+- fry1323: fixed clone3 syscall-frame capture (was read via per-CPU GS
+  scratch, clobbered mid-syscall -> child resumed at .rodata RIP). Now the
+  child thread resumes in glibc; multithreaded execution works.
+- Remaining blocker: claude (pid 12) runs Bun/JSC, spawns worker thread
+  (pid 28), threads sync via futex, then MAIN thread calls
+  tgkill(12,12,SIGABRT) and exits 134. Silent — no stderr text.
+
+DIAGNOSIS (fry1324 instrumentation + objdump):
+- Added a TBABORT backtrace dump in the tgkill SIGABRT branch
+  (syscall.c): on a fatal self-signal from the claude tgid, read the
+  syscall-entry frame (kernel_stack_top-96) for user rip/rsp and scan the
+  user stack for return addresses inside claude's text (0x24aa400..
+  0x6200000; glibc lives at 0x6fff...).
+- Live abort chain:
+    abort@plt  <- trampoline 0x3fc4210 (call abort)
+               <- 0x5c47e2a (cold stub: call abort trampoline)
+               <- function body @ 0x5c43000..0x5c44400
+- Disassembly of the deciding branch (0x5c4437a..0x5c443c5):
+    call WTF::Thread::current()         ; reads pthread TLS key 0x61038e8
+    mov  0x78(%rax),%rcx                ; m_stackBound
+    mov  0x18(%rax),%rdx                ; m_stackOrigin (base)
+    test %rdx,%rdx ; je abort           ; base == 0   -> ABORT
+    cmp  %rcx,%rdx ; jb abort           ; base < bound
+    cmp  0x20(%rax),%rcx ; jbe abort
+  => JSC/WTF stack-bounds validation. The MAIN thread's stack origin is 0
+     -> RELEASE_ASSERT -> abort().
+- Why origin==0: on Linux glibc __pthread_getattr_np derives the main
+  thread's stack from /proc/self/maps (the line whose range contains
+  __libc_stack_end) + getrlimit(RLIMIT_STACK). Our tbridgefs returned
+  /proc/self/maps == "" (empty). No line -> base 0 -> WTF abort.
+  (prlimit64 already returns RLIMIT_STACK rlim_cur = 8 MiB — consistent;
+   the worker's repeated 100ms FUTEX ETIMEDOUT with ZERO wakes is a benign
+   periodic poll, not the cause.)
+
+FIX (src/kernel/fs/tbridgefs.c):
+- /proc/self/maps now emits the REAL fixed user-stack VMA used by every
+  linuxulator process (linux_elf.c LX_STACK_TOP=USER_VA_TOP=0x800000000000,
+  LX_STACK_PAGES=2048 => 8 MiB):
+    7fffff800000-800000000000 rw-p 00000000 00:00 0   [stack]
+  This is accurate (the actual mapping), matches RLIMIT_STACK=8 MiB, and
+  contains the initial SP (launch rsp=0x7ffffffffe00). glibc now resolves
+  stack top=0x800000000000, size=8 MiB, base=0x7fffff800000 (non-zero) ->
+  WTF stack-bounds check passes.
+
+NEXT: rebuild STAGE_CLAUDE=1, boot smp2. Expect the stack-bounds abort to
+clear and claude to advance (toward printing --version). TBABORT beacon
+kept this boot; if a NEW abort site appears, harvest it the same way.
+Strip fry1324 TBABORT beacon once claude is past this.

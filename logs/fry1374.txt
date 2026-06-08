@@ -1,0 +1,54 @@
+fry1374 — Tater Bridge / Claude Code: root-cause of JSC butterfly corruption
+Timestamp: 2026-06-06 11:19:18 CDT
+Author: Claude (Opus 4.8), continuing from Codex handoff (fry1373)
+
+GOAL
+  Run the real Claude Code binary under Tater Bridge (TaterTOS64 Linux-compat).
+  Blocker: Bun/JSC dispatches array elements that are bad pointers
+  (0xffffffffffffffff and 0x40000000), faulting at Bun rip=0x6056F06. Codex's
+  TBSKIP workaround papers over it; we want the origin, not the symptom.
+
+METHOD (this step)
+  Codex added dynamic DR0-DR3 watchpoints armed off the live JSC cage base
+  (g_tb_jsc_slot_watch_base = cage + 0x4480000), plus rcx/rdx/rsi to the #DB
+  TBWATCH dump. Rebuilt kernel, restaged ISO+NVMe (STAGE_CLAUDE=1), booted
+  QEMU/TCG 90s with full UEFI pflash. Serial: /tmp/tb_jsc_src_s.log (2650 lines).
+
+EVIDENCE
+  1. Cage mmap (serial L232): mmap addr=0x26e1e000000 len=0x40000000
+     flags=0x4022 (MAP_ANONYMOUS|MAP_PRIVATE|MAP_NORESERVE) -> sparse=1.
+  2. TBWATCH hits (L905-906): writer rip=0x6FFFFFD721FC = libc.so.6 AVX memmove
+     (vmovdqa %ymm,off(%rcx)). Registers: rdi=0x26e22480000 (dest=slot array),
+     rsi=0x26e1FF8xxxx (source, INSIDE cage), rdx=0x8000 (32 KiB), val=0xff..ff.
+     => The 0xff is COPIED from an older in-cage buffer; the watched array is a
+        propagation site, not the origin. Source already held 0xff.
+  3. Immediately before each TBSKIP (L932-946): dense sweep of
+     madvise(advice=4 = MADV_DONTNEED) over the cage, 64 KiB steps
+     (0x26e1fdc0000 .. 0x26e1fe70000), all rc=0.
+  4. Kernel page hygiene is CORRECT elsewhere: lx_map_one (syscall.c:3396-3403)
+     zeroes every demand-faulted frame; vm_commit_private_pages zeroes too.
+     So this is NOT an un-zeroed-page bug.
+
+ROOT CAUSE (high confidence)
+  lx_map_sparse_anon_private (syscall.c:3505-3508) registers the gigacage with
+  committed=0 (correct: demand-paged). vm_madvise_dontneed's THREADED branch
+  (syscall.c:2415-2438) has `if (!r->committed) continue;` at line 2424. Bun is
+  multithreaded -> proc_shared_state_const(p) is true -> it always takes this
+  branch -> for the sparse cage (committed==0) it skips zeroing EVERY page and
+  returns 0 (success) having done nothing. MADV_DONTNEED on the gigacage is a
+  silent no-op. JSC decommits cells expecting zero-on-next-read (the Linux
+  contract), but stale tagged words (0xff..ff, 0x40000000) persist, get
+  memmove'd into a live butterfly, and are dereferenced as pointers -> the
+  cr2=0xff..ff / cr2=0x40000000 faults at Bun rip=0x6056F06.
+  The non-threaded fallback (2440-2444) is correct precisely because it lacks
+  that committed guard and relies on the per-page vmm_virt_to_phys_user() check.
+
+FIX (applied in fry1375)
+  Remove the region-level `if (!r->committed) continue;` short-circuit in the
+  threaded branch of vm_madvise_dontneed. The per-page pa==0 check already
+  handles partially-committed sparse regions; zeroing in place satisfies the
+  MADV_DONTNEED read-back-zero contract without freeing frames.
+
+NEXT
+  Apply fix, rebuild kernel + restage, boot, confirm TBSKIP no longer fires and
+  Claude progresses past JSC array dispatch. Logged in fry1375.

@@ -1,0 +1,65 @@
+fry1359 - AT_HWCAP/AT_HWCAP2/AT_SYSINFO_EHDR added; path shifts, old 0x40000000 fault returns
+
+Date: 2026-06-04 ~22:50 CDT
+
+What changed:
+- Added AT_HWCAP (0x178bfbff — x86-64 baseline features), AT_HWCAP2 (0x02 — HWCAP2_PAUSE),
+  and AT_SYSINFO_EHDR (0 — no VDSO) to the ELF auxiliary vector in linux_elf.c.
+- LX_AUX_PAIRS bumped from 18 to 20.
+
+Why:
+- AT_HWCAP was previously set to 0, giving JSC no CPU feature information.
+  JSC uses HWCAP for JIT feature detection (SSE, AVX, etc.).
+- AT_SYSINFO_EHDR was missing entirely — Linux always emits it.
+- Missing auxv entries could affect JSC initialization and gigacage setup.
+
+Build verification:
+- make linux_elf.o: passed
+- make kernel: passed
+- Full staged build_iso.sh: passed
+
+Boot result:
+- Path shifted AGAIN (like fry1356). The int3 assertion (0x60EA0A7, code 0x1BC)
+  was NOT hit in this boot.
+- Instead, Bun hit the libuv vtable dispatch at 0x6056F06 with a DIFFERENT
+  bad pointer: rdi=0x40000000 (exactly 1 GiB).
+  
+  !EXC vec=14 err=4 RIP=0x6056F06 CR2=0x40000000
+  !REG rdi=0x40000000
+
+  This is the SAME fault address as the old fry1354 blocker that was thought
+  resolved. It was never fixed — the execution path just moved past it in
+  later boots.
+
+- SIGSEGV delivered: TBSIG exc-deliver sig=11 handler=4c21d90
+- Same Bun crash reporter #UD at 0x2B05212 → process killed
+
+Evidence summary across all boots (fry1354-fry1359):
+  The vtable dispatch loop at 0x6056F06 iterates an object array.
+  Array entries seen:
+    - 0xFFFFFFFFFFFFFFFF (-1 sentinel) — fry1356, fry1357
+    - 0x40000000 (1 GiB) — fry1354, fry1359
+    - 0x1BC (assertion code, different RIP) — fry1355, fry1358
+  The value varies per boot → nondeterministic initialization bug.
+
+Interpretation:
+  The array at offset 0x60 from rbx is populated during JSC/libuv
+  initialization. Different initialization ordering (due to timing,
+  gigacage placement, or syscall latency) produces different garbage
+  entries. This is likely a Bun/JSC bug that also occurs on real Linux
+  under certain conditions, or is triggered by a missing dependency
+  (syscall, /proc file, or library function) that leaves the array
+  partially initialized.
+
+  The int3 assertion (code 0x1BC) and the vtable crash (various rdi)
+  are TWO different failure modes of the same underlying issue: Bun's
+  initialization is incomplete or racy.
+
+Next work:
+- The nondeterministic nature suggests we need to find what syscall
+  or /proc dependency is missing that prevents proper initialization
+  of the libuv/JSC object array.
+- Candidates consistently missing: /proc/self/auxv (file, not aux vector),
+  /proc/sys/kernel/random/boot_id, getrusage, /dev/urandom.
+- The int3→SIGSEGV fallback works but crash reporter can't complete
+  due to gigacage being uninitialized at crash time.

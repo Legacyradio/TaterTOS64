@@ -54,7 +54,7 @@ static void read_inode(uint32_t inum, struct totfs_inode *out) {
     uint32_t blk_idx = inum / (TOTFS_BLOCK_SIZE / TOTFS_INODE_SIZE);
     uint32_t off_in  = (inum % (TOTFS_BLOCK_SIZE / TOTFS_INODE_SIZE)) * TOTFS_INODE_SIZE;
     uint8_t buf[TOTFS_BLOCK_SIZE];
-    read_block(TOTFS_INODE_TABLE_BLK + blk_idx, buf);
+    read_block(g_sb.inode_table_start + blk_idx, buf);
     memcpy(out, buf + off_in, sizeof(*out));
 }
 
@@ -62,9 +62,9 @@ static void write_inode(uint32_t inum, const struct totfs_inode *inode) {
     uint32_t blk_idx = inum / (TOTFS_BLOCK_SIZE / TOTFS_INODE_SIZE);
     uint32_t off_in  = (inum % (TOTFS_BLOCK_SIZE / TOTFS_INODE_SIZE)) * TOTFS_INODE_SIZE;
     uint8_t buf[TOTFS_BLOCK_SIZE];
-    read_block(TOTFS_INODE_TABLE_BLK + blk_idx, buf);
+    read_block(g_sb.inode_table_start + blk_idx, buf);
     memcpy(buf + off_in, inode, sizeof(*inode));
-    write_block(TOTFS_INODE_TABLE_BLK + blk_idx, buf);
+    write_block(g_sb.inode_table_start + blk_idx, buf);
 }
 
 static uint32_t alloc_inode(void) {
@@ -326,6 +326,38 @@ static void do_list(const char *dir_path) {
     }
 }
 
+/* ── --get command (extract a file OUT of the image) ─────────────────── */
+
+static void do_get(const char *src_path, const char *host_file) {
+    uint32_t inum = resolve_path(src_path);
+    if (!inum) {
+        fprintf(stderr, "get: path not found: %s\n", src_path);
+        exit(1);
+    }
+    struct totfs_inode in;
+    read_inode(inum, &in);
+    if (in.type == TOTFS_TYPE_DIR) {
+        fprintf(stderr, "get: is a directory: %s\n", src_path);
+        exit(1);
+    }
+    FILE *out = fopen(host_file, "wb");
+    if (!out) { fprintf(stderr, "get: cannot open %s\n", host_file); exit(1); }
+
+    uint64_t remaining = in.size;
+    uint8_t buf[TOTFS_BLOCK_SIZE];
+    for (uint32_t e = 0; e < in.extent_count && remaining > 0; e++) {
+        for (uint32_t b = 0; b < in.extents[e].block_count && remaining > 0; b++) {
+            read_block(in.extents[e].start_block + b, buf);
+            uint64_t n = remaining < TOTFS_BLOCK_SIZE ? remaining : TOTFS_BLOCK_SIZE;
+            fwrite(buf, 1, n, out);
+            remaining -= n;
+        }
+    }
+    fclose(out);
+    fprintf(stderr, "get: %s -> %s (%llu bytes)\n", src_path, host_file,
+            (unsigned long long)(in.size - remaining));
+}
+
 /* ── Copy file ───────────────────────────────────────────────────────── */
 
 static void do_copy(const char *host_file, const char *dest_path) {
@@ -502,6 +534,8 @@ int main(int argc, char **argv) {
 
     if (argc >= 5 && strcmp(argv[3], "--list") == 0) {
         do_list(argv[4]);
+    } else if (argc >= 6 && strcmp(argv[3], "--get") == 0) {
+        do_get(argv[4], argv[5]);
     } else if (argc >= 5) {
         do_copy(argv[3], argv[4]);
         flush_metadata();

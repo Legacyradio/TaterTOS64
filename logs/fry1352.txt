@@ -1,0 +1,87 @@
+fry1352 - Claude prompt rung: signal copyout fix + next Bun crash blocker
+timestamp: 2026-06-04 15:22:23 CDT
+
+What changed:
+- src/kernel/main.c:
+  - Added TBRIDGE_CLAUDE_PROMPT_ONLY.
+  - Skips earlier Tater Bridge probe launches and skips kernel selftest/INIT.FRY
+    after launching /nvme/RCLAUDE.LXE with:
+      claude -p "say hello from TaterTOS in 10 words"
+  - Purpose is to isolate the real Claude prompt run without SMOKETEST.FRY
+    flooding the serial log.
+
+- src/kernel/proc/syscall.c:
+  - Added lx_read_cr3/lx_write_cr3 helpers.
+  - lx_deliver_signal_from_exception now temporarily switches to cur->cr3
+    for the user sigframe copyout, then restores the saved kernel CR3.
+  - Why: exception dispatch runs after common_isr has switched to
+    irq_kernel_cr3. copyout() validates user pages but directly writes the
+    user VA, so the previous boot kernel-faulted at lx_deliver_signal_from_exception
+    while trying to copy the sigframe to 0x7ffffffdf1b8.
+
+- src/kernel/proc/linux_elf.c:
+  - Added temporary LINUXELF serial breadcrumbs around streamed Linux ELF
+    loading. No behavior change; this was added because the fresh boot looked
+    parked after the launch marker while loading the 244 MB Claude binary.
+
+Build verification:
+- Clean staged rebuild completed successfully:
+    make clean
+    CLAUDE_BIN="$(readlink -f "$(command -v claude)")" STAGE_CLAUDE=1 \
+      MTOOLSRC=/dev/null PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" \
+      /bin/bash build_iso.sh
+- Fresh artifacts:
+    kernel.elf:                 2026-06-04 15:19:03 CDT, 2501872 bytes
+    out/tater_nvme.img:         2026-06-04 15:19:41 CDT, 419430400 bytes
+    out/tatertos64v3.iso:       2026-06-04 15:19:43 CDT, 162686976 bytes
+- /RCLAUDE.LXE staged onto NVMe ToTFS:
+    inode 25, 244000464 bytes, 59571 blocks
+
+Boot verification:
+- QEMU boot command used:
+    qemu-system-x86_64 -m 6G -machine q35,accel=tcg -cpu max,la57=off -smp 2 \
+      -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+      -drive if=pflash,format=raw,file=/tmp/v.fd \
+      -cdrom out/tatertos64v3.iso \
+      -drive file=out/tater_nvme.img,if=none,id=nvm,format=raw \
+      -device nvme,serial=deadbeef,drive=nvm \
+      -serial file:/tmp/s.log -display none -no-reboot
+- Loader completed all streamed segments:
+    LINUXELF: load done entry=60000001f300 rsp=7ffffffffde0 brk=eaa7000
+- Claude launched:
+    PROC: linux launch ok path=/nvme/RCLAUDE.LXE pid=3 entry=60000001f300 rsp=7ffffffffde0 brk=eaa7000
+    TBRIDGE: claude launch rc=3
+    TBRIDGE: prompt-only mode; skipping kernel selftest and INIT.FRY
+
+Result:
+- The previous kernel panic in lx_deliver_signal_from_exception is fixed.
+- The same Bun #GP happens first:
+    !EXC vec=000000000000000D err=000000000000001A RIP=00000000060EA0A7 ...
+- But this time signal delivery returns to userland and Bun prints its crash report:
+    Bun v1.3.14 (521eedd6) Linux x64 (baseline)
+    Args: "claude" "-p" "say hello from TaterTOS in 10 words"
+    panic(main thread): Segmentation fault at address 0x0
+- After Bun's own panic path, the next blocker is:
+    !EXC vec=0000000000000006 err=0000000000000000 RIP=0000000002B05212 ...
+    USER FAULT: pid=3 tid=3 vec=6 err=0x0 rip=0x2b05212 cr2=0x6fdde92b2030
+    PTE CHAIN va=0x6fdde92b2030 cr3=0x7db64000 pml4[223]=0x7513d027
+    PTE CHAIN va=0xaad7027 cr3=0x0 pml4[0]=0x0
+- Then the log floods repeated:
+    PTE CHAIN va=0x0 cr3=0x0 pml4[0]=0x0
+
+Current diagnosis:
+- Kernel sigframe copyout from exception context is no longer the blocker.
+- Real next blocker is Bun/Claude user-mode crash handling after the initial
+  SIGSEGV path: Bun reports null segfault, then hits #UD at RIP 0x2b05212 and
+  the kernel fault-reporting path floods PTE chain output with cr3=0.
+- The LINUXELF loader breadcrumbs are temporary and should be removed or gated
+  after this crash path is understood.
+
+Next recommended step:
+- Inspect exception/user-fault handling after lx_deliver_signal_from_exception
+  for vec=6 (#UD) and stop the repeated PTE dump when the Linux process is
+  already terminal or when the report has no valid cr3.
+- Then map RIP 0x2b05212 against the staged RCLAUDE.LXE image if possible, or
+  add one more narrow trace around signal action/restorer state to see whether
+  Bun's crash reporter is executing an unsupported instruction or returning
+  through a bad/restorer path.

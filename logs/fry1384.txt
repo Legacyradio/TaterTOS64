@@ -1,0 +1,51 @@
+fry1384 — Tater Bridge / Claude Code: #GP root-cause hypotheses refined after the
+mmap fix was ruled out
+Timestamp: 2026-06-06 16:47 CDT
+Author: Claude (Opus 4.8), continuing fry1382/1383
+
+RECAP
+  fry1379 fixed the hang (-mgeneral-regs-only -> Bun boots + runs Claude Code).
+  fry1383 verified the Gemini LNX_mmap aliasing fix does NOT fix the remaining
+  #GP at 0x4C17293 (rdi non-canonical from a 6-byte-packed JSC table). The mmap
+  overlaps that exist are normal loader sub-maps, none at the table.
+
+NEW STATIC FINDING
+  The 6-byte-packed-entry lookup (reconstruct rdi=(u16@+4<<32)|u32@+0; empty=0,
+  deleted=1) is a COMMON INLINED JSC pattern: it appears at 0x4C0D08F (base r15)
+  and 0x4C0D1xx (base r13) and the failing 0x4C17270 path. So the table type and
+  the lookup code are legitimate/correct JSC. The fault is corrupt DATA in one
+  entry (high-16 = low bytes of a valid pointer 0x6FBFF40EC200 written by the
+  32-byte-stride code at 0x5835xxx).
+
+THREE LIVE HYPOTHESES (need targeted boots to distinguish)
+  (b1) INTRA-HEAP ALIASING: JSC's userspace allocator (bmalloc/IsoHeap) handed
+       the same heap address to two objects (the 6-byte atom table and a 32-byte
+       structure). Invisible to mmap-overlap checks. Would imply allocator
+       metadata corruption.
+  (b2) GC-SUSPEND RACE (NEW, promising): the 0x5835xxx writer is a rehash/GC
+       move; the reader runs CONCURRENTLY and sees a half-updated table. JSC's
+       stop-the-world GC uses sig30 to SUSPEND mutator threads (handler at
+       0x4C22C70). Logs show sig30 delivered to pid5 then a quick TBSIG
+       sigreturn. If our signal/futex mechanics let the handler RETURN instead
+       of PARKING the thread for the GC duration, mutators keep touching
+       structures JSC is moving -> type-confusion garbage. (-smp 1 still crashes,
+       but cooperative context switches mid-rehash also race, so smp1 does NOT
+       rule this out.)
+  (b3) STALE TABLE POINTER: less likely — r13=0x6FBBFF3A8020 + r14*6 == entry is
+       self-consistent and the lookup pattern is standard, so the base looks
+       legit.
+
+NEXT INSTRUMENTS
+  - Test (b2) first (cheapest signal): verify sig30 actually PARKS the target
+    thread. Trace, for the sig30 path: does the target thread stop making
+    progress (no syscalls/no scheduling) between sig30 deliver and the GC's
+    resume signal? If it keeps running -> b2 confirmed; fix = make sig30 suspend
+    truly block the thread until resumed (proper park, not immediate sigreturn).
+  - For (b1): instrument the JSC allocator / the 0x5835xxx writer to log the
+    object base+size, and compare with the atom-table base 0x6FBBFF3A8020 for
+    address reuse while the table is still live.
+
+STATUS: hang fixed; Bun runs Claude Code init; #GP (this) then HTTPS egress+auth
+  remain before an actual reply. ~9/10 "binary runs", ~7.5-8/10 "prints reply".
+  Diagnostic instrumentation + Gemini mmap refactor + Claude signal-FPU all in
+  tree, uncommitted. Build/run under KVM (-cpu host), CLAUDE_BIN=2.1.162.

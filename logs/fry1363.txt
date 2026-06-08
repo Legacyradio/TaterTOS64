@@ -1,0 +1,41 @@
+fry1363 - mmap size-alignment for large allocs; INT3 ASSERTION BYPASSED
+
+Date: 2026-06-04 ~23:35 CDT
+
+What changed:
+- Large mmap allocations (>= 1 MiB) now align base address to the
+  next power-of-2 >= allocation size. Previously only 4K aligned.
+- Applied to both cursor-based allocation and hint-fallback paths.
+- Uses round-up-to-next-power-of-2 for non-power-of-2 sizes.
+
+Why:
+- JSC gigacages require size-aligned base addresses for bit-pattern
+  masking. Our 4K-only alignment placed gigacages at random offsets,
+  causing the assertion 0x1BC (fry1354-fry1362, ~8 fry logs).
+  Linux's buddy allocator does this naturally; Tater Bridge's cursor
+  must explicitly align.
+
+Build: clean.
+
+Boot result:
+- INT3 ASSERTION 0x1BC IS GONE. First boot without it in 8+ cycles.
+  Gigacage addresses now properly aligned:
+    64 MiB gigacage: 0x6fbbfc000000 (64 MiB aligned) ✓
+    1 GiB gigacage:  0x23971c00000 (hint honored) ✓
+    8 GiB cage:      0x6fbc00000000 (8 GiB aligned) ✓
+    128 GiB cage:    0x6fc000000000 (128 GiB aligned) ✓
+
+- Now consistently hits the libuv vtable crash at 0x6056F06 with
+  rdi=-1 (0xFFFFFFFFFFFFFFFF). Same SIGSEGV delivery + crash reporter
+  #UD sequence.
+
+- This confirms the int3 assertion was gigacage alignment. The libuv
+  array corruption is the NEXT blocker, separate from alignment.
+
+Next step:
+- The libuv array corruption (vtable dispatch on garbage entries) is
+  the remaining blocker. This is likely caused by incomplete init
+  due to a missing syscall or /proc file.
+  With alignment fixed, Bun gets further and the access/newfstatat
+  path traces should now show what files are being checked before
+  the crash — useful for diagnosing the array corruption.

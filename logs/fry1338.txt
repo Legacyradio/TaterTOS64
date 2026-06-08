@@ -1,0 +1,41 @@
+fry1338 - Tater Bridge claude --help boot checkpoint after stdio fcntl fix
+timestamp: 2026-06-04 10:26:40 CDT
+
+What changed:
+- No source change in this checkpoint; this records the post-fry1337 boot result.
+
+Why:
+- planv3 requires each meaningful verified step to be banked as a fry log before
+  moving on to the next blocker.
+
+Verification:
+- Rebuilt ISO before this checkpoint with STAGE_CLAUDE=1 and staged the real
+  claude binary as /RCLAUDE.LXE.
+- Booted with QEMU TCG, -smp 2, NVMe image, 6G RAM, serial to /tmp/s.log.
+- Tater Bridge launched the real claude --help path:
+  - TBRIDGE: launching REAL claude --help (from /nvme)
+  - TBRIDGE: claude launch rc=12
+  - selftest: 106 passed, 0 failed
+- The previous stdio fcntl blocker is cleared:
+  - fcntl(1, F_DUPFD_CLOEXEC, 0) returned fd 11.
+  - fcntl(fd 11, F_GETFL) returned 1.
+  - fcntl(fd 11, F_SETFL, O_NONBLOCK|...) returned 0.
+  - fcntl(2, F_DUPFD_CLOEXEC, 0) returned fd 12.
+  - fcntl(fd 12, F_GETFL) returned 1.
+  - fcntl(fd 12, F_SETFL, O_NONBLOCK|...) returned 0.
+
+Next blocker:
+- claude progressed to a fresh anonymous mmap:
+  - mmap(NULL, 0x2000000, PROT_READ|PROT_WRITE,
+    MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0)
+    returned 0x6fdd66908000.
+- It then faulted on a write inside that mapping:
+  - USER FAULT: pid=12 tid=12 vec=14 err=0x7 rip=0x54effb1
+    cr2=0x6fdd67000000
+- err=0x7 means present-page, write, user fault. This is a protection fault,
+  not a missing-page demand fault.
+
+Next step:
+- Inspect the Linux mmap page-install path and the PTE flag propagation for
+  normal anonymous mappings. The likely bug is a writable anonymous page being
+  installed or later left read-only.

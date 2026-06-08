@@ -1,0 +1,39 @@
+fry1361 - rseq stub returns 0; path shifts to rdi=-1 again
+
+Date: 2026-06-04 ~23:15 CDT
+
+What changed:
+- LNX_rseq (syscall 334) now returns 0 (success) instead of ENOSYS.
+  Glibc in some configs calls abort() on rseq ENOSYS; returning 0
+  tells it "rseq registered, use fallback path."
+
+Build: clean.
+
+Boot result:
+- Path shifted again: rdi=-1 (0xFFFFFFFFFFFFFFFF) at 0x6056F06.
+  Same libuv vtable dispatch, same SIGSEGV delivery, same crash
+  reporter #UD at 0x2B05212.
+- rseq no longer returns error in trace.
+
+Nondeterministic summary (fry1354-fry1361):
+  Same code path (0x6056F06 vtable dispatch) crashes with:
+  - rdi=0x40000000 (1 GiB) — fry1354, 1359
+  - rdi=0xFFFFFFFFFFFFFFFF (-1) — fry1356, 1357, 1361
+  - int3 at 0x60EA0A7 (code 0x1BC) — fry1355, 1358, 1360
+  Each small kernel change shifts timing/ordering enough to change
+  which garbage value appears in the array.
+
+Interpretation:
+  The libuv/JSC object array at offset 0x60 from rbx is populated
+  during initialization but has race/uninitialized entries. The
+  specific garbage depends on ASLR, mmap layout, and syscall timing.
+  This is Bun's internal bug triggered by our incomplete Linux surface.
+  On real Linux, these races are masked by deterministic initialization
+  ordering from fully working syscalls and /proc files.
+
+Next steps:
+- Add path tracing for access/newfstatat syscalls to identify missing
+  files that might prevent proper initialization.
+- Check if any Bun-specific /proc files are needed (e.g. /proc/version,
+  /proc/self/status).
+- Continue adding missing syscall stubs until initialization completes.

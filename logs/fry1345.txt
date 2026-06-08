@@ -1,0 +1,57 @@
+fry1345 - /proc/self/maps dynamic enumeration verified; new blocker: Bun int3 assertion
+timestamp: 2026-06-04 11:35:00 CDT
+
+What changed:
+- Rebuilt ISO with fry1344 (dynamic /proc/self/maps).
+- Booted QEMU with -cpu max,la57=off.
+
+Evidence:
+- /proc/self/maps now returns 229 bytes (up from 51). JSC reads it and sees
+  the actual vm_region layout including stack, mmap'd regions, and the cage
+  reservations.
+
+- Cage address CHANGED: JSC's MAP_NORESERVE gigacage hint shifted from
+  0x3d9a3c00000 (fry1343) to 0x3b1ac000000. This proves JSC is computing
+  its cage base from /proc/self/maps content — different maps → different
+  computed address. The mmap hint handling correctly honored the new hint.
+
+- Selftest: 106 passed, 0 failed (unchanged).
+
+- The old 0x4c17293 crash (JSC structure-ID check at unmapped cage address)
+  is GONE. Both fry1342 (mmap hint) and fry1344 (maps enumeration) are
+  working together.
+
+New blocker:
+- Bun hits an int3 (breakpoint) instruction at RIP=0x60ea0a7:
+  - push rbp; mov rbp,rsp; mov r11,rdi; int3
+  - This is Bun's internal assertion/error trap — used for ASAN failures,
+    UBSAN reports, and unreachable-code markers.
+  - Called from functions passing error codes 0x38 or 0x66.
+  - Generated as #GP (vec=0x0D) because TaterTOS doesn't have a user-mode
+    #BP handler.
+
+- The trap occurs immediately after Bun finishes its cage setup (8 GB
+  reservation, trim, madvise, followed by smaller MAP_NORESERVE mmaps).
+
+Conclusion:
+- The mmap hint + maps enumeration fixes got past two previous blockers.
+  Bun now initializes its memory layout based on actual VM state and
+  reaches runtime code paths that trigger its own internal assertions.
+- This is a different class of problem: not memory mapping, but Bun's
+  runtime expectations about the Linux environment (possibly a syscall
+  returning unexpected values, a missing feature, or a sanitizer detecting
+  something wrong with the environment).
+
+Next step:
+- The int3 means Bun detected an internal error condition. Need to determine
+  whether this is:
+  a) A Bun sanitizer (ASAN/UBSAN) false positive triggered by Tater Bridge
+     returning unexpected values from a syscall
+  b) A real Bun assertion failure because Tater Bridge is missing a required
+     feature (e.g., /proc/self/auxv, AT_RANDOM, vdso, etc.)
+  c) Bun's JSC engine hitting an unimplemented code path because it couldn't
+     initialize properly
+- Disassembling the callers of the int3 stub (0x60ea072 and 0x60ea094) may
+  reveal which Bun subsystem triggered the trap.
+- Checking whether /proc/self/auxv, AT_PHDR, and other ELF auxiliary vector
+  entries are available could help — Bun heavily relies on these.

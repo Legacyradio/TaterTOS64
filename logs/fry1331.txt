@@ -1,0 +1,35 @@
+=====================================================================
+fry1331 - Wire Linux signal syscalls and syscall-exit delivery
+2026-06-04 09:57:03 CDT
+=====================================================================
+
+Completed code step:
+- Replaced the linuxulator signal no-op switch cases in
+  src/kernel/proc/syscall.c:
+  - rt_sigaction now stores/returns shared process dispositions.
+  - rt_sigprocmask now updates the per-thread blocked mask.
+  - sigaltstack now stores/returns per-thread alternate-stack state.
+  - kill, tkill, and tgkill now queue a pending signal on the target task.
+  - rt_sigreturn now restores the saved user context from the signal frame.
+- Added syscall-exit delivery from linux_syscall_dispatch:
+  - finds pending unblocked handled signals,
+  - builds a small rt signal frame on the user stack,
+  - redirects SYSRET RIP/RSP into the userspace handler,
+  - passes signo, siginfo pointer, and ucontext pointer in rdi/rsi/rdx.
+- Added TBTRACE names/selectors for rt_sigreturn and tkill.
+- Removed the temporary TBABORT tgkill backtrace beacon while replacing the
+  tgkill block. TBTRACE/TBFUTEX/TBSCHED tracing remains.
+
+Why:
+- The Claude/Bun/JSC blocker is thread-directed SIG30. JSC expects the target
+  thread to leave futex_wait, run its installed handler, capture stack/register
+  state for GC, and later return through rt_sigreturn. The previous kernel path
+  returned success from tgkill but never made a signal pending and never entered
+  the handler.
+- This step connects the state added in fry1330 to the syscall switch and the
+  SYSRET path so a queued handled signal can actually execute userspace code.
+
+Verification:
+- Not built or booted yet. Next step is compiler verification, followed by the
+  full -smp 2 boot test if the build passes.
+=====================================================================

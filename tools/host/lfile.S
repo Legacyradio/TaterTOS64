@@ -1,5 +1,5 @@
 /*
- * lfile.S - unmodified static Linux x86_64 ELF for the TaterTOS linuxulator.
+ * lfile.S - unmodified static Linux x86_64 ELF for Tater Bridge.
  *
  * Exercises the next compatibility rung after lhello.S:
  *   - access(2)
@@ -171,7 +171,7 @@ write1:
     ret
 
 .section .rodata
-banner:          .ascii "==== TaterTOS linuxulator: VFS syscall probe ====\n"
+banner:          .ascii "==== Tater Bridge: VFS syscall probe ====\n"
                  banner_len = . - banner
 okline:          .ascii "[OK] access/openat/fstat/read/lseek/pread64/newfstatat/close passed\n"
                  okline_len = . - okline

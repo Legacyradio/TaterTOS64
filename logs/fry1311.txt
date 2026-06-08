@@ -1,0 +1,123 @@
+=====================================================================
+fry1311 - devfs /dev/urandom unblock for real Claude startup
+=====================================================================
+DATE: 2026-06-03 18:55:10 CDT
+GOAL: Crack the next Claude Code runtime blocker after the clean
+fry1310 boot reached Bun/JSC and faulted at the 0xBBADBEEF crash site.
+
+---------------------------------------------------------------------
+DIAGNOSIS
+---------------------------------------------------------------------
+Offline disassembly of the real Claude binary at rip 0x60a9b84 showed
+the crash site was not MAP_JIT yet. The failing path was:
+
+  open(filename, O_RDONLY)
+  if fd == -1 and errno != EINTR:
+      write/deref 0xBBADBEEF
+      ud2
+
+The filename string at the referenced rodata address was:
+
+  /dev/urandom
+
+TaterTOS64v3 already had SYS_getrandom backed by entropy_getbytes(), but
+the VFS had no /dev mount and no /dev/urandom node. libuv/Bun therefore
+opened /dev/urandom directly, got ENOENT, and intentionally crashed.
+
+---------------------------------------------------------------------
+FIX
+---------------------------------------------------------------------
+Added a small VFS-backed devfs:
+
+  src/kernel/fs/devfs.h
+  src/kernel/fs/devfs.c
+
+Nodes implemented:
+
+  /dev/null    read EOF, write discards
+  /dev/zero    read zero-filled bytes, write discards
+  /dev/random  read entropy_getbytes()
+  /dev/urandom read entropy_getbytes()
+
+WHY:
+  Claude's immediate blocker was /dev/urandom. Adding devfs at the VFS
+  layer is the correct OS-side fix because other Linux runtimes also
+  probe /dev/null, /dev/zero, /dev/random, and /dev/urandom. This avoids
+  special-casing openat() and keeps the behavior available to every
+  process.
+
+Wiring:
+  - Makefile now includes src/kernel/fs/devfs.o in KERNEL_OBJS.
+  - src/kernel/fs/vfs.c mounts devfs at /dev after each successful root
+    mount path: packed ramdisk, ToTFS GPT, ToTFS raw fallback, FAT32.
+  - src/kernel/selftest.c now opens and reads /dev/urandom, /dev/zero,
+    and /dev/null so this does not silently regress.
+
+No Linux/Windows code was imported. This is native TaterTOS64v3 VFS code
+backed by the existing entropy subsystem.
+
+---------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------
+Targeted compile/link:
+
+  make src/kernel/fs/devfs.o src/kernel/fs/vfs.o src/kernel/selftest.o kernel
+
+Result:
+  exit 0
+  devfs.o, vfs.o, selftest.o compiled
+  kernel.elf relinked successfully
+
+Planv3 clean rebuild with real Claude staged:
+
+  CLAUDE_BIN="$(readlink -f "$(command -v claude)")" \
+  STAGE_CLAUDE=1 MTOOLSRC=/dev/null \
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" \
+  /bin/bash build_iso.sh
+
+Result:
+  exit 0
+  kernel.elf rebuilt
+  out/tatertos64v3.iso rebuilt
+  out/tater_nvme.img rebuilt
+  /RCLAUDE.LXE staged as inode 25, size 244000464 bytes, 59571 blocks,
+  1 extent
+
+Post-build image check:
+
+  ./tools/totcopy out/tater_nvme.img 1048576 --list /
+
+Confirmed:
+  [FILE] inode=25 size=244000464 RCLAUDE.LXE
+
+Output artifacts:
+  kernel.elf                 2.4M, timestamp Jun 3 18:54
+  out/tatertos64v3.iso       156M, timestamp Jun 3 18:54
+  out/tater_nvme.img         400M, timestamp Jun 3 18:54
+  src/kernel/fs/devfs.o      4.4K, timestamp Jun 3 18:53
+
+QEMU/serial validation was not run yet in this step because planv3 says
+QEMU logs are off limits unless expressly stated. Next validation needs
+explicit permission to boot QEMU and inspect the serial output.
+
+---------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------
+With explicit QEMU-log permission, boot the rebuilt ISO + NVMe using the
+same smp2 command from fry1310 and check whether Claude gets past the
+former /dev/urandom crash site:
+
+  cp /usr/share/edk2/x64/OVMF_VARS.4m.fd /tmp/v.fd
+  timeout 420 qemu-system-x86_64 -m 6G -machine q35,accel=tcg -cpu max -smp 2 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=/tmp/v.fd -cdrom out/tatertos64v3.iso \
+    -drive file=out/tater_nvme.img,if=none,id=nvm,format=raw \
+    -device nvme,serial=deadbeef,drive=nvm \
+    -serial file:/tmp/s.log -display none -no-reboot
+
+Expected:
+  - selftest pass count increases because of devfs tests
+  - no 0xBBADBEEF fault at rip 0x60a9b84 from open("/dev/urandom")
+  - either "claude --version" prints, or the next real runtime/syscall
+    gap appears after the devfs fix
+=====================================================================

@@ -1,0 +1,35 @@
+fry1360 - getrusage stub + /proc/self/auxv added; int3 path still dominant
+
+Date: 2026-06-04 ~23:05 CDT
+
+What changed:
+- Added LNX_getrusage (syscall 98) stub in syscall.c. Returns zeroed rusage
+  for RUSAGE_SELF and RUSAGE_THREAD. Previously returned ENOSYS.
+- Added /proc/self/auxv to tbridgefs (TBRIDGEFS_NODE_PROC_AUXV) with binary
+  data serving. Emits AT_PAGESZ, AT_HWCAP, AT_HWCAP2, AT_CLKTCK,
+  AT_SYSINFO_EHDR, AT_PHDR, AT_PHNUM, AT_RANDOM.
+- Modified tbridgefs open/read to handle binary auxv data (null bytes).
+
+Build: clean (all warnings fixed with uint64_t casts).
+
+Boot result:
+- Same int3 assertion path as fry1358. No auxv access observed.
+  !EXC vec=3 RIP=0x60EA0A8 rdi=0x1BC (assertion code 444)
+  TBSIG exc-deliver sig=11 vec=3 handler=287a9b0
+
+- Crash reporter runs, prints "Segmentation fault at 0x60EA0A8", then
+  jumps to gigacage offset 0x1F27, dereferences NULL+2, #PF, recursive
+  SIGSEGV, "panicked during a panic", #UD at 0x2B05212, killed.
+
+- The int3 assertion consistently blocks the path. The nondeterministic
+  variation (rdi=-1, rdi=0x40000000, int3 0x1BC) continues — this boot
+  got the int3 flavor.
+
+Next steps:
+- The int3 assertion (code 0x1BC) fires during JSC gigacage init
+  immediately after 64 MiB MAP_NORESERVE mmap + mprotect.
+  Without Bun source, need to attack from the other direction:
+  - rseq (syscall 334) stub — currently returns ENOSYS, Bun handles it
+    but the handler code path may have side effects
+  - prctl PR_GET_TSC / PR_SET_TSC — JSC uses for timing
+  - Check if any syscall returns unexpected errno that triggers assert

@@ -1,0 +1,88 @@
+fry1371 - closed statm/scheduler/sigsuspend ABI holes, liveness remains
+
+Date: 2026-06-05 ~08:43 CDT
+
+What changed:
+- Added Linux syscall 144 (`sched_setscheduler`) for Tater Bridge.
+  Host Linux `claude --version` calls this after worker `clone3`.
+  Tater Bridge previously returned `-ENOSYS`; now it accepts
+  `SCHED_OTHER` with optional `SCHED_RESET_ON_FORK` and validates pid
+  and the scheduler parameter pointer.
+- Added `/proc/self/statm` in tbridgefs.
+  Host Linux reads it before the successful `claude --version` output.
+  Tater Bridge previously returned ENOENT; now the file opens and emits
+  Linux page-count fields.
+- Added Linux syscall 130 (`rt_sigsuspend`).
+  After statm/scheduler were closed, Tater Bridge hit repeated
+  `nr=130 unknown -ENOSYS` in a Claude worker. The syscall now validates
+  sigset size, installs the temporary mask, blocks/yields, restores the
+  old mask, and returns `-EINTR`.
+- Made Claude syscall tracing follow the actual Claude tgid dynamically.
+  This keeps traces useful when `-smp 8` changes the first Claude pid
+  from 3 to 9.
+- Restored the final launcher to prompt mode:
+    claude -p "say hello from TaterTOS in 10 words"
+
+Build verification:
+- `make src/kernel/proc/syscall.o src/kernel/fs/tbridgefs.o` passed.
+- `make kernel` passed.
+- Full staged rebuild passed:
+    CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.162
+    STAGE_CLAUDE=1 build_iso.sh
+- Final artifacts:
+    out/tatertos64v3.iso
+    out/tater_nvme.img with `/RCLAUDE.LXE` staged.
+
+Probe results:
+- `/tmp/tb_statm_sched_s.log`
+  90-second `claude --version`, `-smp 2`.
+  Timed out. `/proc/self/statm` now opens and reads. The next missing
+  surface was `nr=130` (`rt_sigsuspend`).
+- `/tmp/tb_sigsuspend_s.log`
+  90-second `claude --version`, `-smp 2`.
+  Timed out. `rt_sigsuspend` no longer returns `-ENOSYS`; it returns
+  `-EINTR`, with `TBSIG queue`, `TBSIG deliver`, and `TBSIG sigreturn`
+  observed. No stdout write and no `exit_group`. Still only two
+  `TBCLONE3 args` entries.
+- `/tmp/tb_smp8_trace_s.log`
+  90-second `claude --version`, `-smp 8`.
+  Timed out. Dynamic tracing followed Claude at pid/tgid 9. Widening SMP
+  still produced only two `clone3` workers and did not reach CLI output.
+- `/tmp/tb_prompt_s.log`
+  75-second final prompt-mode smoke boot from rebuilt artifacts.
+  Timed out. Confirmed launch line:
+    TBRIDGE: launching REAL claude -p (from /nvme)
+  Counts/evidence:
+    0 exceptions
+    0 `exit_group`
+    0 stdout `write`
+    4 `TBSKIP bad-ptr`
+    no `unknown` syscall lines
+    `/proc/self/statm` opened
+    `rt_sigsuspend` entered and returned `-EINTR`
+
+Conclusion:
+- The closed surfaces are real ABI holes, not speculative cleanup:
+  statm, sched_setscheduler, and rt_sigsuspend all appear on the
+  successful Linux path or the current Tater Bridge path.
+- Claude/Bun is still mechanically stable but does not reach CLI output.
+  The blocker is now narrowed past missing statm/sched_setscheduler/
+  rt_sigsuspend into JSC GC/futex/signal coordination semantics.
+- The adjacent JSC parking-lot futex addresses (`...e8c8` waits and
+  `...e880` wakes) are normal Linux behavior by themselves; host Linux
+  also does that before progressing.
+
+Next work:
+- Compare host and Tater Bridge signal/futex traces around SIGRT/tgkill,
+  rt_sigreturn, and the worker wake transitions after the first normal
+  100 ms parking-lot timeout.
+- Recheck `rt_sigsuspend` accuracy. The current implementation restores
+  the old mask before syscall-exit signal delivery; Linux may require a
+  saved suspended-mask path through signal delivery and sigreturn.
+- Instrument futex word transitions around:
+    0x6fbff402c1d4
+    0x6fbff402c188
+    0x6fbff800e8c8
+    0x63ad6e0
+- Treat epoll as secondary until a trace shows Bun actually reaches
+  `epoll_wait`/`epoll_pwait`.

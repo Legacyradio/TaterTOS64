@@ -1,0 +1,52 @@
+=====================================================================
+fry1333 - QEMU verification: real Claude --version reaches output
+2026-06-04 10:01:29 CDT
+=====================================================================
+
+Completed verification step:
+- Booted the newly built ISO under QEMU with the handoff-required shape:
+  timeout 600 qemu-system-x86_64 -m 6G -machine q35,accel=tcg -cpu max -smp 2
+  with the ISO at out/tatertos64v3.iso, NVMe image at out/tater_nvme.img,
+  serial captured to /tmp/s.log, and display disabled.
+- Reaped QEMU after the successful evidence appeared so it did not sit until
+  the 600-second timeout.
+
+Result:
+- PASS. The real Claude binary printed:
+  2.1.162 (Claude Code)
+- The process then entered exit_group(0):
+  /tmp/s.log line 2900:
+  TBTRACE enter pid=12 tgid=12 nr=231 exit_group a1=0 ...
+- This means the previous signal-delivery deadlock no longer blocks
+  claude --version.
+
+Key serial evidence:
+- Launch and selftest:
+  /tmp/s.log line 88:  LINUXTEST: claude launch rc=12
+  /tmp/s.log line 90:  selftest: 106 passed, 0 failed
+- JSC SIG30 delivery path:
+  /tmp/s.log line 1590: pid 24 tgkill(tgid=12, tid=25, sig=30)
+  /tmp/s.log line 1591: TBSIG queued sig30 on target tid 25
+  /tmp/s.log line 1592: TBSCHED signal-wake woke tid 25 out of futex wait
+  /tmp/s.log line 1594: TBFUTEX wait-return tid 25 rc=-4 (-EINTR)
+  /tmp/s.log line 1595: TBSIG deliver entered handler 0x4c22c70 with restorer 0x6fffffe1a8f0
+  /tmp/s.log line 1608: tid 25 entered rt_sigreturn
+  /tmp/s.log line 1609: TBSIG sigreturn restored rip/rsp/mask
+  /tmp/s.log lines 1614-1623: a second SIG30 delivery and rt_sigreturn also succeeded
+- Final user-visible success:
+  /tmp/s.log line 2831: 2.1.162 (Claude Code)
+  /tmp/s.log line 2900: exit_group(0)
+
+Notes:
+- /tmp/s.log also contains two USER FAULT lines for earlier probe tasks
+  pid 18 and pid 19, not for the Claude process tgid 12. They occurred before
+  the Claude runtime reached the signal path and did not stop the verification.
+- TBTRACE/TBFUTEX/TBSCHED/TBSIG tracing remains in place for follow-up cleanup
+  after this milestone is banked.
+
+Why:
+- This verifies the exact blocker from fry1329: thread-directed SIG30 no longer
+  no-ops. The target thread gets a pending signal, leaves futex_wait with
+  -EINTR, runs the userspace handler, returns through rt_sigreturn, and the
+  runtime proceeds far enough to print the real Claude version.
+=====================================================================

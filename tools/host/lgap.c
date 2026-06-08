@@ -20,7 +20,7 @@ int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
 
-    printf("==== TaterTOS linuxulator: syscall gap probe ====\n");
+    printf("==== Tater Bridge: syscall gap probe ====\n");
 
     /* 1. nanosleep → clock_nanosleep (230) on modern glibc */
     {

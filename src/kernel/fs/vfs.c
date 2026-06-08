@@ -4,6 +4,8 @@
 #include "totfs.h"
 #include "ntfs.h"
 #include "part.h"
+#include "devfs.h"
+#include "tbridgefs.h"
 #include "../../boot/efi_handoff.h"
 #include "../../drivers/smp/spinlock.h"
 void kprint(const char *fmt, ...);
@@ -39,6 +41,8 @@ static int sec_probe_root(struct fs_ops *ops, void *fs_data);
 static struct vfs_mount *find_mount_locked(const char *path, uint32_t *out_best_len);
 static struct vfs_mount *find_mount_ref(const char *path, const char **out_rel);
 static struct vfs_mount *find_mount_exact_ref(const char *mountpoint);
+static void vfs_mount_devfs(void);
+static void vfs_mount_tbridgefs(void);
 #define SEC_MAX_MOUNTED 8u
 // ── Ramdisk backend ──────────────────────────────────────────────────────────
 static struct ramdisk_header *g_rd_hdr  = 0;
@@ -59,6 +63,24 @@ static uint64_t vfs_lock_irqsave(void) {
 
 static void vfs_unlock_irqrestore(uint64_t flags) {
     spin_unlock_irqrestore(&g_vfs_lock, flags);
+}
+
+static void vfs_mount_devfs(void) {
+    if (devfs_mount() != 0) {
+        kprint("VFS: /dev mount failed\n");
+    }
+}
+
+static void vfs_mount_tbridgefs(void) {
+    if (tbridgefs_mount_proc() != 0) {
+        kprint("VFS: /proc mount failed\n");
+    }
+    if (tbridgefs_mount_sys() != 0) {
+        kprint("VFS: /sys mount failed\n");
+    }
+    if (tbridgefs_mount_usr() != 0) {
+        kprint("VFS: /usr mount failed\n");
+    }
 }
 
 static void vfs_mem_zero(void *ptr, uint64_t len) {
@@ -343,6 +365,8 @@ static int rd_mount_packed(void) {
     rd_ops.stat    = rd_stat;
     rd_ops.seek    = rd_seek;
     vfs_mount("/", &rd_ops, 0);
+    vfs_mount_devfs();
+    vfs_mount_tbridgefs();
     kprint("VFS: ramdisk mounted (%u files)\n", (unsigned)g_rd_hdr->count);
     return 0;
 }
@@ -873,6 +897,8 @@ int vfs_init(struct block_device *bd) {
             totfs_ops.truncate = totfs_truncate_vfs;
             totfs_ops.rename  = totfs_rename_vfs;
             vfs_mount("/", &totfs_ops, &g_totfs);
+            vfs_mount_devfs();
+            vfs_mount_tbridgefs();
             kprint("VFS: ToTFS mounted at LBA %llu\n", (unsigned long long)totfs_lba);
             return 0;
         }
@@ -897,6 +923,8 @@ int vfs_init(struct block_device *bd) {
                     totfs_ops.truncate = totfs_truncate_vfs;
                     totfs_ops.rename  = totfs_rename_vfs;
                     vfs_mount("/", &totfs_ops, &g_totfs);
+                    vfs_mount_devfs();
+                    vfs_mount_tbridgefs();
                     kprint("VFS: ToTFS mounted at raw LBA %llu\n",
                            (unsigned long long)raw_offsets[i]);
                     return 0;
@@ -959,6 +987,8 @@ int vfs_init(struct block_device *bd) {
     fat32_ops.truncate = fat32_truncate_vfs;
     fat32_ops.rename = fat32_rename_vfs;
     vfs_mount("/", &fat32_ops, &g_fat32);
+    vfs_mount_devfs();
+    vfs_mount_tbridgefs();
     kprint("ERROR: DBG_VFS picked source=%s lba=%llu userspace_score=%u\n", source, part_lba, score);
     kprint("VFS: FAT32 mounted at LBA %llu\n", part_lba);
     return 0;

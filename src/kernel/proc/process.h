@@ -17,6 +17,15 @@ enum proc_state {
 #define PROC_INBUF 512    /* per-process stdin ring buffer size */
 #define PROC_VMREG_MAX FRY_VMREG_MAX
 
+#define TB_CLAUDE_WATCH_TGID 3u
+#define TB_JSC_CAGE_SLOT_ARRAY_OFF 0x4480000ULL
+#define TB_JSC_SLOT_WATCH0_OFF (0x3f8ULL * 8ULL)
+#define TB_JSC_SLOT_WATCH1_OFF (0x3f9ULL * 8ULL)
+#define TB_JSC_SLOT_WATCH2_OFF (0x7f8ULL * 8ULL)
+#define TB_JSC_SLOT_WATCH3_OFF (0x7f9ULL * 8ULL)
+#define TB_JSC_FUTEX_UADDR 0x63ad6e0ULL
+#define TB_JSC_FUTEX_KEY 0x80030000063ad6e0ULL
+
 enum process_launch_error {
     PROCESS_LAUNCH_OK = 0,
     PROCESS_LAUNCH_ERR_CREATE_USER = -200
@@ -38,7 +47,8 @@ enum fry_fd_kind {
     FD_TIMERFD    = 8,    /* timerfd — fd_ptrs[fd] is struct timerfd_cb* */
     FD_SIGNALFD   = 9,    /* signalfd — fd_ptrs[fd] is struct signalfd_cb* */
     FD_INOTIFY    = 10,    /* inotify — fd_ptrs[fd] is struct inotify_cb* */
-    FD_MEMFD      = 11     /* memfd — fd_ptrs[fd] is struct memfd_cb* */
+    FD_MEMFD      = 11,    /* memfd — fd_ptrs[fd] is struct memfd_cb* */
+    FD_STDIO      = 12     /* dup of stdin/stdout/stderr — fd_ptrs[fd] encodes fd+1 */
 };
 
 /*
@@ -79,6 +89,13 @@ struct fry_vm_region {
     uint8_t _pad[4];
 };
 
+struct fry_linux_sigaction {
+    uint64_t handler;
+    uint64_t flags;
+    uint64_t restorer;
+    uint64_t mask;
+};
+
 struct fry_process_shared {
     uint32_t owner_pid;
     uint32_t refcount;
@@ -92,6 +109,7 @@ struct fry_process_shared {
     uint16_t _res_pad;
     uint64_t heap_start;
     uint64_t heap_end;
+    uint64_t linux_mmap_next;       /* shared Linux mmap() top-down cursor */
     /* stdout capture ring buffer — written by SYS_WRITE(fd=1),
        read by SYS_PROC_OUTPUT.  head==tail means empty. */
     uint8_t  outbuf[PROC_OUTBUF];
@@ -109,6 +127,7 @@ struct fry_process_shared {
     uint32_t env_offsets[FRY_ENV_MAX];    /* offset into args_buf for each env var */
     char     args_buf[FRY_ARGS_BUFSZ];   /* packed null-terminated strings */
     struct fry_vm_region vm_regions[PROC_VMREG_MAX];
+    struct fry_linux_sigaction linux_sigact[64]; /* dispositions shared by tgid */
 };
 
 /*
@@ -181,13 +200,23 @@ struct fry_process {
     uint8_t dumpable;
     uint8_t thp_disabled;
     uint8_t is_linux;      /* 1 = Linux-personality process: syscalls route
-                              through linux_syscall_dispatch (linuxulator) */
+                              through linux_syscall_dispatch (Tater Bridge) */
     uint8_t is_clone_child; /* 1 = first run restores full GPRs from clone_ctx */
     uint8_t _prctl_pad[1];
     /* Linux-personality per-thread bookkeeping (set via Linux syscalls). */
     uint64_t linux_clear_child_tid; /* set_tid_address — futex-wake on exit */
     uint64_t linux_robust_list;     /* set_robust_list head */
-    uint64_t linux_mmap_next;       /* bump pointer for anonymous mmap() */
+    uint64_t linux_rseq_addr;       /* rseq registration area */
+    uint32_t linux_rseq_len;
+    uint32_t linux_rseq_sig;
+    uint64_t linux_sig_blocked;     /* per-thread blocked signal mask */
+    uint64_t linux_sig_pending;     /* per-thread pending signal mask */
+    uint64_t linux_sigsuspend_saved_mask; /* mask restored by rt_sigreturn */
+    uint64_t linux_sigalt_sp;       /* per-thread sigaltstack ss_sp */
+    uint64_t linux_sigalt_size;     /* per-thread sigaltstack ss_size */
+    uint32_t linux_sigalt_flags;    /* per-thread sigaltstack ss_flags */
+    uint8_t linux_sigsuspend_active; /* 1 while rt_sigsuspend mask is active */
+    uint8_t _linux_sig_pad[3];
     struct linux_clone_ctx clone_ctx; /* full register set for a clone child */
     uint64_t timer_slack_ns;
     uint64_t kernel_stack_phys;
@@ -199,9 +228,47 @@ struct fry_process {
      * (~832B); 1024 leaves headroom. The aligned(64) makes the whole PCB
      * 64-aligned so &procs[i].fpu_area stays aligned. */
     uint8_t fpu_area[1024] __attribute__((aligned(64)));
+    /* fry1381: FPU/SSE/AVX state saved across SIGNAL delivery (separate from
+     * fpu_area which is for context switches). Saved when a signal frame is
+     * built, restored on rt_sigreturn, so handlers can't corrupt the
+     * interrupted thread's vector registers. */
+    uint8_t sig_fpu_area[1024] __attribute__((aligned(64)));
 };
 
 extern struct fry_process procs[PROC_MAX];
+void lx_fpu_save_area(uint8_t *area);
+void lx_fpu_restore_area(const uint8_t *area);
+extern volatile uint64_t g_tb_jsc_slot_watch_base;
+/* fry1379: absolute DR write-watchpoint addresses. Repurposed from the cage-
+ * relative butterfly slots to the JSC hash-set bucket array (deterministic at
+ * 0x6FBBFFF11020 across boots) to catch the -1 bulk-fill and any later zeroing
+ * of empty buckets. Armed for the Claude process on every context switch. */
+extern volatile uint64_t g_tb_jsc_slot_watch[4];
+
+static inline void tb_program_jsc_slot_watchpoints_for(const struct fry_process *p) {
+    uint64_t dr7 = 0;
+    if (g_tb_jsc_slot_watch[0] && p && !p->is_kernel &&
+        (p->pid == TB_CLAUDE_WATCH_TGID || p->tgid == TB_CLAUDE_WATCH_TGID)) {
+        uint64_t dr0 = g_tb_jsc_slot_watch[0];
+        uint64_t dr1 = g_tb_jsc_slot_watch[1];
+        uint64_t dr2 = g_tb_jsc_slot_watch[2];
+        uint64_t dr3 = g_tb_jsc_slot_watch[3];
+        __asm__ volatile(
+            "mov %0, %%dr0\n"
+            "mov %1, %%dr1\n"
+            "mov %2, %%dr2\n"
+            "mov %3, %%dr3\n"
+            :
+            : "r"(dr0), "r"(dr1), "r"(dr2), "r"(dr3)
+            : "memory");
+        dr7 = (1ULL << 0) | (1ULL << 2) | (1ULL << 4) | (1ULL << 6) |
+              (1ULL << 16) | (2ULL << 18) |
+              (1ULL << 20) | (2ULL << 22) |
+              (1ULL << 24) | (2ULL << 26) |
+              (1ULL << 28) | (2ULL << 30);
+    }
+    __asm__ volatile("mov %0, %%dr7" : : "r"(dr7) : "memory");
+}
 
 int process_init(void);
 struct fry_process *process_create_user(uint64_t cr3, uint64_t entry, uint64_t user_rsp, const char *name);

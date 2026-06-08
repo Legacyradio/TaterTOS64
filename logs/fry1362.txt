@@ -1,0 +1,34 @@
+fry1362 - access/newfstatat trace + /proc/self/{status,cmdline} + /proc/version added
+
+Date: 2026-06-04 ~23:25 CDT
+
+What changed:
+- Added LNX_access (21) and LNX_newfstatat (262) to syscall trace filter
+  with path tracing — will show what files Bun checks before crashing.
+- Added /proc/self/status, /proc/self/cmdline, /proc/version to tbridgefs.
+- Added readdir entries for all new nodes.
+
+Build: clean.
+
+Boot result:
+- Same int3 assertion path (code 0x1BC at 0x60EA0A7).
+- New /proc nodes not accessed before assertion fires.
+- CR2=0x6FDDEB21E000 — gigacage base shifted by one page vs prior boots
+  (different ASLR/mm timing).
+
+Analysis of int3 register state across boots:
+  rax = gigacage base (varies: 0x6fddeb22e000 or 0x6fddeb21e000)
+  rdx = 0x0000FFFFFFFFFFFF (48-bit canonical mask)
+  r9  = 0xFFFFFFFFFFFFFFFC (-4, alignment mask)
+  r12 = 0xA (10)
+  r14 = 0x6FDFF7A2A030 (another JSC mmap region)
+  
+  JSC appears to validate that the gigacage base address satisfies
+  certain masking constraints. The two gigacage regions are at unrelated
+  addresses (0x6fddeb... and 0x6fdff7...) — on real Linux, JSC
+  allocates a single huge region and subdivides it with known offsets.
+  Our independent mmap placement breaks the relative offsets.
+
+Next step:
+- Investigate whether forcing coniguous allocation or honoring mmap
+  hints more aggressively would satisfy JSC's addressing constraints.

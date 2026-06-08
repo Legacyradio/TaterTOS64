@@ -1,0 +1,55 @@
+fry1340 - Claude JSC cage fault narrowed to LA57 exposure plus mmap hint gap
+timestamp: 2026-06-04 10:50:53 CDT
+
+What changed:
+- Added an early serial GPR dump for user exception frames in:
+  - src/kernel/irq/irqdesc.c
+- The dump prints !REG lines immediately after !EXC, before later fault
+  reporting paths can lose the register evidence.
+
+Why:
+- The previous Claude blocker was a #GP at RIP 0x4c17293, but the serial log
+  only showed the exception header. Decoding the cause required the faulting
+  instruction's input registers.
+
+Evidence:
+- Disassembly of the installed Claude binary at RIP 0x4c17293:
+  - 4c17293: mov eax,DWORD PTR [rdi+0x4]
+- With QEMU -cpu max, the early register dump showed:
+  - rdi=0000FFC000000000
+  - faulting operand rdi+4 = 0x0000ffc000000004
+- That address is canonical only when LA57 is available. TaterTOS is still
+  using 4-level paging, with user space capped below 0x0000800000000000.
+  Under -cpu max, user CPUID exposed LA57 and JSC/Bun selected a cage pointer
+  that TaterTOS cannot legally dereference in 4-level mode.
+
+Verification:
+- Rebuilt the ISO with the early !REG dump and real Claude staged.
+- Booted QEMU with -cpu max and reproduced the #GP with full GPR evidence.
+- Booted QEMU again with -cpu max,la57=off. This cleared the 0xffc0...
+  noncanonical #GP and Claude ran much farther:
+  - TBRIDGE: claude launch rc=12
+  - selftest: 106 passed, 0 failed
+  - signal delivery produced TBSIG deliver / TBSIG sigreturn traffic
+  - /proc/version probes were reached
+
+New blocker:
+- With LA57 hidden, Claude no longer dies on the 0xffc0... #GP. It now dies
+  later on a normal not-present user page fault at the same JSC load:
+  - !EXC vec=0x0e err=0x4 RIP=0x4c17293 CR2=0x0000012000000004
+  - rdi=0000012000000000
+  - USER FAULT: pid=12 tid=12 vec=14 err=0x4 rip=0x4c17293 cr2=0x12000000004
+  - PTE CHAIN va=0x12000000004 ... pml4[2]=0x0
+
+Conclusion:
+- The old #GP was a CPU-feature exposure/configuration issue: do not expose
+  LA57 to Linux userland until TaterTOS actually supports 5-level paging.
+- The current Claude blocker is real Tater Bridge mmap behavior. JSC is using
+  a canonical cage base around 0x0000012000000000, but the bridge did not
+  reserve/map that hinted cage region, so the first load at +4 faults.
+
+Next step:
+- Fix LNX_mmap hint handling in src/kernel/proc/syscall.c. For non-MAP_FIXED
+  calls with a usable addr hint, page-align and honor the hint when the range
+  is valid and free, including sparse anonymous demand-paged regions. Fall back
+  to the existing shared top-down cursor only when the hint is unusable.

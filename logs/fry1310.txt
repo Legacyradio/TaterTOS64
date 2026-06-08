@@ -1,0 +1,270 @@
+=====================================================================
+fry1310 — totcopy inode-table location bug (multi-block bitmap regression)
+=====================================================================
+DATE: 2026-06-03 (afternoon CDT)
+GOAL: Resume the Claude-Code-port build/boot loop. Rebuild with
+STAGE_CLAUDE=1 (exercising last session's untested ToTFS multi-block
+block-bitmap fix) so the 233 MB real claude binary lands on the 400 MB
+NVMe as /RCLAUDE.LXE, then boot and harvest the first unimplemented
+Linux syscall.
+
+---------------------------------------------------------------------
+STEP 1 — Rebuild STAGE_CLAUDE=1 (incremental; clean rebuild waived by Zack)
+---------------------------------------------------------------------
+Command:
+  rm -f out/tater_nvme.img
+  CLAUDE_BIN="$(readlink -f "$(command -v claude)")" \
+  STAGE_CLAUDE=1 MTOOLSRC=/dev/null \
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" \
+  /bin/bash build_iso.sh
+Result: exit 0. claude binary is now v2.1.162, 233 MB, still ET_EXEC
+(entry 0x24aa400), NEEDED librt/libc/ld-linux/libpthread/libdl/libm.
+ToTFS multi-block bitmap fix WORKED for the write path:
+  totcopy: .../2.1.162 -> /RCLAUDE.LXE (inode 25, 244000464 bytes,
+           59571 blocks, 1 extents)
+244 MB staged in a single extent (the old 128 MB single-block bitmap
+used to reject this). But build's own verify line failed:
+  NVMe ToTFS contents:
+  list: not a directory: /
+
+---------------------------------------------------------------------
+STEP 2 — Diagnosed the "--list /" failure (NOT cosmetic)
+---------------------------------------------------------------------
+Contradiction: 25 files copied to root in the same run (proves root reads
+as a DIR at copy time) yet "--list /" reads root as type=0 (not a dir).
+
+Root cause: tools/totcopy.c read_inode()/write_inode() located the inode
+table via the COMPILE-TIME CONSTANT TOTFS_INODE_TABLE_BLK, while mktotfs
+places the inode table at the SHIFTED superblock value
+sb.inode_table_start = TOTFS_BLOCK_BITMAP_BLK + bitmap_blocks. With a
+single-block bitmap (<=128 MB) bitmap_blocks==1 and the two coincided
+(shift 0). For the 400 MB NVMe, bitmap_blocks==4, so the inode table
+moved +3 blocks and the two diverged:
+  - mktotfs wrote the real root inode (type=DIR) at sb.inode_table_start.
+  - totcopy read/wrote inodes at the old constant block (now inside the
+    zeroed bitmap region) -> built a phantom root (type stayed 0) and
+    appended all 25 dirents there.
+  - Copies "succeeded" only because resolve_path("/") short-circuits and
+    returns ROOT_INODE WITHOUT the type check (the type!=DIR guard runs
+    only inside the path-component loop, which "/" skips). do_list()
+    DOES check type -> "not a directory".
+
+Boot impact (the real danger): the kernel (src/kernel/fs/totfs.c
+totfs_read_inode, lines 103/119/126) correctly uses
+fs->sb.inode_table_start. So at boot the kernel would read mktotfs's
+PRISTINE EMPTY root (only "." / "..") and never see the 25 files totcopy
+wrote at the wrong location -> /RCLAUDE.LXE unreachable. The build would
+have looked fine and the boot would have silently failed to find claude.
+
+---------------------------------------------------------------------
+STEP 3 — Fix (patch-based, tools/totcopy.c only; kernel already correct)
+---------------------------------------------------------------------
+WHY: align totcopy's inode addressing with the on-disk authority (the
+superblock), which is what both mktotfs writes and the kernel reads.
+Changed 3 sites from TOTFS_INODE_TABLE_BLK to g_sb.inode_table_start:
+  - read_inode():  read_block(g_sb.inode_table_start + blk_idx, ...)
+  - write_inode(): read_block / write_block(g_sb.inode_table_start + ...)
+g_sb is the file-scope superblock (line 24), loaded at image-open before
+any inode access, so it is valid at these call sites. Allocator + both
+bitmaps already used superblock fields; only inode addressing was stale.
+No kernel change (kernel was already superblock-correct, per handoff).
+
+NEXT: rebuild STAGE_CLAUDE=1, verify "totcopy --list /" shows RCLAUDE,
+then boot with NVMe and grep -a serial for "launching REAL claude",
+loader rc, first "LINUXSYS: unimplemented nr=".
+
+---------------------------------------------------------------------
+STEP 4 — Rebuild #2 (with totcopy fix) + verify
+---------------------------------------------------------------------
+exit 0. claude now v2.1.162 / 233 MB / still ET_EXEC (entry 0x24aa400).
+totcopy --list / NOW WORKS (was the bug's symptom): root reads as DIR,
+all 25 files listed incl. RCLAUDE.LXE (inode 25, 244000464 bytes) at the
+superblock-correct inode-table location the kernel reads from. totcopy
+fix confirmed end-to-end.
+
+---------------------------------------------------------------------
+STEP 5 — First boot with NVMe — did NOT reach claude. Diagnosed.
+---------------------------------------------------------------------
+Boot command (TCG, 6G, -smp 2, NVMe attached):
+  cp /usr/share/edk2/x64/OVMF_VARS.4m.fd /tmp/v.fd
+  timeout 420 qemu-system-x86_64 -m 6G -machine q35,accel=tcg -cpu max -smp 2 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=/tmp/v.fd -cdrom out/tatertos64v3.iso \
+    -drive file=out/tater_nvme.img,if=none,id=nvm,format=raw \
+    -device nvme,serial=deadbeef,drive=nvm \
+    -serial file:/tmp/s.log -display none -no-reboot
+
+Serial result: small LX probes pass (LHELLO..LFUTEX rc=3..11), selftest
+77/0, REAL coreutils env/cat/ls fail rc=-8 (-ENOEXEC, PIE — expected),
+then: "LINUXTEST: /nvme/RCLAUDE.LXE not present (skip)". claude never ran.
+(Note: plain kprint() output is lost in early SMP serial garbling; only
+early_serial_puts + kprint_serial_only reliably reach serial. So the
+storage/mount kprints are invisible — diagnosed from disk + source, not
+serial.)
+
+ROOT CAUSE #2 (GPT partition type GUID mismatch — boot-blocking):
+The kernel gates ToTFS secondary-mount on guid_eq(p.type_guid,
+TOTFS_PART_GUID) (vfs.c:1684). build_iso.sh created the NVMe GPT with
+  sgdisk --typecode=1:46544F54-0053-5441-4552-544F53363400
+which serializes (GPT mixed-endian) to on-disk bytes
+  54 4F 54 46 53 00 41 54 45 52 54 4F 53 36 34 00
+but the kernel's TOTFS_PART_GUID (totfs.h) is
+  46 54 4F 54 00 53 54 41 45 52 54 4F 53 36 34 00
+First 8 bytes differ -> guid_eq() false -> ToTFS partition not recognized
+-> /nvme never mounted -> vfs_open("/nvme/RCLAUDE.LXE")==NULL -> skip.
+Verified empirically: xxd of NVMe LBA2 == 54 4F 54 46 ... ; superblock
+magic at LBA2048 == 46 54 4F 54 (=0x544F5446 TOTFS_MAGIC, correct), so
+totfs_probe WOULD pass — only the GUID gate blocked it. (part_init() is
+skipped in live mode, but vfs_mount_secondary reads the GPT itself, so
+that is not the cause.)
+
+---------------------------------------------------------------------
+STEP 6 — Fix #2 (build_iso.sh typecode; kernel array is canonical spec)
+---------------------------------------------------------------------
+WHY: the kernel's TOTFS_PART_GUID is the on-disk spec (also used at
+vfs.c:836) and its first 4 bytes intentionally mirror the superblock
+magic's on-disk form (46 54 4F 54 = "TOTF"). The build script's typecode
+was simply wrong. Changed build_iso.sh typecode to
+  544F5446-5300-4154-4552-544F53363400
+First group is LE, so 544F5446 -> on-disk 46 54 4F 54. Verified on a
+scratch image: sgdisk with the new typecode yields LBA2 bytes
+  46 54 4F 54 00 53 54 41 45 52 54 4F 53 36 34 00
+== kernel TOTFS_PART_GUID exactly. Verified BEFORE the 15-min rebuild.
+
+NEXT: rm out/tater_nvme.img (force GPT recreate with new typecode),
+rebuild STAGE_CLAUDE=1, reboot with NVMe, expect /nvme to mount and
+"launching REAL claude --version" -> then harvest the FIRST real claude
+syscall gap (the original goal of this loop).
+
+---------------------------------------------------------------------
+STEP 7 — GPT fix worked; /nvme mounts; but boot HANGS in vfs_open(RCLAUDE)
+---------------------------------------------------------------------
+Rebuild #3 (new typecode) exit 0. New image verified: NVMe LBA2 type GUID
+== kernel TOTFS_PART_GUID exactly; RCLAUDE.LXE present (inode 25).
+Boot (smp2, NVMe): probe suite runs to "[OK] futex probe complete", then
+NO further serial output for the full timeout -> guest HANGS. Crucially,
+neither "launching REAL claude --version" (main.c:746) nor "not present
+(skip)" (750) printed, so vfs_open("/nvme/RCLAUDE.LXE") (738) NEVER
+RETURNED. (Earlier pre-GPT-fix boot returned NULL fast -> "skip"; now
+/nvme is mounted so open actually traverses ToTFS-on-NVMe and stalls.)
+
+MISSTEP (owned): briefly rebooted with -smp 1 to get a cleaner serial
+trace. That was a corner cut — the hang is SMP-specific territory and
+smp1 changes claude's threading model; it would have diagnosed the wrong
+system. Reverted to smp2. Lesson: fix VISIBILITY into the real config,
+never simplify the config to make debugging easier.
+
+Serial-visibility facts (important for all future debugging here):
+- kprint() is filtered by kprint_should_emit() (kprint.c:731) -> most
+  kernel lines are DROPPED from serial/fb. That is why "storage: nvme
+  init" etc never appeared. NOT an SMP loss.
+- kprint_serial_only() (kprint.c:709) bypasses the filter, takes
+  kprint_lock (SMP-safe). USE IT for beacons.
+- Userspace write(1/2) reaches serial (the "[OK]" probe lines).
+
+By inspection the open path has NO size-dependent loop:
+totfs_open_vfs (totfs.c:397) reads inode + caches <=5 extents;
+totfs_resolve_path (167) walks bounded components; reads are low metadata
+blocks (same region that read fine at mount). So localize empirically.
+
+---------------------------------------------------------------------
+STEP 8 — Instrumentation pass (kprint_serial_only beacons; temp)
+---------------------------------------------------------------------
+WHY: pinpoint where vfs_open("/nvme/RCLAUDE.LXE") stalls under real smp2
+without guessing. Beacons (all kprint_serial_only, filter-bypassing):
+  main.c:738    "pre-open /nvme/RCLAUDE.LXE" and "post-open lxb=%p"
+  totfs.c open  TOTFS_OPEN enter/resolved/inode (totfs_open_vfs)
+  totfs.c rslv  TOTFS_RESOLVE comp/dir-read/found (totfs_resolve_path)
+Added decl of kprint_serial_only to totfs.c. (%.*s NOT supported by the
+kernel formatter -> used %s; %p/%u/%llu/%x ARE supported.)
+Expected read: which beacon is LAST before silence localizes the hang to
+VFS routing (find_mount_ref) vs resolve loop vs read_inode vs NVMe read.
+These beacons are TEMPORARY — remove once the gap is found.
+
+NEXT: rebuild STAGE_CLAUDE=1 (kernel changed), reboot smp2, read the last
+beacon before the hang, fix the underlying ToTFS/NVMe read stall, then
+proceed to the real claude syscall harvest.
+
+---------------------------------------------------------------------
+STEP 9 — ROOT CAUSE of the hang (NVMe poll yields from idle ctx)
+---------------------------------------------------------------------
+Two instrumentation passes (wait_cq_irq beacons, then full read-path:
+nvme_io_rw_for_ctrl/poll_cq) gave the definitive trace. MSI is OFF
+(irqc=0) so io_q reads use poll_cq. Trace:
+  lba 2069-2071: PCQ enter cur=0x0     pid=0 -> done ok=1  (works)
+  lba 2096:      PCQ enter cur=0xffffffff81e1b0c0 pid=0 -> done ok=1
+  lba 2097:      PCQ enter cur=0xffffffff81e1b0c0 pid=0
+                 PCQ: first yield spin=0 -> HANG (silence)
+proc_current() returns the per-CPU IDLE task (kernel addr, pid 0) once the
+scheduler is fully up and the probe processes have exited (current[cpu] =
+idle, sched.c:349). poll_cq's yield guard was just `proc_current()` (non-
+null), so from the idle/boot context it called sched_yield() -> scheduler
+switched into idle_loop and NEVER returned to kernel_main's read -> the
+in-flight read (and all of kernel_main after it) is abandoned -> total
+hang. Earlier reads worked only because current[cpu] was still NULL
+(busy-poll, no yield). pid 0 is reserved/invalid (process.c:765,789).
+
+---------------------------------------------------------------------
+STEP 10 — FIX: never yield/sleep from the pid-0 idle/boot context
+---------------------------------------------------------------------
+WHY: yielding the CPU is only safe from a REAL schedulable process (pid
+!= 0) that the scheduler will resume. The idle/boot context (NULL or pid
+0) must busy-poll for the NVMe completion (exactly what worked before the
+scheduler came up). Patched src/drivers/storage/nvme.c:
+  - poll_cq: yield only if (yc = proc_current()) && yc->pid != 0.
+  - wait_cq_irq: take the pause/busy path if (!cur || cur->pid == 0 ||
+    !cpu_irqs_enabled()).
+This is a genuine driver concurrency bug exposed by reading claude off
+NVMe during the live LINUXTEST phase, NOT a beacon artifact.
+
+NEXT: rebuild STAGE_CLAUDE=1, reboot smp2, expect the RCLAUDE inode read
+to complete -> "launching REAL claude --version" -> harvest the FIRST
+real claude syscall gap. Beacons KEPT for this verification boot; strip
+all fry1310 beacons (main.c, totfs.c, nvme.c) once confirmed.
+
+---------------------------------------------------------------------
+STEP 11 — FIX VERIFIED: claude LOADS + EXECUTES. Beacons stripped.
+---------------------------------------------------------------------
+Verification boot WITH beacons: claude loaded off NVMe, pid=12, valid
+entry=60000001f300 rsp brk=eaa7000, "claude launch rc=12". ZERO faults,
+ZERO unimplemented-syscall beacons during load. NVMe idle-yield deadlock
+is fixed. (That boot spammed 4.7M serial lines from the per-sector
+beacons; the streaming load took ~433s and the time-based selftest
+hpet_ns_sec_ok PANICKED purely from that skew.)
+
+All fry1310 beacons then STRIPPED (main.c pre/post-open, totfs.c
+TOTFS_OPEN/RESOLVE, nvme.c PCQ/NVME_RW/WCQ). The idle-yield FIX retained
+(nvme.c poll_cq + wait_cq_irq: only yield when proc_current() pid != 0).
+Verified: strings kernel.elf has 0 beacon strings.
+
+---------------------------------------------------------------------
+STEP 12 — CLEAN BOOT: selftest PASSES; claude runs Bun/JSC then hits
+          a JavaScriptCore CRASH() at 0xBBADBEEF (new frontier)
+---------------------------------------------------------------------
+Clean smp2 boot (no beacons), serial log only 210 lines:
+  - claude launch ok pid=12 rc=12.
+  - "selftest: 77 passed, 0 failed"  <-- hpet_ns_sec_ok panic GONE;
+    confirms it was beacon-spam time-skew, not a real regression.
+  - Other init probes pass (smoketest 15/0, chrome_probe 12/0 incl uname/
+    sysinfo/getrusage/sched_getaffinity/splice/tee/mlock, libc, futex,
+    thread+gap). The null-rip faults (pid 18,19 rip=0 cr2=0) are the
+    test-harness exit convention, benign.
+  - pid 12 (claude) FAULT:
+      vec=14 err=0x6 (write,user,not-present) rip=0x60a9b84 cr2=0xBBADBEEF
+0xBBADBEEF is WebKit/JavaScriptCore's CRASH() poison address (WTFCrash /
+RELEASE_ASSERT writes+derefs it to force an abort). So claude's Bun/JSC
+runtime started, initialized, and then hit an INTERNAL JSC assertion ->
+deliberate crash. This is NOT a clean -ENOSYS/unimplemented syscall; it
+is claude getting far into Bun startup and a JSC invariant failing.
+
+NEXT FRONTIER (own session): diagnose the JSC CRASH. Approaches:
+  - disassemble claude binary around rip 0x60a9b84 to identify the
+    RELEASE_ASSERT/CRASH site and the checked condition.
+  - trace claude's last syscalls before the fault (a syscall returning an
+    unexpected value JSC asserts on: candidates getrandom, mmap flags/
+    MAP_JIT RWX, madvise, /proc, sysctl, signal setup).
+  - claude is ET_EXEC + threaded Bun; JIT needs RWX mmap (Bun mmaps RWX) —
+    a likely assert source if MAP_JIT/PROT_EXEC handling is incomplete.
+STATUS: MILESTONE — real unmodified Claude Code binary loads and executes
+in TaterTOS64v3; now blocked at a JSC internal abort, not the kernel ABI.
+=====================================================================

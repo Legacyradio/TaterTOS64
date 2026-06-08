@@ -1,0 +1,32 @@
+fry1341 - Tater Bridge probe label cleanup
+timestamp: 2026-06-04 10:50:53 CDT
+
+What changed:
+- Renamed active user-facing Linux compatibility probe banners from
+  "linuxulator" to "Tater Bridge" in:
+  - tools/host/lfutex.c
+  - tools/host/lasync.c
+  - tools/host/lgap.c
+  - tools/host/lthr.c
+  - tools/host/llibc.c
+  - tools/host/ldyn.S
+  - tools/host/lmmap.S
+  - tools/host/lfile.S
+  - tools/host/lhello.S
+
+Why:
+- The compatibility layer is supposed to be called Tater Bridge. The old
+  linuxulator label was only a working-name label and should not appear in
+  active probe output.
+
+Verification:
+- Source scan over active code:
+  - rg -n "linuxulator|Linuxulator|LINUXULATOR" tools src build_iso.sh README.md
+  - only remaining active-tree hit is README.md:32, where linuxulator appears
+    as a FreeBSD analogy, not as the TaterTOS component name.
+- Full ISO rebuild completed successfully with STAGE_CLAUDE=1.
+- The real Claude binary was staged into the ISO as /RCLAUDE.LXE.
+
+Notes:
+- Historical logs were left untouched so old debugging evidence remains
+  searchable and accurate.

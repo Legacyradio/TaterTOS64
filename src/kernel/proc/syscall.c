@@ -65,9 +65,27 @@ static uint8_t g_first_init_syscall_seen = 0;
 static uint8_t g_first_init_gui_spawn_seen = 0;
 static uint8_t g_first_gui_fb_seen = 0;
 static uint32_t g_spawn_attempt_count = 0;  /* visual spawn tracker */
+volatile uint64_t g_tb_jsc_slot_watch_base = 0;
+/* fry1379: absolute DR write-watchpoints on the JSC hash-set bucket array.
+ * [0],[1],[2] = empty buckets (key=0, should become -1); [3] = an occupied
+ * bucket (to see the insert write). Addresses observed deterministic across
+ * boots. Catches who writes -1 (fill) vs 0 (zeroing) into the buckets. */
+/* fry1389: armed on the corrupt CodeBlock numCalleeLocals field. The faulting
+ * JIT prologue (RIP 0x3F4CFB6) reads numCalleeLocals=[CodeBlock+0x14]=0 for a
+ * live CodeBlock at 0x6FBFF50F42C0 (deterministic across boots) -> 0-size frame
+ * -> infinite stack-zero. 0x6FBFF50F42D0 is the 8-byte-aligned qword covering
+ * +0x14. All 4 DRs alias it (avoids DR1-3 watching linear addr 0). Catches any
+ * USER-mode write to the field with RIP. (Kernel physmap writes use a different
+ * linear address -> see TBVMTOUCH page logging instead.) */
+volatile uint64_t g_tb_jsc_slot_watch[4] = { 0ULL, 0ULL, 0ULL, 0ULL };
+/* fry1389: kernel-side culprit catcher — any vm op (zero/unmap/demand) whose
+ * range covers this page is logged with op + range for the Claude tgid. */
+volatile uint64_t g_tb_target_page = 0x6FBFF50F4000ULL;
 
 static int futex_key_for_user_word_ex(struct fry_process *p, uint64_t uaddr,
                                       int private_key, uint64_t *key_out);
+__attribute__((noreturn))
+static void syscall_exit_current(uint32_t code);
 
 /* Phase 7: kernel clipboard buffer */
 static char g_clipboard_buf[FRY_CLIPBOARD_MAX];
@@ -115,6 +133,87 @@ static uint8_t g_sys_exit_stacks[SYS_EXIT_STACK_CPUS][SYS_EXIT_STACK_BYTES]
 #define FRY_X_OK 1
 #define FRY_W_OK 2
 #define FRY_R_OK 4
+
+static uint32_t g_tb_trace_claude_tgid = 3u;
+#define TB_TRACE_CLAUDE_TGID g_tb_trace_claude_tgid
+/* Master switch for the high-volume per-syscall enter/ret/path trace. Default
+ * OFF: emitting a serial line per syscall makes the kernel busy-wait on the
+ * UART for every call and dominates runtime (fry1376). The targeted JSC
+ * futex/skip/watch markers stay on independently. Flip to 1 for full tracing. */
+static volatile int g_tb_trace_syscalls = 0;
+
+#define LNX_SIGHUP   1
+#define LNX_SIGINT   2
+#define LNX_SIGSEGV  11
+#define LNX_SIGKILL  9
+#define LNX_SIGSTOP  19
+#define LNX_SIGCHLD  17
+#define LNX_SIGURG   23
+#define LNX_SIGWINCH 28
+
+#define LNX_SIG_BLOCK   0
+#define LNX_SIG_UNBLOCK 1
+#define LNX_SIG_SETMASK 2
+
+#define LNX_SS_DISABLE  2u
+#define LNX_SA_ONSTACK  0x08000000ULL
+#define LNX_SA_RESTORER 0x04000000ULL
+#define LX_SIGFRAME_MAGIC 0x5453494752544652ULL /* "RFTRGIST" */
+
+#define LX_SYSFRAME_A6       0
+#define LX_SYSFRAME_R9       2
+#define LX_SYSFRAME_R8       3
+#define LX_SYSFRAME_R10      4
+#define LX_SYSFRAME_RDX      5
+#define LX_SYSFRAME_RSI      6
+#define LX_SYSFRAME_RDI      7
+#define LX_SYSFRAME_RBP      8
+#define LX_SYSFRAME_RFLAGS   9
+#define LX_SYSFRAME_RIP      10
+#define LX_SYSFRAME_RSP      11
+
+struct lnx_user_sigaction {
+    uint64_t handler;
+    uint64_t flags;
+    uint64_t restorer;
+    uint64_t mask;
+};
+
+struct lnx_user_stack {
+    uint64_t sp;
+    uint32_t flags;
+    uint32_t pad;
+    uint64_t size;
+};
+
+struct lx_sigrestore_regs {
+    uint64_t rax, rbx, rcx, rdx, rsi, rdi, rbp;
+    uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
+    uint64_t rip, rsp, rflags;
+};
+
+struct lx_mcontext {
+    uint64_t gregs[23];
+    uint64_t fpregs;
+    uint64_t reserved[8];
+};
+
+struct lx_ucontext {
+    uint64_t flags;
+    uint64_t link;
+    struct lnx_user_stack stack;
+    struct lx_mcontext mcontext;
+    uint64_t sigmask;
+};
+
+struct lx_rt_sigframe {
+    uint64_t restorer;
+    uint64_t magic;
+    uint64_t saved_mask;
+    struct lx_sigrestore_regs regs;
+    uint8_t siginfo[128];
+    struct lx_ucontext ucontext;
+};
 
 static struct fry_process_shared *proc_shared_state(struct fry_process *p) {
     return p ? p->shared : 0;
@@ -240,6 +339,68 @@ static void fd_install(struct fry_process *p, int fd, void *ptr, uint8_t kind, u
     shared->fd_kind[fd] = kind;
     shared->fd_flags[fd] = flags;
     shared->open_fds++;
+}
+
+static void fd_release(struct fry_process *p, int fd);
+static int fd_path_set(struct fry_process_shared *shared, int fd, const char *path);
+
+static void *stdio_fd_ptr(int fd) {
+    return (void *)(uintptr_t)(fd + 1);
+}
+
+static int stdio_fd_from_ptr(void *ptr) {
+    uintptr_t v = (uintptr_t)ptr;
+    if (v < 1 || v > 3) return -1;
+    return (int)v - 1;
+}
+
+static int fd_is_open(struct fry_process_shared *shared, int fd) {
+    if (!shared || fd < 0 || fd >= FRY_FD_MAX) return 0;
+    if (fd >= 0 && fd <= 2) return 1;
+    return shared->fd_kind[fd] != FD_NONE && shared->fd_ptrs[fd] != 0;
+}
+
+static int lx_dup_fd_at(struct fry_process *p, int oldfd, int minfd, uint32_t extra_flags) {
+    struct fry_process_shared *shared = proc_shared_state(p);
+    if (!shared) return -ESRCH;
+    if (oldfd < 0 || oldfd >= FRY_FD_MAX || !fd_is_open(shared, oldfd))
+        return -EBADF;
+    if (minfd < 0 || minfd >= FRY_FD_MAX) return -EINVAL;
+
+    int start = minfd < 3 ? 3 : minfd;
+    int newfd = -1;
+    for (int fd = start; fd < FRY_FD_MAX; fd++) {
+        if (!fd_is_open(shared, fd)) {
+            newfd = fd;
+            break;
+        }
+    }
+    if (newfd < 0) return -EMFILE;
+
+    if (oldfd <= 2) {
+        fd_install(p, newfd, stdio_fd_ptr(oldfd), FD_STDIO, extra_flags);
+        return newfd;
+    }
+
+    void *optr = shared->fd_ptrs[oldfd];
+    uint8_t okind = shared->fd_kind[oldfd];
+    uint32_t flags = shared->fd_flags[oldfd] | extra_flags;
+    fd_install(p, newfd, optr, okind, flags);
+    shared->fd_table[newfd] = shared->fd_table[oldfd];
+    if (shared->fd_paths[oldfd][0]) {
+        int prc = fd_path_set(shared, newfd, shared->fd_paths[oldfd]);
+        if (prc < 0) {
+            fd_release(p, newfd);
+            return prc;
+        }
+        if (okind == FD_DIR) shared->fd_ptrs[newfd] = shared->fd_paths[newfd];
+    }
+    if (okind == FD_PIPE_READ) {
+        ((struct fry_pipe *)optr)->readers++;
+    } else if (okind == FD_PIPE_WRITE) {
+        ((struct fry_pipe *)optr)->writers++;
+    }
+    return newfd;
 }
 
 static void fd_release(struct fry_process *p, int fd) {
@@ -575,7 +736,11 @@ static uint16_t poll_check_fd(struct fry_process *p, int32_t fd, uint16_t events
 
     uint16_t revents = 0;
 
-    if (kind == FD_FILE) {
+    if (kind == FD_STDIO) {
+        int realfd = stdio_fd_from_ptr(shared->fd_ptrs[fd]);
+        if (realfd == 0) revents |= FRY_POLLIN;
+        else if (realfd == 1 || realfd == 2) revents |= FRY_POLLOUT;
+    } else if (kind == FD_FILE) {
         /* Files are always ready for read and write */
         if (events & FRY_POLLIN) revents |= FRY_POLLIN;
         if (events & FRY_POLLOUT) revents |= FRY_POLLOUT;
@@ -914,6 +1079,15 @@ struct readdir_ex_ctx {
     uint32_t len;
     uint32_t pos;
 };
+struct lx_getdents64_ctx {
+    uint8_t *buf;
+    uint32_t len;
+    uint32_t pos;
+    uint32_t base_skip;
+    uint32_t skip;
+    uint32_t emitted;
+    uint32_t overflow;
+};
 struct fry_dirent_hdr {
     uint16_t rec_len;
     uint16_t name_len;
@@ -1011,6 +1185,550 @@ int copyout(struct fry_process *p, const void *src_kern, uint64_t dst_user, uint
     uint8_t *dst = (uint8_t *)(uintptr_t)dst_user;
     for (uint64_t i = 0; i < len; i++) dst[i] = src[i];
     return 0;
+}
+
+static void lx_memzero(void *p, uint64_t n) {
+    uint8_t *b = (uint8_t *)p;
+    for (uint64_t i = 0; i < n; i++) b[i] = 0;
+}
+
+static void lx_store32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v >> 0);
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16);
+    p[3] = (uint8_t)(v >> 24);
+}
+
+static void lx_store64(uint8_t *p, uint64_t v) {
+    for (uint32_t i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (i * 8));
+}
+
+static void lx_fill_siginfo(uint8_t siginfo[128], int sig, int code, uint64_t addr) {
+    lx_memzero(siginfo, 128);
+    lx_store32(siginfo + 0, (uint32_t)sig);   /* si_signo */
+    lx_store32(siginfo + 4, 0);               /* si_errno */
+    lx_store32(siginfo + 8, (uint32_t)code);  /* si_code */
+    lx_store64(siginfo + 16, addr);           /* si_addr for fault signals */
+}
+
+static inline uint64_t lx_read_cr3(void) {
+    uint64_t v;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(v));
+    return v;
+}
+
+static inline uint64_t lx_read_cr2(void) {
+    uint64_t v;
+    __asm__ volatile("mov %%cr2, %0" : "=r"(v));
+    return v;
+}
+
+static inline void lx_write_cr3(uint64_t v) {
+    __asm__ volatile("mov %0, %%cr3" : : "r"(v) : "memory");
+}
+
+static uint64_t lx_signal_bit(int sig) {
+    if (sig <= 0 || sig >= 64) return 0;
+    return 1ULL << (uint32_t)(sig - 1);
+}
+
+static int lx_signal_valid(int sig) {
+    return sig > 0 && sig < 64;
+}
+
+static int lx_signal_default_ignored(int sig) {
+    return sig == LNX_SIGCHLD || sig == LNX_SIGURG || sig == LNX_SIGWINCH;
+}
+
+static uint64_t lx_signal_unblockable_mask(void) {
+    return lx_signal_bit(LNX_SIGKILL) | lx_signal_bit(LNX_SIGSTOP);
+}
+
+static uint64_t lx_pending_handled_mask(struct fry_process *p) {
+    if (!p || !p->is_linux || !p->shared) return 0;
+    uint64_t mask = p->linux_sig_pending & ~p->linux_sig_blocked;
+    mask &= ~lx_signal_unblockable_mask();
+    for (uint32_t sig = 1; sig < 64; sig++) {
+        uint64_t bit = 1ULL << (sig - 1);
+        if ((mask & bit) && p->shared->linux_sigact[sig].handler)
+            return bit;
+    }
+    return 0;
+}
+
+static int lx_lowest_signal(uint64_t mask) {
+    for (int sig = 1; sig < 64; sig++) {
+        if (mask & lx_signal_bit(sig)) return sig;
+    }
+    return 0;
+}
+
+static int lx_rseq_update_cpu(struct fry_process *p) {
+    if (!p || !p->is_linux || !p->linux_rseq_addr) return 0;
+    if (p->linux_rseq_len < 32) return -EINVAL;
+    if (!user_buf_writable(p, p->linux_rseq_addr, p->linux_rseq_len))
+        return -EFAULT;
+
+    uint32_t cpu = p->cpu;
+    uint32_t ncpu = smp_cpu_count();
+    if (ncpu == 0) ncpu = 1;
+    if (cpu >= ncpu) cpu = 0;
+
+    if (copyout(p, &cpu, p->linux_rseq_addr + 0, sizeof(cpu)) != 0)
+        return -EFAULT;
+    if (copyout(p, &cpu, p->linux_rseq_addr + 4, sizeof(cpu)) != 0)
+        return -EFAULT;
+    if (p->linux_rseq_len >= 28) {
+        if (copyout(p, &cpu, p->linux_rseq_addr + 20, sizeof(cpu)) != 0)
+            return -EFAULT;
+        if (copyout(p, &cpu, p->linux_rseq_addr + 24, sizeof(cpu)) != 0)
+            return -EFAULT;
+    }
+    return 0;
+}
+
+static void lx_sigaction_to_user(const struct fry_linux_sigaction *in,
+                                 struct lnx_user_sigaction *out) {
+    out->handler = in ? in->handler : 0;
+    out->flags = in ? in->flags : 0;
+    out->restorer = in ? in->restorer : 0;
+    out->mask = in ? in->mask : 0;
+}
+
+static void lx_sigaction_from_user(const struct lnx_user_sigaction *in,
+                                   struct fry_linux_sigaction *out) {
+    out->handler = in ? in->handler : 0;
+    out->flags = in ? in->flags : 0;
+    out->restorer = in ? in->restorer : 0;
+    out->mask = in ? in->mask : 0;
+}
+
+static uint64_t lx_read_gs_slot(uint32_t off) {
+    uint64_t v = 0;
+    switch (off) {
+    case 24: __asm__ volatile("movq %%gs:24, %0" : "=r"(v)); break;
+    case 32: __asm__ volatile("movq %%gs:32, %0" : "=r"(v)); break;
+    case 40: __asm__ volatile("movq %%gs:40, %0" : "=r"(v)); break;
+    case 48: __asm__ volatile("movq %%gs:48, %0" : "=r"(v)); break;
+    case 56: __asm__ volatile("movq %%gs:56, %0" : "=r"(v)); break;
+    default: break;
+    }
+    return v;
+}
+
+static void lx_write_gs_slot(uint32_t off, uint64_t v) {
+    switch (off) {
+    case 24: __asm__ volatile("movq %0, %%gs:24" : : "r"(v) : "memory"); break;
+    case 32: __asm__ volatile("movq %0, %%gs:32" : : "r"(v) : "memory"); break;
+    case 40: __asm__ volatile("movq %0, %%gs:40" : : "r"(v) : "memory"); break;
+    case 48: __asm__ volatile("movq %0, %%gs:48" : : "r"(v) : "memory"); break;
+    case 56: __asm__ volatile("movq %0, %%gs:56" : : "r"(v) : "memory"); break;
+    default: break;
+    }
+}
+
+static uint64_t *lx_syscall_frame(struct fry_process *cur) {
+    if (!cur || !cur->kernel_stack_top) return 0;
+    return (uint64_t *)(uintptr_t)(cur->kernel_stack_top - (12ULL * sizeof(uint64_t)));
+}
+
+static void lx_fill_ucontext(struct lx_rt_sigframe *sf, const struct lx_sigrestore_regs *r,
+                             uint64_t old_mask, struct fry_process *cur) {
+    lx_memzero(&sf->ucontext, sizeof(sf->ucontext));
+    sf->ucontext.stack.sp = cur ? cur->linux_sigalt_sp : 0;
+    sf->ucontext.stack.flags = cur ? cur->linux_sigalt_flags : 0;
+    sf->ucontext.stack.size = cur ? cur->linux_sigalt_size : 0;
+    sf->ucontext.sigmask = old_mask;
+
+    sf->ucontext.mcontext.gregs[0] = r->r8;
+    sf->ucontext.mcontext.gregs[1] = r->r9;
+    sf->ucontext.mcontext.gregs[2] = r->r10;
+    sf->ucontext.mcontext.gregs[3] = r->r11;
+    sf->ucontext.mcontext.gregs[4] = r->r12;
+    sf->ucontext.mcontext.gregs[5] = r->r13;
+    sf->ucontext.mcontext.gregs[6] = r->r14;
+    sf->ucontext.mcontext.gregs[7] = r->r15;
+    sf->ucontext.mcontext.gregs[8] = r->rdi;
+    sf->ucontext.mcontext.gregs[9] = r->rsi;
+    sf->ucontext.mcontext.gregs[10] = r->rbp;
+    sf->ucontext.mcontext.gregs[11] = r->rbx;
+    sf->ucontext.mcontext.gregs[12] = r->rdx;
+    sf->ucontext.mcontext.gregs[13] = r->rax;
+    sf->ucontext.mcontext.gregs[14] = r->rcx;
+    sf->ucontext.mcontext.gregs[15] = r->rsp;
+    sf->ucontext.mcontext.gregs[16] = r->rip;
+    sf->ucontext.mcontext.gregs[17] = r->rflags;
+}
+
+static uint64_t lx_rt_sigaction_sys(struct fry_process *cur, uint64_t sig_u,
+                                    uint64_t act_u, uint64_t old_u,
+                                    uint64_t sigset_size) {
+    int sig = (int)sig_u;
+    if (!cur || !cur->shared) return (uint64_t)-ESRCH;
+    if (!lx_signal_valid(sig) || sig == LNX_SIGKILL || sig == LNX_SIGSTOP)
+        return (uint64_t)-EINVAL;
+    if (sigset_size != 8 && sigset_size != 128) return (uint64_t)-EINVAL;
+
+    if (old_u) {
+        struct lnx_user_sigaction old;
+        lx_sigaction_to_user(&cur->shared->linux_sigact[sig], &old);
+        if (copyout(cur, &old, old_u, sizeof(old)) != 0) return (uint64_t)-EFAULT;
+    }
+    if (act_u) {
+        struct lnx_user_sigaction act;
+        if (copyin(cur, act_u, &act, sizeof(act)) != 0) return (uint64_t)-EFAULT;
+        lx_sigaction_from_user(&act, &cur->shared->linux_sigact[sig]);
+    }
+    return 0;
+}
+
+static uint64_t lx_rt_sigprocmask_sys(struct fry_process *cur, uint64_t how_u,
+                                      uint64_t set_u, uint64_t old_u,
+                                      uint64_t sigset_size) {
+    if (!cur) return (uint64_t)-ESRCH;
+    if (sigset_size != 8 && sigset_size != 128) return (uint64_t)-EINVAL;
+    uint64_t old = cur->linux_sig_blocked;
+    if (old_u && copyout(cur, &old, old_u, 8) != 0) return (uint64_t)-EFAULT;
+    if (!set_u) return 0;
+
+    uint64_t set = 0;
+    if (copyin(cur, set_u, &set, 8) != 0) return (uint64_t)-EFAULT;
+    set &= ~lx_signal_unblockable_mask();
+    switch ((int)how_u) {
+    case LNX_SIG_BLOCK:
+        cur->linux_sig_blocked |= set;
+        break;
+    case LNX_SIG_UNBLOCK:
+        cur->linux_sig_blocked &= ~set;
+        break;
+    case LNX_SIG_SETMASK:
+        cur->linux_sig_blocked = set;
+        break;
+    default:
+        return (uint64_t)-EINVAL;
+    }
+    return 0;
+}
+
+static uint64_t lx_rt_sigsuspend_sys(struct fry_process *cur, uint64_t mask_u,
+                                     uint64_t sigset_size) {
+    if (!cur) return (uint64_t)-ESRCH;
+    if (sigset_size != 8 && sigset_size != 128) return (uint64_t)-EINVAL;
+
+    uint64_t new_mask = 0;
+    if (copyin(cur, mask_u, &new_mask, 8) != 0) return (uint64_t)-EFAULT;
+    cur->linux_sigsuspend_saved_mask = cur->linux_sig_blocked;
+    cur->linux_sigsuspend_active = 1;
+    cur->linux_sig_blocked = new_mask & ~lx_signal_unblockable_mask();
+
+    while (!lx_pending_handled_mask(cur)) {
+        sched_block(cur->pid);
+        sched_yield();
+    }
+
+    return (uint64_t)-EINTR;
+}
+
+static uint64_t lx_sigaltstack_sys(struct fry_process *cur, uint64_t ss_u, uint64_t old_u) {
+    if (!cur) return (uint64_t)-ESRCH;
+    if (old_u) {
+        struct lnx_user_stack old;
+        old.sp = cur->linux_sigalt_sp;
+        old.flags = cur->linux_sigalt_flags;
+        old.pad = 0;
+        old.size = cur->linux_sigalt_size;
+        if (copyout(cur, &old, old_u, sizeof(old)) != 0) return (uint64_t)-EFAULT;
+    }
+    if (ss_u) {
+        struct lnx_user_stack ss;
+        if (copyin(cur, ss_u, &ss, sizeof(ss)) != 0) return (uint64_t)-EFAULT;
+        if (ss.flags & ~LNX_SS_DISABLE) return (uint64_t)-EINVAL;
+        cur->linux_sigalt_sp = ss.sp;
+        cur->linux_sigalt_size = ss.size;
+        cur->linux_sigalt_flags = ss.flags;
+    }
+    return 0;
+}
+
+static uint64_t lx_send_signal(struct fry_process *sender, struct fry_process *target, int sig) {
+    if (!target || !target->shared) return (uint64_t)-ESRCH;
+    if (sig == 0) return 0;
+    if (!lx_signal_valid(sig)) return (uint64_t)-EINVAL;
+
+    struct fry_linux_sigaction *act = &target->shared->linux_sigact[sig];
+    if (!act->handler) {
+        if (lx_signal_default_ignored(sig)) return 0;
+        if (sender && (sender->pid == TB_TRACE_CLAUDE_TGID || sender->tgid == TB_TRACE_CLAUDE_TGID)) {
+            kprint_serial_only("TBSIG default-exit sender=%u target=%u tgid=%u sig=%d\n",
+                               sender->pid, target->pid, target->tgid, sig);
+        }
+        if (sender && sender->tgid == target->tgid)
+            syscall_exit_current(128u + (uint32_t)sig);
+        process_exit_group(target->tgid, 128u + (uint32_t)sig);
+        return 0;
+    }
+
+    target->linux_sig_pending |= lx_signal_bit(sig);
+    if (sender && (sender->pid == TB_TRACE_CLAUDE_TGID || sender->tgid == TB_TRACE_CLAUDE_TGID)) {
+        kprint_serial_only("TBSIG queue sender=%u target=%u tgid=%u sig=%d pending=%lx blocked=%lx handler=%lx restorer=%lx\n",
+                           sender->pid, target->pid, target->tgid, sig,
+                           (unsigned long)target->linux_sig_pending,
+                           (unsigned long)target->linux_sig_blocked,
+                           (unsigned long)act->handler,
+                           (unsigned long)act->restorer);
+    }
+    sched_wake_signal(target->pid);
+    return 0;
+}
+
+/* Deliver a Unix signal from an exception context (not a syscall return).
+ * The exception frame layout (from common_isr push order):
+ *   [0]=rax [1]=rbx [2]=rcx [3]=rdx [4]=rbp [5]=rsi [6]=rdi
+ *   [7]=r8 [8]=r9 [9]=r10 [10]=r11 [11]=r12 [12]=r13 [13]=r14 [14]=r15
+ *   [15]=vector [16]=error [17]=RIP [18]=CS [19]=RFLAGS [20]=RSP [21]=SS
+ *
+ * Returns 1 if a signal handler was invoked (modifies the frame), 0 if not
+ * (caller should kill the process). */
+int lx_deliver_signal_from_exception(struct fry_process *cur, uint64_t vector,
+                                     uint64_t *exc_frame) {
+    if (!cur || !cur->shared || !exc_frame) return 0;
+
+    /* Map exception vector to Unix signal */
+    int sig = 0;
+    switch (vector) {
+    case 0:  sig = 8;  break;  /* #DE  → SIGFPE  */
+    case 1:  sig = 5;  break;  /* #DB  → SIGTRAP */
+    case 3:  sig = 5;  break;  /* #BP  → SIGTRAP */
+    case 4:  sig = 11; break;  /* #OF  → SIGSEGV */
+    case 5:  sig = 11; break;  /* #BR  → SIGSEGV */
+    case 6:  sig = 4;  break;  /* #UD  → SIGILL  */
+    case 7:  sig = 8;  break;  /* #NM  → SIGFPE  */
+    case 11: sig = 7;  break;  /* #NP  → SIGBUS  */
+    default: sig = 11; break;  /* #GP #PF #SS → SIGSEGV */
+    }
+    if (sig == 0) return 0;
+
+    int si_code = 0;
+    uint64_t si_addr = exc_frame[17];
+    if (sig == LNX_SIGSEGV) {
+        si_code = 1; /* SEGV_MAPERR */
+        si_addr = lx_read_cr2();
+    } else if (sig == 4) {
+        si_code = 2; /* ILL_ILLOPN */
+    } else if (sig == 5) {
+        si_code = 1; /* TRAP_BRKPT */
+    } else if (sig == 7) {
+        si_code = 2; /* BUS_ADRERR */
+    } else if (sig == 8) {
+        si_code = 1; /* FPE_INTDIV */
+    }
+
+    struct fry_linux_sigaction *act = &cur->shared->linux_sigact[sig];
+    if (!act->handler || !act->restorer) {
+        /* Fallback: #BP (int3) with no SIGTRAP handler →
+         * try SIGSEGV for runtimes (Bun) that only install SIGSEGV. */
+        if (vector == 3 && sig == 5) {
+            act = &cur->shared->linux_sigact[11]; /* SIGSEGV */
+            sig = 11;
+            si_code = 2; /* SEGV_ACCERR */
+            /* si_addr stays exc_frame[17] — the faulting RIP */
+        }
+        if (!act->handler || !act->restorer) {
+            if (cur->pid == TB_TRACE_CLAUDE_TGID || cur->tgid == TB_TRACE_CLAUDE_TGID) {
+                kprint_serial_only("TBSIG exc-miss pid=%u tgid=%u sig=%d vec=%llu handler=%lx restorer=%lx oldrip=%lx\n",
+                                   cur->pid, cur->tgid, sig,
+                                   (unsigned long long)vector,
+                                   (unsigned long)act->handler,
+                                   (unsigned long)act->restorer,
+                                   (unsigned long)exc_frame[17]);
+            }
+            return 0;
+        }
+    }
+
+    struct lx_rt_sigframe sf;
+    lx_memzero(&sf, sizeof(sf));
+    sf.restorer = act->restorer;
+    sf.magic = LX_SIGFRAME_MAGIC;
+    sf.saved_mask = cur->linux_sigsuspend_active ?
+        cur->linux_sigsuspend_saved_mask : cur->linux_sig_blocked;
+
+    /* Read saved registers from the exception frame */
+    sf.regs.rax = exc_frame[0];
+    sf.regs.rbx = exc_frame[1];
+    sf.regs.rcx = exc_frame[2];
+    sf.regs.rdx = exc_frame[3];
+    sf.regs.rsi = exc_frame[5];
+    sf.regs.rdi = exc_frame[6];
+    sf.regs.rbp = exc_frame[4];
+    sf.regs.r8  = exc_frame[7];
+    sf.regs.r9  = exc_frame[8];
+    sf.regs.r10 = exc_frame[9];
+    sf.regs.r11 = exc_frame[10];
+    sf.regs.r12 = exc_frame[11];
+    sf.regs.r13 = exc_frame[12];
+    sf.regs.r14 = exc_frame[13];
+    sf.regs.r15 = exc_frame[14];
+    sf.regs.rip = exc_frame[17];
+    sf.regs.rsp = exc_frame[20];
+    sf.regs.rflags = exc_frame[19];
+    lx_fill_siginfo(sf.siginfo, sig, si_code, si_addr);
+    lx_fill_ucontext(&sf, &sf.regs, sf.saved_mask, cur);
+
+    uint64_t stack_top = exc_frame[20]; /* saved user RSP */
+    if ((act->flags & LNX_SA_ONSTACK) &&
+        cur->linux_sigalt_sp && cur->linux_sigalt_size &&
+        !(cur->linux_sigalt_flags & LNX_SS_DISABLE)) {
+        stack_top = cur->linux_sigalt_sp + cur->linux_sigalt_size;
+    }
+    uint64_t sp = (stack_top - sizeof(sf)) & ~0xFULL;
+    sp -= 8ULL;
+    uint64_t saved_cr3 = lx_read_cr3();
+    int switched_cr3 = (cur->cr3 && saved_cr3 != cur->cr3);
+    if (switched_cr3) lx_write_cr3(cur->cr3);
+    int copy_rc = copyout(cur, &sf, sp, sizeof(sf));
+    if (switched_cr3) lx_write_cr3(saved_cr3);
+    if (copy_rc != 0) return 0;
+
+    cur->linux_sig_blocked |= (lx_signal_bit(sig) | (act->mask & ~lx_signal_unblockable_mask()));
+
+    /* fry1381: preserve the interrupted thread's FPU/SSE/AVX state across the
+     * handler (restored on rt_sigreturn). Without this, a handler's vector use
+     * corrupts an interrupted vector op (e.g. JSC movups rehash). */
+    lx_fpu_save_area(cur->sig_fpu_area);
+
+    /* Modify the exception frame to jump to the handler */
+    exc_frame[17] = act->handler;   /* RIP → handler */
+    exc_frame[20] = sp;             /* RSP → sigframe */
+    exc_frame[6]  = (uint64_t)sig;  /* RDI → signal number */
+    exc_frame[5]  = sp + (uint64_t)__builtin_offsetof(struct lx_rt_sigframe, siginfo);
+    exc_frame[3]  = sp + (uint64_t)__builtin_offsetof(struct lx_rt_sigframe, ucontext);
+    exc_frame[19] = exc_frame[19] | 0x202ULL; /* ensure IF=1 */
+
+    if (cur->pid == TB_TRACE_CLAUDE_TGID || cur->tgid == TB_TRACE_CLAUDE_TGID) {
+        kprint_serial_only("TBSIG exc-deliver pid=%u tgid=%u sig=%d vec=%llu handler=%lx sp=%lx oldrip=%lx\\n",
+                           cur->pid, cur->tgid, sig,
+                           (unsigned long long)vector,
+                           (unsigned long)act->handler,
+                           (unsigned long)sp,
+                           (unsigned long)sf.regs.rip);
+    }
+    return 1;
+}
+
+static uint64_t lx_deliver_signal_on_sysret(struct fry_process *cur, uint64_t syscall_rc) {
+    if (!cur || !cur->shared) return syscall_rc;
+    uint64_t bit = lx_pending_handled_mask(cur);
+    if (!bit) return syscall_rc;
+    int sig = lx_lowest_signal(bit);
+    if (!sig) return syscall_rc;
+    struct fry_linux_sigaction *act = &cur->shared->linux_sigact[sig];
+    if (!act->handler || !act->restorer) return syscall_rc;
+
+    uint64_t *frame = lx_syscall_frame(cur);
+    if (!frame) return syscall_rc;
+
+    struct lx_rt_sigframe sf;
+    lx_memzero(&sf, sizeof(sf));
+    sf.restorer = act->restorer;
+    sf.magic = LX_SIGFRAME_MAGIC;
+    sf.saved_mask = cur->linux_sig_blocked;
+    sf.regs.rax = syscall_rc;
+    sf.regs.rbx = lx_read_gs_slot(24);
+    sf.regs.rcx = frame[LX_SYSFRAME_RIP];
+    sf.regs.rdx = frame[LX_SYSFRAME_RDX];
+    sf.regs.rsi = frame[LX_SYSFRAME_RSI];
+    sf.regs.rdi = frame[LX_SYSFRAME_RDI];
+    sf.regs.rbp = frame[LX_SYSFRAME_RBP];
+    sf.regs.r8 = frame[LX_SYSFRAME_R8];
+    sf.regs.r9 = frame[LX_SYSFRAME_R9];
+    sf.regs.r10 = frame[LX_SYSFRAME_R10];
+    sf.regs.r11 = frame[LX_SYSFRAME_RFLAGS];
+    sf.regs.r12 = lx_read_gs_slot(32);
+    sf.regs.r13 = lx_read_gs_slot(40);
+    sf.regs.r14 = lx_read_gs_slot(48);
+    sf.regs.r15 = lx_read_gs_slot(56);
+    sf.regs.rip = frame[LX_SYSFRAME_RIP];
+    sf.regs.rsp = frame[LX_SYSFRAME_RSP];
+    sf.regs.rflags = frame[LX_SYSFRAME_RFLAGS];
+    lx_fill_siginfo(sf.siginfo, sig, 0, 0);
+    lx_fill_ucontext(&sf, &sf.regs, cur->linux_sig_blocked, cur);
+
+    uint64_t stack_top = frame[LX_SYSFRAME_RSP];
+    if ((act->flags & LNX_SA_ONSTACK) &&
+        cur->linux_sigalt_sp && cur->linux_sigalt_size &&
+        !(cur->linux_sigalt_flags & LNX_SS_DISABLE)) {
+        stack_top = cur->linux_sigalt_sp + cur->linux_sigalt_size;
+    }
+    uint64_t sp = (stack_top - sizeof(sf)) & ~0xFULL;
+    sp -= 8ULL; /* handler entry RSP must look like a call: RSP % 16 == 8 */
+    if (copyout(cur, &sf, sp, sizeof(sf)) != 0) return syscall_rc;
+
+    cur->linux_sig_pending &= ~bit;
+    cur->linux_sig_blocked |= (bit | (act->mask & ~lx_signal_unblockable_mask()));
+    cur->linux_sigsuspend_active = 0;
+
+    /* fry1381: preserve FPU/SSE/AVX across the handler (restored on sigreturn). */
+    lx_fpu_save_area(cur->sig_fpu_area);
+
+    frame[LX_SYSFRAME_RIP] = act->handler;
+    frame[LX_SYSFRAME_RSP] = sp;
+    frame[LX_SYSFRAME_RDI] = (uint64_t)sig;
+    frame[LX_SYSFRAME_RSI] = sp + (uint64_t)__builtin_offsetof(struct lx_rt_sigframe, siginfo);
+    frame[LX_SYSFRAME_RDX] = sp + (uint64_t)__builtin_offsetof(struct lx_rt_sigframe, ucontext);
+
+    if (cur->pid == TB_TRACE_CLAUDE_TGID || cur->tgid == TB_TRACE_CLAUDE_TGID) {
+        kprint_serial_only("TBSIG deliver pid=%u tgid=%u sig=%d handler=%lx restorer=%lx sp=%lx oldrip=%lx oldrsp=%lx rc=%lx\n",
+                           cur->pid, cur->tgid, sig,
+                           (unsigned long)act->handler,
+                           (unsigned long)act->restorer,
+                           (unsigned long)sp,
+                           (unsigned long)sf.regs.rip,
+                           (unsigned long)sf.regs.rsp,
+                           (unsigned long)syscall_rc);
+    }
+    return syscall_rc;
+}
+
+static uint64_t lx_rt_sigreturn_sys(struct fry_process *cur) {
+    uint64_t *frame = lx_syscall_frame(cur);
+    if (!cur || !frame) return (uint64_t)-EFAULT;
+    uint64_t user_sp = frame[LX_SYSFRAME_RSP];
+    struct lx_rt_sigframe sf;
+    uint64_t sf_base = user_sp - 8ULL;
+    if (copyin(cur, sf_base, &sf, sizeof(sf)) != 0 || sf.magic != LX_SIGFRAME_MAGIC)
+        return (uint64_t)-EFAULT;
+
+    cur->linux_sig_blocked = sf.saved_mask & ~lx_signal_unblockable_mask();
+    frame[LX_SYSFRAME_RIP] = sf.regs.rip;
+    frame[LX_SYSFRAME_RSP] = sf.regs.rsp;
+    frame[LX_SYSFRAME_RFLAGS] = sf.regs.rflags | 0x202ULL;
+    frame[LX_SYSFRAME_RDI] = sf.regs.rdi;
+    frame[LX_SYSFRAME_RSI] = sf.regs.rsi;
+    frame[LX_SYSFRAME_RDX] = sf.regs.rdx;
+    frame[LX_SYSFRAME_R10] = sf.regs.r10;
+    frame[LX_SYSFRAME_R8] = sf.regs.r8;
+    frame[LX_SYSFRAME_R9] = sf.regs.r9;
+    frame[LX_SYSFRAME_RBP] = sf.regs.rbp;
+    lx_write_gs_slot(24, sf.regs.rbx);
+    lx_write_gs_slot(32, sf.regs.r12);
+    lx_write_gs_slot(40, sf.regs.r13);
+    lx_write_gs_slot(48, sf.regs.r14);
+    lx_write_gs_slot(56, sf.regs.r15);
+
+    /* fry1381: restore the FPU/SSE/AVX state saved at signal delivery, so the
+     * interrupted thread resumes with its vector registers intact. */
+    lx_fpu_restore_area(cur->sig_fpu_area);
+
+    if (cur->pid == TB_TRACE_CLAUDE_TGID || cur->tgid == TB_TRACE_CLAUDE_TGID) {
+        kprint_serial_only("TBSIG sigreturn pid=%u tgid=%u rip=%lx rsp=%lx rax=%lx mask=%lx\n",
+                           cur->pid, cur->tgid,
+                           (unsigned long)sf.regs.rip,
+                           (unsigned long)sf.regs.rsp,
+                           (unsigned long)sf.regs.rax,
+                           (unsigned long)cur->linux_sig_blocked);
+    }
+    return sf.regs.rax;
 }
 
 static int streq_lit(const char *a, const char *b) {
@@ -1201,6 +1919,49 @@ static int readdir_ex_cb(const char *name, uint64_t size, uint32_t attr, void *c
     dst[name_len] = 0;
     rc->pos += rec_len;
     if (rc->pos >= rc->len) return 1;
+    return 0;
+}
+
+static uint16_t lx_dirent64_reclen(uint32_t name_len) {
+    uint32_t reclen = 19u + name_len + 1u; /* ino64 + off64 + reclen + type + NUL */
+    reclen = (reclen + 7u) & ~7u;
+    return (uint16_t)reclen;
+}
+
+static int lx_getdents64_cb(const char *name, uint64_t size, uint32_t attr, void *c) {
+    (void)size;
+    struct lx_getdents64_ctx *ctx = (struct lx_getdents64_ctx *)c;
+    uint32_t name_len = 0;
+    uint32_t index;
+    uint16_t reclen;
+    uint8_t *dst;
+
+    if (!ctx || !name) return 1;
+    if (ctx->skip > 0) {
+        ctx->skip--;
+        return 0;
+    }
+
+    while (name[name_len]) name_len++;
+    if (name_len > 255u) name_len = 255u;
+    reclen = lx_dirent64_reclen(name_len);
+    if (ctx->pos + reclen > ctx->len) {
+        ctx->overflow = 1;
+        return 1;
+    }
+
+    dst = ctx->buf + ctx->pos;
+    index = ctx->base_skip + ctx->emitted + 1u;
+    *(uint64_t *)(uintptr_t)(dst + 0) = (uint64_t)index;              /* d_ino */
+    *(int64_t *)(uintptr_t)(dst + 8) = (int64_t)(index + 1u);         /* d_off */
+    *(uint16_t *)(uintptr_t)(dst + 16) = reclen;                     /* d_reclen */
+    dst[18] = (attr & 0x10u) ? 4u : 8u;                              /* DT_DIR/DT_REG */
+    for (uint32_t i = 0; i < name_len; i++) dst[19u + i] = (uint8_t)name[i];
+    dst[19u + name_len] = 0;
+    for (uint32_t i = 20u + name_len; i < reclen; i++) dst[i] = 0;
+
+    ctx->pos += reclen;
+    ctx->emitted++;
     return 0;
 }
 
@@ -1434,8 +2195,22 @@ static struct vm_shared_object vm_shared_objects[FRY_VM_SHARED_MAX];
 static int vm_region_alloc_slot(struct fry_process *p) {
     if (!p || !proc_shared_state(p)) return -1;
     for (int i = 0; i < PROC_VMREG_MAX; i++) {
-        if (!PROC_VMREGS(p)[i].used) return i;
+        if (!PROC_VMREGS(p)[i].used) {
+            /* fry1390: confirm the old 256-slot ceiling was being exceeded
+             * (the aliasing trigger). Log once when we first use slot >= 256. */
+            if (i >= 256 && (p->pid == 3u || p->tgid == 3u)) {
+                static int g_vmreg_over256_logged = 0;
+                if (!g_vmreg_over256_logged) {
+                    g_vmreg_over256_logged = 1;
+                    kprint_serial_only("TBVMREG exceeded old-256 ceiling: now using slot=%d (was the aliasing bug)\n", i);
+                }
+            }
+            return i;
+        }
     }
+    if (p->pid == 3u || p->tgid == 3u)
+        kprint_serial_only("TBVMREG TABLE FULL (%d) pid=%u -> mapping would be UNTRACKED\n",
+                           PROC_VMREG_MAX, p->pid);
     return -1;
 }
 
@@ -1678,8 +2453,77 @@ static void vm_zero_page(uint64_t phys) {
     for (uint64_t i = 0; i < PAGE_SIZE; i++) dst[i] = 0;
 }
 
+/* fry1389: log any vm op (for the Claude tgid) whose [base,base+len) range
+ * covers the corrupt CodeBlock page (g_tb_target_page). Catches a kernel-side
+ * zero/unmap/release of the live page that the user-VA DR watchpoint misses. */
+static void tb_log_vm_touch(const char *op, struct fry_process *p,
+                            uint64_t base, uint64_t len) {
+    if (!g_tb_target_page || !p) return;
+    if (p->pid != 3u && p->tgid != 3u) return;
+    uint64_t end = base + len;
+    if (end < base) return;
+    if (g_tb_target_page < base || g_tb_target_page >= end) return;
+    kprint_serial_only("TBVMTOUCH op=%s pid=%u base=0x%llx len=0x%llx end=0x%llx target=0x%llx\n",
+                       op, p->pid, (unsigned long long)base,
+                       (unsigned long long)len, (unsigned long long)end,
+                       (unsigned long long)g_tb_target_page);
+}
+
+static int vm_madvise_dontneed(struct fry_process *p, uint64_t base, uint64_t length) {
+    if (!p || !p->cr3 || length == 0) return -EINVAL;
+    if (base + length < base) return -EINVAL;
+    tb_log_vm_touch("dontneed", p, base, length);
+    uint64_t end = base + length;
+
+    if (proc_shared_state_const(p)) {
+        int touched_region = 0;
+        for (int i = 0; i < PROC_VMREG_MAX; i++) {
+            const struct fry_vm_region *r = &PROC_VMREGS_CONST(p)[i];
+            if (!r->used) continue;
+            uint64_t r_end = r->base + r->length;
+            if (r_end < r->base) continue;
+            if (end <= r->base || base >= r_end) continue;
+            touched_region = 1;
+            /* fry1386: RE-APPLIED the fry1374 fix (the fry1378 revert was wrong).
+             * Do NOT gate on r->committed. Sparse NORESERVE gigacage regions
+             * register committed=0 yet have pages demand-faulted in. JSC issues
+             * MADV_DONTNEED over such a region (e.g. the 1.5MB atom/compact table
+             * at 0x6fbbff3a9000) to release it and RELIES on the Linux contract
+             * that the next read returns ZERO. With the committed guard, DONTNEED
+             * was a no-op for the sparse cage, so STALE data (an old 32-byte-record
+             * structure's pointers) persisted; JSC reused the region as a 6-byte
+             * packed table and read the stale bytes -> non-canonical pointer ->
+             * #GP at 0x4C17293 (proven: DONTNEED at serial L3560 immediately
+             * followed by the #GP at L3562). The fry1378 reasoning blamed this for
+             * the hash-sentinel hang, but that hang was the AVX-clobber bug fixed
+             * separately by -mgeneral-regs-only (fry1379). The per-page pa==0 check
+             * below already skips genuinely uncommitted pages. */
+            if (r->kind != FRY_VM_REGION_ANON_PRIVATE &&
+                r->kind != FRY_VM_REGION_ANON_SHARED) {
+                continue;
+            }
+            uint64_t from = (base > r->base) ? base : r->base;
+            uint64_t to = (end < r_end) ? end : r_end;
+            for (uint64_t va = from; va < to; va += PAGE_SIZE) {
+                uint64_t pa = vmm_virt_to_phys_user(p->cr3, va) & 0x000FFFFFFFFFF000ULL;
+                if (!pa) continue;
+                vm_zero_page(pa);
+            }
+        }
+        if (touched_region) return 0;
+    }
+
+    for (uint64_t va = base; va < end; va += PAGE_SIZE) {
+        uint64_t pa = vmm_virt_to_phys_user(p->cr3, va) & 0x000FFFFFFFFFF000ULL;
+        if (!pa) continue;
+        vm_zero_page(pa);
+    }
+    return 0;
+}
+
 static void vm_unmap_pages_only(struct fry_process *p, uint64_t base, uint64_t length) {
     if (!p) return;
+    tb_log_vm_touch("unmap", p, base, length);
     for (uint64_t va = base; va < base + length; va += PAGE_SIZE) {
         if (!vmm_virt_to_phys_user(p->cr3, va)) continue;
         vmm_unmap_user(p->cr3, va);
@@ -1688,6 +2532,7 @@ static void vm_unmap_pages_only(struct fry_process *p, uint64_t base, uint64_t l
 
 static void vm_release_private_pages(struct fry_process *p, uint64_t base, uint64_t length) {
     if (!p) return;
+    tb_log_vm_touch("release", p, base, length);
     for (uint64_t va = base; va < base + length; va += PAGE_SIZE) {
         uint64_t pa = vmm_virt_to_phys_user(p->cr3, va);
         if (!pa) continue;
@@ -2101,7 +2946,31 @@ static int vm_mprotect_region_range(struct fry_process *p, uint64_t base, uint64
 
     if (!r.committed) {
         if (r.kind != FRY_VM_REGION_ANON_PRIVATE && r.kind != FRY_VM_REGION_GUARD) return -1;
-        if (prot == 0) return 0;
+        if (prot == 0) {
+            if (base == r.base && end == r_end) {
+                vm_region_fill(&PROC_VMREGS(p)[slot], r.base, r.length, 0, r.flags,
+                               r.kind, r.backing_id, r.backing_page_start, 0);
+            } else if (base == r.base) {
+                vm_region_fill(&PROC_VMREGS(p)[slot], base, length, 0, r.flags,
+                               r.kind, r.backing_id, vm_region_page_start_at(&r, base), 0);
+                vm_region_fill_span_from_parent(&PROC_VMREGS(p)[slot1], &r, end, r_end - end,
+                                                r.prot, r.flags, 0);
+            } else if (end == r_end) {
+                vm_region_fill_span_from_parent(&PROC_VMREGS(p)[slot], &r, r.base,
+                                                base - r.base, r.prot, r.flags, 0);
+                vm_region_fill(&PROC_VMREGS(p)[slot1], base, length, 0, r.flags,
+                               r.kind, r.backing_id, vm_region_page_start_at(&r, base), 0);
+            } else {
+                vm_region_fill_span_from_parent(&PROC_VMREGS(p)[slot], &r, r.base,
+                                                base - r.base, r.prot, r.flags, 0);
+                vm_region_fill(&PROC_VMREGS(p)[slot1], base, length, 0, r.flags,
+                               r.kind, r.backing_id, vm_region_page_start_at(&r, base), 0);
+                vm_region_fill_span_from_parent(&PROC_VMREGS(p)[slot2], &r, end, r_end - end,
+                                                r.prot, r.flags, 0);
+            }
+            vm_region_merge_neighbors(p);
+            return 0;
+        }
         if (r.kind == FRY_VM_REGION_GUARD) return -1;
         if (vm_commit_private_pages(p, base, length, prot) != 0) return -1;
 
@@ -2214,6 +3083,7 @@ static int futex_wait_begin_ex(struct fry_process *cur, uint64_t uaddr,
                                int private_key) {
     uint64_t key;
     volatile const uint32_t *word;
+    uint64_t now_ms;
     uint64_t wake_time_ms;
     int rc;
     if (!cur) return -ESRCH;
@@ -2222,26 +3092,74 @@ static int futex_wait_begin_ex(struct fry_process *cur, uint64_t uaddr,
     if (rc < 0) return rc;
 
     word = (volatile const uint32_t *)(uintptr_t)uaddr;
+    if (uaddr == TB_JSC_FUTEX_UADDR) {
+        kprint_serial_only("TBFUTEX jsc-wait-enter pid=%u tgid=%u key=%lx expected=%u current=%u timeout=%u timeout_ms=%llu bitset=%x\n",
+                           cur->pid, cur->tgid, (unsigned long)key,
+                           expected, (unsigned)*word, has_timeout ? 1u : 0u,
+                           (unsigned long long)timeout_ms, bitset);
+    }
+    if (cur && (cur->pid == TB_TRACE_CLAUDE_TGID || cur->tgid == TB_TRACE_CLAUDE_TGID)) {
+        kprint_serial_only("TBFUTEX wait-begin pid=%u tgid=%u uaddr=%lx key=%lx private=%u expected=%u actual=%u timeout=%u timeout_ms=%llu bitset=%x\n",
+                           cur->pid, cur->tgid, (unsigned long)uaddr,
+                           (unsigned long)key, private_key ? 1u : 0u,
+                           expected, (unsigned)*word, has_timeout ? 1u : 0u,
+                           (unsigned long long)timeout_ms, bitset);
+    }
+    now_ms = sys_now_ms();
     if (!has_timeout) {
         wake_time_ms = UINT64_MAX;
     } else if (timeout_ms == 0) {
-        wake_time_ms = sys_now_ms();
+        wake_time_ms = now_ms;
     } else {
-        wake_time_ms = sys_now_ms();
-        if (wake_time_ms > UINT64_MAX - timeout_ms) {
+        if (now_ms > UINT64_MAX - timeout_ms) {
             wake_time_ms = UINT64_MAX - 1ULL;
         } else {
-            wake_time_ms += timeout_ms;
+            wake_time_ms = now_ms + timeout_ms;
         }
     }
 
     rc = sched_block_futex(cur->pid, word, expected, key, wake_time_ms, bitset);
-    if (rc < 0) return rc;
+    if (rc < 0) {
+        if (uaddr == TB_JSC_FUTEX_UADDR) {
+            kprint_serial_only("TBFUTEX jsc-wait-block-fail pid=%u tgid=%u key=%lx rc=%d expected=%u current=%u\n",
+                               cur->pid, cur->tgid, (unsigned long)key,
+                               rc, expected, (unsigned)*word);
+        }
+        if (cur && (cur->pid == TB_TRACE_CLAUDE_TGID || cur->tgid == TB_TRACE_CLAUDE_TGID)) {
+            kprint_serial_only("TBFUTEX wait-block-fail pid=%u tgid=%u uaddr=%lx key=%lx rc=%d actual=%u expected=%u\n",
+                               cur->pid, cur->tgid, (unsigned long)uaddr,
+                               (unsigned long)key, rc, (unsigned)*word, expected);
+        }
+        return rc;
+    }
+    if (cur && (cur->pid == TB_TRACE_CLAUDE_TGID || cur->tgid == TB_TRACE_CLAUDE_TGID)) {
+        kprint_serial_only("TBFUTEX wait-yield pid=%u tgid=%u uaddr=%lx key=%lx now=%llu wake_time=%llu delta=%llu\n",
+                           cur->pid, cur->tgid, (unsigned long)uaddr,
+                           (unsigned long)key, (unsigned long long)now_ms,
+                           (unsigned long long)wake_time_ms,
+                           (unsigned long long)((wake_time_ms == UINT64_MAX ||
+                                                 wake_time_ms < now_ms) ? 0 : wake_time_ms - now_ms));
+    }
     sched_yield();
 
     cur = proc_current();
     if (!cur) return -ESRCH;
     rc = cur->wait_result;
+    if (uaddr == TB_JSC_FUTEX_UADDR) {
+        uint64_t ret_now = sys_now_ms();
+        kprint_serial_only("TBFUTEX jsc-wait-return pid=%u tgid=%u key=%lx rc=%d elapsed=%llu current=%u\n",
+                           cur->pid, cur->tgid, (unsigned long)key, rc,
+                           (unsigned long long)((ret_now >= now_ms) ? ret_now - now_ms : 0),
+                           (unsigned)*word);
+    }
+    if (cur && (cur->pid == TB_TRACE_CLAUDE_TGID || cur->tgid == TB_TRACE_CLAUDE_TGID)) {
+        uint64_t ret_now = sys_now_ms();
+        kprint_serial_only("TBFUTEX wait-return pid=%u tgid=%u uaddr=%lx key=%lx rc=%d elapsed=%llu actual=%u\n",
+                           cur->pid, cur->tgid, (unsigned long)uaddr,
+                           (unsigned long)key, rc,
+                           (unsigned long long)((ret_now >= now_ms) ? ret_now - now_ms : 0),
+                           (unsigned)*word);
+    }
     cur->wait_result = 0;
     cur->wait_futex_key = 0;
     cur->wait_futex_bitset = 0;
@@ -2264,12 +3182,46 @@ static int futex_wake_waiters_bitset(struct fry_process *cur, uint64_t uaddr,
     if (bitset == 0) return -EINVAL;
     rc = futex_key_for_user_word_ex(cur, uaddr, private_key, &key);
     if (rc < 0) return rc;
-    return (int)sched_wake_futex(key, max_wake, bitset, 0);
+    if (uaddr == TB_JSC_FUTEX_UADDR) {
+        volatile const uint32_t *word = (volatile const uint32_t *)(uintptr_t)uaddr;
+        kprint_serial_only("TBFUTEX jsc-wake-call pid=%u tgid=%u key=%lx current=%u max=%u bitset=%x\n",
+                           cur->pid, cur->tgid, (unsigned long)key,
+                           (unsigned)*word, max_wake, bitset);
+    }
+    if (cur && (cur->pid == TB_TRACE_CLAUDE_TGID || cur->tgid == TB_TRACE_CLAUDE_TGID)) {
+        kprint_serial_only("TBFUTEX wake-call pid=%u tgid=%u uaddr=%lx key=%lx private=%u max=%u bitset=%x\n",
+                           cur->pid, cur->tgid, (unsigned long)uaddr,
+                           (unsigned long)key, private_key ? 1u : 0u,
+                           max_wake, bitset);
+    }
+    rc = (int)sched_wake_futex(key, max_wake, bitset, 0);
+    if (uaddr == TB_JSC_FUTEX_UADDR) {
+        volatile const uint32_t *word = (volatile const uint32_t *)(uintptr_t)uaddr;
+        kprint_serial_only("TBFUTEX jsc-wake-ret pid=%u tgid=%u key=%lx rc=%d current=%u\n",
+                           cur->pid, cur->tgid, (unsigned long)key, rc,
+                           (unsigned)*word);
+    }
+    if (cur && (cur->pid == TB_TRACE_CLAUDE_TGID || cur->tgid == TB_TRACE_CLAUDE_TGID)) {
+        kprint_serial_only("TBFUTEX wake-ret pid=%u tgid=%u uaddr=%lx key=%lx rc=%d\n",
+                           cur->pid, cur->tgid, (unsigned long)uaddr,
+                           (unsigned long)key, rc);
+    }
+    return rc;
 }
 
 static int futex_wake_waiters(struct fry_process *cur, uint64_t uaddr, uint32_t max_wake) {
     return futex_wake_waiters_bitset(cur, uaddr, max_wake,
                                      FUTEX_BITSET_MATCH_ANY, 0);
+}
+
+static uint64_t linux_affinity_mask_bytes(uint32_t ncpu) {
+    uint64_t bytes;
+    if (ncpu == 0) ncpu = 1;
+    bytes = ((uint64_t)ncpu + 7ULL) / 8ULL;
+    bytes = (bytes + 7ULL) & ~7ULL;
+    if (bytes == 0) bytes = 8;
+    if (bytes > 128) bytes = 128;
+    return bytes;
 }
 
 static int futex_requeue_waiters(struct fry_process *cur, uint64_t uaddr,
@@ -2352,7 +3304,7 @@ static int futex_wake_op(struct fry_process *cur, uint64_t uaddr1,
 }
 
 /* =====================================================================
- * Linux compatibility layer — syscall translation ("linuxulator").
+ * Tater Bridge — Linux-compatible syscall translation.
  *
  * Routed to from syscall_dispatch() when the current process has is_linux
  * set. `num` here is a LINUX x86_64 syscall number (a separate namespace
@@ -2368,6 +3320,149 @@ static int futex_wake_op(struct fry_process *cur, uint64_t uaddr1,
 
 #define LX_FRAME_MASK 0x000FFFFFFFFFF000ULL
 #define LX_PG 4096ULL
+
+static int tb_trace_is_claude(struct fry_process *cur) {
+    if (!cur) return 0;
+    if (cur->name[0]) {
+        for (uint32_t i = 0; cur->name[i]; i++) {
+            uint32_t j = 0;
+            const char *needle = "RCLAUDE";
+            while (needle[j] && cur->name[i + j] == needle[j]) j++;
+            if (!needle[j]) {
+                g_tb_trace_claude_tgid = cur->tgid ? cur->tgid : cur->pid;
+                return 1;
+            }
+            j = 0;
+            needle = "claude";
+            while (needle[j] && cur->name[i + j] == needle[j]) j++;
+            if (!needle[j]) {
+                g_tb_trace_claude_tgid = cur->tgid ? cur->tgid : cur->pid;
+                return 1;
+            }
+        }
+    }
+    return cur->pid == TB_TRACE_CLAUDE_TGID || cur->tgid == TB_TRACE_CLAUDE_TGID;
+}
+
+static const char *tb_trace_syscall_name(uint64_t num) {
+    switch (num) {
+    case LNX_read: return "read";
+    case LNX_write: return "write";
+    case LNX_readv: return "readv";
+    case LNX_readlink: return "readlink";
+    case LNX_access: return "access";
+    case LNX_newfstatat: return "newfstatat";
+    case LNX_pread64: return "pread64";
+    case LNX_open: return "open";
+    case LNX_openat: return "openat";
+    case LNX_close: return "close";
+    case LNX_mmap: return "mmap";
+    case LNX_mprotect: return "mprotect";
+    case LNX_munmap: return "munmap";
+    case LNX_madvise: return "madvise";
+    case LNX_rt_sigaction: return "rt_sigaction";
+    case LNX_rt_sigprocmask: return "rt_sigprocmask";
+    case LNX_rt_sigreturn: return "rt_sigreturn";
+    case LNX_rt_sigsuspend: return "rt_sigsuspend";
+    case LNX_sigaltstack: return "sigaltstack";
+    case LNX_clone: return "clone";
+    case LNX_clone3: return "clone3";
+    case LNX_set_robust_list: return "set_robust_list";
+    case LNX_rseq: return "rseq";
+    case LNX_sched_setscheduler: return "sched_setscheduler";
+    case LNX_futex: return "futex";
+    case LNX_nanosleep: return "nanosleep";
+    case LNX_clock_nanosleep: return "clock_nanosleep";
+    case LNX_epoll_create: return "epoll_create";
+    case LNX_epoll_create1: return "epoll_create1";
+    case LNX_epoll_ctl: return "epoll_ctl";
+    case LNX_epoll_wait: return "epoll_wait";
+    case LNX_epoll_pwait: return "epoll_pwait";
+    case LNX_eventfd: return "eventfd";
+    case LNX_eventfd2: return "eventfd2";
+    case LNX_timerfd_create: return "timerfd_create";
+    case LNX_timerfd_settime: return "timerfd_settime";
+    case LNX_timerfd_gettime: return "timerfd_gettime";
+    case LNX_signalfd: return "signalfd";
+    case LNX_signalfd4: return "signalfd4";
+    case LNX_getdents64: return "getdents64";
+    case LNX_getrandom: return "getrandom";
+    case LNX_time: return "time";
+    case LNX_fcntl: return "fcntl";
+    case LNX_ioctl: return "ioctl";
+    case LNX_socket: return "socket";
+    case LNX_wait4: return "wait4";
+    case LNX_kill: return "kill";
+    case LNX_tkill: return "tkill";
+    case LNX_tgkill: return "tgkill";
+    case LNX_exit: return "exit";
+    case LNX_exit_group: return "exit_group";
+    default: return "unknown";
+    }
+}
+
+static int tb_trace_selected_syscall(uint64_t num) {
+    switch (num) {
+    case LNX_read:
+    case LNX_write:
+    case LNX_readv:
+    case LNX_readlink:
+    case LNX_pread64:
+    case LNX_open:
+    case LNX_openat:
+    case LNX_close:
+    case LNX_mmap:
+    case LNX_mprotect:
+    case LNX_munmap:
+    case LNX_madvise:
+    case LNX_rt_sigaction:
+    case LNX_rt_sigprocmask:
+    case LNX_rt_sigreturn:
+    case LNX_rt_sigsuspend:
+    case LNX_sigaltstack:
+    case LNX_clone:
+    case LNX_clone3:
+    case LNX_set_robust_list:
+    case LNX_rseq:
+    case LNX_futex:
+    case LNX_nanosleep:
+    case LNX_clock_nanosleep:
+    case LNX_epoll_create:
+    case LNX_epoll_create1:
+    case LNX_epoll_ctl:
+    case LNX_epoll_wait:
+    case LNX_epoll_pwait:
+    case LNX_eventfd:
+    case LNX_eventfd2:
+    case LNX_timerfd_create:
+    case LNX_timerfd_settime:
+    case LNX_timerfd_gettime:
+    case LNX_signalfd:
+    case LNX_signalfd4:
+    case LNX_getdents64:
+    case LNX_getrandom:
+    case LNX_time:
+    case LNX_fcntl:
+    case LNX_ioctl:
+    case LNX_socket:
+    case LNX_wait4:
+    case LNX_kill:
+    case LNX_tkill:
+    case LNX_tgkill:
+    case LNX_exit:
+    case LNX_exit_group:
+    case LNX_access:
+    case LNX_newfstatat:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static int tb_trace_is_errno(uint64_t rc) {
+    int64_t s = (int64_t)rc;
+    return s < 0 && s >= -4096;
+}
 
 static void lx_setfield(char *dst, const char *src) {
     int i = 0;
@@ -2385,12 +3480,187 @@ static int lx_map_one(uint64_t cr3, uint64_t va, uint64_t flags) {
     return 0;
 }
 
+/* Demand-paging for anonymous mmap regions (e.g. JSC's MAP_NORESERVE
+ * gigacage: a huge virtual range reserved with no backing pages). The first
+ * access to an un-backed page traps to the #PF handler, which calls this to
+ * commit ONE zero page with the region's protection. This is how a multi-GB
+ * reservation runs on a machine with only a few GB of RAM — physical pages
+ * are allocated only for the pages actually touched.
+ * Returns 1 if the fault was satisfied (retry the instruction), 0 to fall
+ * through to the normal USER FAULT kill. Runs in #PF/exception context with
+ * the faulting process's cr3 active. */
+int lx_try_demand_page(struct fry_process *p, uint64_t fault_va, uint64_t err) {
+    if (!p) return 0;
+    /* Only NOT-present faults are demand-pageable. err bit0 set => the page
+     * was present and this is a real protection violation -> let it kill. */
+    if (err & 0x1ULL) return 0;
+    uint64_t va = fault_va & ~0xFFFULL;
+    if (g_tb_target_page && va == (g_tb_target_page & ~0xFFFULL))
+        tb_log_vm_touch("demand-refault", p, va, LX_PG);
+    int slot = vm_region_find_containing(p, va, LX_PG);
+    if (slot < 0) return 0;
+    struct fry_vm_region *r = &PROC_VMREGS(p)[slot];
+    if (!r->used) return 0;
+    if (r->kind != FRY_VM_REGION_ANON_PRIVATE &&
+        r->kind != FRY_VM_REGION_ANON_SHARED) return 0;
+    uint32_t prot = r->prot;
+    if (prot == 0) return 0;                       /* PROT_NONE -> real fault */
+    if ((err & 0x2ULL) && !(prot & FRY_PROT_WRITE)) /* write to read-only */
+        return 0;
+    /* Lost a race with another CPU that already committed this page? Fine. */
+    if (vmm_virt_to_phys_user(p->cr3, va) & LX_FRAME_MASK) return 1;
+    uint64_t mflags = VMM_FLAG_PRESENT | VMM_FLAG_USER;
+    if (prot & FRY_PROT_WRITE) mflags |= VMM_FLAG_WRITE;
+    if (!(prot & FRY_PROT_EXEC)) mflags |= VMM_FLAG_NO_EXECUTE;
+    if (lx_map_one(p->cr3, va, mflags) != 0) return 0;  /* OOM -> kill */
+    return 1;
+}
+
+/* fry1387: demand stack growth. Linux auto-grows a thread's stack when a fault
+ * lands just below the stack VMA (within ~rsp). We don't track a GROWSDOWN flag,
+ * so emulate it: if a not-present USER #PF is at/above (rsp - 64KB) and just
+ * below the nearest anon-private writable region (the stack), extend that region
+ * down to the fault page and commit it. Capped so runaway recursion still dies.
+ * Returns 1 if grown+satisfied (retry), 0 to fall through to USER FAULT kill. */
+int lx_try_grow_stack(struct fry_process *p, uint64_t fault_va, uint64_t rsp,
+                      uint64_t err) {
+    if (!p) return 0;
+    if (err & 0x1ULL) return 0;                       /* not-present only */
+    uint64_t va = fault_va & ~0xFFFULL;
+    /* Main-stack window FIRST, with NO rsp-proximity requirement: JSC pre-zeroes
+     * an entire multi-MB stack frame far below rsp (observed fault ~8MB below
+     * rsp), so the Linux "within 64KB of rsp" heuristic wrongly rejects it. The
+     * window [USER_VA_TOP-64MB, USER_VA_TOP) is exclusively the main thread's
+     * stack (heap/cages live at 0x6fxx/0x26xx), so growing here is safe; the
+     * 64MB cap still kills genuine runaway recursion. The ELF loader maps the
+     * initial 8MB ([USER_VA_TOP-8MB, USER_VA_TOP)) with no PROC_VMREGS region. */
+    /* DIAGNOSTIC (fry1388): cap raised 64MB -> 512MB to discriminate whether
+     * JSC's giant single-frame stack zero is a LEGIT large reservation (will
+     * terminate well under 512MB -> just needs a bigger stack) or GARBAGE from a
+     * corrupted object (runs unbounded to the new cap). Bucketed depth logging
+     * replaces the per-page TBSTACKGROW spam. */
+    if (va < USER_VA_TOP && va >= (USER_VA_TOP - (512ULL << 20))) {
+        if (vmm_virt_to_phys_user(p->cr3, va) & LX_FRAME_MASK) return 1;
+        if (!vm_any_region_overlap(p, va, LX_PG)) {   /* not a tracked region */
+            uint64_t sflags = VMM_FLAG_PRESENT | VMM_FLAG_USER | VMM_FLAG_WRITE |
+                              VMM_FLAG_NO_EXECUTE;
+            if (lx_map_one(p->cr3, va, sflags) != 0) return 0;
+            if (p->pid == TB_TRACE_CLAUDE_TGID || p->tgid == TB_TRACE_CLAUDE_TGID) {
+                static uint64_t g_deep_bucket = 0;     /* 8MB-depth buckets */
+                uint64_t depth = USER_VA_TOP - va;
+                uint64_t bucket = depth >> 23;         /* 8MB units */
+                if (bucket != g_deep_bucket) {
+                    g_deep_bucket = bucket;
+                    kprint_serial_only("TBBIGFRAME pid=%u depth=%luMB va=%lx rsp=%lx below_rsp=%ldMB\n",
+                                       p->pid, (unsigned long)(depth >> 20),
+                                       (unsigned long)va, (unsigned long)rsp,
+                                       (long)(((int64_t)rsp - (int64_t)va) >> 20));
+                }
+            }
+            return 1;
+        }
+    }
+    if (fault_va + 65536ULL < rsp) return 0;          /* generic: near rsp only */
+    struct fry_vm_region *best = 0;
+    for (int i = 0; i < PROC_VMREG_MAX; i++) {
+        struct fry_vm_region *r = &PROC_VMREGS(p)[i];
+        if (!r->used) continue;
+        if (r->kind != FRY_VM_REGION_ANON_PRIVATE) continue;
+        if (!(r->prot & FRY_PROT_WRITE)) continue;
+        if (r->base <= va) continue;                  /* want the region ABOVE */
+        if (!best || r->base < best->base) best = r;
+    }
+    if (!best) return 0;
+    uint64_t gap = best->base - va;
+    if (gap > (1ULL << 20)) return 0;                 /* single grow <= 1MB */
+    if ((best->base + best->length) - va > (64ULL << 20)) return 0; /* cap 64MB */
+    if (vm_any_region_overlap(p, va, gap)) return 0;  /* would collide below */
+    best->length += gap;
+    best->base = va;
+    if (vmm_virt_to_phys_user(p->cr3, va) & LX_FRAME_MASK) return 1;
+    uint64_t mflags = VMM_FLAG_PRESENT | VMM_FLAG_USER | VMM_FLAG_WRITE;
+    if (!(best->prot & FRY_PROT_EXEC)) mflags |= VMM_FLAG_NO_EXECUTE;
+    if (lx_map_one(p->cr3, va, mflags) != 0) return 0;
+    if (p->pid == TB_TRACE_CLAUDE_TGID || p->tgid == TB_TRACE_CLAUDE_TGID) {
+        kprint_serial_only("TBSTACKGROW pid=%u va=%lx newbase=%lx len=%lx rsp=%lx\n",
+                           p->pid, (unsigned long)va, (unsigned long)best->base,
+                           (unsigned long)best->length, (unsigned long)rsp);
+    }
+    return 1;
+}
+
 static void lx_unmap_range(uint64_t cr3, uint64_t base, uint64_t npg) {
     for (uint64_t i = 0; i < npg; i++) {
         uint64_t va = base + i * LX_PG;
         uint64_t f = vmm_virt_to_phys_user(cr3, va) & LX_FRAME_MASK;
         if (f) { vmm_unmap_user(cr3, va); pmm_free_page(f); }
     }
+}
+
+#define LX_SPARSE_RESERVE_MIN (4ULL * 1024ULL * 1024ULL * 1024ULL)
+
+static uint32_t lx_mmap_prot_to_fry(uint64_t prot) {
+    uint32_t fprot = 0;
+    if (prot & LNX_PROT_READ) fprot |= FRY_PROT_READ;
+    if (prot & LNX_PROT_WRITE) fprot |= FRY_PROT_WRITE;
+    if (prot & LNX_PROT_EXEC) fprot |= FRY_PROT_EXEC;
+    if (fprot != 0) fprot |= FRY_PROT_READ;
+    return fprot;
+}
+
+static int lx_mmap_prot_supported(uint64_t prot) {
+    uint32_t fprot = lx_mmap_prot_to_fry(prot);
+    if ((fprot & ~(FRY_PROT_READ | FRY_PROT_WRITE | FRY_PROT_EXEC)) != 0) return 0;
+    if (fprot == 0) return 1;
+    return (fprot & FRY_PROT_READ) != 0;
+}
+
+static int is_range_free_for_mmap_hint(struct fry_process *p, uint64_t base, uint64_t length) {
+    if (!p || !p->cr3 || length == 0) return 0;
+    if (base < 0x10000ULL) return 0;   /* Linux mmap_min_addr equivalent */
+    if (base + length < base) return 0;
+    if (base + length > VM_USER_LIMIT) return 0;
+    if (vm_any_region_overlap(p, base, length)) return 0;
+
+    if (vmm_virt_to_phys_user(p->cr3, base) != 0) return 0;
+    uint64_t end_page = base + length - LX_PG;
+    if (vmm_virt_to_phys_user(p->cr3, end_page) != 0) return 0;
+
+    /* Full walk for ranges <=64MB (thorough for cage and sub-cage sizes;
+     * init-time cost is acceptable and guarantees no hidden present pages
+     * from direct ELF/brk/prior maps). Larger ranges use ends + VMA check. */
+    if (length <= (64ULL * 1024 * 1024)) {
+        for (uint64_t va = base; va < base + length; va += LX_PG) {
+            if (vmm_virt_to_phys_user(p->cr3, va) != 0) return 0;
+        }
+    }
+    return 1;
+}
+
+static int lx_sparse_range_available(struct fry_process *p, uint64_t base, uint64_t length) {
+    /* Use the common thorough predicate (also used by hint logic). */
+    if (!is_range_free_for_mmap_hint(p, base, length)) return 0;
+    return 1;
+}
+
+static int lx_map_sparse_anon_private(struct fry_process *p, uint64_t base,
+                                      uint64_t length, uint64_t prot) {
+    if (!lx_sparse_range_available(p, base, length)) return -1;
+    if (!lx_mmap_prot_supported(prot)) return -1;
+
+    int slot = vm_region_alloc_slot(p);
+    if (slot < 0) return -1;
+    /* Store the REAL protection (not 0). MAP_NORESERVE means "back pages
+     * lazily", NOT "inaccessible": the range is usable per its mmap prot and
+     * pages are committed on first touch by lx_try_demand_page(), which needs
+     * the prot to map them with correct permissions. (committed stays 0; no
+     * physical pages are backed until touched.) */
+    vm_region_fill(&PROC_VMREGS(p)[slot], base, length,
+                   lx_mmap_prot_to_fry(prot),
+                   FRY_MAP_PRIVATE | FRY_MAP_ANON | FRY_MAP_RESERVE,
+                   FRY_VM_REGION_ANON_PRIVATE, VM_BACKING_NONE, 0, 0);
+    vm_region_merge_neighbors(p);
+    return 0;
 }
 
 static uint32_t lx_to_fry_open_flags(uint64_t lflags) {
@@ -2449,6 +3719,8 @@ static int lx_fd_stat_to_user(struct fry_process *cur, int fd, uint64_t dst) {
         return lx_copy_stat(cur, dst, 0, LNX_S_IFCHR | 0666u);
     if (fd < 3 || fd >= FRY_FD_MAX) return -EBADF;
     if (!shared->fd_ptrs[fd] || shared->fd_kind[fd] == FD_NONE) return -EBADF;
+    if (shared->fd_kind[fd] == FD_STDIO)
+        return lx_copy_stat(cur, dst, 0, LNX_S_IFCHR | 0666u);
     if (shared->fd_kind[fd] == FD_DIR) {
         struct vfs_stat st;
         if (!shared->fd_paths[fd][0]) return -EBADF;
@@ -2469,7 +3741,10 @@ static int lx_path_stat_to_user(struct fry_process *cur, int dirfd,
                                 const char *raw_path, uint64_t dst) {
     char path[FRY_PATH_MAX];
     struct vfs_stat st;
-    int rpath = resolve_at_path(cur, dirfd, raw_path, path);
+    const char *lookup_path = streq_lit(raw_path, "/etc/localtime")
+                            ? "/usr/share/zoneinfo/UTC"
+                            : raw_path;
+    int rpath = resolve_at_path(cur, dirfd, lookup_path, path);
     if (rpath < 0) return rpath;
     if (vfs_stat(path, &st) != 0) return -ENOENT;
     return lx_copy_stat(cur, dst, st.size, lx_mode_from_vfs_attr(st.attr));
@@ -2482,7 +3757,10 @@ static int lx_open_path(struct fry_process *cur, int dirfd, const char *raw_path
     if (!shared) return -ESRCH;
 
     char path[FRY_PATH_MAX];
-    int rpath = resolve_at_path(cur, dirfd, raw_path, path);
+    const char *lookup_path = streq_lit(raw_path, "/etc/localtime")
+                            ? "/usr/share/zoneinfo/UTC"
+                            : raw_path;
+    int rpath = resolve_at_path(cur, dirfd, lookup_path, path);
     if (rpath < 0) return rpath;
 
     uint32_t flags = lx_to_fry_open_flags(lflags);
@@ -2492,6 +3770,7 @@ static int lx_open_path(struct fry_process *cur, int dirfd, const char *raw_path
         int fd = fd_alloc(cur);
         if (fd < 0) return -EMFILE;
         fd_install(cur, fd, shared->fd_paths[fd], FD_DIR, flags & O_NONBLOCK);
+        shared->fd_table[fd] = 0;
         int prc = install_fd_path(cur, fd, path);
         if (prc < 0) return prc;
         return fd;
@@ -2821,6 +4100,11 @@ static int64_t lx_read_fd(struct fry_process *cur, int fd, uint64_t dst,
     if (fd == 0) return 0;
     if (fd < 3 || fd >= FRY_FD_MAX) return -EBADF;
     if (!shared->fd_ptrs[fd] || shared->fd_kind[fd] == FD_NONE) return -EBADF;
+    if (shared->fd_kind[fd] == FD_STDIO) {
+        int realfd = stdio_fd_from_ptr(shared->fd_ptrs[fd]);
+        if (realfd == 0) return 0;
+        return -EBADF;
+    }
     if (shared->fd_kind[fd] == FD_FILE)
         return vfs_read((struct vfs_file *)shared->fd_ptrs[fd],
                         (void *)(uintptr_t)dst, (uint32_t)len);
@@ -2888,6 +4172,14 @@ static int64_t lx_write_fd(struct fry_process *cur, int fd, uint64_t src,
     if (!shared || fd < 3 || fd >= FRY_FD_MAX ||
         !shared->fd_ptrs[fd] || shared->fd_kind[fd] == FD_NONE)
         return -EBADF;
+    if (shared->fd_kind[fd] == FD_STDIO) {
+        int realfd = stdio_fd_from_ptr(shared->fd_ptrs[fd]);
+        if (realfd == 1 || realfd == 2) {
+            kprint_write((const char *)(uintptr_t)src, len);
+            return (int64_t)len;
+        }
+        return -EBADF;
+    }
     if (shared->fd_kind[fd] == FD_FILE)
         return vfs_write((struct vfs_file *)shared->fd_ptrs[fd],
                          (const void *)(uintptr_t)src, (uint32_t)len);
@@ -2945,10 +4237,10 @@ static int lx_close_fd(struct fry_process *cur, int fd) {
     return 0;
 }
 
-uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
-                                uint64_t a3, uint64_t a4, uint64_t a5,
-                                uint64_t a6,
-                                struct fry_process *cur) {
+static uint64_t linux_syscall_dispatch_impl(uint64_t num, uint64_t a1, uint64_t a2,
+                                            uint64_t a3, uint64_t a4, uint64_t a5,
+                                            uint64_t a6,
+                                            struct fry_process *cur) {
     if (!cur) return (uint64_t)-ESRCH;
 
     switch (num) {
@@ -3024,6 +4316,29 @@ uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
         return (uint64_t)rd;
     }
 
+    case LNX_getdents64: {
+        int fd = (int)a1;
+        uint32_t count = (uint32_t)a3;
+        struct fry_process_shared *shared = proc_shared_state(cur);
+        if (count == 0) return (uint64_t)-EINVAL;
+        if (!user_buf_writable(cur, a2, count)) return (uint64_t)-EFAULT;
+        if (!shared || fd < 3 || fd >= FRY_FD_MAX ||
+            !shared->fd_ptrs[fd] || shared->fd_kind[fd] == FD_NONE)
+            return (uint64_t)-EBADF;
+        if (shared->fd_kind[fd] != FD_DIR) return (uint64_t)-ENOTDIR;
+        if (!shared->fd_paths[fd][0]) return (uint64_t)-EBADF;
+
+        uint32_t skip = (shared->fd_table[fd] > 0) ? (uint32_t)shared->fd_table[fd] : 0;
+        struct lx_getdents64_ctx ctx = {
+            (uint8_t *)(uintptr_t)a2, count, 0, skip, skip, 0, 0
+        };
+        int rc = vfs_readdir_ex(shared->fd_paths[fd], lx_getdents64_cb, &ctx);
+        if (rc < 0) return (uint64_t)-ENOENT;
+        if (ctx.pos == 0 && ctx.overflow) return (uint64_t)-EINVAL;
+        shared->fd_table[fd] = (int)(skip + ctx.emitted);
+        return (uint64_t)ctx.pos;
+    }
+
     case LNX_lseek: {
         int fd = (int)a1;
         int64_t off = (int64_t)a2;
@@ -3074,20 +4389,98 @@ uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
         uint64_t addr = a1, len = a2, prot = a3, flags = a4;
         int fd = (int)a5;
         uint64_t off = a6;
+        struct fry_process_shared *shared = proc_shared_state(cur);
+        if (!shared) return (uint64_t)-ENOMEM;
         if (len == 0) return (uint64_t)-EINVAL;
         if (off & 0xFFFULL) return (uint64_t)-EINVAL;
+        if (len > UINT64_MAX - 0xFFFULL) return (uint64_t)-ENOMEM;
         uint64_t npg = (len + 0xFFF) >> 12;
+        uint64_t map_len = npg * LX_PG;
         uint64_t mflags = VMM_FLAG_PRESENT | VMM_FLAG_USER;
         if (prot & LNX_PROT_WRITE) mflags |= VMM_FLAG_WRITE;
         if (!(prot & LNX_PROT_EXEC)) mflags |= VMM_FLAG_NO_EXECUTE;
-        uint64_t base;
+
+        uint64_t base = 0;
         if ((flags & LNX_MAP_FIXED) && addr) {
             base = addr & ~0xFFFULL;
+            (void)vm_unmap_region_range(cur, base, map_len);
             lx_unmap_range(cur->cr3, base, npg);   /* replace any existing */
-        } else {
-            cur->linux_mmap_next = (cur->linux_mmap_next - npg * LX_PG) & ~0xFFFULL;
-            base = cur->linux_mmap_next;
+        } else if (addr) {
+            /* Honor mmap hint when the range is usable. Force the supplied
+             * hint (for JSC gigacages at 0x0120... etc) when the range is
+             * demonstrably free. Never silently fall back to cursor for a
+             * usable hint; the app will often dereference its chosen cage VA
+             * regardless of the return value. */
+            uint64_t hint_base = addr & ~0xFFFULL;
+            if (is_range_free_for_mmap_hint(cur, hint_base, map_len)) {
+                base = hint_base;
+            }
         }
+
+        if (!base) {
+            /* Top-down cursor allocation.  Unlike Linux, our blind cursor used
+             * to collide with hints; we now search downward using the hint-
+             * check (which verifies against all tracked VM regions AND the
+             * page tables) to find the first truly free hole. */
+            uint64_t align = 0x1000ULL;
+            if (map_len >= (1ULL * 1024 * 1024)) {
+                uint64_t p2 = map_len;
+                p2 |= p2 >> 1;  p2 |= p2 >> 2;
+                p2 |= p2 >> 4;  p2 |= p2 >> 8;
+                p2 |= p2 >> 16; p2 |= p2 >> 32;
+                p2 = (p2 >> 1) + 1;
+                align = p2;
+            }
+            while (shared->linux_mmap_next >= map_len + 0x10000ULL) {
+                uint64_t cand = (shared->linux_mmap_next - map_len) & ~(align - 1);
+                if (is_range_free_for_mmap_hint(cur, cand, map_len)) {
+                    base = cand;
+                    shared->linux_mmap_next = cand;
+                    break;
+                }
+                /* Occupied. Round down to next aligned block and try again. */
+                if (cand <= align) { shared->linux_mmap_next = 0; break; }
+                shared->linux_mmap_next = cand;
+            }
+            if (!base) return (uint64_t)-ENOMEM;
+        }
+
+        int anon_private = ((flags & LNX_MAP_ANONYMOUS) != 0) &&
+                           ((flags & LNX_MAP_PRIVATE) != 0) &&
+                           ((flags & LNX_MAP_SHARED) == 0);
+        /* Sparse/lazy reservation for large anon private regions.
+         * Small NORESERVE mappings still get eager pages — only treat
+         * regions >= 64 MiB as sparse when NORESERVE is set.  Gigacage-
+         * sized regions (>= 4 GiB) are always sparse. */
+        int sparse_reserve = anon_private &&
+                             (map_len >= (64ULL * 1024 * 1024)) &&
+                             ((flags & LNX_MAP_NORESERVE) != 0 ||
+                              map_len >= LX_SPARSE_RESERVE_MIN);
+        if (sparse_reserve) {
+            if (lx_map_sparse_anon_private(cur, base, map_len, prot) != 0) {
+                return (uint64_t)-ENOMEM;
+            }
+            if (tb_trace_is_claude(cur) && map_len == 0x40000000ULL) {
+                g_tb_jsc_slot_watch_base = base + TB_JSC_CAGE_SLOT_ARRAY_OFF;
+                tb_program_jsc_slot_watchpoints_for(cur);
+                kprint_serial_only("TBWATCH arm-jsc-slots pid=%u tgid=%u cage=0x%llx arr=0x%llx slots=0x%llx,0x%llx,0x%llx,0x%llx\n",
+                                   cur->pid, cur->tgid,
+                                   (unsigned long long)base,
+                                   (unsigned long long)g_tb_jsc_slot_watch_base,
+                                   (unsigned long long)(g_tb_jsc_slot_watch_base + TB_JSC_SLOT_WATCH0_OFF),
+                                   (unsigned long long)(g_tb_jsc_slot_watch_base + TB_JSC_SLOT_WATCH1_OFF),
+                                   (unsigned long long)(g_tb_jsc_slot_watch_base + TB_JSC_SLOT_WATCH2_OFF),
+                                   (unsigned long long)(g_tb_jsc_slot_watch_base + TB_JSC_SLOT_WATCH3_OFF));
+            }
+            if (tb_trace_is_claude(cur)) {
+                kprint_serial_only("TBTRACE mmap detail pid=%u base=0x%llx len=0x%llx chosen=%s sparse=1\n",
+                                   (unsigned)cur->pid, (unsigned long long)base, (unsigned long long)map_len,
+                                   (base == (addr & ~0xFFFULL) ? "hint" : "cursor"));
+            }
+            return base;
+        }
+
+        /* eager path (non-sparse) */
         for (uint64_t i = 0; i < npg; i++) {
             uint64_t va = base + i * LX_PG;
             if (vmm_virt_to_phys_user(cur->cr3, va) & LX_FRAME_MASK) continue;
@@ -3097,7 +4490,6 @@ uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
             }
         }
         if (!(flags & LNX_MAP_ANONYMOUS)) {
-            struct fry_process_shared *shared = proc_shared_state(cur);
             if (!shared || fd < 3 || fd >= FRY_FD_MAX ||
                 !shared->fd_ptrs[fd] || shared->fd_kind[fd] != FD_FILE) {
                 lx_unmap_range(cur->cr3, base, npg);
@@ -3146,12 +4538,30 @@ uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
             }
             vfs_seek(vf, old, FRY_SEEK_SET);
         }
+
+        /* Track the successful mapping in the VM regions table. fry1383:
+         * this is the fix for untracked eager mappings. */
+        int slot = vm_region_alloc_slot(cur);
+        if (slot >= 0) {
+            uint32_t fprot = lx_mmap_prot_to_fry(prot);
+            uint32_t fflags = FRY_MAP_PRIVATE | (anon_private ? FRY_MAP_ANON : 0);
+            uint8_t kind = anon_private ? FRY_VM_REGION_ANON_PRIVATE : FRY_VM_REGION_FILE_PRIVATE;
+            vm_region_fill(&PROC_VMREGS(cur)[slot], base, map_len, fprot, fflags, kind, VM_BACKING_NONE, 0, 1);
+        }
+
+        if (tb_trace_is_claude(cur)) {
+            kprint_serial_only("TBTRACE mmap detail pid=%u base=0x%llx len=0x%llx chosen=%s sparse=0\n",
+                               (unsigned)cur->pid, (unsigned long long)base, (unsigned long long)map_len,
+                               (base == (addr & ~0xFFFULL) ? "hint" : "cursor"));
+        }
         return base;
     }
 
     case LNX_munmap: {
         uint64_t base = a1 & ~0xFFFULL;
         uint64_t npg = (a2 + 0xFFF) >> 12;
+        uint64_t map_len = npg * LX_PG;
+        if (vm_unmap_region_range(cur, base, map_len) == 0) return 0;
         lx_unmap_range(cur->cr3, base, npg);
         return 0;
     }
@@ -3159,6 +4569,13 @@ uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
     case LNX_mprotect: {
         uint64_t base = a1 & ~0xFFFULL, prot = a3;
         uint64_t npg = (a2 + 0xFFF) >> 12;
+        uint64_t map_len = npg * LX_PG;
+        uint32_t fry_prot = lx_mmap_prot_to_fry(prot);
+        /* Always update the vm_region prot if a region covers this range.
+         * Also update already-present page table entries — the old code
+         * returned after vm_mprotect_region_range and never touched PTEs,
+         * so protection changes on faulted-in pages were silently ignored. */
+        int region_ok = (vm_mprotect_region_range(cur, base, map_len, fry_prot) == 0);
         uint64_t mflags = VMM_FLAG_PRESENT | VMM_FLAG_USER;
         if (prot & LNX_PROT_WRITE) mflags |= VMM_FLAG_WRITE;
         if (!(prot & LNX_PROT_EXEC)) mflags |= VMM_FLAG_NO_EXECUTE;
@@ -3172,8 +4589,40 @@ uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
         return 0;
     }
 
-    case LNX_madvise:
+    case LNX_madvise: {
+        uint64_t addr = a1;
+        uint64_t len = a2;
+        uint64_t advice = a3;
+        if (len == 0) return 0;
+        if (addr > UINT64_MAX - len) return (uint64_t)-EINVAL;
+
+        if (advice == 102) { /* MADV_GUARD_INSTALL */
+            uint64_t base = addr & ~0xFFFULL;
+            uint64_t end = (addr + len + 0xFFFULL) & ~0xFFFULL;
+            if (end < base) return (uint64_t)-EINVAL;
+            (void)vm_mprotect_region_range(cur, base, end - base, 0);
+            for (uint64_t va = base; va < end; va += LX_PG) {
+                uint64_t pa = vmm_virt_to_phys_user(cur->cr3, va) & LX_FRAME_MASK;
+                if (!pa) continue;
+                vmm_unmap_user(cur->cr3, va);
+                __asm__ volatile("invlpg (%0)" : : "r"(va) : "memory");
+            }
+            return 0;
+        }
+
+        /*
+         * JSC/Bun uses MADV_DONTNEED while cycling heap pages. Linux promises
+         * anonymous private pages read back as zero after the advice. Keeping
+         * stale contents here can feed old tagged pointers back into JSC.
+         */
+        if (advice == 4) { /* MADV_DONTNEED */
+            uint64_t base = addr & ~0xFFFULL;
+            uint64_t end = (addr + len + 0xFFFULL) & ~0xFFFULL;
+            if (end < base) return (uint64_t)-EINVAL;
+            return (uint64_t)vm_madvise_dontneed(cur, base, end - base);
+        }
         return 0;
+    }
 
     case LNX_arch_prctl: {
         int code = (int)a1;
@@ -3185,7 +4634,7 @@ uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
              * glibc's x86_64 loader expects tcbhead_t.tcb/self to point at
              * the thread pointer before it calls set_tid_address(). Linux
              * userland normally initializes these itself; normalize them here
-             * as a compatibility guard for the early linuxulator bootstrap.
+             * as a compatibility guard for the early Tater Bridge bootstrap.
              */
             if (addr && user_buf_writable(cur, addr, 24)) {
                 uint64_t *tcb = (uint64_t *)(uintptr_t)addr;
@@ -3220,6 +4669,22 @@ uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
         return cur->pid;
     case LNX_getppid:
         return 1;
+    case LNX_getrusage: {
+        /* Return zeroed rusage. JSC/Bun calls this for memory tracking
+         * during initialization. A full implementation would track
+         * ru_maxrss/ru_utime/ru_stime but returning zeros is sufficient
+         * to unblock initialization. */
+        uint64_t len = a2;
+        if (len > 144) len = 144; /* sizeof(struct rusage) */
+        if (a1 == 0 /* RUSAGE_SELF */ || a1 == (uint64_t)-1 /* RUSAGE_THREAD */) {
+            char *dst = (char *)(uintptr_t)a2;
+            if (user_buf_writable(cur, a2, (uint32_t)len)) {
+                for (uint64_t i = 0; i < len; i++) dst[i] = 0;
+                return 0;
+            }
+        }
+        return (uint64_t)-EINVAL;
+    }
     case LNX_getuid:
     case LNX_geteuid:
     case LNX_getgid:
@@ -3233,7 +4698,7 @@ uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
         lx_setfield(u + 0 * 65, "Linux");
         lx_setfield(u + 1 * 65, "tatertos");
         lx_setfield(u + 2 * 65, "5.15.0-tatertos");
-        lx_setfield(u + 3 * 65, "#1 TaterTOS64v3 linuxulator");
+        lx_setfield(u + 3 * 65, "#1 TaterTOS64v3 Tater Bridge");
         lx_setfield(u + 4 * 65, "x86_64");
         lx_setfield(u + 5 * 65, "(none)");
         return 0;
@@ -3262,6 +4727,63 @@ uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
         uint64_t *t = (uint64_t *)(uintptr_t)ts;
         t[0] = ms / 1000ULL;
         t[1] = (ms % 1000ULL) * 1000000ULL;
+        return 0;
+    }
+
+    case LNX_gettimeofday: {
+        uint64_t tv = a1;
+        uint64_t tz = a2;
+        int64_t rtc_boot_epoch_sec(void);
+        uint64_t freq = hpet_get_freq_hz();
+        uint64_t up_ms = (freq == 0) ? 0 : (hpet_read_counter() * 1000ULL) / freq;
+        uint64_t ms = (uint64_t)(rtc_boot_epoch_sec() * 1000LL) + up_ms;
+        if (tv) {
+            if (!user_buf_writable(cur, tv, 16)) return (uint64_t)-EFAULT;
+            uint64_t out[2];
+            out[0] = ms / 1000ULL;
+            out[1] = (ms % 1000ULL) * 1000ULL;
+            if (copyout(cur, out, tv, sizeof(out)) != 0) return (uint64_t)-EFAULT;
+        }
+        if (tz) {
+            if (!user_buf_writable(cur, tz, 8)) return (uint64_t)-EFAULT;
+            uint32_t out[2] = {0, 0};
+            if (copyout(cur, out, tz, sizeof(out)) != 0) return (uint64_t)-EFAULT;
+        }
+        return 0;
+    }
+
+    case LNX_time: {
+        int64_t rtc_boot_epoch_sec(void);
+        uint64_t freq = hpet_get_freq_hz();
+        uint64_t up_ms = (freq == 0) ? 0 : (hpet_read_counter() * 1000ULL) / freq;
+        int64_t sec = rtc_boot_epoch_sec() + (int64_t)(up_ms / 1000ULL);
+        if (a1) {
+            if (!user_buf_writable(cur, a1, sizeof(sec))) return (uint64_t)-EFAULT;
+            if (copyout(cur, &sec, a1, sizeof(sec)) != 0) return (uint64_t)-EFAULT;
+        }
+        return (uint64_t)sec;
+    }
+
+    case LNX_sysinfo: {
+        if (!user_buf_writable(cur, a1, 112)) return (uint64_t)-EFAULT;
+        uint8_t info[112];
+        for (uint32_t i = 0; i < sizeof(info); i++) info[i] = 0;
+        uint64_t freq = hpet_get_freq_hz();
+        uint64_t uptime_ms = (freq > 0) ? ((hpet_read_counter() * 1000ULL) / freq) : 0;
+        int64_t uptime = (int64_t)(uptime_ms / 1000ULL);
+        uint64_t total = pmm_get_total_pages() * 4096ULL;
+        uint64_t free = (pmm_get_total_pages() - pmm_get_used_pages()) * 4096ULL;
+        uint16_t proc_count = 0;
+        for (uint32_t i = 0; i < PROC_MAX; i++) {
+            if (procs[i].state != PROC_UNUSED && procs[i].state != PROC_DEAD)
+                proc_count++;
+        }
+        copyout(cur, &uptime, a1 + 0, sizeof(uptime));
+        copyout(cur, &total, a1 + 32, sizeof(total));
+        copyout(cur, &free, a1 + 40, sizeof(free));
+        copyout(cur, &proc_count, a1 + 80, sizeof(proc_count));
+        uint32_t mem_unit = 1;
+        copyout(cur, &mem_unit, a1 + 104, sizeof(mem_unit));
         return 0;
     }
 
@@ -3303,20 +4825,181 @@ uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
         return 0;
     }
 
-    /* Signals: accepted as no-ops until the signals phase (phase 3). Lets
-     * glibc init proceed; a static nostdlib binary never calls these. */
+    case LNX_prctl: {
+        int option = (int)a1;
+        switch (option) {
+        case PR_SET_NAME: {
+            if (!user_buf_mapped(cur, a2, 16)) return (uint64_t)-EFAULT;
+            const char *src = (const char *)(uintptr_t)a2;
+            uint32_t i = 0;
+            for (; i < sizeof(cur->name) - 1 && i < 15; i++) {
+                cur->name[i] = src[i];
+                if (src[i] == '\0') break;
+            }
+            cur->name[sizeof(cur->name) - 1] = '\0';
+            if (i >= sizeof(cur->name) - 1 || i >= 15) cur->name[i < sizeof(cur->name) ? i : sizeof(cur->name) - 1] = '\0';
+            return 0;
+        }
+        case PR_GET_NAME: {
+            if (!user_buf_writable(cur, a2, 16)) return (uint64_t)-EFAULT;
+            char out[16];
+            for (uint32_t i = 0; i < sizeof(out); i++) out[i] = 0;
+            for (uint32_t i = 0; i < sizeof(out) - 1 && cur->name[i]; i++) out[i] = cur->name[i];
+            return (uint64_t)copyout(cur, out, a2, sizeof(out));
+        }
+        case PR_SET_DUMPABLE:
+            cur->dumpable = (uint8_t)(a2 != 0);
+            return 0;
+        case PR_GET_DUMPABLE:
+            return cur->dumpable ? 1 : 0;
+        case PR_SET_NO_NEW_PRIVS:
+            if (a2 != 1 || a3 || a4 || a5) return (uint64_t)-EINVAL;
+            cur->no_new_privs = 1;
+            return 0;
+        case PR_GET_NO_NEW_PRIVS:
+            return cur->no_new_privs ? 1 : 0;
+        case PR_SET_THP_DISABLE:
+            cur->thp_disabled = (uint8_t)(a2 != 0);
+            return 0;
+        case PR_GET_THP_DISABLE:
+            return cur->thp_disabled ? 1 : 0;
+        case PR_SET_TIMERSLACK:
+            cur->timer_slack_ns = a2;
+            return 0;
+        case PR_GET_TIMERSLACK:
+            return cur->timer_slack_ns ? cur->timer_slack_ns : 50000ULL;
+        case PR_GET_SECCOMP:
+            return 0;
+        case PR_SET_PDEATHSIG:
+        case PR_SET_PTRACER:
+        case PR_SET_VMA:
+            return 0;
+        case PR_GET_PDEATHSIG: {
+            if (!user_buf_writable(cur, a2, sizeof(int))) return (uint64_t)-EFAULT;
+            int zero = 0;
+            return (uint64_t)copyout(cur, &zero, a2, sizeof(zero));
+        }
+        default:
+            return (uint64_t)-EINVAL;
+        }
+    }
+
     case LNX_rt_sigaction:
+        return lx_rt_sigaction_sys(cur, a1, a2, a3, a4);
+
     case LNX_rt_sigprocmask:
+        return lx_rt_sigprocmask_sys(cur, a1, a2, a3, a4);
+
+    case LNX_rt_sigreturn:
+        return lx_rt_sigreturn_sys(cur);
+
+    case LNX_rt_sigsuspend:
+        return lx_rt_sigsuspend_sys(cur, a1, a2);
+
     case LNX_sigaltstack:
-        return 0;
+        return lx_sigaltstack_sys(cur, a1, a2);
 
     case LNX_sched_yield:
         sched_yield();
         return 0;
 
+    case LNX_sched_setscheduler: {
+        int policy = (int)a2;
+        uint64_t param = a3;
+        const int sched_reset_on_fork = 0x40000000;
+        int base_policy = policy & ~sched_reset_on_fork;
+        if (a1 != 0) {
+            struct fry_process *target = 0;
+            for (uint32_t i = 0; i < PROC_MAX; i++) {
+                if (procs[i].pid == (uint32_t)a1 &&
+                    procs[i].state != PROC_UNUSED &&
+                    procs[i].state != PROC_DEAD) {
+                    target = &procs[i];
+                    break;
+                }
+            }
+            if (!target || target->tgid != cur->tgid) return (uint64_t)-ESRCH;
+        }
+        if (param && !user_buf_mapped(cur, param, sizeof(int))) return (uint64_t)-EFAULT;
+        if (base_policy != 0) return (uint64_t)-EINVAL; /* SCHED_OTHER only. */
+        return 0;
+    }
+
+    case LNX_sched_getaffinity: {
+        uint64_t cpusetsize = a2;
+        uint32_t ncpu = smp_cpu_count();
+        uint64_t mask_bytes = linux_affinity_mask_bytes(ncpu);
+        if (cpusetsize < mask_bytes) return (uint64_t)-EINVAL;
+        if (!user_buf_writable(cur, a3, mask_bytes)) return (uint64_t)-EFAULT;
+        uint8_t mask[128];
+        for (uint32_t i = 0; i < sizeof(mask); i++) mask[i] = 0;
+        if (ncpu == 0) ncpu = 1;
+        for (uint32_t i = 0; i < ncpu && i < sizeof(mask) * 8 && i < cpusetsize * 8; i++)
+            mask[i / 8] |= (uint8_t)(1u << (i % 8));
+        if (copyout(cur, mask, a3, mask_bytes) != 0) return (uint64_t)-EFAULT;
+        return mask_bytes;
+    }
+
+    case LNX_close_range: {
+        uint32_t first = (uint32_t)a1;
+        uint32_t last = (uint32_t)a2;
+        uint32_t flags = (uint32_t)a3;
+        if (first > last) return (uint64_t)-EINVAL;
+        if (flags & ~0x6u) return (uint64_t)-EINVAL; /* UNSHARE/CLOEXEC accepted as local no-ops. */
+        if (first >= FRY_FD_MAX) return 0;
+        if (last >= FRY_FD_MAX) last = FRY_FD_MAX - 1;
+        if (flags & 0x4u) return 0; /* CLOEXEC: fd table has no exec transition yet. */
+        for (uint32_t fd = first; fd <= last; fd++)
+            (void)lx_close_fd(cur, (int)fd);
+        return 0;
+    }
+
+    case LNX_kill: {
+        int pid = (int)a1;
+        int sig = (int)a2;
+        struct fry_process *target = 0;
+        if (pid > 0) {
+            target = proc_find_group_leader((uint32_t)pid);
+            if (!target) target = proc_find_task((uint32_t)pid);
+        } else if (pid == 0) {
+            target = proc_find_group_leader(cur->tgid);
+            if (!target) target = cur;
+        } else {
+            return (uint64_t)-EINVAL;
+        }
+        return lx_send_signal(cur, target, sig);
+    }
+
+    case LNX_tkill: {
+        uint32_t tid = (uint32_t)a1;
+        int sig = (int)a2;
+        struct fry_process *target = proc_find_task(tid);
+        return lx_send_signal(cur, target, sig);
+    }
+
+    case LNX_tgkill: {
+        uint32_t tgid = (uint32_t)a1;
+        uint32_t tid = (uint32_t)a2;
+        int sig = (int)a3;
+        struct fry_process *target = proc_find_task(tid);
+        if (!target || target->tgid != tgid) return (uint64_t)-ESRCH;
+        return lx_send_signal(cur, target, sig);
+    }
+
     case LNX_rseq:
+        if (a1 == 0) {
+            cur->linux_rseq_addr = 0;
+            cur->linux_rseq_len = 0;
+            cur->linux_rseq_sig = 0;
+            return 0;
+        }
+        if (a2 < 32 || a2 > 4096) return (uint64_t)-EINVAL;
+        if (!user_buf_writable(cur, a1, a2)) return (uint64_t)-EFAULT;
+        cur->linux_rseq_addr = a1;
+        cur->linux_rseq_len = (uint32_t)a2;
+        cur->linux_rseq_sig = (uint32_t)a4;
+        return (uint64_t)lx_rseq_update_cpu(cur);
     case LNX_get_robust_list:
-    case LNX_sched_getaffinity:
         return (uint64_t)-ENOSYS;
 
     case LNX_futex: {
@@ -3340,6 +5023,13 @@ uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
                 uint64_t nsec = ts[1];
                 if (nsec >= 1000000000ULL) return (uint64_t)-EINVAL;
                 timeout_ms = sec * 1000ULL + nsec / 1000000ULL;
+                if (cur && (cur->pid == TB_TRACE_CLAUDE_TGID || cur->tgid == TB_TRACE_CLAUDE_TGID)) {
+                    kprint_serial_only("TBFUTEX timeout-rel pid=%u tgid=%u cmd=WAIT sec=%llu nsec=%llu rel_ms=%llu\n",
+                                       cur->pid, cur->tgid,
+                                       (unsigned long long)sec,
+                                       (unsigned long long)nsec,
+                                       (unsigned long long)timeout_ms);
+                }
             }
             LX_FUTEX_RETURN(futex_wait_begin_ex(cur, a1, (uint32_t)a3,
                                                 has_timeout, timeout_ms,
@@ -3368,6 +5058,16 @@ uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
                     now_ms = sys_now_ms();
                 }
                 timeout_ms = (target_ms > now_ms) ? (target_ms - now_ms) : 0;
+                if (cur && (cur->pid == TB_TRACE_CLAUDE_TGID || cur->tgid == TB_TRACE_CLAUDE_TGID)) {
+                    kprint_serial_only("TBFUTEX timeout-abs pid=%u tgid=%u cmd=WAIT_BITSET realtime=%u sec=%llu nsec=%llu target_ms=%llu now_ms=%llu rel_ms=%llu\n",
+                                       cur->pid, cur->tgid,
+                                       (op & FUTEX_CLOCK_REALTIME) ? 1u : 0u,
+                                       (unsigned long long)sec,
+                                       (unsigned long long)nsec,
+                                       (unsigned long long)target_ms,
+                                       (unsigned long long)now_ms,
+                                       (unsigned long long)timeout_ms);
+                }
             }
             LX_FUTEX_RETURN(futex_wait_begin_ex(cur, a1, (uint32_t)a3,
                                                 has_timeout, timeout_ms, bitset,
@@ -3450,6 +5150,8 @@ uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
         struct fry_process_shared *shared = proc_shared_state(cur);
         if (fd < 0 || fd >= FRY_FD_MAX || !shared) return (uint64_t)-EBADF;
         switch (cmd) {
+        case 0:  /* F_DUPFD */
+            return (uint64_t)lx_dup_fd_at(cur, fd, (int)arg, 0);
         case 1:  /* F_GETFD */
             return (shared->fd_flags[fd] & 1 /* FD_CLOEXEC */) ? 1 : 0;
         case 2:  /* F_SETFD */
@@ -3460,6 +5162,8 @@ uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
         case 4:  /* F_SETFL */
             shared->fd_flags[fd] = (shared->fd_flags[fd] & ~0x3FFF) | ((uint32_t)arg & 0x3FFF);
             return 0;
+        case 1030:  /* F_DUPFD_CLOEXEC */
+            return (uint64_t)lx_dup_fd_at(cur, fd, (int)arg, 1u);
         default:
             return (uint64_t)-EINVAL;
         }
@@ -3507,18 +5211,7 @@ uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
 
     case LNX_dup: {
         int oldfd = (int)a1;
-        struct fry_process_shared *shared = proc_shared_state(cur);
-        if (!shared || oldfd < 0 || oldfd >= FRY_FD_MAX ||
-            !shared->fd_ptrs[oldfd]) return (uint64_t)-EBADF;
-        for (int i = 0; i < FRY_FD_MAX; i++) {
-            if (!shared->fd_ptrs[i]) {
-                shared->fd_ptrs[i]  = shared->fd_ptrs[oldfd];
-                shared->fd_kind[i]  = shared->fd_kind[oldfd];
-                shared->fd_flags[i] = shared->fd_flags[oldfd];
-                return i;
-            }
-        }
-        return (uint64_t)-EMFILE;
+        return (uint64_t)lx_dup_fd_at(cur, oldfd, 0, 0);
     }
 
     case LNX_dup2: {
@@ -3526,12 +5219,29 @@ uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
         struct fry_process_shared *shared = proc_shared_state(cur);
         if (!shared || oldfd < 0 || oldfd >= FRY_FD_MAX ||
             newfd < 0 || newfd >= FRY_FD_MAX ||
-            !shared->fd_ptrs[oldfd]) return (uint64_t)-EBADF;
+            !fd_is_open(shared, oldfd)) return (uint64_t)-EBADF;
         if (oldfd == newfd) return newfd;
         if (shared->fd_ptrs[newfd]) lx_close_fd(cur, newfd);
-        shared->fd_ptrs[newfd]  = shared->fd_ptrs[oldfd];
-        shared->fd_kind[newfd]  = shared->fd_kind[oldfd];
-        shared->fd_flags[newfd] = shared->fd_flags[oldfd];
+        if (newfd < 3) return (uint64_t)-EBADF;
+        if (oldfd <= 2) {
+            fd_install(cur, newfd, stdio_fd_ptr(oldfd), FD_STDIO, 0);
+            return newfd;
+        }
+        fd_install(cur, newfd, shared->fd_ptrs[oldfd],
+                   shared->fd_kind[oldfd], shared->fd_flags[oldfd]);
+        shared->fd_table[newfd] = shared->fd_table[oldfd];
+        if (shared->fd_paths[oldfd][0]) {
+            int prc = fd_path_set(shared, newfd, shared->fd_paths[oldfd]);
+            if (prc < 0) {
+                fd_release(cur, newfd);
+                return (uint64_t)prc;
+            }
+            if (shared->fd_kind[oldfd] == FD_DIR) shared->fd_ptrs[newfd] = shared->fd_paths[newfd];
+        }
+        if (shared->fd_kind[oldfd] == FD_PIPE_READ)
+            ((struct fry_pipe *)shared->fd_ptrs[oldfd])->readers++;
+        else if (shared->fd_kind[oldfd] == FD_PIPE_WRITE)
+            ((struct fry_pipe *)shared->fd_ptrs[oldfd])->writers++;
         return newfd;
     }
 
@@ -3595,6 +5305,24 @@ uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
         if (!user_buf_writable(cur, a2, a3)) return (uint64_t)-EFAULT;
         if (copy_user_string(cur, a1, raw_path, sizeof(raw_path)) != 0)
             return (uint64_t)-EFAULT;
+        if (streq_lit(raw_path, "/etc/localtime")) {
+            const char *target = "/usr/share/zoneinfo/UTC";
+            uint64_t n = 0;
+            while (target[n]) n++;
+            if (n > a3) n = a3;
+            char *dst = (char *)(uintptr_t)a2;
+            for (uint64_t i = 0; i < n; i++) dst[i] = target[i];
+            return n;
+        }
+        if (streq_lit(raw_path, "/proc/self/exe")) {
+            const char *target = "/nvme/RCLAUDE.LXE";
+            uint64_t n = 0;
+            while (target[n]) n++;
+            if (n > a3) n = a3;
+            char *dst = (char *)(uintptr_t)a2;
+            for (uint64_t i = 0; i < n; i++) dst[i] = target[i];
+            return n;
+        }
         int rpath = resolve_at_path(cur, FRY_AT_FDCWD, raw_path, path);
         if (rpath < 0) return (uint64_t)rpath;
         if (vfs_stat(path, &st) != 0) return (uint64_t)-ENOENT;
@@ -3635,18 +5363,46 @@ uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
         const uint64_t *src = (const uint64_t *)(uintptr_t)a1;
         uint64_t *dst = (uint64_t *)&args;
         for (uint64_t i = 0; i < 11; i++) dst[i] = src[i];
+        if (cur && (cur->pid == TB_TRACE_CLAUDE_TGID || cur->tgid == TB_TRACE_CLAUDE_TGID)) {
+            kprint_serial_only("TBCLONE3 args pid=%u tgid=%u flags=%lx pidfd=%lx child_tid=%lx parent_tid=%lx exit_signal=%lx stack=%lx stack_size=%lx tls=%lx set_tid=%lx set_tid_size=%lx cgroup=%lx\n",
+                               cur->pid, cur->tgid,
+                               (unsigned long)args.flags,
+                               (unsigned long)args.pidfd,
+                               (unsigned long)args.child_tid,
+                               (unsigned long)args.parent_tid,
+                               (unsigned long)args.exit_signal,
+                               (unsigned long)args.stack,
+                               (unsigned long)args.stack_size,
+                               (unsigned long)args.tls,
+                               (unsigned long)args.set_tid,
+                               (unsigned long)args.set_tid_size,
+                               (unsigned long)args.cgroup);
+        }
 
         /* Only CLONE_THREAD for now */
         uint64_t flags = args.flags;
-        if (!(flags & 0x00010000 /* CLONE_THREAD */))
+        if (!(flags & LNX_CLONE_THREAD))
             return (uint64_t)-EINVAL;
+        if (flags & LNX_CLONE_PIDFD)
+            return (uint64_t)-EINVAL;
+        if ((flags & LNX_CLONE_PARENT_SETTID) && args.parent_tid &&
+            !user_buf_writable(cur, args.parent_tid, sizeof(uint32_t)))
+            return (uint64_t)-EFAULT;
+        if ((flags & LNX_CLONE_CHILD_SETTID) && args.child_tid &&
+            !user_buf_writable(cur, args.child_tid, sizeof(uint32_t)))
+            return (uint64_t)-EFAULT;
+        if ((flags & LNX_CLONE_CHILD_CLEARTID) && args.child_tid &&
+            !user_buf_writable(cur, args.child_tid, sizeof(uint32_t)))
+            return (uint64_t)-EFAULT;
 
-        /* Read interrupt frame from current CPU's percpu (GS-relative).
-         * We stored it at %gs:16 in syscall_entry before call syscall_dispatch.
-         * Must read via GS, not via cur->cpu, because the process might have
-         * been migrated by the scheduler before reaching this handler. */
-        uint64_t frame_rsp;
-        __asm__ volatile("movq %%gs:16, %0" : "=r"(frame_rsp));
+        /* Read the syscall-entry frame from this task's kernel stack.
+         * syscall_entry builds this fixed frame at kernel_stack_top - 96:
+         *   [a6,pad,r9,r8,r10,rdx,rsi,rdi,rbp,r11,rcx,user_rsp]
+         *
+         * Do not read the frame through per-CPU scratch here. Interrupts are
+         * enabled while syscall_dispatch runs, so another task on the same CPU
+         * can overwrite percpu.linux_frame_rsp before clone3 snapshots it. */
+        uint64_t frame_rsp = cur->kernel_stack_top - (12ULL * sizeof(uint64_t));
         uint64_t *frame = (uint64_t *)(uintptr_t)frame_rsp;
         uint64_t user_rip = frame[10];
         uint64_t user_rsp_saved = frame[11];
@@ -3658,6 +5414,14 @@ uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
          * one slot below the mapped region -> page fault at stack-8. */
         uint64_t child_rsp = args.stack ? (args.stack + args.stack_size)
                                         : user_rsp_saved;
+        if (cur && (cur->pid == TB_TRACE_CLAUDE_TGID || cur->tgid == TB_TRACE_CLAUDE_TGID)) {
+            kprint_serial_only("TBCLONE3 frame pid=%u tgid=%u user_rip=%lx user_rsp=%lx child_rsp=%lx frame_rsp=%lx\n",
+                               cur->pid, cur->tgid,
+                               (unsigned long)user_rip,
+                               (unsigned long)user_rsp_saved,
+                               (unsigned long)child_rsp,
+                               (unsigned long)frame_rsp);
+        }
         struct fry_process *child = process_clone_linux_thread(
             cur, user_rip, child_rsp,
             args.tls, args.child_tid, args.parent_tid);
@@ -3693,12 +5457,27 @@ uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
         child->clone_ctx.rsp = child_rsp;
         child->clone_ctx.rflags = frame[9] | 0x202ULL;
 
-        /* Write child TID notifications */
-        if (args.child_tid && user_buf_writable(cur, args.child_tid, 4))
+        /* Write TID notifications only when clone flags request them. */
+        if ((flags & LNX_CLONE_CHILD_SETTID) && args.child_tid)
             *(uint32_t *)(uintptr_t)args.child_tid = child->pid;
-        if (args.parent_tid && user_buf_writable(cur, args.parent_tid, 4))
+        if ((flags & LNX_CLONE_PARENT_SETTID) && args.parent_tid)
             *(uint32_t *)(uintptr_t)args.parent_tid = child->pid;
-        child->linux_clear_child_tid = args.child_tid;
+        child->linux_clear_child_tid =
+            (flags & LNX_CLONE_CHILD_CLEARTID) ? args.child_tid : 0;
+        if (cur && (cur->pid == TB_TRACE_CLAUDE_TGID || cur->tgid == TB_TRACE_CLAUDE_TGID)) {
+            uint32_t child_tid_val = 0xffffffffU;
+            uint32_t parent_tid_val = 0xffffffffU;
+            if (args.child_tid && user_buf_mapped(cur, args.child_tid, 4))
+                child_tid_val = *(uint32_t *)(uintptr_t)args.child_tid;
+            if (args.parent_tid && user_buf_mapped(cur, args.parent_tid, 4))
+                parent_tid_val = *(uint32_t *)(uintptr_t)args.parent_tid;
+            kprint_serial_only("TBCLONE3 child pid=%u tgid=%u child_tid=%lx val=%u parent_tid=%lx val=%u clear_child_tid=%lx tls=%lx\n",
+                               child->pid, child->tgid,
+                               (unsigned long)args.child_tid, child_tid_val,
+                               (unsigned long)args.parent_tid, parent_tid_val,
+                               (unsigned long)child->linux_clear_child_tid,
+                               (unsigned long)args.tls);
+        }
 
         sched_add(child->pid);
         return child->pid;
@@ -3710,6 +5489,48 @@ uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
                (unsigned long)a3, cur->pid);
         return (uint64_t)-ENOSYS;
     }
+}
+
+uint64_t linux_syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
+                                uint64_t a3, uint64_t a4, uint64_t a5,
+                                uint64_t a6,
+                                struct fry_process *cur) {
+    uint32_t trace_pid = cur ? cur->pid : 0;
+    uint32_t trace_tgid = cur ? cur->tgid : 0;
+    int is_claude = tb_trace_is_claude(cur);
+    int trace = g_tb_trace_syscalls && is_claude && tb_trace_selected_syscall(num);
+    if (trace) {
+        kprint_serial_only("TBTRACE enter pid=%u tgid=%u nr=%lu %s a1=%lx a2=%lx a3=%lx a4=%lx a5=%lx a6=%lx\n",
+                           trace_pid, trace_tgid, (unsigned long)num,
+                           tb_trace_syscall_name(num),
+                           (unsigned long)a1, (unsigned long)a2,
+                           (unsigned long)a3, (unsigned long)a4,
+                           (unsigned long)a5, (unsigned long)a6);
+        if (num == LNX_open || num == LNX_openat || num == LNX_access || num == LNX_newfstatat) {
+            char tb_path[128];
+            uint64_t path_ptr = (num == LNX_open || num == LNX_access) ? a1 : a2;
+            if (copy_user_string(cur, path_ptr, tb_path, sizeof(tb_path)) == 0) {
+                kprint_serial_only("TBTRACE path pid=%u tgid=%u nr=%lu %s path=\"%s\"\n",
+                                   trace_pid, trace_tgid, (unsigned long)num,
+                                   tb_trace_syscall_name(num), tb_path);
+            } else {
+                kprint_serial_only("TBTRACE path pid=%u tgid=%u nr=%lu %s path=<copy-failed>\n",
+                                   trace_pid, trace_tgid, (unsigned long)num,
+                                   tb_trace_syscall_name(num));
+            }
+        }
+    }
+    uint64_t rc = linux_syscall_dispatch_impl(num, a1, a2, a3, a4, a5, a6, cur);
+    rc = lx_deliver_signal_on_sysret(cur, rc);
+    if (cur && cur->linux_rseq_addr)
+        (void)lx_rseq_update_cpu(cur);
+    if (trace || (is_claude && tb_trace_is_errno(rc))) {
+        kprint_serial_only("TBTRACE ret pid=%u tgid=%u nr=%lu %s rc=%lx\n",
+                           trace_pid, trace_tgid,
+                           (unsigned long)num, tb_trace_syscall_name(num),
+                           (unsigned long)rc);
+    }
+    return rc;
 }
 
 uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
@@ -4126,6 +5947,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                 int fd = fd_alloc(cur);
                 if (fd < 0) return (uint64_t)-EMFILE;
                 fd_install(cur, fd, shared->fd_paths[fd], FD_DIR, flags & O_NONBLOCK);
+                shared->fd_table[fd] = 0;
                 int prc = install_fd_path(cur, fd, path);
                 if (prc < 0) return (uint64_t)prc;
                 return (uint64_t)fd;
@@ -4957,6 +6779,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             int newfd = fd_alloc(cur);
             if (newfd < 0) return (uint64_t)-EMFILE;
             fd_install(cur, newfd, optr, okind, shared->fd_flags[oldfd]);
+            shared->fd_table[newfd] = shared->fd_table[oldfd];
             if (shared->fd_paths[oldfd][0]) {
                 int prc = fd_path_set(shared, newfd, shared->fd_paths[oldfd]);
                 if (prc < 0) {
@@ -5039,6 +6862,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                 fd_release(cur, newfd2);
             }
             fd_install(cur, newfd2, optr2, okind2, shared->fd_flags[oldfd2]);
+            shared->fd_table[newfd2] = shared->fd_table[oldfd2];
             if (shared->fd_paths[oldfd2][0]) {
                 int prc = fd_path_set(shared, newfd2, shared->fd_paths[oldfd2]);
                 if (prc < 0) {
@@ -6486,6 +8310,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                 fd = fd_alloc(cur);
                 if (fd < 0) return (uint64_t)-EMFILE;
                 fd_install(cur, fd, shared->fd_paths[fd], FD_DIR, flags & O_NONBLOCK);
+                shared->fd_table[fd] = 0;
                 int prc = install_fd_path(cur, fd, path);
                 if (prc < 0) return (uint64_t)prc;
                 return (uint64_t)fd;
@@ -7037,6 +8862,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             }
 
             fd_install(cur, newfd, optr, okind, flags);
+            shared->fd_table[newfd] = shared->fd_table[oldfd];
             if (shared->fd_paths[oldfd][0]) {
                 int prc = fd_path_set(shared, newfd, shared->fd_paths[oldfd]);
                 if (prc < 0) {
@@ -7830,17 +9656,19 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             /* sched_getaffinity(pid, cpusetsize, mask) */
             if (!cur) return (uint64_t)-ESRCH;
             uint64_t cpusetsize = a2;
-            if (!user_buf_writable(cur, a3, cpusetsize))
-                return (uint64_t)-EFAULT;
             uint32_t ncpu = smp_cpu_count();
+            uint64_t mask_bytes = linux_affinity_mask_bytes(ncpu);
+            if (cpusetsize < mask_bytes)
+                return (uint64_t)-EINVAL;
+            if (!user_buf_writable(cur, a3, mask_bytes))
+                return (uint64_t)-EFAULT;
             if (ncpu == 0) ncpu = 1;
             uint8_t mask_buf[128];
             for (uint32_t i = 0; i < sizeof(mask_buf); i++) mask_buf[i] = 0;
             for (uint32_t i = 0; i < ncpu && i < cpusetsize * 8 && i < sizeof(mask_buf)*8; i++)
                 mask_buf[i / 8] |= (uint8_t)(1u << (i % 8));
-            uint64_t copy_sz = cpusetsize < sizeof(mask_buf) ? cpusetsize : (uint64_t)sizeof(mask_buf);
-            copyout(cur, mask_buf, a3, copy_sz);
-            return (int64_t)copy_sz;
+            copyout(cur, mask_buf, a3, mask_bytes);
+            return (int64_t)mask_bytes;
         }
         case SYS_SCHED_SETAFFINITY: {
             return 0;

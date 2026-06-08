@@ -1,0 +1,56 @@
+fry1380 — Tater Bridge / Claude Code: post-fix downstream #GP characterized
+Timestamp: 2026-06-06 13:52:33 CDT
+Author: Claude (Opus 4.8), continuing fry1379
+
+CONTEXT
+  fry1379 fixed the root-cause hang (-mgeneral-regs-only; kernel no longer
+  clobbers user AVX/YMM in interrupt context). Bun/JSC now boots fully and runs
+  ~4.25s into Claude Code execution, then hits a NEW #GP. This log characterizes
+  that #GP.
+
+THE #GP
+  vec=0x0D (#GP), user RIP=0x4C17293: `mov 0x4(%rdi),%eax` with rdi non-canonical
+  (0x0000C20000000000 -> bit47 set, bits48-63 clear). #GP, not #PF; the CR2 in
+  the log is STALE (varies per boot: 0x6FBC01303040, 0x6FC012024000, 0x6FBC01315000)
+  and Bun's "Segmentation fault at address ..." echoes that stale CR2 — ignore it.
+  The vec=6 #UD at 0x2B05212 is just Zig's panic/abort (bytes 0f 0b = UD2).
+
+WHERE rdi COMES FROM (disasm of caller 0x4C0D1C0..0x4C0D208)
+  It is a JSC open-addressing hash probe with 6-BYTE PACKED entries:
+    idx = (hash+probe) & mask(r15d); entry = r13 + idx*6
+    rdi = (movzwl entry+4 << 32) | (mov entry+0)   ; reconstruct 48-bit pointer
+    if (rdi==0) empty/not-found; if (rdi==1) deleted/skip; else string-compare.
+  The bad entry: low32=0x00000000, high16=0xC200 -> rdi=0xC20000000000. So an
+  entry's high-16 field holds 0xC200 where an empty entry should be all-zero.
+  Then 0x4C17270 (string/atom equality: len@+4, data@+8) derefs rdi -> #GP.
+
+KEY PROPERTIES
+  - DETERMINISTIC: identical #GP at the same RIP with -smp 1 AND -smp 2. Not an
+    SMP/context-switch FPU race; not a rare clobber.
+  - Kernel is now vector-clean: -mgeneral-regs-only (C) + no SSE/AVX in kernel
+    asm (grep verified). So this is NOT a kernel vector clobber.
+  - Symbol neighborhood is uv_wtf8_to_utf16+... and 0xC2 is a UTF-8 lead byte ->
+    likely JSC WTF-8 / atom-string interning table. The prompt is pure ASCII, so
+    0xC2 is not from the prompt text directly.
+
+HYPOTHESES (unproven, for next session)
+  1. JSC stores TAGGED values (JSValues/caged ptrs) in this 48-bit table and the
+     JIT path derefs without untagging/masking; 0xC200... may be a valid encoded
+     value mis-derefed (needs a cage mask the env makes JSC skip).
+  2. The 48-bit pack/unpack of a pointer loses/garbles the high-16 in our env
+     (a specific store width/value wrong). 0xC200 in [32:47] is not in any cage
+     range (cages: 0x6fbc.. 8GB, 0x6fc0.. 128GB, 0x26e1e.. 1GB), so it is not a
+     valid allocation pointer.
+  3. An env-derived wrong value (a syscall/auxv/sysconf return) feeds a JSC
+     computation that yields 0xC200 in the high bits.
+
+NEXT
+  - Re-point a DR write-watchpoint at the offending packed entry (or its page)
+    from construction to catch the write that puts 0xC200 in the high-16 field;
+    record rip+value (like fry1379's bucket watch).
+  - Disassemble further up the JSC call chain (rets: 0x4C0D208, 0x4C0D437,
+    0x5835D86, 0x5835B3D, 0x583A283, 0x58393EE, 0x584915C, 0x4D2D5F8,
+    0x5BCAA8A, 0x5643966, 0x564372F, jit 0x6FBFEC00473A) to identify the table.
+
+STATUS: hang FIXED; Bun boots + runs Claude Code init/builtins; crashes on this
+  deterministic JSC packed-table #GP before producing assistant output. Run KVM.

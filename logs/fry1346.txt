@@ -1,0 +1,25 @@
+fry1346 - fix sparse reservation threshold: only >= 64 MiB
+timestamp: 2026-06-04 11:55:00 CDT
+
+What changed:
+- src/kernel/proc/syscall.c: tightened the sparse_reserve condition.
+  Old: anon_private AND (MAP_NORESERVE OR >= 64MB OR >= 4GB)
+       → ANY MAP_NORESERVE mapping was sparse, even 4 KB.
+  New: anon_private AND >= 64 MiB AND (MAP_NORESERVE OR >= 4 GiB)
+       → only large regions are sparse; small NORESERVE gets eager pages.
+
+Why:
+- The old condition was changed in a previous fry log to fix gigacage
+  reservations, but it was too broad. Every single MAP_NORESERVE mmap
+  (including 4 KB ones) was treated as sparse, meaning no pages were
+  committed. Bun immediately dereferences the returned pointer and
+  gets a page fault with no page table entry.
+- The new threshold (64 MiB minimum for sparse) ensures small utility
+  mappings are eagerly backed while cage-sized reservations (128 MB+)
+  remain lazy.
+
+Expected effect:
+- The 4 KB mmap at 0x6fdff7a3a000 just before the int3 crash should
+  now get an eager page mapping instead of a sparse reservation.
+- This may resolve the int3 assertion if it was triggered by Bun
+  accessing unmapped NORESERVE memory.

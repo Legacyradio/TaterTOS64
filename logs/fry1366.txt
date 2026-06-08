@@ -1,0 +1,33 @@
+fry1366 - 3-boot measurement: 0/3 clean; clean exit from fry1365 was ENOMEM fluke
+
+Date: 2026-06-05 ~00:20 CDT
+
+What changed:
+- Ran 3 consecutive QEMU boots with the fry1365 code (mprotect PTE fix,
+  mmap alignment, all /proc files). Measured clean-exit rate.
+
+Results:
+  Boot 1: crash (2 exceptions: #PF + #UD) — 7,967 byte log
+  Boot 2: crash (2 exceptions: #PF + #UD)
+  Boot 3: crash (2 exceptions: #PF + #UD)
+  Rate: 0/3 clean (0%)
+
+- The single clean boot from fry1365 was caused by the mprotect ENOMEM
+  bug — Bun exited early with 127 before reaching signal handler setup.
+  That exit path avoided the libuv array corruption.
+
+- All boots with the correct mprotect return (0) reach the libuv vtable
+  dispatch at 0x6056F06 and crash with either rdi=-1 or rdi=0x40000000.
+
+This confirms the libuv array corruption is the consistent blocker
+after mmap alignment and mprotect fixes. The crash is at the same
+code path every time, with varying garbage values in the array.
+
+Next direction:
+- The array has 7322 entries (count from offset 0x58 of rbx).
+  0x40000000 = 1 GiB = first gigacage size suggests a size value
+  leaked into a pointer slot.
+- Need to identify what initialization step populates the array and
+  what syscall or /proc file gap causes stale entries.
+- Or: make mmap placement fully deterministic (fixed base) to see
+  if consistent addresses eliminate the nondeterminism.

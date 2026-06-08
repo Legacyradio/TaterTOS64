@@ -1,0 +1,51 @@
+fry1357 - libgcc_s.so.1 staged; Bun crash reporter runs then hits #UD
+
+Date: 2026-06-04 ~22:15 CDT
+
+What changed:
+- Added libgcc_s.so.1 to LINUX_DYN_LIBS in build_iso.sh:22.
+  Bun dlopen's libgcc_s for C++ unwind support. Previously returned ENOENT
+  on all 6 search paths (/usr/lib, /lib64/glibc-hwcaps/x86-64-v3, etc.).
+- Rebuilt ISO with STAGE_CLAUDE=1 (190 files vs 189, +libgcc_s.so.1).
+
+Why:
+- fry1356 showed Bun opening /usr/lib/libgcc_s.so.1 before the crash but
+  getting ENOENT. Missing libgcc_s could cause C++ exception handling
+  failures that corrupt internal state.
+
+Build verification:
+- build_iso.sh: passed (190 files staged)
+
+Boot result:
+- libgcc_s.so.1 now loads successfully:
+  TBTRACE path pid=3 tgid=3 nr=257 openat path="/usr/lib/libgcc_s.so.1"
+- Same #PF at 0x6056F06 (rdi=-1 in libuv) still occurs.
+- SIGSEGV delivered correctly again.
+- New evidence: Bun's SIGSEGV handler RUNS and produces output:
+  "panic(main thread): Segmentation fault at address 0xFFFFFFFFFFFFFFFF"
+  (Bun's crash reporter message, not kernel panic)
+- Handler re-installs signal handlers (multiple rt_sigaction calls for
+  signals 11, 4, 7, 8, 6, 1, 15) as part of crash reporter reset logic.
+- Crash reporter then hits #UD at RIP=0x2B05212:
+  vec=6 err=0 RIP=0x2B05212 CS=0x2B RF=0x10246
+  0x2B05212 is in Bun's RO data segment (0x200000-0x42A92B4, flags=R).
+  Likely a function pointer in Bun's crash reporter machinery that was
+  never initialized before the crash (crashed during startup, not runtime).
+
+- /proc/3/mem still returns ENOENT. /etc/ld.so.cache returns ENOENT.
+
+Key finding: Bun's crash reporter DOES run and prints the error message.
+The crash is during INITIALIZATION, so the crash reporter's internal
+function pointer tables may be only partially set up. The #UD jump to
+data is consistent with an uninitialized function pointer being called.
+
+Next work:
+- The root cause is the rdi=-1 dereference at 0x6056F06. This is a
+  libuv vtable dispatch loop iterating an object array with -1 sentinel.
+  Need to determine what syscall failure or initialization gap causes
+  -1 to be stored in the array.
+- Short-term approach: if the crash reporter can't fully initialize,
+  need Bun to get further in startup before crashing, so crash reporter
+  function pointers are resolved. The missing /proc/self/mem and
+  /etc/ld.so.cache might be preventing full initialization.
+- Or: fix the rdi=-1 root cause directly.

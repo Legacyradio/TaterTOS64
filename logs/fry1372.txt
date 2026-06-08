@@ -1,0 +1,85 @@
+fry1372 - fixed affinity return size and futex lost-wake race; Claude still hangs in JSC liveness loop
+
+Date: 2026-06-05 13:21 CDT
+
+What changed:
+- Fixed Linux sched_getaffinity return semantics in Tater Bridge.
+  The old code returned the caller's cpusetsize. Linux returns the kernel
+  affinity mask byte count. Host Claude sees return value 8, so Tater Bridge
+  now returns an 8-byte rounded mask for <=64 CPUs instead of values such as
+  128 when the caller supplies a large buffer.
+
+- Closed a real futex wait race in sched_block_futex.
+  The old path checked the futex word before publishing the waiter, then
+  exposed a gap where another thread could change the word and call wake
+  before the waiter was visible. The scheduler now rechecks the user word
+  after setting wait_futex_key/wait_futex_bitset. If the word already changed,
+  it cancels the wait and returns -EAGAIN, matching Linux's atomic
+  compare-and-block shape more closely.
+
+- Restored the final boot launcher to prompt mode:
+    claude -p "say hello from TaterTOS in 10 words"
+
+Build verification:
+- make src/kernel/proc/syscall.o: passed.
+- make kernel: passed.
+- make src/kernel/proc/sched.o kernel: passed.
+- Full staged build_iso.sh with STAGE_CLAUDE=1: passed after both fixes.
+- Final artifacts rebuilt:
+    out/tatertos64v3.iso
+    out/tater_nvme.img with /RCLAUDE.LXE staged from
+    /home/legacyindieradio/.local/share/claude/versions/2.1.162
+
+Probe 1:
+- /tmp/tb_affinity2_s.log
+- 120-second prompt-mode boot, -smp 2.
+- Timed out.
+- Reached Claude/Bun/JSC futex loop.
+- Still no stdout write and no exit_group.
+
+Probe 2:
+- /tmp/tb_futex_atomic_s.log
+- 120-second prompt-mode boot, -smp 2, after futex atomic recheck.
+- Timed out.
+- Counts:
+    TBCLONE3 args: 2
+    TBSKIP bad-ptr: 5
+    EXCEPTION: 0
+    stdout writes: 0
+    exit_group: 0
+    unknown syscalls: 0
+    TBFUTEX wait-block-fail: 6
+    TBSCHED futex-timeout: 45
+    rt_sigsuspend: 2
+
+What improved:
+- sched_getaffinity now matches the host-observed return-size behavior.
+- The futex wait path now handles the lost-wake window where the futex word
+  changes while a thread is trying to publish itself as a waiter.
+- The final artifact is not left in temporary --version mode.
+
+What did not improve:
+- Claude still does not reach CLI output.
+- It still creates only two clone3 workers on the -smp 2 prompt smoke.
+- It still falls into the same Bun/JSC GC + parking-lot futex + madvise loop.
+- The TBSKIP bad-ptr workaround still fires five times.
+
+Conclusion:
+- This session fixed two real Linux ABI/semantic issues, but neither was the
+  final Claude Code liveness blocker.
+- The remaining strongest suspect is not a missing syscall. The current trace
+  shows no unknown syscalls and no crash. It is still a coordination bug in
+  the JSC/Bun startup path: futex wake/value sequencing, signal/thread
+  ordering, or the bad-ptr/TBSKIP corruption path.
+
+Next work:
+- Instrument TBSKIP with RIP, RSP, target pointer, and nearby call context.
+  It is now more suspicious than epoll because it fires before output and may
+  be hiding a corrupt callback/vtable/control-flow path.
+- Add focused trace around sched_getaffinity return value and copied mask to
+  prove Claude now observes the Linux-shaped value.
+- Continue comparing host vs Tater immediately after the second clone3 and
+  around futex addresses:
+    0x63ad6e0
+    0x6fbff800e8c8 / 0x6fbff800e880
+    0x6fbff402c1d0 / 0x6fbff402c188

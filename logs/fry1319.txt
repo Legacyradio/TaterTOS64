@@ -1,0 +1,44 @@
+2026-06-03 21:28:00 CDT
+
+Fry 1319 - Linux time(201) syscall validated, abort path remains
+
+What changed:
+- Added Linux syscall number time(201) in src/kernel/proc/linux_compat.h.
+- Added a native Tater Bridge time() implementation in src/kernel/proc/syscall.c.
+- The implementation uses the same RTC boot epoch plus HPET uptime source as
+  gettimeofday and writes the optional userspace time_t pointer when provided.
+
+Why:
+- Fry 1318 showed time(201) was the last trace-proven ENOSYS immediately before
+  Claude entered its abort path.
+- rseq(334) still returns ENOSYS by design because glibc commonly treats that as
+  an acceptable fallback.
+
+Verification:
+- Targeted build passed:
+  make src/kernel/proc/syscall.o kernel
+- Clean staged build passed:
+  CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.162 STAGE_CLAUDE=1 MTOOLSRC=/dev/null ./build_iso.sh
+- Boot log:
+  /tmp/s_fry1319_time.log
+- Selftest still passed:
+  85 passed, 0 failed.
+- Claude launch:
+  LINUXTEST: launching REAL claude --version (from /nvme)
+  LINUXTEST: claude launch rc=12
+- time(201) now returns successfully:
+  TBTRACE enter pid=12 tgid=12 nr=201 time a1=0 ...
+  TBTRACE ret pid=12 tgid=12 nr=201 time rc=6a20e035
+
+Result:
+- The previous time(201) ENOSYS is gone.
+- Claude still chooses the SIGABRT path after further runtime initialization:
+  TBTRACE enter pid=12 tgid=12 nr=234 tgkill a1=c a2=c a3=6 ...
+- QEMU remained alive after the fatal tgkill path, so the next fix is to inspect
+  Tater Bridge fatal signal / thread-group exit handling and distinguish clean
+  process termination from a stuck teardown.
+
+Next:
+- Add focused teardown evidence around tgkill/syscall_exit_current if needed.
+- Decode the nearby openat probes only if the abort reason remains unclear after
+  process-exit handling is correct.

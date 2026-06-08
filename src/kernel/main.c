@@ -89,7 +89,7 @@ void lapic_timer_init(void);
 void gop_fb_init(void);
 int process_launch(const char *path);
 int process_last_launch_error(void);
-/* Linuxulator: launch an unmodified Linux ELF (linux_compat.h). vfs_open/
+/* Tater Bridge: launch an unmodified Linux ELF (linux_compat.h). vfs_open/
  * vfs_close already come from "fs/vfs.h" included above. */
 int process_launch_linux(const char *path, const char *const *argv, int argc,
                          const char *const *envp, int envc);
@@ -106,6 +106,7 @@ uint8_t kernel_stack[262144];
 #define TATER_BUILD_ID  "2026-03-04-fry531-rollback"
 #define TATER_SELFTEST 1
 #define TATER_SKIP_SMP 0
+#define TBRIDGE_CLAUDE_PROMPT_ONLY 1
 
 static void aml_extended_init_thread(void *arg) {
     (void)arg;
@@ -539,28 +540,31 @@ static void after_vmm(struct fry_handoff *handoff) {
         syscall_init();
         early_fb_color(handoff, 5, 2, 0x0000FFFFu); /* R2C5: syscall_init done */
 
-        /* Linuxulator proof-of-life: when /LXTEST.RUN is present, launch an
+        /* Tater Bridge proof-of-life: when /LXTEST.RUN is present, launch an
          * UNMODIFIED static Linux x86_64 ELF through the compatibility layer.
          * Diagnostics go via kprint_serial_only() because plain kprint() is
          * filtered this early in boot; the Linux process's own write() reaches
          * serial like any other userspace stdout. */
+        int tbridge_claude_prompt_only = 0;
         {
             void kprint_serial_only(const char *fmt, ...);
             struct vfs_file *lxm = vfs_open("/LXTEST.RUN");
             if (lxm) {
                 vfs_close(lxm);
+                struct vfs_file *lxb = 0;
+#if !TBRIDGE_CLAUDE_PROMPT_ONLY
                 const char *lxpath = "/apps/LHELLO.LXE";
-                struct vfs_file *lxb = vfs_open(lxpath);
+                lxb = vfs_open(lxpath);
                 if (!lxb) { lxpath = "/LHELLO.LXE"; lxb = vfs_open(lxpath); }
                 if (lxb) {
                     vfs_close(lxb);
                     const char *lxargv[] = { "/apps/lhello", "phase1" };
                     const char *lxenvp[] = { "PATH=/apps", "TATERTOS=1" };
-                    kprint_serial_only("LINUXTEST: launching %s\n", lxpath);
+                    kprint_serial_only("TBRIDGE: launching %s\n", lxpath);
                     int lrc = process_launch_linux(lxpath, lxargv, 2, lxenvp, 2);
-                    kprint_serial_only("LINUXTEST: process_launch_linux rc=%d\n", lrc);
+                    kprint_serial_only("TBRIDGE: process_launch_linux rc=%d\n", lrc);
                 } else {
-                    kprint_serial_only("LINUXTEST: marker present but LHELLO.LXE not found\n");
+                    kprint_serial_only("TBRIDGE: marker present but LHELLO.LXE not found\n");
                 }
 
                 lxpath = "/apps/LFILE.LXE";
@@ -570,11 +574,11 @@ static void after_vmm(struct fry_handoff *handoff) {
                     vfs_close(lxb);
                     const char *lfargv[] = { "/apps/lfile", "vfs" };
                     const char *lfenvp[] = { "PATH=/apps", "TATERTOS=1" };
-                    kprint_serial_only("LINUXTEST: launching %s\n", lxpath);
+                    kprint_serial_only("TBRIDGE: launching %s\n", lxpath);
                     int lfrc = process_launch_linux(lxpath, lfargv, 2, lfenvp, 2);
-                    kprint_serial_only("LINUXTEST: process_launch_linux rc=%d\n", lfrc);
+                    kprint_serial_only("TBRIDGE: process_launch_linux rc=%d\n", lfrc);
                 } else {
-                    kprint_serial_only("LINUXTEST: marker present but LFILE.LXE not found\n");
+                    kprint_serial_only("TBRIDGE: marker present but LFILE.LXE not found\n");
                 }
 
                 lxpath = "/apps/LMMAP.LXE";
@@ -584,11 +588,11 @@ static void after_vmm(struct fry_handoff *handoff) {
                     vfs_close(lxb);
                     const char *lmargv[] = { "/apps/lmmap", "mmap" };
                     const char *lmenvp[] = { "PATH=/apps", "TATERTOS=1" };
-                    kprint_serial_only("LINUXTEST: launching %s\n", lxpath);
+                    kprint_serial_only("TBRIDGE: launching %s\n", lxpath);
                     int lmrc = process_launch_linux(lxpath, lmargv, 2, lmenvp, 2);
-                    kprint_serial_only("LINUXTEST: process_launch_linux rc=%d\n", lmrc);
+                    kprint_serial_only("TBRIDGE: process_launch_linux rc=%d\n", lmrc);
                 } else {
-                    kprint_serial_only("LINUXTEST: marker present but LMMAP.LXE not found\n");
+                    kprint_serial_only("TBRIDGE: marker present but LMMAP.LXE not found\n");
                 }
 
                 lxpath = "/apps/LDYN.LXE";
@@ -602,11 +606,11 @@ static void after_vmm(struct fry_handoff *handoff) {
                         "LD_LIBRARY_PATH=/usr/lib:/lib64",
                         "TATERTOS=1"
                     };
-                    kprint_serial_only("LINUXTEST: launching %s\n", lxpath);
+                    kprint_serial_only("TBRIDGE: launching %s\n", lxpath);
                     int ldrc = process_launch_linux(lxpath, ldargv, 2, ldenvp, 3);
-                    kprint_serial_only("LINUXTEST: process_launch_linux rc=%d\n", ldrc);
+                    kprint_serial_only("TBRIDGE: process_launch_linux rc=%d\n", ldrc);
                 } else {
-                    kprint_serial_only("LINUXTEST: marker present but LDYN.LXE not found\n");
+                    kprint_serial_only("TBRIDGE: marker present but LDYN.LXE not found\n");
                 }
 
                 lxpath = "/apps/LLIBC.LXE";
@@ -620,11 +624,11 @@ static void after_vmm(struct fry_handoff *handoff) {
                         "LD_LIBRARY_PATH=/usr/lib:/lib64",
                         "TATERTOS=1"
                     };
-                    kprint_serial_only("LINUXTEST: launching %s\n", lxpath);
+                    kprint_serial_only("TBRIDGE: launching %s\n", lxpath);
                     int llirc = process_launch_linux(lxpath, lliargv, 2, llienvp, 3);
-                    kprint_serial_only("LINUXTEST: process_launch_linux rc=%d\n", llirc);
+                    kprint_serial_only("TBRIDGE: process_launch_linux rc=%d\n", llirc);
                 } else {
-                    kprint_serial_only("LINUXTEST: marker present but LLIBC.LXE not found\n");
+                    kprint_serial_only("TBRIDGE: marker present but LLIBC.LXE not found\n");
                 }
 
                 lxpath = "/apps/LGAP.LXE";
@@ -638,11 +642,11 @@ static void after_vmm(struct fry_handoff *handoff) {
                         "LD_LIBRARY_PATH=/usr/lib:/lib64",
                         "TATERTOS=1"
                     };
-                    kprint_serial_only("LINUXTEST: launching %s\n", lxpath);
+                    kprint_serial_only("TBRIDGE: launching %s\n", lxpath);
                     int lgrc = process_launch_linux(lxpath, lgargv, 2, lgenvp, 3);
-                    kprint_serial_only("LINUXTEST: process_launch_linux rc=%d\n", lgrc);
+                    kprint_serial_only("TBRIDGE: process_launch_linux rc=%d\n", lgrc);
                 } else {
-                    kprint_serial_only("LINUXTEST: marker present but LGAP.LXE not found\n");
+                    kprint_serial_only("TBRIDGE: marker present but LGAP.LXE not found\n");
                 }
 
                 lxpath = "/apps/LTHR.LXE";
@@ -656,11 +660,11 @@ static void after_vmm(struct fry_handoff *handoff) {
                         "LD_LIBRARY_PATH=/usr/lib:/lib64",
                         "TATERTOS=1"
                     };
-                    kprint_serial_only("LINUXTEST: launching %s\n", lxpath);
+                    kprint_serial_only("TBRIDGE: launching %s\n", lxpath);
                     int ltrc = process_launch_linux(lxpath, ltargv, 2, ltenvp, 3);
-                    kprint_serial_only("LINUXTEST: process_launch_linux rc=%d\n", ltrc);
+                    kprint_serial_only("TBRIDGE: process_launch_linux rc=%d\n", ltrc);
                 } else {
-                    kprint_serial_only("LINUXTEST: marker present but LTHR.LXE not found\n");
+                    kprint_serial_only("TBRIDGE: marker present but LTHR.LXE not found\n");
                 }
 
                 lxpath = "/apps/LASYNC.LXE";
@@ -674,11 +678,11 @@ static void after_vmm(struct fry_handoff *handoff) {
                         "LD_LIBRARY_PATH=/usr/lib:/lib64",
                         "TATERTOS=1"
                     };
-                    kprint_serial_only("LINUXTEST: launching %s\n", lxpath);
+                    kprint_serial_only("TBRIDGE: launching %s\n", lxpath);
                     int larc = process_launch_linux(lxpath, laargv, 2, laenvp, 3);
-                    kprint_serial_only("LINUXTEST: process_launch_linux rc=%d\n", larc);
+                    kprint_serial_only("TBRIDGE: process_launch_linux rc=%d\n", larc);
                 } else {
-                    kprint_serial_only("LINUXTEST: marker present but LASYNC.LXE not found\n");
+                    kprint_serial_only("TBRIDGE: marker present but LASYNC.LXE not found\n");
                 }
 
                 lxpath = "/apps/LFUTEX.LXE";
@@ -692,17 +696,19 @@ static void after_vmm(struct fry_handoff *handoff) {
                         "LD_LIBRARY_PATH=/usr/lib:/lib64",
                         "TATERTOS=1"
                     };
-                    kprint_serial_only("LINUXTEST: launching %s\n", lxpath);
+                    kprint_serial_only("TBRIDGE: launching %s\n", lxpath);
                     int lfxrc = process_launch_linux(lxpath, lfxargv, 2, lfxenvp, 3);
-                    kprint_serial_only("LINUXTEST: process_launch_linux rc=%d\n", lfxrc);
+                    kprint_serial_only("TBRIDGE: process_launch_linux rc=%d\n", lfxrc);
                 } else {
-                    kprint_serial_only("LINUXTEST: marker present but LFUTEX.LXE not found\n");
+                    kprint_serial_only("TBRIDGE: marker present but LFUTEX.LXE not found\n");
                 }
+#endif
 
                 /* REAL unmodified Linux coreutils — prove the layer runs
                  * arbitrary host binaries, and harvest the next syscall gaps
                  * (ls -> getdents64) toward the real claude binary. */
                 {
+#if !TBRIDGE_CLAUDE_PROMPT_ONLY
                     const char *rcenvp[] = {
                         "PATH=/apps",
                         "LD_LIBRARY_PATH=/usr/lib:/lib64",
@@ -715,43 +721,63 @@ static void after_vmm(struct fry_handoff *handoff) {
                     if (lxb) {
                         vfs_close(lxb);
                         const char *a[] = { "env" };
-                        kprint_serial_only("LINUXTEST: launching REAL env\n");
+                        kprint_serial_only("TBRIDGE: launching REAL env\n");
                         process_launch_linux("/apps/RENV.LXE", a, 1, rcenvp, 3);
                     }
                     lxb = vfs_open("/apps/RCAT.LXE");
                     if (lxb) {
                         vfs_close(lxb);
                         const char *a[] = { "cat", "/LXTEST.TXT" };
-                        kprint_serial_only("LINUXTEST: launching REAL cat /LXTEST.TXT\n");
+                        kprint_serial_only("TBRIDGE: launching REAL cat /LXTEST.TXT\n");
                         process_launch_linux("/apps/RCAT.LXE", a, 2, rcenvp, 3);
                     }
                     lxb = vfs_open("/apps/RLS.LXE");
                     if (lxb) {
                         vfs_close(lxb);
                         const char *a[] = { "ls", "/apps" };
-                        kprint_serial_only("LINUXTEST: launching REAL ls /apps\n");
+                        kprint_serial_only("TBRIDGE: launching REAL ls /apps\n");
                         process_launch_linux("/apps/RLS.LXE", a, 2, rcenvp, 3);
                     }
+#endif
                     /* The REAL claude binary on the NVMe (/nvme), streamed from
-                     * disk by the loader (not in the ramdisk). --version
-                     * exercises Bun startup without needing the network. */
+                     * disk by the loader (not in the ramdisk). */
                     lxb = vfs_open("/nvme/RCLAUDE.LXE");
                     if (lxb) {
                         vfs_close(lxb);
-                        const char *a[] = { "claude", "--version" };
+                        const char *a[] = { "claude", "-p", "say hello from TaterTOS in 10 words" };
+                        /* fry1390: JSC's concurrent JIT/GC publishes a CodeBlock
+                         * that gets ENTERED before its numCalleeLocals field is
+                         * written (proven: a live CodeBlock with numLocals=0 ->
+                         * JIT prologue computes a 0-size frame -> infinite
+                         * stack-zero -> crash; reproduces on -smp 1, kernel VM
+                         * exonerated). Force SYNCHRONOUS construction so the
+                         * field is always set before entry. JSC reads JSC_<opt>
+                         * env vars at Options::initialize(). */
                         const char *ce[] = {
                             "PATH=/apps", "LD_LIBRARY_PATH=/usr/lib:/lib64",
-                            "HOME=/", "TMPDIR=/tmp", "TATERTOS=1"
+                            "HOME=/", "TMPDIR=/tmp", "TATERTOS=1",
+                            "JSC_useDFGJIT=0", "JSC_useFTLJIT=0", "JSC_dumpOptions=1"
                         };
-                        kprint_serial_only("LINUXTEST: launching REAL claude --version (from /nvme)\n");
-                        int crc = process_launch_linux("/nvme/RCLAUDE.LXE", a, 2, ce, 5);
-                        kprint_serial_only("LINUXTEST: claude launch rc=%d\n", crc);
+                        kprint_serial_only("TBRIDGE: launching REAL claude -p (from /nvme)\n");
+                        int crc = process_launch_linux("/nvme/RCLAUDE.LXE", a, 3, ce, 8);
+                        kprint_serial_only("TBRIDGE: claude launch rc=%d\n", crc);
+                        tbridge_claude_prompt_only = (crc >= 0);
                     } else {
-                        kprint_serial_only("LINUXTEST: /nvme/RCLAUDE.LXE not present (skip)\n");
+                        kprint_serial_only("TBRIDGE: /nvme/RCLAUDE.LXE not present (skip)\n");
                     }
                 }
             }
         }
+#if TBRIDGE_CLAUDE_PROMPT_ONLY
+        if (tbridge_claude_prompt_only) {
+            void kprint_serial_only(const char *fmt, ...);
+            kprint_serial_only("TBRIDGE: prompt-only mode; skipping kernel selftest and INIT.FRY\n");
+            if (TATER_BOOT_SERIAL_TRACE) early_serial_puts("B:SCHED\n");
+            early_fb_color(handoff, 7, 2, 0x0000FFFFu);
+            sched_tick();
+            kernel_panic("boot thread resumed after Claude prompt scheduler handoff");
+        }
+#endif
 #if TATER_SELFTEST
         kernel_selftest();
 #endif

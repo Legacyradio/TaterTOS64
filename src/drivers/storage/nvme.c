@@ -591,8 +591,15 @@ static int poll_cq(struct nvme_queue *q, struct nvme_cpl *out) {
         }
 
         __asm__ volatile ("pause" : : : "memory");
-        if ((spin % NVME_YIELD_INTERVAL) == 0 && proc_current()) {
-            sched_yield();
+        /* Only yield when running in a REAL schedulable process (pid != 0).
+         * The per-CPU idle/boot context has pid 0; yielding from it switches
+         * into idle_loop and never returns to the caller, abandoning the
+         * in-flight read. Busy-poll instead (same path that works pre-sched). */
+        {
+            struct fry_process *yc = proc_current();
+            if ((spin % NVME_YIELD_INTERVAL) == 0 && yc && yc->pid != 0) {
+                sched_yield();
+            }
         }
     }
     g_cmd_wait_timed_out = 1u;
@@ -612,7 +619,9 @@ static int wait_cq_irq(struct nvme_queue *q, struct nvme_cpl *out) {
         }
 
         struct fry_process *cur = proc_current();
-        if (!cur || !cpu_irqs_enabled()) {
+        /* pid 0 == per-CPU idle/boot context: must NOT sleep/yield (the
+         * switch into idle_loop never returns to this caller). Busy-poll. */
+        if (!cur || cur->pid == 0 || !cpu_irqs_enabled()) {
             __asm__ volatile ("pause" : : : "memory");
             continue;
         }

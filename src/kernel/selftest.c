@@ -151,6 +151,153 @@ void kernel_selftest(void) {
         st_check("entropy_unique", a != b, 1);
     }
 
+    /* Phase 5: /dev entropy and runtime device nodes */
+    {
+        struct vfs_file *urnd = vfs_open("/dev/urandom");
+        st_check("devfs_urandom_open", urnd != 0, 1);
+        if (urnd) {
+            uint8_t rnd[8] = {0,0,0,0,0,0,0,0};
+            int rd = vfs_read(urnd, rnd, sizeof(rnd));
+            st_check("devfs_urandom_read", rd, sizeof(rnd));
+            uint64_t sum = 0;
+            for (int i = 0; i < 8; i++) sum += rnd[i];
+            st_check("devfs_urandom_nonzero", sum != 0, 1);
+            vfs_close(urnd);
+        }
+        struct vfs_file *zero = vfs_open("/dev/zero");
+        st_check("devfs_zero_open", zero != 0, 1);
+        if (zero) {
+            uint8_t z[8] = {1,1,1,1,1,1,1,1};
+            int rd = vfs_read(zero, z, sizeof(z));
+            st_check("devfs_zero_read", rd, sizeof(z));
+            uint64_t sum = 0;
+            for (int i = 0; i < 8; i++) sum += z[i];
+            st_check("devfs_zero_all_zero", sum, 0);
+            vfs_close(zero);
+        }
+        struct vfs_file *nul = vfs_open("/dev/null");
+        st_check("devfs_null_open", nul != 0, 1);
+        if (nul) {
+            uint8_t b = 0;
+            st_check("devfs_null_read_eof", vfs_read(nul, &b, 1), 0);
+            vfs_close(nul);
+        }
+    }
+
+    /* Phase 5: Tater Bridge synthetic ABI files */
+    {
+        char buf[64];
+        struct vfs_file *over = vfs_open("/proc/sys/vm/overcommit_memory");
+        st_check("tbridgefs_overcommit_open", over != 0, 1);
+        if (over) {
+            int rd = vfs_read(over, buf, sizeof(buf));
+            st_check("tbridgefs_overcommit_read", rd, 2);
+            st_check("tbridgefs_overcommit_value", rd >= 2 && buf[0] == '1' && buf[1] == '\n', 1);
+            vfs_close(over);
+        }
+    }
+
+    {
+        char buf[64];
+        struct vfs_file *cg = vfs_open("/proc/self/cgroup");
+        st_check("tbridgefs_cgroup_open", cg != 0, 1);
+        if (cg) {
+            int rd = vfs_read(cg, buf, sizeof(buf));
+            st_check("tbridgefs_cgroup_read", rd, 5);
+            st_check("tbridgefs_cgroup_value", rd >= 5 && buf[0] == '0' && buf[1] == ':' && buf[2] == ':' && buf[3] == '/' && buf[4] == '\n', 1);
+            vfs_close(cg);
+        }
+    }
+
+    {
+        char buf[64];
+        struct vfs_file *thp = vfs_open("/sys/kernel/mm/transparent_hugepage/enabled");
+        st_check("tbridgefs_thp_open", thp != 0, 1);
+        if (thp) {
+            int rd = vfs_read(thp, buf, sizeof(buf));
+            st_check("tbridgefs_thp_read_nonempty", rd > 0, 1);
+            vfs_close(thp);
+        }
+    }
+
+    {
+        const char mark[] = "claude\n";
+        struct vfs_file *tm = vfs_open("/sys/kernel/debug/tracing/trace_marker");
+        st_check("tbridgefs_trace_marker_open", tm != 0, 1);
+        if (tm) {
+            st_check("tbridgefs_trace_marker_write", vfs_write(tm, mark, sizeof(mark) - 1), (int)(sizeof(mark) - 1));
+            vfs_close(tm);
+        }
+    }
+
+    {
+        char buf[128];
+        struct vfs_file *maps = vfs_open("/proc/self/maps");
+        st_check("tbridgefs_maps_open", maps != 0, 1);
+        if (maps) {
+            /* maps now advertises the user [stack] VMA so glibc
+             * pthread_getattr_np can resolve the main thread's stack
+             * (empty maps -> WTF::Thread stack-origin 0 -> abort). */
+            int n = vfs_read(maps, buf, sizeof(buf) - 1);
+            st_check("tbridgefs_maps_read_nonempty", n > 0 ? 1 : 0, 1);
+            int has_stack = 0;
+            if (n > 0) {
+                buf[n] = 0;
+                for (int i = 0; i + 7 <= n; i++) {
+                    if (buf[i] == '[' && buf[i+1] == 's' && buf[i+2] == 't' &&
+                        buf[i+3] == 'a' && buf[i+4] == 'c' && buf[i+5] == 'k' &&
+                        buf[i+6] == ']') { has_stack = 1; break; }
+                }
+            }
+            st_check("tbridgefs_maps_has_stack", has_stack, 1);
+            vfs_close(maps);
+        }
+    }
+
+    {
+        char buf[64];
+        struct vfs_file *mma = vfs_open("/proc/sys/vm/mmap_min_addr");
+        st_check("tbridgefs_mmap_min_open", mma != 0, 1);
+        if (mma) {
+            int rd = vfs_read(mma, buf, sizeof(buf));
+            st_check("tbridgefs_mmap_min_read", rd > 0, 1);
+            vfs_close(mma);
+        }
+    }
+
+    {
+        char buf[64];
+        struct vfs_file *cpu = vfs_open("/sys/devices/system/cpu/online");
+        st_check("tbridgefs_cpu_online_open", cpu != 0, 1);
+        if (cpu) {
+            int rd = vfs_read(cpu, buf, sizeof(buf));
+            st_check("tbridgefs_cpu_online_read", rd > 0, 1);
+            vfs_close(cpu);
+        }
+    }
+
+    {
+        char buf[128];
+        struct vfs_file *ps = vfs_open("/proc/stat");
+        st_check("tbridgefs_proc_stat_open", ps != 0, 1);
+        if (ps) {
+            int rd = vfs_read(ps, buf, sizeof(buf));
+            st_check("tbridgefs_proc_stat_read", rd > 0, 1);
+            vfs_close(ps);
+        }
+    }
+
+    {
+        char buf[64];
+        struct vfs_file *lim = vfs_open("/sys/fs/cgroup/memory.max");
+        st_check("tbridgefs_cgroup_memory_max_open", lim != 0, 1);
+        if (lim) {
+            int rd = vfs_read(lim, buf, sizeof(buf));
+            st_check("tbridgefs_cgroup_memory_max_read", rd > 0, 1);
+            vfs_close(lim);
+        }
+    }
+
     /* Phase 5: time constants */
     st_check("CLOCK_MONOTONIC", FRY_CLOCK_MONOTONIC, 0);
     st_check("CLOCK_REALTIME",  FRY_CLOCK_REALTIME,  1);

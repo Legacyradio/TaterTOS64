@@ -5,7 +5,7 @@
  *   /lib64/ld-linux-x86-64.so.2
  *
  * The program itself uses only raw Linux syscalls, so this isolates the
- * linuxulator dynamic-loader handoff from libc application behavior.
+ * Tater Bridge dynamic-loader handoff from libc application behavior.
  */
 
 .intel_syntax noprefix
@@ -33,7 +33,7 @@ write1:
     ret
 
 .section .rodata
-banner: .ascii "==== TaterTOS linuxulator: dynamic PT_INTERP probe ====\n"
+banner: .ascii "==== Tater Bridge: dynamic PT_INTERP probe ====\n"
         banner_len = . - banner
 okline: .ascii "[OK] PT_INTERP loader reached user entry\n"
         okline_len = . - okline

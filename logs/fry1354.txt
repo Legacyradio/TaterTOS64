@@ -1,0 +1,43 @@
+fry1354 - Tater Bridge timezone surface + current Claude prompt blocker
+
+Date: 2026-06-04 ~21:30 CDT
+
+What changed:
+- Added a narrowly mounted Tater Bridge zoneinfo surface at /usr/share/zoneinfo.
+- Aliased /etc/localtime open/stat lookups to /usr/share/zoneinfo/UTC.
+- Added a Claude/Bun vector-3 trap-stack diagnostic in irqdesc.c, gated to
+  tgid 3 and int3 only.
+
+Correction made during testing:
+- The first mount attempt used /usr and shadowed /usr/lib, which broke the
+  Linux loader with missing librt.so.1.
+- The mount was narrowed to /usr/share/zoneinfo so /usr/lib remains visible.
+
+Verified final boot evidence:
+- /usr/lib/librt.so.1 opens again.
+- /etc/localtime opens and reads 5 bytes, then EOF.
+- /usr/share/zoneinfo/ opens as a directory.
+- The prior timezone ENOENT path is no longer the immediate blocker.
+
+Latest verified artifacts:
+- kernel.elf: 2026-06-04 21:27:32 CDT, 2510408 bytes
+- out/tater_nvme.img: 2026-06-04 21:28:06 CDT, 419430400 bytes
+- out/tatertos64v3.iso: 2026-06-04 21:28:08 CDT, 162695168 bytes
+
+Current blocker:
+- Claude prompt mode still reaches Bun/JSC userland and then faults at:
+    !EXC vec=14 err=4 RIP=0x6056F06 CR2=0x40000000
+    panic(main thread): Segmentation fault at address 0x40000000
+- Crash-reporting paths after that also expose missing helpers:
+    getrusage nr=98, process_vm_readv nr=310, msync nr=26, /proc/3/mem,
+    and libgcc_s.so.1.
+- Those crash-reporting gaps are likely secondary until the first
+  RIP=0x6056F06 / CR2=0x40000000 fault is understood.
+
+Next work:
+1. Diagnose why the Bun/JSC object pointer at RIP 0x6056F06 resolves to
+   0x40000000 after timezone succeeds.
+2. Investigate why readlink nr=89 still returns -ENOENT for timezone even
+   though direct /etc/localtime open/read now works.
+3. Add low-risk crash reporter compatibility only after the first fault path is
+   mapped, so we do not chase secondary noise first.

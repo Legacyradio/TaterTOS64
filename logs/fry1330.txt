@@ -1,0 +1,42 @@
+=====================================================================
+fry1330 - Linux signal state + futex interrupt wake groundwork
+2026-06-04 09:54:55 CDT
+=====================================================================
+
+Completed code step:
+- Added Linux signal bookkeeping fields:
+  - shared per-process dispositions in src/kernel/proc/process.h:
+    fry_process_shared.linux_sigact[64]
+  - per-thread blocked/pending masks and sigaltstack state in fry_process
+- Made Linux thread clone paths inherit the parent's blocked signal mask in
+  src/kernel/proc/process.c.
+- Added LNX_rt_sigreturn and LNX_tkill syscall numbers in
+  src/kernel/proc/linux_compat.h.
+- Added scheduler support in src/kernel/proc/sched.c/.h to wake a task that
+  is blocked in futex wait when it has an unblocked pending signal with a
+  userspace handler, returning that wait toward userspace with -EINTR.
+- Started the syscall-side Linux signal helpers in src/kernel/proc/syscall.c:
+  rt_sigaction/sigprocmask/sigaltstack user layouts, pending-mask helpers,
+  queue helper, sigframe/ucontext scaffolding, and rt_sigreturn restore helper.
+
+Why:
+- The real Claude/Bun/JSC binary installs a SIG30 handler and uses tgkill to
+  suspend another thread for GC stack scanning. Before this step, the kernel
+  accepted rt_sigaction/rt_sigprocmask/sigaltstack but discarded the state,
+  and tgkill returned success without making the target thread runnable or
+  deliverable. That let pid 28 think sig30 was sent while tid 29 stayed stuck
+  in futex_wait forever.
+- This step gives the kernel the state ownership Linux expects and gives the
+  scheduler a way to break a futex wait on a handled pending signal.
+
+Verification:
+- Not built or booted yet. This is an implementation checkpoint made before
+  continuing, per planv3 logging rules 5 and 6.
+
+Next:
+- Finish wiring the new syscall helpers into linux_syscall_dispatch_impl for
+  rt_sigaction, rt_sigprocmask, sigaltstack, kill, tkill, tgkill, and
+  rt_sigreturn.
+- Compile, then boot with -smp 2 and verify serial TBSIG/TBFUTEX/TBSCHED
+  evidence around pid 28 -> tid 29 SIG30 delivery.
+=====================================================================

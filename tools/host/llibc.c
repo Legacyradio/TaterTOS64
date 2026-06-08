@@ -23,7 +23,7 @@ int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
 
-    printf("==== TaterTOS linuxulator: libc probe ====\n");
+    printf("==== Tater Bridge: libc probe ====\n");
 
     /* 1. printf → write syscall via libc */
     printf("[OK] printf works via libc\n");

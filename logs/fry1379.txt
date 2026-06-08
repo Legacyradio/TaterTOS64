@@ -1,0 +1,62 @@
+fry1379 — Tater Bridge / Claude Code: ROOT CAUSE FOUND & FIXED. Kernel clobbered
+user AVX/YMM in interrupt context. Bun now boots fully; new downstream #GP.
+Timestamp: 2026-06-06 13:40:25 CDT
+Author: Claude (Opus 4.8), continuing fry1374-1378
+
+THE ROOT CAUSE (proven, fixed)
+  Repurposed the DR watchpoints to the JSC hash-set bucket array and caught the
+  init write:
+    rip=0x6FFFFFD72A12 (libc __memset_avx2)  rdi=0x6FBBFFF11000  rdx=0x220
+    rsi=0x00000000000000FF   -> JSC called memset(buckets, 0xFF, 0x220)
+    BUT the bytes that landed were 0x00.
+  i.e. an AVX memset asked to fill with 0xFF wrote 0. The kernel was CLOBBERING
+  the interrupted user thread's YMM register mid-memset:
+    - sched.c XSAVE/XRSTORs FPU state only on FULL CONTEXT SWITCHES, not on
+      same-process interrupts.
+    - Makefile CFLAGS had NO -mno-sse/-mno-avx, so GCC -O2 emitted SSE/AVX in
+      kernel interrupt-path code (memcpy/memset/struct copies). A timer IRQ
+      landing inside libc's AVX memset ran vectorized kernel code, trashed
+      ymm0, and on iretq the memset resumed with ymm0=0 -> wrote zeros.
+  Effect: JSC's -1 (0xFF) empty sentinels became 0 -> hash probe at 0x60CCF10
+  never found an empty bucket -> infinite spin -> main thread hung holding the
+  JSC heap lock -> workers starved. ALL prior symptoms (0xff/0x40000000 "corrupt"
+  slots, TBSKIP, the 0x63ad6e0 futex "deadlock", the liveness hang) were this.
+
+THE FIX
+  Makefile: add -mgeneral-regs-only to kernel CFLAGS (kernel never touches
+  x87/MMX/SSE/AVX; verified no float/double/intrinsics in kernel .c). Full kernel
+  rebuild (rm src/kernel src/drivers *.o; make kernel). Compiles clean.
+
+VERIFICATION (KVM boot, /tmp/tb_fix2_s.log)
+  - Watchpoint now shows memset writing val=0xFFFFFFFFFFFFFFFF (correct -1).
+  - TBSKIP: 0 (was 3-5). TBRIP spin: 7 transient (was 400 = infinite).
+  - Bun fully initializes and RUNS ~4.25s:
+      "Bun v1.3.14 ... Linux x64 (baseline)  CPU: sse42 popcnt avx avx2"
+      Args: "claude" "-p" "say hello from TaterTOS in 10 words"
+      Features: ... jsc standalone_executable claude_code
+      Builtins: node:assert/buffer/crypto/fs/http/.../http2 (all loaded)
+    This is FAR past every prior boot; the hang is gone.
+
+NEW (next) FAILURE — downstream, different class
+  vec=0x0D #GP at user RIP=0x4C17293: `mov 0x4(%rdi),%eax` with
+  rdi=0x0000C20000000000 (NON-CANONICAL: bit47 set, bits48-63 clear) -> #GP
+  (not #PF; the CR2=0x6FBC01303040 in the log is stale). Bun deref'd a garbage/
+  non-canonical pointer in a string/key compare (fn at 0x4C17270). Kernel
+  delivered SIGSEGV -> Bun crash reporter printed bun.report URL -> UD2 abort
+  (the vec=6 #UD at 0x2B05212 is just Zig's panic/abort, 0f 0b = UD2).
+  Source of 0xC20000000000 unknown yet — candidate: a JSValue/cage-tagged value
+  not unboxed/masked before deref, or another env-derived wrong value. NOT a
+  vector-clobber (whole kernel now -mgeneral-regs-only; syscall+signal paths
+  covered too). Next: trace where rdi=0xC20000000000 is produced (disasm callers
+  of 0x4C17270; check if it's a JSValue needing a mask, or a corrupted struct).
+
+TREE STATE (uncommitted, on eff81672)
+  Makefile: +mgeneral-regs-only (THE fix).
+  syscall.c: g_tb_trace_syscalls master switch (default OFF); DONTNEED reverted
+    to original (fry1374 backed out); g_tb_jsc_slot_watch[4] diag array.
+  irqdesc.c: RIP sampler + TBPROBE dump + bucket watchpoints (diagnostic);
+    TBSKIP no longer zeroes slots.
+  process.h: watchpoint helper now uses absolute g_tb_jsc_slot_watch[].
+  NOTE: the diagnostic instrumentation (watchpoints/sampler/TBPROBE, TBSKIP
+  block) can be removed now that root cause is fixed — left in for the #GP hunt.
+  Run under KVM: -machine q35,accel=kvm -cpu host.

@@ -1,0 +1,19 @@
+2026-06-04 03:38 CDT  Fry 1324 — TBABORT backtrace diagnostic (TEMPORARY)
+
+WHAT CHANGED (src/kernel/proc/syscall.c, LNX_tgkill handler):
+- Added an instrumented dump in the fatal-self-signal branch (sig 4/6/7/
+  8/9/11/15 to own tgid). For the claude tgid only (TB_TRACE_CLAUDE_TGID):
+  read the syscall-entry frame (kernel_stack_top - 12*8) for user rip/rsp,
+  then scan up to 2 KB of the user stack and print return addresses that
+  fall inside claude's own text (0x24aa400..0x6200000; glibc is 0x6fff...).
+  Beacons: "TBABORT pid=.. sig=.. urip=.. ursp=.." and "TBABORT bt off=.. ret=..".
+
+WHY: claude was calling tgkill(self, SIGABRT) and exiting 134 SILENTLY (no
+stderr text). Needed the userspace call chain to objdump-map the abort.
+Result fed fry1325: the chain was abort@plt <- 0x3fc4210 <- 0x5c47e2a <-
+a WTF::Thread stack-bounds RELEASE_ASSERT (m_stackOrigin==0), root-caused
+to an empty /proc/self/maps.
+
+STATUS: TEMPORARY diagnostic. It is harmless (claude tgid only, read-only
+stack scan) but must be STRIPPED once claude no longer aborts here. Tracked
+for removal alongside any remaining fry13xx beacons.

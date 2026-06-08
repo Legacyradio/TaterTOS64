@@ -1,0 +1,86 @@
+fry1373 - rseq, guard pages, and madvise semantics tightened; liveness remains
+
+Date: 2026-06-05 ~14:35 CDT
+
+What changed:
+- Added minimal Linux rseq registration state per Tater Bridge thread.
+  rseq now records the userspace rseq area and writes cpu_id_start/cpu_id
+  plus node_id/mm_cid for the 32-byte ABI used by Claude's glibc path.
+- Added trace names for rseq and set_robust_list so worker startup can be
+  compared directly against host Linux strace.
+- Implemented MADV_GUARD_INSTALL by marking the advised range PROT_NONE and
+  removing any present PTEs instead of treating guard stack pages as a no-op.
+- Made MADV_DONTNEED region-aware:
+    sparse/reserved mappings return without walking every 4K page
+    anonymous committed pages are zeroed
+    file-private mappings are not zeroed, matching Linux's reload-from-file
+    behavior instead of corrupting file-backed contents
+- Kept the launcher in final prompt mode:
+    claude -p "say hello from TaterTOS in 10 words"
+
+Build result:
+- `make src/kernel/proc/syscall.o` passed after the final madvise fix.
+- Full staged build passed:
+    CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.162
+    STAGE_CLAUDE=1
+    /bin/bash build_iso.sh
+- Rebuilt:
+    out/tatertos64v3.iso
+    out/tater_nvme.img with /RCLAUDE.LXE staged
+
+Host comparison:
+- Host Linux `claude --version` exits quickly and prints:
+    2.1.162 (Claude Code)
+- Host creates about nine clone3 workers before output.
+- Host threads each do:
+    rseq(..., 33, 0, 0x53053053) = 0
+    set_robust_list(..., 24) = 0
+- Host also uses the same JSC futex word 0x63ad6e0 and the same early
+  parking-lot wait/wake pattern before progressing.
+
+Probe results:
+- `/tmp/tb_rseq_s.log`, 150s prompt mode:
+    2327 lines, 2 clone3, 4 TBSKIP, 0 exceptions, 0 writes,
+    0 exit_group, 0 unknown syscalls, 7 wait-block-fail,
+    47 futex-timeout, 0 epoll_wait/epoll_pwait.
+  rseq did not solve liveness, but showed pid 5 becoming active before
+  both workers eventually parked on 0x63ad6e0.
+- `/tmp/tb_guard_s.log`, 180s prompt mode:
+    2314 lines, 2 clone3, 5 TBSKIP, 0 exceptions, 0 writes,
+    0 exit_group, 0 unknown syscalls, 7 wait-block-fail,
+    43 futex-timeout, 6 rseq trace lines, 6 set_robust_list trace lines.
+  Guard-page implementation did not change the two-clone plateau.
+- `/tmp/tb_madv_s.log`, 180s prompt mode:
+    2345 lines, 2 clone3, 5 TBSKIP, 0 exceptions, 0 writes,
+    0 exit_group, 0 unknown syscalls, 7 wait-block-fail,
+    39 futex-timeout.
+  Region-aware DONTNEED avoided the huge sparse 64 GiB PTE walk but did
+  not reach CLI output.
+- `/tmp/tb_madv_file_s.log`, 180s prompt mode, final state:
+    2275 lines, 2 clone3, 4 TBSKIP, 0 exceptions, 0 writes,
+    0 exit_group, 0 unknown syscalls, 5 wait-block-fail,
+    41 futex-timeout, 4 rt_sigsuspend, 0 epoll_wait/epoll_pwait,
+    6 rseq trace lines, 6 set_robust_list trace lines.
+
+Conclusion:
+- The port is still mechanically stable: no exceptions, no unknown syscalls,
+  no exit crash, and worker threads register rseq/robust-list successfully.
+- The liveness blocker is not basic rseq registration, guard-page no-op
+  behavior, or the initial huge sparse MADV_DONTNEED scan.
+- The remaining repeated divergence is still the JSC/Bun runtime path:
+  only two clone3 workers are created under Tater Bridge, while host Linux
+  creates the broader worker set and prints quickly.
+- TBSKIP remains suspicious. Final run still has 4 bad pointer slots in the
+  same JSC dispatch loop:
+    r14=0x3f8 / 0x7f8 -> 0x40000000
+    r14=0xff8 / 0xff9 -> 0xffffffffffffffff
+
+Next work:
+- Instrument writes to the bad slot array backing pointer:
+    array base around 0x40563080000 in the final run
+    slot offsets r14*8 for 0x3f8, 0x7f8, 0xff8, 0xff9
+- Add focused tracing for the 0x63ad6e0 futex word transitions:
+    old value, new value, caller pid, syscall site, and return path
+- Compare host vs Tater after the second clone3. Host proceeds into more
+  stack guard installs and clone3 workers; Tater stays in the two-worker
+  GC/madvise/futex cycle.

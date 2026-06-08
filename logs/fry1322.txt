@@ -1,0 +1,36 @@
+2026-06-03 21:38:28 CDT
+
+Fry 1322 - Tater Bridge proc/sys/cgroup startup nodes
+
+What changed:
+- Extended native Tater Bridge fs coverage for the next Claude startup probes:
+  /proc/self/maps, /proc/sys/vm/mmap_min_addr, /proc/stat,
+  /sys/devices/system/cpu/online, and cpu/memory cgroup limit files under
+  /sys/fs/cgroup.
+- Added focused selftests for the new synthetic files.
+
+Why:
+- fry1321 path tracing showed Claude had moved past /dev/urandom but was still
+  seeing ENOENT from several runtime environment probes before startup could
+  advance cleanly.
+- These are Tater Bridge synthetic ABI files, implemented in our VFS, not Linux
+  kernel code.
+
+Verification:
+- Targeted build passed:
+  make src/kernel/fs/tbridgefs.o src/kernel/selftest.o kernel
+- Clean staged ISO/NVMe build passed with STAGE_CLAUDE=1.
+- Boot serial /tmp/s_fry1322_cgroup.log reported:
+  selftest: 105 passed, 0 failed
+- Focused Claude path trace showed the new probes opened/read successfully:
+  /proc/self/maps rc=3, read rc=0
+  /proc/sys/vm/mmap_min_addr rc=3, read rc=6
+- The previous dynamic ENOENT list for /proc/stat, cpu online, and cgroup
+  cpu/memory files disappeared from the focused trace.
+
+Result:
+- Claude advanced beyond the prior missing-file stage.
+- New blocker is a clone3 child entry fault:
+  USER FAULT tid=28 rip=0x400b57 cr2=0x400b57
+- Disassembly shows 0x400b57 is .rodata text bytes, not executable code, so
+  the next fix is clone3 syscall-frame capture rather than another pseudo-file.

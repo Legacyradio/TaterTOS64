@@ -2,14 +2,14 @@
 #define TATER_LINUX_COMPAT_H
 
 /*
- * TaterTOS64v3 — Linux compatibility layer ("linuxulator").
+ * TaterTOS64v3 — Tater Bridge Linux-compatible ABI layer.
  *
  * Original TaterTOS code that lets the kernel host UNMODIFIED Linux
  * x86_64 ELF binaries by (a) loading a bare Linux ELF and building a
  * SysV/Linux initial process stack, and (b) translating Linux syscalls
  * into TaterTOS kernel operations. No Linux source lives in the kernel;
  * the Linux binaries themselves live in the filesystem as data. Same
- * posture as FreeBSD's linuxulator or WSL1 — a "personality", not a
+ * posture as a userspace ABI personality, not a
  * conversion of TaterTOS into Linux.
  */
 
@@ -32,6 +32,7 @@ struct fry_process;
 #define LNX_brk               12
 #define LNX_rt_sigaction      13
 #define LNX_rt_sigprocmask    14
+#define LNX_rt_sigreturn      15
 #define LNX_ioctl             16
 #define LNX_pread64           17
 #define LNX_readv             19
@@ -43,6 +44,7 @@ struct fry_process;
 #define LNX_dup2              33
 #define LNX_nanosleep         35
 #define LNX_epoll_create      213
+#define LNX_getdents64        217
 #define LNX_getpid            39
 #define LNX_socket            41
 #define LNX_clone             56
@@ -54,14 +56,22 @@ struct fry_process;
 #define LNX_fcntl             72
 #define LNX_getcwd            79
 #define LNX_readlink          89
+#define LNX_gettimeofday      96
+#define LNX_getrusage         98
+#define LNX_sysinfo           99
 #define LNX_getuid            102
 #define LNX_getgid            104
 #define LNX_geteuid           107
 #define LNX_getegid           108
 #define LNX_getppid           110
+#define LNX_rt_sigsuspend     130
 #define LNX_sigaltstack       131
+#define LNX_sched_setscheduler 144
+#define LNX_prctl             157
 #define LNX_arch_prctl        158
 #define LNX_gettid            186
+#define LNX_time              201
+#define LNX_tkill             200
 #define LNX_futex             202
 #define LNX_sched_getaffinity 204
 #define LNX_set_tid_address   218
@@ -93,6 +103,7 @@ struct fry_process;
 #define LNX_getrandom         318
 #define LNX_rseq              334
 #define LNX_clone3            435
+#define LNX_close_range       436
 
 /* ---- arch_prctl subfunctions ---- */
 #define LNX_ARCH_SET_GS  0x1001
@@ -108,6 +119,20 @@ struct fry_process;
 #define LNX_MAP_PRIVATE     0x02
 #define LNX_MAP_FIXED       0x10
 #define LNX_MAP_ANONYMOUS   0x20
+#define LNX_MAP_NORESERVE   0x4000
+
+/* ---- Linux clone/clone3 flags used by Tater Bridge ---- */
+#define LNX_CLONE_VM              0x00000100ULL
+#define LNX_CLONE_FS              0x00000200ULL
+#define LNX_CLONE_FILES           0x00000400ULL
+#define LNX_CLONE_SIGHAND         0x00000800ULL
+#define LNX_CLONE_PIDFD           0x00001000ULL
+#define LNX_CLONE_THREAD          0x00010000ULL
+#define LNX_CLONE_SYSVSEM         0x00040000ULL
+#define LNX_CLONE_SETTLS          0x00080000ULL
+#define LNX_CLONE_PARENT_SETTID   0x00100000ULL
+#define LNX_CLONE_CHILD_CLEARTID  0x00200000ULL
+#define LNX_CLONE_CHILD_SETTID    0x01000000ULL
 
 /* ---- Linux open/stat/at constants used by the translator ---- */
 #define LNX_AT_FDCWD       (-100)

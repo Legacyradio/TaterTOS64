@@ -1,0 +1,125 @@
+=====================================================================
+fry1312 - QEMU validation of devfs /dev/urandom fix
+=====================================================================
+DATE: 2026-06-03 evening CDT
+GOAL: Boot the rebuilt ISO + NVMe image from fry1311 and verify whether
+the real Claude Code binary gets past the old /dev/urandom-triggered
+0xBBADBEEF crash.
+
+TERMINOLOGY NOTE:
+  The Linux-compatible ABI layer is Tater Bridge. Older serial strings
+  and older logs still say "linuxulator"; those are legacy labels only.
+  Any subsystem behavior added here must be native TaterTOS64v3 code
+  built on our ABI/VFS/syscall layers, not copied Linux kernel code.
+
+---------------------------------------------------------------------
+AUTHORIZED QEMU/SERIAL VALIDATION
+---------------------------------------------------------------------
+The user explicitly allowed QEMU serial inspection for this round after
+planv3 rule 11 was raised.
+
+Short validation boot:
+
+  cp /usr/share/edk2/x64/OVMF_VARS.4m.fd /tmp/v_fry1312.fd
+  timeout 420 qemu-system-x86_64 -m 6G -machine q35,accel=tcg -cpu max -smp 2 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=/tmp/v_fry1312.fd \
+    -cdrom out/tatertos64v3.iso \
+    -drive file=out/tater_nvme.img,if=none,id=nvm,format=raw \
+    -device nvme,serial=deadbeef,drive=nvm \
+    -serial file:/tmp/s_fry1312.log -display none -no-reboot
+
+Result:
+  timeout exit 124 after 420 seconds
+  serial file: /tmp/s_fry1312.log
+  serial lines: 207
+
+Long validation boot:
+
+  cp /usr/share/edk2/x64/OVMF_VARS.4m.fd /tmp/v_fry1312_long.fd
+  timeout 900 qemu-system-x86_64 -m 6G -machine q35,accel=tcg -cpu max -smp 2 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=/tmp/v_fry1312_long.fd \
+    -cdrom out/tatertos64v3.iso \
+    -drive file=out/tater_nvme.img,if=none,id=nvm,format=raw \
+    -device nvme,serial=deadbeef,drive=nvm \
+    -serial file:/tmp/s_fry1312_long.log -display none -no-reboot
+
+Result:
+  timeout exit 124 after 900 seconds
+  serial file: /tmp/s_fry1312_long.log
+  serial lines: 207
+
+---------------------------------------------------------------------
+SERIAL EVIDENCE
+---------------------------------------------------------------------
+Both boots reached the real Claude launch:
+
+  LINUXTEST: launching REAL claude --version (from /nvme)
+  PROC: linux launch ok path=/nvme/RCLAUDE.LXE pid=12 entry=60000001f300 rsp=7ffffffffe00 brk=eaa7000
+  LINUXTEST: claude launch rc=12
+
+Selftest now passes with the devfs checks included:
+
+  selftest: 85 passed, 0 failed
+
+This is up from the fry1310 clean boot's 77 passed / 0 failed. The new
+checks are the /dev/urandom, /dev/zero, and /dev/null coverage from
+fry1311.
+
+Important negative evidence:
+
+  - No 0xBBADBEEF fault appears in either serial log.
+  - No old rip=0x60a9b84 appears in either serial log.
+  - No /dev/urandom failure appears in either serial log.
+  - No "unimplemented nr=" appears in either serial log.
+
+Other probe results still pass:
+
+  - syscall smoketest: 15 passed, 0 failed
+  - chrome_probe: 12 passed, 0 failed
+  - Tater Bridge probes for VFS, file-backed mmap, dynamic PT_INTERP,
+    futex, async I/O, thread/gap, libc all reached their existing pass
+    markers.
+
+The null-rip user faults for smoketest/chrome_probe remain the known test
+exit convention and are not the Claude blocker.
+
+---------------------------------------------------------------------
+CONCLUSION
+---------------------------------------------------------------------
+The old /dev/urandom-triggered JSC/libuv crash is fixed far enough that
+it no longer appears during two boots. Claude launches successfully as
+pid 12 and the system continues through the existing probe suite.
+
+However, Claude still does not print --version and does not fault before
+timeout. The 900-second run produced the same 207-line serial shape as
+the 420-second run. That means the next symptom is a silent wait/hang or
+long-running path after Claude launch, not the previous immediate
+0xBBADBEEF crash.
+
+The older fry logs already warned that the next likely rungs after
+startup are:
+
+  - real signal delivery / signal setup
+  - JIT executable mappings / RWX mmap and mprotect behavior
+  - longer libc/runtime assumptions
+  - sockets/TLS later for full functionality, but not required for
+    claude --version
+
+---------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------
+Do not run more blind long boots. Add narrow, temporary Tater Bridge
+tracepoints for pid 12 only, then rebuild and boot once:
+
+  - trace syscall number, args, and return for pid 12
+  - focus first on mmap/mprotect/munmap, sigaction/rt_sigaction,
+    sigprocmask/rt_sigprocmask, clone/clone3, futex, epoll/timerfd,
+    read/openat/stat paths, and any blocking wait
+  - include a serial marker when pid 12 enters and returns from blocking
+    primitives so a silent hang has a last-known syscall
+
+Keep these tracepoints temporary and log their addition/removal in the
+next fry file.
+=====================================================================

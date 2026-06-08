@@ -1,0 +1,53 @@
+fry1382 — Tater Bridge / Claude Code: the #GP is memory TYPE CONFUSION / aliasing
+Timestamp: 2026-06-06 14:19:52 CDT
+Author: Claude (Opus 4.8), continuing fry1380/1381
+
+METHOD
+  Re-armed DR write-watchpoints on the EXACT #GP entry (r12=0x6FBBFF3C2C6C,
+  stable across boots): 8-byte watches at 0x6FBBFF3C2C68 and 0x6FBBFF3C2C70
+  (the entry + its high-16 at +4). Read the LAST TBWATCH write before the #GP
+  line. /tmp/tb_lw_s.log (#GP at line 1433).
+
+CULPRIT WRITE (last before the #GP)
+  L356: rip=0x5835D16  watch=0x6FBBFF3C2C70  val=0x00006FBFF40EC200
+  i.e. an 8-byte pointer 0x6FBFF40EC200 was stored STARTING at 0x6FBBFF3C2C70.
+  The reader treats 0x6FBBFF3C2C6C as a 6-byte-packed entry whose high-16 lives
+  at +4 = 0x6FBBFF3C2C70. So the low 2 bytes of that 8-byte pointer (0xC200)
+  become the reader's high-16 -> reconstructed 48-bit value 0xC20000000000 ->
+  non-canonical -> #GP at 0x4C17293 (`mov 0x4(%rdi),%eax`). The garbage varies
+  per boot because it is the low bytes of a real (heap-address-dependent)
+  pointer (0xC200, 0x8220, ...).
+
+DIAGNOSIS: TYPE CONFUSION / MEMORY ALIASING
+  - WRITER (rip 0x5835xxx, fry1380 disasm): 32-byte-stride records, writes
+    `movups %xmm`/`movq` of pointers — a different structure layout.
+  - READER (rip 0x4C0D1C0 -> 0x4C17270): 6-byte-stride packed entries.
+  - SAME memory (0x6FBBFF3C2C6x) written as 32-byte records and read as 6-byte
+    entries. The written value 0x6FBFF40EC200 is a VALID pointer (into the 0x6FBF
+    cage) — so the writer is correct for ITS object; the reader is reading the
+    wrong object. This is use-after-free or two live JSC objects overlapping the
+    same address — impossible on stock Linux, so an env bug:
+      (a) our malloc/mmap/brk handed back a region that is still live (overlap),
+      (b) or an earlier corrupted pointer (pre-fix vector clobber?) left JSC
+          with a dangling reference that now aliases reused memory.
+
+NOT yet the cause (ruled out this session): kernel vector clobber in interrupts
+  (fixed fry1379), TBSKIP zeroing (fry1378), DONTNEED (fry1378), signal-FPU
+  (fry1381 — kept, correct, but not this).
+
+NEXT
+  1. Check for MMAP/heap ALIASING: scan TBTRACE mmap detail returns for any two
+     allocations whose [base,base+len) overlap, esp. near 0x6FBBFF3C2C00 and the
+     0x6FBF cage. If mmap/brk ever returns an already-mapped range -> that's the
+     bug (fix placement/cursor in lx mmap).
+  2. If no overlap: the reader's table pointer (r13=0x6FBBFF3A8020, the table
+     base) is itself stale/wrong -> trace where r13 is loaded (disasm up the
+     chain 0x4C0D... callers) to find the bad table pointer's origin; it may be
+     a JSValue/struct field corrupted earlier.
+  3. Consider running with diagnostics stripped to confirm the #GP isn't an
+     artifact of the watchpoint/#DB instrumentation perturbing timing.
+
+STATUS: hang FIXED (fry1379); Bun boots + runs Claude Code init/builtins; still
+  crashes on this aliasing/type-confusion #GP before producing assistant output.
+  Net "binary runs" ~9/10; "prints a reply end-to-end" ~7.5-8/10 (this #GP, then
+  HTTPS egress + auth still unproven). KVM for all runs.

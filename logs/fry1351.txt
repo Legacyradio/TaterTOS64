@@ -1,0 +1,33 @@
+fry1351 - launcher arg changes + session handoff
+timestamp: 2026-06-04 14:35:00 CDT
+
+What changed:
+- src/kernel/main.c: Claude launch args changed from "claude --help" to
+  "claude -p say hello from TaterTOS in 10 words" for single-prompt mode.
+  This attempts to get an actual AI response rather than the selftest.
+- Wrote HANDOFF.md at repo root with build/boot commands, uncommitted
+  file list, fry log index, current state, and next steps.
+
+Why:
+- The --help/selftest mode (fry1350) proved Claude Code runs and passes
+  all 15 tests. Next rung: actual AI inference via -p prompt mode.
+- Handoff needed because user is restarting their machine mid-session.
+  Document captures everything needed to resume without context loss.
+
+Build verification:
+- ISO rebuilt successfully (exit 0, same 2 pre-existing warnings).
+- Boot attempted but QEMU hit NVMe image lock from killed prior session.
+  Lock cleaned (rm out/tater_nvme.img.lock). Ready for fresh boot.
+
+Next boot:
+  cp /usr/share/edk2/x64/OVMF_VARS.4m.fd /tmp/v.fd
+  qemu-system-x86_64 -m 6G -machine q35,accel=tcg -cpu max,la57=off -smp 2 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=/tmp/v.fd \
+    -cdrom out/tatertos64v3.iso \
+    -drive file=out/tater_nvme.img,if=none,id=nvm,format=raw \
+    -device nvme,serial=deadbeef,drive=nvm \
+    -serial file:/tmp/s.log -display none -no-reboot
+  Expect: Claude launches, JSC init, then attempts -p prompt.
+  If networking works: Claude calls API, prints response to stdout.
+  If no networking: Claude prints error about API unreachable.

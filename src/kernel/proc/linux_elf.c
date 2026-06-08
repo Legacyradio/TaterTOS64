@@ -37,6 +37,7 @@ uint32_t vfs_size(struct vfs_file *f);
 #define LX_STREAM_THRESHOLD (16u * 1024u * 1024u)
 int entropy_getbytes(void *buf, uint32_t len);
 void kprint(const char *fmt, ...);
+void kprint_serial_only(const char *fmt, ...);
 
 /* ---- ELF on-disk structures (self-contained, like elf.c) ---- */
 struct lx_ehdr {
@@ -94,10 +95,12 @@ struct lx_phdr {
 #define LXAT_RANDOM   25
 #define LXAT_EXECFN   31
 #define LXAT_HWCAP    16
+#define LXAT_HWCAP2   26
+#define LXAT_SYSINFO_EHDR 33
 
 /* Number of auxv pairs we emit, INCLUDING the AT_NULL terminator. Must
  * exactly match the AUX() emissions in build_initial_stack(). */
-#define LX_AUX_PAIRS  18
+#define LX_AUX_PAIRS  20
 
 #define LX_PAGE       4096ULL
 #define LX_STACK_PAGES 2048ULL          /* 8 MiB stack, Linux-conventional */
@@ -165,9 +168,11 @@ static int lx_read_image(const char *path, struct lx_file_image *img) {
     if (!path || !img) return -EINVAL;
     lx_memzero((uint8_t *)img, sizeof(*img));
 
+    kprint_serial_only("LINUXELF: open %s\n", path);
     struct vfs_file *f = vfs_open(path);
     if (!f) return -ENOENT;
     uint32_t size = vfs_size(f);
+    kprint_serial_only("LINUXELF: size %s %u\n", path, size);
     if (size < sizeof(struct lx_ehdr)) {
         vfs_close(f);
         return -ENOEXEC;
@@ -190,6 +195,8 @@ static int lx_read_image(const char *path, struct lx_file_image *img) {
         img->file = 0;
         img->streamed = 0;
         img->eh = (const struct lx_ehdr *)buf;
+        kprint_serial_only("LINUXELF: buffered %s pages=%lu\n",
+                           path, (unsigned long)pages);
         return 0;
     }
 
@@ -219,6 +226,9 @@ static int lx_read_image(const char *path, struct lx_file_image *img) {
     img->file = f;          /* kept open for streamed segment reads */
     img->streamed = 1;
     img->eh = (const struct lx_ehdr *)meta;
+    kprint_serial_only("LINUXELF: streamed %s meta=%lu pages=%lu phnum=%u\n",
+                       path, (unsigned long)meta_len,
+                       (unsigned long)pages, (unsigned)hdr.e_phnum);
     return 0;
 }
 
@@ -311,6 +321,10 @@ static int lx_map_segment_at(uint64_t cr3, const struct lx_phdr *ph,
 
     uint64_t start = vaddr & ~0xFFFULL;
     uint64_t end = (vaddr + memsz + 0xFFFULL) & ~0xFFFULL;
+    kprint_serial_only("LINUXELF: map seg va=%lx mem=%lx file=%lx off=%lx stream=%d\n",
+                       (unsigned long)vaddr, (unsigned long)memsz,
+                       (unsigned long)filesz, (unsigned long)off,
+                       stream ? 1 : 0);
 
     uint64_t flags = VMM_FLAG_PRESENT | VMM_FLAG_USER;
     if (ph->p_flags & LX_PF_W) flags |= VMM_FLAG_WRITE;
@@ -345,6 +359,8 @@ static int lx_map_segment_at(uint64_t cr3, const struct lx_phdr *ph,
                 v2 += (uint64_t)rd;
                 rem -= (uint64_t)rd;
             }
+            kprint_serial_only("LINUXELF: streamed seg done va=%lx file=%lx\n",
+                               (unsigned long)vaddr, (unsigned long)filesz);
         } else {
             if (lx_poke(cr3, vaddr, payload + off, filesz) != 0) return -EFAULT;
         }
@@ -453,8 +469,10 @@ static int build_initial_stack(uint64_t cr3, const char *path,
     AUX(LXAT_SECURE,   0);
     AUX(LXAT_RANDOM,   a_random);
     AUX(LXAT_CLKTCK,   100);
-    AUX(LXAT_HWCAP,    0);
+    AUX(LXAT_HWCAP,    0x178bfbff); /* x86-64 baseline: FPU, VME, DE, PSE, TSC, MSR, PAE, MCE, CX8, APIC, SEP, MTRR, PGE, MCA, CMOV, PAT, PSE36, CLFLUSH, MMX, FXSR, SSE, SSE2, HTT, SSE3, PCLMUL, SSSE3, CX16, SSE4.1, SSE4.2, POPCNT, AES */
+    AUX(LXAT_HWCAP2,   0x00000002); /* x86-64: HWCAP2_PAUSE (rep nop hint) */
     AUX(LXAT_PLATFORM, a_platform);
+    AUX(LXAT_SYSINFO_EHDR, 0);    /* no VDSO */
     AUX(LXAT_EXECFN,   a_execfn);
     AUX(LXAT_NULL,     0);
 #undef AUX
@@ -470,6 +488,7 @@ int elf_load_linux(const char *path,
                    uint64_t *rsp_out, uint64_t *brk_out) {
     if (!path || !cr3_out || !entry_out || !rsp_out || !brk_out)
         return -EINVAL;
+    kprint_serial_only("LINUXELF: load start %s\n", path);
 
     struct lx_file_image main_img;
     struct lx_file_image interp_img;
@@ -478,11 +497,15 @@ int elf_load_linux(const char *path,
 
     int rc = lx_read_image(path, &main_img);
     if (rc != 0) return rc;
+    kprint_serial_only("LINUXELF: read main rc=0 %s\n", path);
     rc = lx_validate_image(&main_img, LX_ET_EXEC, "main");
     if (rc != 0) {
         lx_free_image(&main_img);
         return rc;
     }
+    kprint_serial_only("LINUXELF: validate main entry=%lx phnum=%u\n",
+                       (unsigned long)main_img.eh->e_entry,
+                       (unsigned)main_img.eh->e_phnum);
 
     char interp_path[LX_INTERP_PATH_CAP];
     int has_interp = lx_copy_interp_path(&main_img, interp_path);
@@ -491,6 +514,7 @@ int elf_load_linux(const char *path,
         return has_interp;
     }
     if (has_interp) {
+        kprint_serial_only("LINUXELF: interp %s\n", interp_path);
         rc = lx_read_image(interp_path, &interp_img);
         if (rc != 0) {
             kprint("LINUXELF: PT_INTERP %s unavailable rc=%d\n", interp_path, rc);
@@ -503,6 +527,7 @@ int elf_load_linux(const char *path,
             lx_free_image(&main_img);
             return rc;
         }
+        kprint_serial_only("LINUXELF: validate interp ok\n");
     }
 
     uint64_t cr3 = vmm_create_address_space();
@@ -520,6 +545,7 @@ int elf_load_linux(const char *path,
     const struct lx_phdr *ph = main_img.ph;
     for (uint16_t i = 0; i < eh->e_phnum; i++) {
         if (ph[i].p_type != LX_PT_LOAD) continue;
+        kprint_serial_only("LINUXELF: main PT_LOAD %u\n", (unsigned)i);
         rc = lx_map_segment(cr3, &ph[i], main_img.buf, main_img.size, main_img.file);
         if (rc != 0) {
             vmm_destroy_address_space(cr3);
@@ -551,6 +577,7 @@ int elf_load_linux(const char *path,
         const struct lx_phdr *iph = interp_img.ph;
         for (uint16_t i = 0; i < ieh->e_phnum; i++) {
             if (iph[i].p_type != LX_PT_LOAD) continue;
+            kprint_serial_only("LINUXELF: interp PT_LOAD %u\n", (unsigned)i);
             rc = lx_map_segment_at(cr3, &iph[i], interp_img.buf,
                                    interp_img.size, LX_INTERP_BASE,
                                    interp_img.file);
@@ -575,6 +602,7 @@ int elf_load_linux(const char *path,
     }
 
     /* Allocate + zero the stack. */
+    kprint_serial_only("LINUXELF: stack map start\n");
     uint64_t stack_base = LX_STACK_TOP - LX_STACK_PAGES * LX_PAGE;
     for (uint64_t i = 0; i < LX_STACK_PAGES; i++) {
         uint64_t phys = pmm_alloc_page();
@@ -590,6 +618,7 @@ int elf_load_linux(const char *path,
     }
 
     uint64_t rsp = 0;
+    kprint_serial_only("LINUXELF: stack build start\n");
     rc = build_initial_stack(cr3, path, argv, argc, envp, envc,
                              eh, phdr_va, at_base, at_entry, &rsp);
     lx_free_image(&interp_img);
@@ -603,5 +632,8 @@ int elf_load_linux(const char *path,
     *entry_out = entry;
     *rsp_out = rsp;
     *brk_out = (brk_end + 0xFFFULL) & ~0xFFFULL;
+    kprint_serial_only("LINUXELF: load done entry=%lx rsp=%lx brk=%lx\n",
+                       (unsigned long)entry, (unsigned long)rsp,
+                       (unsigned long)*brk_out);
     return 0;
 }

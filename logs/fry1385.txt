@@ -1,0 +1,44 @@
+fry1385 — Tater Bridge / Claude Code: #GP is SAME-THREAD use-after-free/aliasing
+(GC-suspend race ruled out)
+Timestamp: 2026-06-06 16:52:05 CDT
+Author: Claude (Opus 4.8), continuing fry1384
+
+DECISIVE FINDING
+  From the exact-entry watchpoint boot (/tmp/tb_lw_s.log): the 32-byte-stride
+  WRITES to the entry (rip 0x5835D16/0x583B50F/...) are all pid=3, and the #GP
+  READ (rip 0x4C17293) is also pid=3. SAME THREAD (the Bun/JSC main thread).
+  => This is NOT a cross-thread / GC-stop-the-world suspend race (hypothesis b2
+     is OUT). rt_sigsuspend (syscall.c:1419) parks correctly in a loop anyway.
+
+WHAT IT IS
+  The main thread writes a region as a 32-byte-record structure (rip 0x5835xxx,
+  movups xmm of valid pointers) and LATER reads the SAME bytes as a 6-byte-packed
+  atom/compact table (rip 0x4C0D1xx -> 0x4C17270). One thread, one address, two
+  layouts => use-after-free / double-allocation in JSC's USERSPACE allocator
+  (bmalloc/IsoHeap): the region was freed/repurposed but a stale pointer
+  (reader base r13=0x6FBBFF3A8020) still reads the old layout. The "garbage"
+  high-16 (0xC200/0x8220) is just the low bytes of a valid pointer the 32-byte
+  writer stored there.
+  NOTE: pre-dates the Gemini LNX_mmap refactor (my 2.1.162 boots in fry1380/1382
+  hit it before the 15:48 mmap edit), so the mmap refactor neither caused nor
+  fixed it (consistent with fry1383).
+
+WHY in our env and not stock Linux (candidates)
+  - The atom/compact table GREW (mask=0x3FFFF => 256K entries, ~1.5MB) via a
+    rehash that allocates a new array and frees the old; if our allocator hands
+    the freed old array back to a different object while a stale ref remains,
+    UAF. Trigger could be a wrong size/return from mmap/mremap/brk used by
+    bmalloc, or earlier corruption leaving a dangling ref.
+  - Need to catch the free+reuse of the table region.
+
+NEXT INSTRUMENT (driving next)
+  Re-enable targeted tracing and watch the table region's lifecycle for pid=3:
+  log any munmap / MADV_DONTNEED / MADV_FREE / mremap / brk that covers
+  0x6FBBFF3A8020..(+0x180000) before the #GP, plus the mmap/alloc that first
+  produced it, to see the free->reuse transition. If found: fix the kernel
+  vm op that lets bmalloc reuse a still-referenced region (or returns a moved
+  address bmalloc mishandles). Also disasm where r13 is loaded to see if it is
+  a cached/stale field vs freshly read.
+
+STATUS unchanged: hang fixed (fry1379), Bun runs Claude Code; this UAF/aliasing
+  #GP then HTTPS egress+auth remain. KVM, CLAUDE_BIN=2.1.162.

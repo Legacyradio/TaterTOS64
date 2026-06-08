@@ -1,0 +1,48 @@
+2026-06-03 21:04:11 CDT
+
+Fry 1317 - clone3 TID flag fix validated, next abort surfaced
+
+What changed:
+- Added Tater Bridge clone/clone3 flag constants in src/kernel/proc/linux_compat.h.
+- Patched src/kernel/proc/syscall.c clone3 handling so:
+  - parent_tid is written only with CLONE_PARENT_SETTID,
+  - child_tid is written only with CLONE_CHILD_SETTID,
+  - linux_clear_child_tid is installed only with CLONE_CHILD_CLEARTID,
+  - unsupported CLONE_PIDFD is rejected instead of treating pidfd as a TID pointer.
+
+Why:
+- Fry 1316 proved Claude's clone3 flags were 0x3d0f00:
+  CLONE_VM, CLONE_FS, CLONE_FILES, CLONE_SIGHAND, CLONE_THREAD,
+  CLONE_SYSVSEM, CLONE_SETTLS, CLONE_PARENT_SETTID, CLONE_CHILD_CLEARTID.
+- CLONE_CHILD_SETTID was not set, but the old code still wrote child_tid=pid.
+- That bad write created the value the parent then waited on.
+
+Verification:
+- Targeted build passed:
+  make src/kernel/proc/syscall.o kernel
+- Clean staged build passed:
+  CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.162 STAGE_CLAUDE=1 MTOOLSRC=/dev/null ./build_iso.sh
+- /RCLAUDE.LXE staged on NVMe:
+  inode 25, size 244000464, 59571 blocks, 1 extent.
+- Boot log:
+  /tmp/s_fry1317_clonefix.log
+- Selftest still passed:
+  85 passed, 0 failed.
+- The old parked parent/child futex pair is gone.
+- New trace shows the child thread wakes and runs through repeated futex handshakes, libuv-style epoll/timerfd/eventfd setup, and later runtime work.
+
+New blocker:
+- Claude now aborts instead of hanging:
+  USER FAULT: pid=12 tid=12 vec=13 err=0x0 rip=0x6fffffe016e6 cr2=0x7ffffffff468
+- Address decode:
+  libc mapped at 0x6fffffddc000, so RIP offset is 0x256e6.
+  /usr/lib/libc.so.6 at 0x256e6 is glibc abort() executing hlt after raise(SIGABRT).
+- Immediately before the fault:
+  tgkill(pid=12, tid=12, sig=6) returned -ENOSYS twice.
+- Remaining trace-proven Tater Bridge gaps on the path include:
+  gettimeofday(96), sysinfo(99), prctl(157), sched_getaffinity(204), tgkill(234), close_range(436).
+
+Next:
+- Patch the smallest critical syscall surface first, starting with prctl/gettimeofday/sysinfo/sched_getaffinity and tgkill behavior.
+- Rebuild and boot again.
+- Keep trace enabled until claude either prints --version or exposes the next real blocker.

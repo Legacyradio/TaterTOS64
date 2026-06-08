@@ -85,6 +85,160 @@ static inline uint64_t read_cr3_irq(void) {
     uint64_t v; __asm__ volatile("mov %%cr3, %0" : "=r"(v)); return v;
 }
 
+static void exc_early_serial_dump_regs(const uint64_t *frame) {
+    early_serial_puts("!REG rax=");
+    early_serial_puthex64(frame[0]);
+    early_serial_puts(" rbx=");
+    early_serial_puthex64(frame[1]);
+    early_serial_puts(" rcx=");
+    early_serial_puthex64(frame[2]);
+    early_serial_puts(" rdx=");
+    early_serial_puthex64(frame[3]);
+    early_serial_puts(" rbp=");
+    early_serial_puthex64(frame[4]);
+    early_serial_puts("\n");
+
+    early_serial_puts("!REG rsi=");
+    early_serial_puthex64(frame[5]);
+    early_serial_puts(" rdi=");
+    early_serial_puthex64(frame[6]);
+    early_serial_puts(" r8=");
+    early_serial_puthex64(frame[7]);
+    early_serial_puts(" r9=");
+    early_serial_puthex64(frame[8]);
+    early_serial_puts(" r10=");
+    early_serial_puthex64(frame[9]);
+    early_serial_puts("\n");
+
+    early_serial_puts("!REG r11=");
+    early_serial_puthex64(frame[10]);
+    early_serial_puts(" r12=");
+    early_serial_puthex64(frame[11]);
+    early_serial_puts(" r13=");
+    early_serial_puthex64(frame[12]);
+    early_serial_puts(" r14=");
+    early_serial_puthex64(frame[13]);
+    early_serial_puts(" r15=");
+    early_serial_puthex64(frame[14]);
+    early_serial_puts("\n");
+}
+
+static int read_user_u64_for_exc(const struct fry_process *p, uint64_t addr, uint64_t *out) {
+    if (!p || !p->cr3 || !out) return -1;
+    if (addr > USER_VA_TOP - sizeof(uint64_t)) return -1;
+    uint64_t pa = vmm_virt_to_phys_user(p->cr3, addr);
+    if (!pa) return -1;
+    uint64_t phys = pa & 0x000FFFFFFFFFF000ULL;
+    uint64_t off = addr & 0xFFFULL;
+    if (off > 0x1000ULL - sizeof(uint64_t)) return -1;
+    const uint8_t *kv = (const uint8_t *)(uintptr_t)vmm_phys_to_virt(phys);
+    *out = *(const uint64_t *)(const void *)(kv + off);
+    return 0;
+}
+
+static int write_user_u64_for_exc(const struct fry_process *p, uint64_t addr, uint64_t val) {
+    if (!p || !p->cr3) return -1;
+    if (addr > USER_VA_TOP - sizeof(uint64_t)) return -1;
+    uint64_t pa = vmm_virt_to_phys_user(p->cr3, addr);
+    if (!pa) return -1;
+    uint64_t phys = pa & 0x000FFFFFFFFFF000ULL;
+    uint64_t off = addr & 0xFFFULL;
+    if (off > 0x1000ULL - sizeof(uint64_t)) return -1;
+    uint8_t *kv = (uint8_t *)(uintptr_t)vmm_phys_to_virt(phys);
+    *(uint64_t *)(void *)(kv + off) = val;
+    return 0;
+}
+
+static uint64_t tb_watch_addr_from_dr6(uint64_t dr6) {
+    if (dr6 & 0x1ULL) return g_tb_jsc_slot_watch[0];
+    if (dr6 & 0x2ULL) return g_tb_jsc_slot_watch[1];
+    if (dr6 & 0x4ULL) return g_tb_jsc_slot_watch[2];
+    if (dr6 & 0x8ULL) return g_tb_jsc_slot_watch[3];
+    return 0;
+}
+
+static int tb_handle_jsc_slot_watchpoint(uint64_t vector, const uint64_t *frame) {
+    if (vector != 1 || !frame) return 0;
+    struct fry_process *cur = proc_current();
+    if (!cur || cur->is_kernel ||
+        (cur->pid != TB_CLAUDE_WATCH_TGID && cur->tgid != TB_CLAUDE_WATCH_TGID))
+        return 0;
+
+    uint64_t dr6 = 0;
+    __asm__ volatile("mov %%dr6, %0" : "=r"(dr6));
+    uint64_t watch = tb_watch_addr_from_dr6(dr6);
+    if (!watch) return 0;
+
+    uint64_t val = 0;
+    int have_val = read_user_u64_for_exc(cur, watch, &val) == 0;
+    early_serial_puts("TBWATCH jsc-slot pid=");
+    early_serial_puthex64(cur->pid);
+    early_serial_puts(" tgid=");
+    early_serial_puthex64(cur->tgid);
+    early_serial_puts(" dr6=");
+    early_serial_puthex64(dr6);
+    early_serial_puts(" rip=");
+    early_serial_puthex64(frame[17]);
+    early_serial_puts(" rsp=");
+    early_serial_puthex64(frame[20]);
+    early_serial_puts(" watch=");
+    early_serial_puthex64(watch);
+    early_serial_puts(" val=");
+    if (have_val) early_serial_puthex64(val); else early_serial_puts("NA");
+    early_serial_puts(" rax=");
+    early_serial_puthex64(frame[0]);
+    early_serial_puts(" rbx=");
+    early_serial_puthex64(frame[1]);
+    early_serial_puts(" rcx=");
+    early_serial_puthex64(frame[2]);
+    early_serial_puts(" rdx=");
+    early_serial_puthex64(frame[3]);
+    early_serial_puts(" rsi=");
+    early_serial_puthex64(frame[5]);
+    early_serial_puts(" rdi=");
+    early_serial_puthex64(frame[6]);
+    early_serial_puts(" r14=");
+    early_serial_puthex64(frame[13]);
+    early_serial_puts("\n");
+
+    dr6 = 0;
+    __asm__ volatile("mov %0, %%dr6" : : "r"(dr6) : "memory");
+    return 1;
+}
+
+static void exc_early_serial_dump_trap_stack(const struct fry_process *cur,
+                                             const uint64_t *frame) {
+    if (!cur || (frame[18] & 3ULL) != 3ULL) return;
+    uint32_t tgid = process_group_id(cur);
+    if (tgid != 3u) return;
+
+    uint64_t rsp = frame[20];
+    uint64_t rbp = frame[4];
+    uint64_t stack0 = 0, stack1 = 0, saved_rbp = 0, caller = 0;
+    int have_stack0 = read_user_u64_for_exc(cur, rsp, &stack0) == 0;
+    int have_stack1 = read_user_u64_for_exc(cur, rsp + 8, &stack1) == 0;
+    int have_saved_rbp = read_user_u64_for_exc(cur, rbp, &saved_rbp) == 0;
+    int have_caller = read_user_u64_for_exc(cur, rbp + 8, &caller) == 0;
+
+    early_serial_puts("!TRAPSTACK pid=");
+    early_serial_puthex64(cur->pid);
+    early_serial_puts(" tgid=");
+    early_serial_puthex64(tgid);
+    early_serial_puts(" rsp=");
+    early_serial_puthex64(rsp);
+    early_serial_puts(" rbp=");
+    early_serial_puthex64(rbp);
+    early_serial_puts(" stack0=");
+    if (have_stack0) early_serial_puthex64(stack0); else early_serial_puts("NA");
+    early_serial_puts(" stack1=");
+    if (have_stack1) early_serial_puthex64(stack1); else early_serial_puts("NA");
+    early_serial_puts(" saved_rbp=");
+    if (have_saved_rbp) early_serial_puthex64(saved_rbp); else early_serial_puts("NA");
+    early_serial_puts(" caller=");
+    if (have_caller) early_serial_puthex64(caller); else early_serial_puts("NA");
+    early_serial_puts("\n");
+}
+
 static const struct fry_vm_region *pf_find_vm_region(const struct fry_process *p,
                                                      uint64_t addr) {
     if (!p || !p->shared) return 0;
@@ -175,9 +329,22 @@ static void dump_pte_chain(uint64_t cr3_phys, uint64_t va) {
     kprint("  pt[%llu]=0x%llx\n", (unsigned long long)pt_i, (unsigned long long)pte);
 }
 
-/* Kill a user process that triggered a CPU exception.
+/* Map user CPU exceptions to the Unix signal delivered/killed for that fault.
  * Handles ALL exception vectors (0-31), not just #PF (vec 14). */
-__attribute__((noreturn))
+static uint32_t exc_unix_signal(uint64_t vector) {
+    switch (vector) {
+    case 0:  return 8;   /* #DE  → SIGFPE  */
+    case 1:  return 5;   /* #DB  → SIGTRAP */
+    case 3:  return 5;   /* #BP  → SIGTRAP */
+    case 4:  return 11;  /* #OF  → SIGSEGV */
+    case 5:  return 11;  /* #BR  → SIGSEGV */
+    case 6:  return 4;   /* #UD  → SIGILL  */
+    case 7:  return 8;   /* #NM  → SIGFPE  */
+    case 11: return 7;   /* #NP  → SIGBUS  */
+    default: return 11;  /* #GP #PF #SS #TS etc → SIGSEGV */
+    }
+}
+
 static void exc_kill_current_user(uint64_t vector, uint64_t error, void *ctx) {
     struct fry_process *cur = proc_current();
     if (!cur || cur->is_kernel) {
@@ -200,28 +367,41 @@ static void exc_kill_current_user(uint64_t vector, uint64_t error, void *ctx) {
 
     if (vector == 14) {
         pf_log_region_detail(cur, cr2, error);
-        /* Dump actual PTE chain for the faulting address */
-        dump_pte_chain(cur->cr3, cr2);
+        if (cur->cr3) {
+            dump_pte_chain(cur->cr3, cr2);
+        } else {
+            kprint("USER VM: skipped PTE dump for pid=%u tid=%u because cr3=0\n",
+                   (unsigned)tgid, (unsigned)tid);
+        }
     }
 
+    uint32_t unix_sig = exc_unix_signal(vector);
     uint32_t cpu = exc_cpu_index();
     uint64_t kcr3 = irq_kernel_cr3 ? irq_kernel_cr3 : read_cr3_irq();
     uint64_t exit_sp = ((uint64_t)(uintptr_t)&g_exc_exit_stacks[cpu][EXC_EXIT_STACK_SIZE]) & ~0xFULL;
     __asm__ volatile(
         "mov %0, %%cr3\n"
         "mov %1, %%rsp\n"
-        "mov %2, %%edi\n"
-        "mov %3, %%esi\n"
+        "movl %k2, %%edi\n"
+        "movl %k3, %%esi\n"
         "call *%4\n"
         :
         : "r"(kcr3),
           "r"(exit_sp),
           "r"(tgid),
-          "r"(139u),
+          "r"(128u + unix_sig),
           "r"(pf_kill_finish)
         : "rdi", "rsi", "memory");
     __builtin_unreachable();
 }
+
+/* fry1377: userspace-RIP sampler. The Claude main thread (pid=3) wedges in a
+ * pure-userspace spin (no syscalls, no faults) holding the JSC heap lock. Sample
+ * its RIP from the LAPIC timer IRQ (vector 0x40) to locate the spin site. Rate-
+ * limited so IRQ-context serial output stays bounded. */
+static uint64_t g_tb_rip_samples = 0;
+static uint32_t g_tb_rip_logs = 0;
+static uint32_t g_tb_rip_detail_logs = 0;
 
 void irq_dispatch(uint64_t vector, uint64_t error, void *ctx) {
     // Early serial telemetry: always emitted for CPU exceptions (< 32).
@@ -236,6 +416,123 @@ void irq_dispatch(uint64_t vector, uint64_t error, void *ctx) {
         uint64_t rflags = frame[19];
         uint64_t cr2    = read_cr2_irq();
         uint64_t cr3    = read_cr3_irq();
+        /* Demand-page a not-present USER #PF inside a reserved anon mmap
+         * region (e.g. JSC's MAP_NORESERVE gigacage). Commit one zero page
+         * and iretq to retry. Done before any logging/kill so it is fast and
+         * silent — a running runtime faults in thousands of pages this way. */
+        if (vector == 14 && (cs & 3ULL) == 3ULL &&
+            lx_try_demand_page(proc_current(), cr2, error)) {
+            return;
+        }
+        /* fry1389: ONE-TIME dump of the JSC JIT-prologue CodeBlock chain on the
+         * first DEEP main-stack fault (below USER_VA_TOP-8MB). The faulting code
+         * (RIP 0x3F4CFB6) computes frame size = CodeBlock->m_numCalleeLocals
+         * ([CodeBlock+0x14]) * 8, sets rsp = rbp - size, then zeroes locals. A
+         * garbage-huge size walks the stack off the cap. This tells us whether
+         * the CodeBlock POINTER ([rbp+0x10]) is garbage (stack/frame corruption)
+         * or its CONTENTS are garbage (heap corruption / UAF). */
+        if (vector == 14 && (cs & 3ULL) == 3ULL &&
+            cr2 < (0x800000000000ULL - (8ULL << 20)) &&
+            cr2 >= (0x800000000000ULL - (512ULL << 20))) {
+            static int g_bf_dumped = 0;
+            if (!g_bf_dumped) {
+                g_bf_dumped = 1;
+                struct fry_process *bc = proc_current();
+                uint64_t rbp = frame[4];
+                uint64_t rsi = frame[5];        /* CodeBlock the JIT actually used */
+                uint64_t cb = 0, retaddr = 0, callerfp = 0;
+                uint64_t cnt = 0, vm = 0, lim = 0;
+                uint64_t rsicnt = 0, cb0 = 0, cb8 = 0, cb10 = 0;
+                int hb  = read_user_u64_for_exc(bc, rbp + 0x10, &cb) == 0;
+                (void)read_user_u64_for_exc(bc, rbp + 0x08, &retaddr);
+                (void)read_user_u64_for_exc(bc, rbp + 0x00, &callerfp);
+                int hc  = hb && read_user_u64_for_exc(bc, cb + 0x14, &cnt) == 0;
+                int hvm = hb && read_user_u64_for_exc(bc, cb + 0x48, &vm) == 0;
+                int hl  = hvm && read_user_u64_for_exc(bc, vm + 0x60, &lim) == 0;
+                int hrc = read_user_u64_for_exc(bc, rsi + 0x14, &rsicnt) == 0;
+                (void)read_user_u64_for_exc(bc, cb + 0x00, &cb0);
+                (void)read_user_u64_for_exc(bc, cb + 0x08, &cb8);
+                (void)read_user_u64_for_exc(bc, cb + 0x10, &cb10);
+                early_serial_puts("TBBFDUMP rip="); early_serial_puthex64(rip);
+                early_serial_puts(" rbp="); early_serial_puthex64(rbp);
+                early_serial_puts(" rsi="); early_serial_puthex64(rsi);
+                early_serial_puts(" cb=");
+                if (hb) early_serial_puthex64(cb); else early_serial_puts("FAULT");
+                early_serial_puts(" rsi.numLocals=");
+                if (hrc) early_serial_puthex64(rsicnt & 0xFFFFFFFFULL); else early_serial_puts("FAULT");
+                early_serial_puts(" cb.numLocals=");
+                if (hc) early_serial_puthex64(cnt & 0xFFFFFFFFULL); else early_serial_puts("FAULT");
+                early_serial_puts(" cb+0=");  early_serial_puthex64(cb0);
+                early_serial_puts(" cb+8=");  early_serial_puthex64(cb8);
+                early_serial_puts(" cb+10="); early_serial_puthex64(cb10);
+                early_serial_puts(" vm=");
+                if (hvm) early_serial_puthex64(vm); else early_serial_puts("FAULT");
+                early_serial_puts(" softLimit=");
+                if (hl) early_serial_puthex64(lim); else early_serial_puts("FAULT");
+                early_serial_puts(" ret="); early_serial_puthex64(retaddr);
+                early_serial_puts(" callerfp="); early_serial_puthex64(callerfp);
+                early_serial_puts("\n");
+            }
+        }
+        /* fry1387: demand stack growth — fault just below the stack VMA. */
+        if (vector == 14 && (cs & 3ULL) == 3ULL &&
+            lx_try_grow_stack(proc_current(), cr2, frame[20], error)) {
+            return;
+        }
+        if ((cs & 3ULL) == 3ULL && tb_handle_jsc_slot_watchpoint(vector, frame)) {
+            return;
+        }
+        /* Work around Bun/JSC libuv array corruption: 0x40000000 (1 GiB =
+         * gigacage size) leaks into a pointer slot in a vtable dispatch loop
+         * at RIP 0x6056F06.  Skip the bogus entry by advancing RIP to the
+         * loop's next-iteration label so Bun can continue initialization. */
+        if (vector == 14 && (cs & 3ULL) == 3ULL &&
+            rip >= 0x6056F06 && rip <= 0x6056F08 &&
+            (cr2 == 0x40000000 || cr2 == 0xFFFFFFFFFFFFFFFF)) {
+            struct fry_process *cur = proc_current();
+            uint64_t rbx = frame[1];
+            uint64_t rdi = frame[6];
+            uint64_t r14 = frame[13];
+            uint64_t count_word = 0;
+            uint64_t array_ptr = 0;
+            uint64_t slot_addr = 0;
+            uint64_t slot_val = 0;
+            int have_count = read_user_u64_for_exc(cur, rbx + 0x58, &count_word) == 0;
+            int have_array = read_user_u64_for_exc(cur, rbx + 0x60, &array_ptr) == 0;
+            if (have_array && r14 < 0x100000ULL) {
+                slot_addr = array_ptr + r14 * 8ULL;
+                (void)read_user_u64_for_exc(cur, slot_addr, &slot_val);
+            }
+            /* fry1378: do NOT zero the slot. 0xffffffffffffffff is a legitimate
+             * JSC hash-table empty sentinel (-1), not corruption. Writing 0 over
+             * it converts the empty sentinel to 0, which later breaks the JSC
+             * hash-probe at 0x60CCF10 (it stops only on -1) -> infinite spin and
+             * the main-thread hang. Keep only the RIP skip so the process
+             * survives this deref; stop destroying sentinels. */
+            early_serial_puts("TBSKIP bad-ptr pid=");
+            early_serial_puthex64(cur ? cur->pid : 0);
+            early_serial_puts(" rip=");
+            early_serial_puthex64(rip);
+            early_serial_puts(" cr2=");
+            early_serial_puthex64(cr2);
+            early_serial_puts(" rbx=");
+            early_serial_puthex64(rbx);
+            early_serial_puts(" r14=");
+            early_serial_puthex64(r14);
+            early_serial_puts(" rdi=");
+            early_serial_puthex64(rdi);
+            early_serial_puts(" count=");
+            if (have_count) early_serial_puthex64(count_word & 0xFFFFFFFFULL); else early_serial_puts("NA");
+            early_serial_puts(" arr=");
+            if (have_array) early_serial_puthex64(array_ptr); else early_serial_puts("NA");
+            early_serial_puts(" slot=");
+            if (slot_addr) early_serial_puthex64(slot_addr); else early_serial_puts("NA");
+            early_serial_puts(" slotval=");
+            if (slot_addr) early_serial_puthex64(slot_val); else early_serial_puts("NA");
+            early_serial_puts("\n");
+            frame[17] = 0x6056F0F;  /* skip to inc r14 + loop */
+            return;
+        }
         early_serial_puts("!EXC vec=");
         early_serial_puthex64(vector);
         early_serial_puts(" err=");
@@ -251,24 +548,122 @@ void irq_dispatch(uint64_t vector, uint64_t error, void *ctx) {
         early_serial_puts(" CR3=");
         early_serial_puthex64(cr3);
         early_serial_puts("\n");
+        exc_early_serial_dump_regs(frame);
+        if (vector == 3) {
+            exc_early_serial_dump_trap_stack(proc_current(), frame);
+        }
+        /* fry1380: on a user #GP/#PF in the Claude thread, walk the rbp chain to
+         * recover the caller return-address chain (the bad-pointer deref's
+         * callers), so we can locate where a non-canonical pointer is produced. */
+        if ((vector == 13 || vector == 14) && (cs & 3ULL) == 3ULL) {
+            struct fry_process *gc = proc_current();
+            if (gc && (gc->pid == TB_CLAUDE_WATCH_TGID || gc->tgid == TB_CLAUDE_WATCH_TGID)) {
+                uint64_t fp = frame[4];   /* rbp */
+                for (int d = 0; d < 12 && fp >= 0x1000ULL; d++) {
+                    uint64_t ret = 0, nextfp = 0;
+                    if (read_user_u64_for_exc(gc, fp + 8, &ret) != 0) break;
+                    early_serial_puts("  TBBT ret=");
+                    early_serial_puthex64(ret);
+                    early_serial_puts(" fp=");
+                    early_serial_puthex64(fp);
+                    early_serial_puts("\n");
+                    if (read_user_u64_for_exc(gc, fp, &nextfp) != 0) break;
+                    if (nextfp <= fp) break;   /* stop on non-ascending / corrupt */
+                    fp = nextfp;
+                }
+            }
+        }
     }
 
     /*
      * Any CPU exception (vec 0-31) from user mode without a registered handler
-     * terminates the process instead of iretq-ing back to the faulting
-     * instruction (which would cause an infinite loop).
-     * Previously only vec=14 (#PF) was handled; vec 0-13,15-31 fell through.
+     * tries to deliver the appropriate Unix signal first. If the process has
+     * a handler, the exception frame is modified to jump there on iretq.
+     * Otherwise the process is killed.
      */
     if (vector < 32 && !irq_descs[vector].handler) {
         uint64_t *frame = (uint64_t *)ctx;
         uint64_t cs = frame[18];
         if ((cs & 3ULL) == 3ULL) {
+            if (lx_deliver_signal_from_exception(proc_current(), vector, frame)) {
+                return;  /* signal delivered, iretq will jump to handler */
+            }
             exc_kill_current_user(vector, error, ctx);
         } else if (vector == 14) {
             kernel_panic("unhandled kernel page fault");
         }
         /* Kernel-mode non-#PF exceptions without handlers fall through
          * to the "EXC unhandled" log below and iretq. */
+    }
+
+    if (vector == 0x40 && ctx) {
+        uint64_t *tframe = (uint64_t *)ctx;
+        if ((tframe[18] & 3ULL) == 3ULL) {   /* interrupted in user mode */
+            struct fry_process *tc = proc_current();
+            if (tc && (tc->pid == TB_CLAUDE_WATCH_TGID ||
+                       tc->tgid == TB_CLAUDE_WATCH_TGID)) {
+                g_tb_rip_samples++;
+                uint64_t srip = tframe[17];
+                /* Detail dump when caught in the JSC hash-probe spin
+                 * (0x60CCF00..0x60CCF30): registers + table header + slots, to
+                 * see whether the mask/capacity is bogus or the table is full of
+                 * garbage with no -1 empty sentinel (fry1377/1378). */
+                if (srip >= 0x60CCF00ULL && srip <= 0x60CCF30ULL &&
+                    g_tb_rip_detail_logs < 2) {
+                    g_tb_rip_detail_logs++;
+                    uint64_t base = tframe[0];   /* rax = table base */
+                    uint64_t key  = tframe[1];   /* rbx = target key */
+                    uint64_t prc  = tframe[2];   /* rcx = hash/probe */
+                    uint64_t msk  = tframe[5];   /* rsi = mask (low 32) */
+                    uint64_t slot = tframe[7];   /* r8  = current slot val */
+                    early_serial_puts("TBPROBE rip=");
+                    early_serial_puthex64(srip);
+                    early_serial_puts(" base=");
+                    early_serial_puthex64(base);
+                    early_serial_puts(" key=");
+                    early_serial_puthex64(key);
+                    early_serial_puts(" rcx=");
+                    early_serial_puthex64(prc);
+                    early_serial_puts(" mask=");
+                    early_serial_puthex64(msk & 0xFFFFFFFFULL);
+                    early_serial_puts(" slot=");
+                    early_serial_puthex64(slot);
+                    early_serial_puts("\n");
+                    /* header qwords (capacity/count/etc.) */
+                    for (int h = 0; h < 4; h++) {
+                        uint64_t hv = 0;
+                        int ok = read_user_u64_for_exc(tc, base + (uint64_t)h * 8, &hv) == 0;
+                        early_serial_puts("  TBPROBE hdr+");
+                        early_serial_puthex64((uint64_t)h * 8);
+                        early_serial_puts("=");
+                        if (ok) early_serial_puthex64(hv); else early_serial_puts("NA");
+                        early_serial_puts("\n");
+                    }
+                    /* ALL 32 entry keys (16-byte entries, data at base+0x20):
+                     * count zeros, pointers, and any -1, to tell "full table
+                     * needs rehash" from "empties wrongly 0" (fry1378). */
+                    for (int e = 0; e <= (int)(msk & 0xFFFFFFFFULL); e++) {
+                        uint64_t v = 0;
+                        int ok = read_user_u64_for_exc(tc, base + 0x20 + (uint64_t)e * 0x10, &v) == 0;
+                        early_serial_puts("  TBPROBE slot[");
+                        early_serial_puthex64((uint64_t)e);
+                        early_serial_puts("]=");
+                        if (ok) early_serial_puthex64(v); else early_serial_puts("NA");
+                        early_serial_puts("\n");
+                    }
+                }
+                if ((g_tb_rip_samples & 0x3FULL) == 0 && g_tb_rip_logs < 400) {
+                    g_tb_rip_logs++;
+                    early_serial_puts("TBRIP pid=");
+                    early_serial_puthex64(tc->pid);
+                    early_serial_puts(" rip=");
+                    early_serial_puthex64(srip);
+                    early_serial_puts(" rsp=");
+                    early_serial_puthex64(tframe[20]);
+                    early_serial_puts("\n");
+                }
+            }
+        }
     }
 
     if (vector < 256 && irq_descs[vector].chip && irq_descs[vector].chip->ack) {

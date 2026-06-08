@@ -1,0 +1,44 @@
+fry1368 - write trace added; Bun runs 180s, GC active, no output yet
+
+Date: 2026-06-05 ~01:00 CDT
+
+What changed:
+- Added LNX_write (1) to syscall trace filter and name table.
+
+Build: clean.
+
+Boot result (180s timeout):
+  TBSKIP: 4 bad entries skipped
+  !EXC: 0
+  write: 0 — Bun never calls write()
+  exit_group: 0
+  Log size: 158,290 bytes
+
+  Bun is ALIVE and STABLE — zero exceptions across 180 seconds.
+  Worker threads (pid=4, 5) cycle through futex ETIMEDOUT/EAGAIN loops.
+  Main thread (pid=3) cycles through madvise GC + futex.
+  epoll is created and configured (epoll_create1 + epoll_ctl ADD/DEL
+  on eventfd fd=7, then fd=9) but epoll_wait is NEVER called.
+
+  Bun has not reached the JavaScript execution phase. The main thread
+  hasn't started its event loop. JSC concurrent GC is running but
+  the initialization sequence appears stalled.
+
+Interpretation:
+  Bun gets past all initialization blockers and runs JSC GC
+  indefinitely. The main thread doesn't crash — it's alive and making
+  progress (madvise calls indicate heap management). But something
+  prevents it from starting JavaScript execution.
+
+  The epoll setup without epoll_wait suggests Bun hasn't entered its
+  event loop. The futex spinning might be JSC's GC parking/unparking
+  as it waits for the main thread to reach a safepoint.
+
+  Bun might be waiting for a signal, timer, or I/O event that never
+  arrives. Or the initialization sequence expects a specific syscall
+  return value that differs from what we provide.
+
+Next:
+  - Check what the main thread is waiting on (futex address analysis)
+  - Try sending a signal or providing stdin input to unblock it
+  - If Bun expects timerfd or signalfd, add those

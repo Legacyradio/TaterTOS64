@@ -1,6 +1,6 @@
 /*
  * lhello.S — a minimal, UNMODIFIED static Linux x86_64 ELF used to validate
- * the TaterTOS linuxulator (Phase 1 proof point).
+ * Tater Bridge (Phase 1 proof point).
  *
  * It is built with the HOST Linux toolchain (gcc -nostdlib -static -no-pie)
  * and is therefore a genuine Linux binary — NOT a TaterTOS .fry. It exercises
@@ -95,7 +95,7 @@ strlen:
     ret
 
 .section .rodata
-banner:  .ascii "==== TaterTOS linuxulator: hello from a REAL unmodified Linux ELF ====\n"
+banner:  .ascii "==== Tater Bridge: hello from a REAL unmodified Linux ELF ====\n"
          banner_len = . - banner
 s_argc:  .ascii "argc="
          s_argc_len = . - s_argc

@@ -1,0 +1,49 @@
+fry1386 — Tater Bridge / Claude Code: MADV_DONTNEED-on-sparse fix RE-APPLIED ->
+the #GP is FIXED. New blocker: demand stack-growth #PF.
+Timestamp: 2026-06-06 17:02:38 CDT
+Author: Claude (Opus 4.8), continuing fry1385
+
+ROOT CAUSE OF THE #GP (proven)
+  Full-trace boot (fry1385 next step, /tmp/tb_uaf_s.log) caught it:
+    L3560: pid=3 madvise a1=0x6fbbff3a9000 a2=0x17f000 a3=4 (MADV_DONTNEED)
+           = the 1.5MB atom/compact-table region (contains entry 0x6FBBFF3C2C6C)
+    L3562: #GP at 0x4C17293  (immediately after)
+  JSC MADV_DONTNEED's the region to release it and reuse it, relying on the Linux
+  contract that the next read returns ZERO. But the handler still had the
+  fry1378 committed-guard (`if (!r->committed) continue;`), so DONTNEED was a
+  NO-OP for the sparse cage -> STALE 32-byte-record data persisted -> JSC reused
+  the region as a 6-byte packed table and read stale pointers -> non-canonical
+  -> #GP. (fry1378 wrongly blamed this fix for the hash-sentinel hang; that hang
+  was the AVX-clobber bug, fixed separately by -mgeneral-regs-only in fry1379.
+  Same-thread write+read confirmed it is reuse, not a race — fry1385.)
+
+FIX (RE-APPLIED, in tree)
+  syscall.c vm_madvise_dontneed(): removed the committed guard again. Sparse
+  region committed pages are now zeroed on DONTNEED; the per-page pa==0 check
+  still skips genuinely uncommitted pages. (This is the fry1374 fix, correctly
+  restored.)
+
+VERIFIED (clean boot, trace OFF, watchpoints OFF; /tmp/tb_dn_s.log, KVM)
+  - GP(#13) = 0  -> the #GP at 0x4C17293 is GONE.
+  - Bun runs ~10.5s (was 4.25s), spawns more threads (to pid=8/9), loads MORE
+    node builtins (node:vm, node:string_decoder, node:stream/promises, ...), and
+    reaches epoll_pwait (the EVENT LOOP). Major forward progress.
+
+NEW BLOCKER: demand stack-growth #PF
+  vec=0x0E (#PF) at CR2=0x00007FFFFF7FFFF8 on pid=3 (main thread). That is 8 bytes
+  below 0x7FFFFF800000 — the main thread's stack grew ~8MB down and faulted just
+  below its mapped region. Linux auto-grows the stack on a fault just below the
+  stack VMA (up to RLIMIT_STACK); we do not, so demand-paging (which only commits
+  WITHIN an existing region) doesn't cover it -> kill. Bun's crash handler then
+  prints panic + UD2 (0f0b).
+
+NEXT (implementing now, fry1387)
+  Add demand stack growth to the user #PF path: if a not-present USER #PF address
+  is just BELOW a thread's stack region (within a sane gap, e.g. <= 64KB below
+  rsp, and total stack <= RLIMIT_STACK/8MB), extend the stack region downward and
+  commit a zero page, then retry. Identify the stack region (the main stack VMA;
+  thread stacks are explicit mmaps from clone3 cl_args.stack).
+
+STATUS: hang fixed (1379); #GP fixed (this); Bun reaches the event loop. Remaining
+  to a printed reply: stack growth, then HTTPS egress (sockets/TLS/DNS) + auth.
+  ~9/10 "binary runs"; "prints reply" climbing. KVM, CLAUDE_BIN=2.1.162.

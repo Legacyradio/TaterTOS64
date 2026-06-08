@@ -1,0 +1,77 @@
+fry1355 - Tater Bridge getdents64 build + current prompt blocker regression
+
+Date: 2026-06-04 ~21:52 CDT
+
+What changed:
+- Added Linux syscall 217 (`getdents64`) to Tater Bridge.
+- Added Linux dirent64 encoding for FD_DIR handles.
+- Added per-directory fd offset tracking through shared->fd_table[fd].
+  This avoids colliding with O_CLOEXEC/O_DIRECTORY bits in fd_flags.
+- Added getdents64 to the Claude syscall trace name/filter.
+
+Why:
+- fry1354 showed /usr/share/zoneinfo/ opened as a directory, then Linux
+  syscall nr=217 returned an unsupported/invalid result before the later
+  0x40000000 fault.
+- The codebase already had vfs_readdir_ex(), so getdents64 was a narrow
+  Linux ABI surface fix instead of inventing a new filesystem path.
+
+Build verification:
+- make src/kernel/proc/syscall.o: passed.
+  Existing warning still appears:
+    vm_unmap_region_range: 'slots' may be used uninitialized
+- git diff --check: clean.
+- make kernel: passed.
+- Full staged Claude build passed:
+    CLAUDE_BIN="$(readlink -f "$(command -v claude)")" STAGE_CLAUDE=1 \
+    MTOOLSRC=/dev/null PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" \
+    /bin/bash build_iso.sh
+
+Latest artifacts:
+- kernel.elf:           2026-06-04 21:47:53 CDT, 2510448 bytes
+- out/tater_nvme.img:   2026-06-04 21:48:27 CDT, 419430400 bytes
+- out/tatertos64v3.iso: 2026-06-04 21:48:30 CDT, 162695168 bytes
+
+Boot verification:
+- Ran two fresh QEMU boots with the handoff command and -cpu max,la57=off.
+- QEMU was stopped after collecting serial evidence.
+- Both boots stopped before /usr/share/zoneinfo getdents64 was reached.
+- Therefore getdents64 is built but not yet runtime-verified by Claude prompt.
+
+Latest serial evidence:
+- /etc/localtime still opens and reads successfully.
+- After cgroup probes, Bun requests a 64 MiB sparse mmap:
+    TBTRACE mmap detail pid=3 base=0x6fddeb22e000 len=0x4000000 chosen=hint sparse=1
+- Immediately after that, Bun hits the old internal assertion trap:
+    !EXC vec=0000000000000003 err=0000000000000000 RIP=00000000060EA0A8 CR2=00006FDDEB22E000
+    !REG rdi=00000000000001BC r11=00000000000001BC
+    !TRAPSTACK ... stack0=NA stack1=NA saved_rbp=NA caller=NA
+    TBSIG exc-miss pid=3 tgid=3 sig=5 vec=3 handler=0 restorer=0 oldrip=60ea0a8
+    USER FAULT: pid=3 tid=3 vec=3 err=0x0 rip=0x60ea0a8 cr2=0x6fddeb22e000
+
+RIP mapping:
+- /home/legacyindieradio/.local/share/claude/versions/2.1.162:
+    0x60EA0A0: push rbp
+    0x60EA0A1: mov rbp,rsp
+    0x60EA0A4: mov rdi,r11
+    0x60EA0A7: int3
+    0x60EA0A8: next int3 byte, reported as RIP after #BP
+- rdi/r11=0x1BC matches the earlier Bun assertion code noted in fry1347.
+
+Current blocker:
+- Not the old 0x40000000 page fault in the latest verified boots.
+- Current live blocker is the stable Bun/JSC int3 assertion at 0x60EA0A7,
+  delivered as #BP -> SIGTRAP with no SIGTRAP handler installed in prompt mode.
+- Earlier prompt boots that reached Bun's crash reporter saw the same area as
+  #GP/SIGSEGV and delivered it to Bun's SIGSEGV handler. This boot is now
+  stopping at the Linux-correct #BP/SIGTRAP path before getdents64 is exercised.
+
+Next work:
+1. Decide whether to preserve strict #BP->SIGTRAP behavior and chase why Bun
+   reaches assertion code 0x1BC, or temporarily route this specific Bun trap
+   to the crash reporter path for more diagnostics.
+2. If chasing the assertion directly, inspect callers into 0x60EA0A0/0x60EA0A7
+   and the immediately preceding 64 MiB sparse mmap at 0x6fddeb22e000.
+3. Once the int3 path is past again, verify the new getdents64 implementation
+   on /usr/share/zoneinfo/ and reassess whether the 0x40000000 fault still
+   exists.

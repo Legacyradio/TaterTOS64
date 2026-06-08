@@ -1,0 +1,64 @@
+fry1378 — Tater Bridge / Claude Code: exact hang mechanism pinned; both prior
+"fix" theories disproven. NOT yet working — honest status + next instrument.
+Timestamp: 2026-06-06 13:17:21 CDT
+Author: Claude (Opus 4.8), continuing fry1377
+
+WHAT THE SPIN ACTUALLY IS (full table dump via extended RIP sampler)
+  pid=3 spins forever in a JSC open-addressing hash-set probe at 0x60CCF10.
+  Dumped the full 32-slot table (mask=0x1F), 16-byte {key,value} entries:
+    - 15 occupied buckets: 0x80000-aligned JSC block pointers
+      (0x6FBBF8000000, ...8080000, ...8100000, ...8180000, 0x6FBFF5xxxxxx ...).
+    - 17 EMPTY buckets: value 0x0.
+    - ZERO buckets contain 0xffffffffffffffff (-1).
+  The probe terminates only on slot==key (rbx) or slot==-1. The search key is
+  0x6FBBF8200000 — the NEXT block in the 0x80000 sequence, NOT present in the
+  table. So this is the INSERT/REHASH path: JSC is placing block 8200000 and
+  probing for a free (-1) bucket. Every empty bucket is 0, never -1 -> no free
+  slot ever found -> ~2e9 probe iterations (rcx climbing) -> infinite spin ->
+  main thread wedges holding JSC heap lock 0x63ad6e0 -> all workers starve.
+  => "corruption", "deadlock", "liveness" are ALL this one thing: JSC's fresh
+     hash-set buckets must be -1 (empty sentinel) but are 0 in our gigacage.
+
+BOTH PRIOR FIX THEORIES DISPROVEN (by reverting each; bug identical):
+  1. Codex TBSKIP slot-zeroing (irqdesc.c:454 wrote 0 over -1 slots): REMOVED
+     in fry1378 (kept the RIP skip so the process survives). Result: empties
+     still 0, still spinning, TBSKIP still 3. Not the cause. (Removal kept — it
+     was still conceptually wrong to destroy sentinels.)
+  2. My fry1374 MADV_DONTNEED-on-sparse change (zero committed pages): REVERTED
+     in fry1378 (re-instated `if (!r->committed) continue;`, back to original
+     Codex behavior). Result: empties still 0, still spinning. Not the cause.
+
+  => The 0-instead-of-(-1) empties are NOT caused by DONTNEED zeroing nor by the
+     TBSKIP workaround. JSC's bulk -1 initialization of fresh set buckets is not
+     persisting in the gigacage, while individual pointer inserts (15 of them)
+     DO persist. The loss is selective: bulk-fill lost, point-writes kept.
+
+RULED OUT (cumulative, fry1374-1378)
+  kernel futex atomicity; page-zero hygiene; MADV_FREE (no-op, correct);
+  MADV_DONTNEED zeroing; TBSKIP zeroing; /etc/localtime (fd-reuse false lead).
+
+LEADING HYPOTHESIS (unproven)
+  The fresh bucket array (at ~0x6FBBFFF11000) is allocated then bulk-filled with
+  -1 by JSC (candidate: the AVX memmove of 0xff seen in fry1374). That bulk fill
+  is not landing/persisting in our demand-paged gigacage, so buckets read 0
+  (fresh zero page) while later single-bucket inserts persist. Possible angles:
+  a #PF taken mid-AVX/rep-store not correctly completing the fill; a page
+  committed for the fill being replaced by a fresh zero page before reads; or a
+  cage region whose fill writes and later reads resolve to different frames.
+
+NEXT INSTRUMENT (deliberate, not trial-and-error)
+  Watch a single set-bucket address from CONSTRUCTION: arm a DR write-watchpoint
+  (or page-fill log) on the bucket array as soon as JSC allocates it, and record
+  every write + value to that page, to see (1) whether JSC ever writes -1 there,
+  and (2) what leaves it 0 by lookup time. The array base moves per boot but the
+  cage layout is stable enough to arm dynamically (as done for the JSC slots).
+  Run under KVM, g_tb_trace_syscalls=0.
+
+TREE STATE (uncommitted, on eff81672)
+  KEEP (tooling/wins): g_tb_trace_syscalls master switch default OFF (syscall.c);
+    RIP sampler + TBPROBE table dump (irqdesc.c); use KVM for all runs.
+  KEEP (more-correct): TBSKIP no longer zeroes slots (irqdesc.c).
+  REVERTED to original: MADV_DONTNEED committed-guard (syscall.c) — fry1374 fix
+    backed out (wrong premise, not this bug).
+  STATUS: terminal does NOT run yet. Exact failure localized; root cause of the
+    lost -1 bulk-fill is the remaining unknown.

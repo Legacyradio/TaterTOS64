@@ -1,0 +1,34 @@
+fry1364 - /proc/3/mem added; crash reporter opens it; libuv crash persists
+
+Date: 2026-06-04 ~23:45 CDT
+
+What changed:
+- Added /proc/self/mem and /proc/3/mem to tbridgefs (TBRIDGEFS_NODE_PROC_MEM).
+  Returns size 0 (openable, no data). Bun's crash reporter now opens it
+  successfully instead of getting ENOENT.
+
+Build: clean.
+
+Boot result:
+- access("/etc/ld.so.preload") → ENOENT (normal, optional file)
+- newfstatat("/usr/lib/glibc-hwcaps/x86-64-v3/") → ENOENT (normal)
+- newfstatat("/usr/lib/glibc-hwcaps/x86-64-v2/") → ENOENT (normal)
+- /proc/3/mem now opens successfully (was ENOENT before)
+  TBTRACE path pid=3 tgid=3 nr=257 openat path="/proc/3/mem"
+  This happens during the crash reporter path — the crash reporter
+  now has access to /proc/self/mem for diagnostics. ✓
+
+- Same libuv crash at 0x6056F06 (rdi=-1). Same SIGSEGV + #UD sequence.
+  The /proc/mem fix helps the crash reporter but doesn't prevent the
+  initialization crash.
+
+- mmap alignment fix (fry1363) is stable — int3 assertion 0x1BC gone.
+  We are now consistently hitting the libuv array corruption instead.
+
+The libuv handle close queue at 0x6056F06 has a -1 sentinel that
+should have been NULLed. This is populated during Bun's signal
+handler setup (the last syscall before crash is sigaction(SIGTERM)).
+Likely a uv_signal_start failure path that leaves stale entries.
+
+Next: /proc/self/fd directory — Bun may iterate fds during signal
+handler setup and crash if /proc/self/fd is missing.

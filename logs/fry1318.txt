@@ -1,0 +1,52 @@
+2026-06-03 21:12:47 CDT
+
+Fry 1318 - trace-proven Tater Bridge syscall surface added
+
+What changed:
+- Added Linux syscall numbers in src/kernel/proc/linux_compat.h:
+  gettimeofday(96), sysinfo(99), prctl(157), close_range(436).
+- Added native Tater Bridge implementations in src/kernel/proc/syscall.c:
+  - gettimeofday: RTC epoch + HPET uptime, timeval/timezone layout.
+  - sysinfo: uptime, RAM totals, free RAM, process count, mem_unit.
+  - prctl: SET/GET_NAME, dumpable, no_new_privs, THP disable, timer slack,
+    seccomp query, pdeathsig, ptracer, and PR_SET_VMA naming as no-op success.
+  - sched_getaffinity: returns the active SMP CPU mask.
+  - close_range: closes Linux fd range or accepts CLOEXEC/UNSHARE as local no-ops.
+  - tgkill: validates tgid/tid and treats fatal self-signals as group termination.
+
+Why:
+- Fry 1317 showed Claude got past /dev/urandom, sparse mmap, clone3, futex,
+  epoll, timerfd, eventfd, and libuv setup, then entered glibc abort().
+- The trace immediately before abort still had ENOSYS from time/sysinfo/prctl/
+  sched_getaffinity/close_range/tgkill-class paths.
+- These implementations are TaterTOS64v3 ABI translations, not imported Linux
+  kernel code.
+
+Verification:
+- Targeted build passed:
+  make src/kernel/proc/syscall.o kernel
+- Clean staged build passed:
+  CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.162 STAGE_CLAUDE=1 MTOOLSRC=/dev/null ./build_iso.sh
+- /RCLAUDE.LXE staged on NVMe:
+  inode 25, size 244000464, 59571 blocks, 1 extent.
+- Boot log:
+  /tmp/s_fry1318_syscalls.log
+- Selftest still passed:
+  85 passed, 0 failed.
+
+Result:
+- The previous gettimeofday/sysinfo/prctl/sched_getaffinity/close_range ENOSYS
+  noise is gone from the Claude path.
+- Claude still chooses the abort path.
+- The remaining ENOSYS lines on the Claude path are:
+  - rseq(334), which is normally allowed to fail with ENOSYS.
+  - time(201), which is still unimplemented and appears shortly before the abort path.
+- Final observed line:
+  TBTRACE enter pid=12 tgid=12 nr=234 tgkill a1=c a2=c a3=6 ...
+- No glibc hlt/USER FAULT appeared after tgkill because tgkill no longer returns
+  ENOSYS, but the process did not produce a final claude --version line either.
+
+Next:
+- Implement Linux time(201) from the same RTC/HPET source as gettimeofday.
+- Add a small exit trace around fatal tgkill/group exit if the abort remains,
+  so we can tell whether the process is exiting cleanly or sticking in teardown.

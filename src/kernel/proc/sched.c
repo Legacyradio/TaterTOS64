@@ -35,6 +35,7 @@ struct percpu_data {
 
 #define MAX_CPUS 64
 #define MSR_FS_BASE 0xC0000100u
+#define TB_TRACE_CLAUDE_TGID 3u
 
 static struct percpu_data percpu[MAX_CPUS];
 static volatile uint32_t g_sched_ready;
@@ -60,6 +61,8 @@ static struct fry_process boot_contexts[MAX_CPUS];
 static spinlock_t g_sched_lock = {0};
 static uint8_t g_first_context_switch_seen;
 static uint8_t g_first_user_switch_seen;
+static uint32_t g_tb_futex_timeout_logs;
+static uint32_t g_tb_futex_wake_miss_logs;
 
 extern char __kernel_stack_top;
 
@@ -208,6 +211,19 @@ static struct fry_process *remove_from_runqueue(uint32_t pid) {
     return 0;
 }
 
+static uint64_t sched_deliverable_signal_mask(const struct fry_process *p) {
+    if (!p || !p->is_linux || !p->shared) return 0;
+    uint64_t mask = p->linux_sig_pending & ~p->linux_sig_blocked;
+    mask &= ~(1ULL << (9 - 1));   /* SIGKILL is never delivered to a handler */
+    mask &= ~(1ULL << (19 - 1));  /* SIGSTOP is never delivered to a handler */
+    for (uint32_t sig = 1; sig < 64; sig++) {
+        uint64_t bit = 1ULL << (sig - 1);
+        if ((mask & bit) && p->shared->linux_sigact[sig].handler)
+            return bit;
+    }
+    return 0;
+}
+
 /* ---- Extended FPU/SSE/AVX state (XSAVE) management ---------------------
  * Without saving vector state across context switches, concurrent glibc
  * processes corrupt each other's XMM/YMM registers -> intermittent crashes
@@ -245,6 +261,24 @@ static inline void fpu_restore(struct fry_process *p) {
     if (!g_xcr0_mask) return;
     __asm__ volatile("xrstor64 (%0)"
                      : : "r"(p->fpu_area), "a"((uint32_t)g_xcr0_mask), "d"(0u)
+                     : "memory");
+}
+
+/* fry1381: save/restore FPU+SSE+AVX state to an arbitrary area, for preserving
+ * vector state ACROSS SIGNAL DELIVERY. Signal handlers (glibc/Bun) freely use
+ * SSE/AVX; the kernel only stored GP regs in the sigframe, so a signal landing
+ * mid-vector-op (e.g. JSC's movups table rehash) corrupted xmm/ymm and the
+ * interrupted code resumed with garbage -> deterministic JSC #GP. */
+void lx_fpu_save_area(uint8_t *area) {
+    if (!g_xcr0_mask || !area) return;
+    __asm__ volatile("xsave64 (%0)"
+                     : : "r"(area), "a"((uint32_t)g_xcr0_mask), "d"(0u)
+                     : "memory");
+}
+void lx_fpu_restore_area(const uint8_t *area) {
+    if (!g_xcr0_mask || !area) return;
+    __asm__ volatile("xrstor64 (%0)"
+                     : : "r"(area), "a"((uint32_t)g_xcr0_mask), "d"(0u)
                      : "memory");
 }
 
@@ -540,7 +574,27 @@ int sched_block_futex(uint32_t pid, volatile const uint32_t *word,
         }
         if (!p) {
             rc = -ESRCH;
+        } else if (sched_deliverable_signal_mask(p)) {
+            uint32_t count = smp_cpu_count();
+            uint32_t bsp = smp_bsp_index();
+            if (count == 0) count = 1;
+            if (bsp >= count) bsp = 0;
+            wake_runnable_locked(p, count, bsp, 0);
+            rc = -EINTR;
         } else {
+            if (key == TB_JSC_FUTEX_KEY) {
+                kprint_serial_only("TBSCHED jsc-futex-block pid=%u tgid=%u state=%u word=%p current=%u expected=%u wake_time=%llu bitset=%x\n",
+                                   p->pid, p->tgid, p->state, word,
+                                   word ? (unsigned)*word : 0u, expected,
+                                   (unsigned long long)wake_time_ms, bitset);
+            }
+            if (p->pid == TB_TRACE_CLAUDE_TGID || p->tgid == TB_TRACE_CLAUDE_TGID) {
+                kprint_serial_only("TBSCHED futex-block pid=%u tgid=%u state=%u word=%p actual=%u expected=%u key=%lx wake_time=%llu bitset=%x\n",
+                                   p->pid, p->tgid, p->state, word,
+                                   word ? (unsigned)*word : 0u, expected,
+                                   (unsigned long)key,
+                                   (unsigned long long)wake_time_ms, bitset);
+            }
             p->state = PROC_WAITING;
             p->wait_pid = 0;
             p->wait_tid = 0;
@@ -548,6 +602,13 @@ int sched_block_futex(uint32_t pid, volatile const uint32_t *word,
             p->wait_futex_bitset = bitset;
             p->wait_result = 0;
             p->wake_time_ms = wake_time_ms;
+            if (*word != expected) {
+                p->state = PROC_RUNNING;
+                p->wait_futex_key = 0;
+                p->wait_futex_bitset = 0;
+                p->wake_time_ms = 0;
+                rc = -EAGAIN;
+            }
         }
     }
     spin_unlock(&g_sched_lock);
@@ -581,6 +642,38 @@ void sched_wake(uint32_t pid) {
     wake_runnable_locked(p, count, bsp, 0);
     spin_unlock(&g_sched_lock);
     irq_restore(irqf);
+}
+
+uint32_t sched_wake_signal(uint32_t pid) {
+    uint64_t irqf = irq_save_disable();
+    uint32_t woke = 0;
+    uint32_t count;
+    uint32_t bsp;
+    spin_lock(&g_sched_lock);
+    count = smp_cpu_count();
+    bsp = smp_bsp_index();
+    if (count == 0) count = 1;
+    if (bsp >= count) bsp = 0;
+    for (uint32_t i = 0; i < PROC_MAX; i++) {
+        if (procs[i].pid != pid) continue;
+        if (procs[i].state != PROC_WAITING) break;
+        if (!sched_deliverable_signal_mask(&procs[i])) break;
+        if (procs[i].pid == TB_TRACE_CLAUDE_TGID || procs[i].tgid == TB_TRACE_CLAUDE_TGID) {
+            kprint_serial_only("TBSCHED signal-wake pid=%u tgid=%u pending=%lx blocked=%lx futex_key=%lx\n",
+                               procs[i].pid, procs[i].tgid,
+                               (unsigned long)procs[i].linux_sig_pending,
+                               (unsigned long)procs[i].linux_sig_blocked,
+                               (unsigned long)procs[i].wait_futex_key);
+        }
+        procs[i].wait_futex_key = 0;
+        procs[i].wait_futex_bitset = 0;
+        wake_runnable_locked(&procs[i], count, bsp, -EINTR);
+        woke = 1;
+        break;
+    }
+    spin_unlock(&g_sched_lock);
+    irq_restore(irqf);
+    return woke;
 }
 
 void sched_block_poll(uint32_t pid, uint64_t wake_time_ms) {
@@ -644,10 +737,39 @@ uint32_t sched_wake_futex(uint64_t key, uint32_t max_wake,
         if (procs[i].state != PROC_WAITING) continue;
         if (procs[i].wait_futex_key != key) continue;
         if ((procs[i].wait_futex_bitset & bitset) == 0) continue;
+        if (key == TB_JSC_FUTEX_KEY) {
+            kprint_serial_only("TBSCHED jsc-futex-wake target=%u tgid=%u key=%lx bitset=%x waiter_bitset=%x result=%d\n",
+                               procs[i].pid, procs[i].tgid,
+                               (unsigned long)key, bitset,
+                               procs[i].wait_futex_bitset, result);
+        }
+        if (procs[i].pid == TB_TRACE_CLAUDE_TGID || procs[i].tgid == TB_TRACE_CLAUDE_TGID) {
+            kprint_serial_only("TBSCHED futex-wake pid=%u tgid=%u key=%lx bitset=%x result=%d\n",
+                               procs[i].pid, procs[i].tgid,
+                               (unsigned long)key, bitset, result);
+        }
         procs[i].wait_futex_key = 0;
         procs[i].wait_futex_bitset = 0;
         wake_runnable_locked(&procs[i], count, bsp, result);
         woke++;
+    }
+    if (woke == 0 && ((key >> 48) == 0x8003ULL) && g_tb_futex_wake_miss_logs < 80) {
+        uint32_t seen = 0;
+        g_tb_futex_wake_miss_logs++;
+        kprint_serial_only("TBSCHED futex-wake-miss key=%lx bitset=%x max=%u\n",
+                           (unsigned long)key, bitset, max_wake);
+        for (uint32_t i = 0; i < PROC_MAX && seen < 4; i++) {
+            if (procs[i].state != PROC_WAITING) continue;
+            if (procs[i].pid != TB_TRACE_CLAUDE_TGID && procs[i].tgid != TB_TRACE_CLAUDE_TGID) continue;
+            if (procs[i].wait_futex_key == 0) continue;
+            kprint_serial_only("TBSCHED futex-waiter pid=%u tgid=%u key=%lx bitset=%x wake_time=%llu result=%d\n",
+                               procs[i].pid, procs[i].tgid,
+                               (unsigned long)procs[i].wait_futex_key,
+                               procs[i].wait_futex_bitset,
+                               (unsigned long long)procs[i].wake_time_ms,
+                               procs[i].wait_result);
+            seen++;
+        }
     }
     spin_unlock(&g_sched_lock);
     irq_restore(irqf);
@@ -711,6 +833,25 @@ void sched_tick(void) {
             procs[i].wait_pid == 0 &&
             procs[i].wake_time_ms <= now) {
             if (procs[i].wait_futex_key != 0) {
+                if (procs[i].wait_futex_key == TB_JSC_FUTEX_KEY) {
+                    kprint_serial_only("TBSCHED jsc-futex-timeout pid=%u tgid=%u key=%lx bitset=%x now=%llu wake_time=%llu\n",
+                                       procs[i].pid, procs[i].tgid,
+                                       (unsigned long)procs[i].wait_futex_key,
+                                       procs[i].wait_futex_bitset,
+                                       (unsigned long long)now,
+                                       (unsigned long long)procs[i].wake_time_ms);
+                }
+                if ((procs[i].pid == TB_TRACE_CLAUDE_TGID ||
+                     procs[i].tgid == TB_TRACE_CLAUDE_TGID) &&
+                    g_tb_futex_timeout_logs < 80) {
+                    g_tb_futex_timeout_logs++;
+                    kprint_serial_only("TBSCHED futex-timeout pid=%u tgid=%u key=%lx bitset=%x now=%llu wake_time=%llu\n",
+                                       procs[i].pid, procs[i].tgid,
+                                       (unsigned long)procs[i].wait_futex_key,
+                                       procs[i].wait_futex_bitset,
+                                       (unsigned long long)now,
+                                       (unsigned long long)procs[i].wake_time_ms);
+                }
                 procs[i].wait_futex_key = 0;
                 procs[i].wait_futex_bitset = 0;
                 wake_runnable_locked(&procs[i], count, bsp, -ETIMEDOUT);
@@ -764,6 +905,7 @@ void sched_tick(void) {
      * process.  syscall_entry reads this via SWAPGS + %gs:0 on all CPUs. */
     percpu[cpu].kstack_top = next->kernel_stack_top;
     write_user_fs_base(next->user_fs_base);
+    tb_program_jsc_slot_watchpoints_for(next);
     if (cpu == bsp && !g_first_context_switch_seen) {
         g_first_context_switch_seen = 1;
         mark_context_switch = 1;

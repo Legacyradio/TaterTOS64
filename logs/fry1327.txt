@@ -1,0 +1,40 @@
+2026-06-04 03:47 CDT  Fry 1327 — demand paging for anonymous mmap (JSC gigacage)
+
+CONTEXT (from fry1326): after the SIGABRT fix, claude runs the full Bun/JSC
+init and faults writing 0x6fde01000000 (err=0x6: write, user, NOT-present)
+inside a 128 GB MAP_NORESERVE anonymous mmap (JSC gigacage). Our mmap takes
+the sparse-reserve path (lx_map_sparse_anon_private): it records the VMA but
+maps NO physical pages. The first write to an un-backed page faulted to the
+USER FAULT kill instead of being demand-committed.
+
+NOTE on "128 GB": this is VIRTUAL address reservation, not physical RAM.
+MAP_NORESERVE means back pages lazily on touch. Demand paging allocates a
+physical page only per touched page, from real RAM — a multi-GB reservation
+runs fine on a few-GB box. The fault was "page never backed", not OOM.
+
+CHANGES:
+1) src/kernel/proc/syscall.c — new lx_try_demand_page(p, fault_va, err):
+   - Only NOT-present faults (err bit0 clear).
+   - Find the VMA containing the page (vm_region_find_containing).
+   - Must be FRY_VM_REGION_ANON_PRIVATE/SHARED with prot != 0 (PROT_NONE
+     stays a real fault). Write fault to a read-only region -> kill.
+   - If already mapped (SMP race) -> retry. Else lx_map_one() commits a
+     zero page with VMM flags derived from the region prot (W/NX). OOM -> kill.
+   Returns 1 = retry, 0 = fall through to USER FAULT kill.
+2) src/kernel/proc/syscall.c — lx_map_sparse_anon_private now stores the
+   REAL prot (lx_mmap_prot_to_fry(prot)) instead of 0, so the demand-pager
+   knows the access permissions. committed stays 0 (no eager backing).
+   WHY: MAP_NORESERVE is "lazy backing", not "inaccessible"; the range is
+   usable per its mmap prot.
+3) src/kernel/irq/irqdesc.c — irq_dispatch(): for a user-mode vec-14 fault,
+   call lx_try_demand_page BEFORE the !EXC logging / kill; on success return
+   (iretq retries the faulting instruction). Placed early so it is fast and
+   silent (a live runtime faults in thousands of pages this way).
+4) src/kernel/proc/syscall.h — prototype for lx_try_demand_page.
+
+EXPECTED: claude's gigacage write at 0x6fde01000000 now commits a page and
+continues instead of dying. Watch the next boot for further progress toward
+claude --version output, or the next distinct fault/abort.
+
+(Diagnostics: clangd shows fry_limits.h-not-found cascade — false positive
+from clangd's include path; x86_64-elf-gcc builds with -Isrc/include.)

@@ -1,0 +1,25 @@
+fry1335 - Tater Bridge rename build verification
+Timestamp: 2026-06-04 10:13:13 CDT
+
+What changed:
+- Rebuilt the ISO after renaming the visible Linux ABI probe/runtime labels from
+  linuxulator/LINUXTEST wording to Tater Bridge/TBRIDGE wording.
+- Staged the real Claude Code binary from:
+  /home/legacyindieradio/.local/share/claude/versions/2.1.162
+- Recreated the NVMe ToTFS image with /RCLAUDE.LXE at 244000464 bytes.
+
+Verification:
+- Command completed successfully:
+  CLAUDE_BIN="$(readlink -f "$(command -v claude)")" STAGE_CLAUDE=1 MTOOLSRC=/dev/null PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+- Produced:
+  /home/legacyindieradio/TaterTOS64/out/tatertos64v3.iso
+- Live-app fallback verification completed successfully.
+
+Why:
+- The user clarified that the visible compatibility layer name should be
+  "Tater Bridge", not "linuxulator". This records the first clean build after
+  the branding cleanup and before the QEMU runtime verification.
+
+Next:
+- Boot the rebuilt ISO under QEMU with -smp 2 and verify the serial log shows
+  TBRIDGE labels plus the real Claude --help path.

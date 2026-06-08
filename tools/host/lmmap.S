@@ -124,7 +124,7 @@ write1:
     ret
 
 .section .rodata
-banner:     .ascii "==== TaterTOS linuxulator: file-backed mmap probe ====\n"
+banner:     .ascii "==== Tater Bridge: file-backed mmap probe ====\n"
             banner_len = . - banner
 okline:     .ascii "[OK] mmap(fd, offset=0) exposed LXTEST.TXT bytes\n"
             okline_len = . - okline

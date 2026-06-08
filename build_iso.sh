@@ -15,11 +15,11 @@ AUTOTEST_VM="${TATERTOS_AUTOTEST_VM:-0}"
 AUTOTEST_VMFAULT="${TATERTOS_AUTOTEST_VMFAULT:-0}"
 VMTEST_RUN_MARKER="$OUT_DIR/VMTEST.RUN"
 VMFAULT_RUN_MARKER="$OUT_DIR/VMFAULT.RUN"
-LINUXTEST_RUN_MARKER="$OUT_DIR/LXTEST.RUN"
-LINUXTEST_DATA_FILE="$OUT_DIR/LXTEST.TXT"
+TBRIDGE_RUN_MARKER="$OUT_DIR/LXTEST.RUN"
+TBRIDGE_DATA_FILE="$OUT_DIR/LXTEST.TXT"
 LINUX_DYN_LD_SRC="${LINUX_DYN_LD_SRC:-/lib64/ld-linux-x86-64.so.2}"
 LINUX_DYN_LIB_DIR="${LINUX_DYN_LIB_DIR:-/usr/lib}"
-LINUX_DYN_LIBS=(librt.so.1 libc.so.6 libpthread.so.0 libdl.so.2 libm.so.6)
+LINUX_DYN_LIBS=(librt.so.1 libc.so.6 libpthread.so.0 libdl.so.2 libm.so.6 libgcc_s.so.1)
 
 . "$ROOT_DIR/tools/host/env.sh"
 
@@ -94,7 +94,7 @@ copy_autotest_markers_totfs() {
   fi
 }
 
-build_linuxulator_test() {
+build_tbridge_test() {
   if [ -f "$ROOT_DIR/tools/host/lhello.S" ]; then
     gcc -nostdlib -static -no-pie -o "$ROOT_DIR/lhello.lxe" \
       "$ROOT_DIR/tools/host/lhello.S"
@@ -130,10 +130,10 @@ build_linuxulator_test() {
   fi
 }
 
-prepare_linuxulator_marker() {
+prepare_tbridge_marker() {
   if [ -f "$ROOT_DIR/lhello.lxe" ] || [ -f "$ROOT_DIR/lfile.lxe" ] || [ -f "$ROOT_DIR/lmmap.lxe" ] || [ -f "$ROOT_DIR/ldyn.lxe" ] || [ -f "$ROOT_DIR/llibc.lxe" ] || [ -f "$ROOT_DIR/lthr.lxe" ] || [ -f "$ROOT_DIR/lgap.lxe" ] || [ -f "$ROOT_DIR/lasync.lxe" ] || [ -f "$ROOT_DIR/lfutex.lxe" ]; then
-    printf "lxtest\n" > "$LINUXTEST_RUN_MARKER"
-    printf "TaterTOS linuxulator VFS probe\n" > "$LINUXTEST_DATA_FILE"
+    printf "lxtest\n" > "$TBRIDGE_RUN_MARKER"
+    printf "Tater Bridge VFS probe\n" > "$TBRIDGE_DATA_FILE"
   fi
 }
 
@@ -166,12 +166,12 @@ copy_linux_runtime_dir() {
   done
 }
 
-copy_linuxulator_test_mtools() {
+copy_tbridge_test_mtools() {
   local img="$1"
   if [ ! -f "$ROOT_DIR/lhello.lxe" ] && [ ! -f "$ROOT_DIR/lfile.lxe" ] && [ ! -f "$ROOT_DIR/lmmap.lxe" ] && [ ! -f "$ROOT_DIR/ldyn.lxe" ] && [ ! -f "$ROOT_DIR/llibc.lxe" ] && [ ! -f "$ROOT_DIR/lthr.lxe" ] && [ ! -f "$ROOT_DIR/lgap.lxe" ] && [ ! -f "$ROOT_DIR/lasync.lxe" ] && [ ! -f "$ROOT_DIR/lfutex.lxe" ]; then
     return 0
   fi
-  prepare_linuxulator_marker
+  prepare_tbridge_marker
   [ -f "$ROOT_DIR/ldyn.lxe" ] && copy_linux_runtime_mtools "$img"
   if command -v mmd >/dev/null 2>&1; then
     mmd -i "$img" ::/apps 2>/dev/null || true
@@ -194,8 +194,8 @@ copy_linuxulator_test_mtools() {
   [ -f "$ROOT_DIR/lasync.lxe" ] && mcopy -o -i "$img" "$ROOT_DIR/lasync.lxe" ::/LASYNC.LXE || true
   [ -f "$ROOT_DIR/lfutex.lxe" ] && mcopy -o -i "$img" "$ROOT_DIR/lfutex.lxe" ::/apps/LFUTEX.LXE || true
   [ -f "$ROOT_DIR/lfutex.lxe" ] && mcopy -o -i "$img" "$ROOT_DIR/lfutex.lxe" ::/LFUTEX.LXE || true
-  mcopy -o -i "$img" "$LINUXTEST_RUN_MARKER" ::/LXTEST.RUN || true
-  mcopy -o -i "$img" "$LINUXTEST_DATA_FILE" ::/LXTEST.TXT || true
+  mcopy -o -i "$img" "$TBRIDGE_RUN_MARKER" ::/LXTEST.RUN || true
+  mcopy -o -i "$img" "$TBRIDGE_DATA_FILE" ::/LXTEST.TXT || true
   # REAL unmodified Linux coreutils. Must end in .LXE so the EFI ramdisk
   # scanner (ramdisk_should_load_name) includes them.
   [ -f /usr/bin/env ] && mcopy -o -i "$img" /usr/bin/env ::/apps/RENV.LXE || true
@@ -204,12 +204,12 @@ copy_linuxulator_test_mtools() {
   [ -f /usr/lib/libcap.so.2 ] && mcopy -o -i "$img" /usr/lib/libcap.so.2 ::/usr/lib/libcap.so.2 || true
 }
 
-copy_linuxulator_test_dir() {
+copy_tbridge_test_dir() {
   local dir="$1"
   if [ ! -f "$ROOT_DIR/lhello.lxe" ] && [ ! -f "$ROOT_DIR/lfile.lxe" ] && [ ! -f "$ROOT_DIR/lmmap.lxe" ] && [ ! -f "$ROOT_DIR/ldyn.lxe" ] && [ ! -f "$ROOT_DIR/llibc.lxe" ] && [ ! -f "$ROOT_DIR/lthr.lxe" ] && [ ! -f "$ROOT_DIR/lgap.lxe" ] && [ ! -f "$ROOT_DIR/lasync.lxe" ] && [ ! -f "$ROOT_DIR/lfutex.lxe" ]; then
     return 0
   fi
-  prepare_linuxulator_marker
+  prepare_tbridge_marker
   [ -f "$ROOT_DIR/ldyn.lxe" ] && copy_linux_runtime_dir "$dir"
   mkdir -p "$dir/apps"
   [ -f "$ROOT_DIR/lhello.lxe" ] && cp "$ROOT_DIR/lhello.lxe" "$dir/apps/LHELLO.LXE"
@@ -230,8 +230,8 @@ copy_linuxulator_test_dir() {
   [ -f "$ROOT_DIR/lasync.lxe" ] && cp "$ROOT_DIR/lasync.lxe" "$dir/LASYNC.LXE"
   [ -f "$ROOT_DIR/lfutex.lxe" ] && cp "$ROOT_DIR/lfutex.lxe" "$dir/apps/LFUTEX.LXE"
   [ -f "$ROOT_DIR/lfutex.lxe" ] && cp "$ROOT_DIR/lfutex.lxe" "$dir/LFUTEX.LXE"
-  cp "$LINUXTEST_RUN_MARKER" "$dir/LXTEST.RUN"
-  cp "$LINUXTEST_DATA_FILE" "$dir/LXTEST.TXT"
+  cp "$TBRIDGE_RUN_MARKER" "$dir/LXTEST.RUN"
+  cp "$TBRIDGE_DATA_FILE" "$dir/LXTEST.TXT"
   # REAL unmodified Linux coreutils (ISO-dir tree = the EFI ramdisk source).
   # Must end in .LXE so ramdisk_should_load_name includes them.
   mkdir -p "$dir/apps" "$dir/usr/lib"
@@ -243,11 +243,11 @@ copy_linuxulator_test_dir() {
   #  fit below 4GB. It goes on the NVMe ToTFS and is streamed from disk.)
 }
 
-copy_linuxulator_test_totfs() {
+copy_tbridge_test_totfs() {
   if [ ! -f "$ROOT_DIR/lhello.lxe" ] && [ ! -f "$ROOT_DIR/lfile.lxe" ] && [ ! -f "$ROOT_DIR/lmmap.lxe" ] && [ ! -f "$ROOT_DIR/ldyn.lxe" ] && [ ! -f "$ROOT_DIR/llibc.lxe" ] && [ ! -f "$ROOT_DIR/lthr.lxe" ] && [ ! -f "$ROOT_DIR/lgap.lxe" ] && [ ! -f "$ROOT_DIR/lasync.lxe" ] && [ ! -f "$ROOT_DIR/lfutex.lxe" ]; then
     return 0
   fi
-  prepare_linuxulator_marker
+  prepare_tbridge_marker
   if [ -f "$ROOT_DIR/lhello.lxe" ]; then
     "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
       "$ROOT_DIR/lhello.lxe" "/LHELLO.LXE"
@@ -285,9 +285,9 @@ copy_linuxulator_test_totfs() {
       "$ROOT_DIR/lfutex.lxe" "/LFUTEX.LXE"
   fi
   "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
-    "$LINUXTEST_RUN_MARKER" "/LXTEST.RUN"
+    "$TBRIDGE_RUN_MARKER" "/LXTEST.RUN"
   "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
-    "$LINUXTEST_DATA_FILE" "/LXTEST.TXT"
+    "$TBRIDGE_DATA_FILE" "/LXTEST.TXT"
 }
 
 # Ensure old ISO-tree artifacts (like stale SHELL.FRY) do not leak into new builds.
@@ -296,10 +296,10 @@ mkdir -p "$EFI_DIR"
 prepare_autotest_markers
 
 # Build kernel and user apps
-make -C "$ROOT_DIR" clean
+# make -C "$ROOT_DIR" clean
 make -C "$ROOT_DIR" kernel init shell gui sysinfo uptime ps fileman netmgr vmtest vmfault abitest thtest smoketest evloop chrome_probe claude
-build_linuxulator_test
-prepare_linuxulator_marker
+build_tbridge_test
+prepare_tbridge_marker
 
 # Create FAT32 image for userspace files
 rm -f "$FS_IMG"
@@ -339,7 +339,7 @@ if command -v mcopy >/dev/null 2>&1; then
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/chrome_probe.fry" ::/apps/CHROME_PROBE.FRY || true
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/claude.fry" ::/apps/CLAUDE.FRY || true
   [ -f "$ROOT_DIR/DSKEY.TXT" ] && mcopy -o -i "$FS_IMG" "$ROOT_DIR/DSKEY.TXT" ::/apps/DSKEY.TXT || true
-  copy_linuxulator_test_mtools "$FS_IMG"
+  copy_tbridge_test_mtools "$FS_IMG"
   mmd -i "$FS_IMG" ::/fonts 2>/dev/null || true
   mcopy -o -i "$FS_IMG" "$ROOT_DIR/DejaVuSans.ttf" ::/fonts/DEJAVU.TTF 2>/dev/null || true
 
@@ -389,8 +389,14 @@ if command -v sgdisk >/dev/null 2>&1; then
   # Delete all existing partitions, create a new one
   sgdisk --zap-all "$NVME_IMG" >/dev/null 2>&1 || true
   # Create partition 1 at LBA 2048 through end, with custom GUID type
+  # Typecode must serialize (GPT mixed-endian) to the kernel's TOTFS_PART_GUID
+  # byte array (src/kernel/fs/totfs.h): 46 54 4F 54 00 53 54 41 45 52 54 4F 53 36 34 00.
+  # The first group is little-endian, so 544F5446 -> on-disk 46 54 4F 54 ("TOTF",
+  # matching the superblock magic's on-disk form). The previous value
+  # (46544F54-0053-5441-...) serialized to 54 4F 54 46 53 00 41 54 ... and failed
+  # guid_eq(), so the ToTFS partition was never recognized and /nvme never mounted.
   sgdisk --new=1:2048:0 \
-         --typecode=1:46544F54-0053-5441-4552-544F53363400 \
+         --typecode=1:544F5446-5300-4154-4552-544F53363400 \
          --change-name=1:"TaterTOS" \
          "$NVME_IMG" >/dev/null 2>&1
   echo "GPT partition table created with ToTFS type GUID"
@@ -423,7 +429,7 @@ if [ -f "$ROOT_DIR/vmtest_fixture.txt" ]; then
   "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
     "$ROOT_DIR/vmtest_fixture.txt" "/VMTEST.TXT"
 fi
-copy_linuxulator_test_totfs
+copy_tbridge_test_totfs
 copy_autotest_markers_totfs
 # The REAL claude binary (ET_EXEC, ~243MB) onto the NVMe ToTFS, opt-in via
 # STAGE_CLAUDE=1. Launched from /nvme/RCLAUDE.LXE and STREAMED from disk by
@@ -502,7 +508,7 @@ if command -v mmd >/dev/null 2>&1 && command -v mcopy >/dev/null 2>&1; then
   mcopy -o -i "$EFI_IMG" "$ROOT_DIR/chrome_probe.fry" ::/apps/CHROME_PROBE.FRY || true
   mcopy -o -i "$EFI_IMG" "$ROOT_DIR/claude.fry" ::/apps/CLAUDE.FRY || true
   [ -f "$ROOT_DIR/DSKEY.TXT" ] && mcopy -o -i "$EFI_IMG" "$ROOT_DIR/DSKEY.TXT" ::/apps/DSKEY.TXT || true
-  copy_linuxulator_test_mtools "$EFI_IMG"
+  copy_tbridge_test_mtools "$EFI_IMG"
 
   mmd -i "$EFI_IMG" ::/fonts 2>/dev/null || true
   mcopy -o -i "$EFI_IMG" "$ROOT_DIR/DejaVuSans.ttf" ::/fonts/DEJAVU.TTF 2>/dev/null || true
@@ -579,7 +585,7 @@ cp "$ROOT_DIR/evloop.fry"  "$ISO_DIR/apps/EVLOOP.FRY"
 cp "$ROOT_DIR/chrome_probe.fry" "$ISO_DIR/apps/CHROME_PROBE.FRY"
 cp "$ROOT_DIR/claude.fry" "$ISO_DIR/apps/CLAUDE.FRY"
 [ -f "$ROOT_DIR/DSKEY.TXT" ] && cp "$ROOT_DIR/DSKEY.TXT" "$ISO_DIR/apps/DSKEY.TXT"
-copy_linuxulator_test_dir "$ISO_DIR"
+copy_tbridge_test_dir "$ISO_DIR"
 
 # Fonts
 mkdir -p "$ISO_DIR/fonts"

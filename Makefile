@@ -10,7 +10,13 @@ HOST_GXX_VERSION ?= $(shell $(HOST_GXX) -dumpversion)
 HOST_GXX_MACHINE ?= $(shell $(HOST_GXX) -dumpmachine)
 
 CXX = $(TOOLBIN)/x86_64-elf-g++
-CFLAGS = -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -O2 -std=gnu11 -Wall -Wextra -Isrc/include
+# -mgeneral-regs-only: the kernel must NEVER touch x87/MMX/SSE/AVX registers.
+# It only XSAVE/XRSTORs FPU state on full context switches, NOT on same-process
+# interrupts. Without this flag GCC emits SSE/AVX for memcpy/memset/struct copies
+# in interrupt handlers, clobbering the interrupted user thread's YMM/XMM mid-
+# instruction (e.g. a libc AVX memset(...,0xFF,...) resumes with ymm0=0 and writes
+# zeros, destroying JSC's -1 hash-set empty sentinels -> infinite probe spin). fry1379.
+CFLAGS = -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -mgeneral-regs-only -O2 -std=gnu11 -Wall -Wextra -Isrc/include
 UFLAGS = -ffreestanding -fno-stack-protector -O2 -std=gnu11 -Wall -Wextra -Isrc/include -Isrc/user/libc
 UCXXFLAGS = -ffreestanding -fno-stack-protector -mno-red-zone -O2 -std=gnu++23 -fno-exceptions -frtti -Wall -Wextra -isystem src/include/c++ -Isrc/include -Isrc/user/libc
 HARFBUZZ_CFLAGS := $(filter -I% -D%,$(shell $(PKG_CONFIG) --cflags harfbuzz 2>/dev/null))
@@ -104,12 +110,15 @@ KERNEL_OBJS = \
   src/kernel/fs/fat32.o \
   src/kernel/fs/totfs.o \
   src/kernel/fs/ntfs.o \
+  src/kernel/fs/devfs.o \
+  src/kernel/fs/tbridgefs.o \
   src/kernel/fs/vfs.o \
   src/kernel/proc/process.o \
   src/kernel/proc/sched.o \
   src/kernel/proc/elf.o \
   src/kernel/proc/linux_elf.o \
   src/kernel/proc/syscall.o \
+  src/kernel/kmem.o \
   src/kernel/selftest.o \
   src/drivers/audio/hda.o
 
@@ -255,6 +264,11 @@ src/drivers/smp/trampoline.o: src/drivers/smp/trampoline.asm
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
+
+# Freestanding mem primitives: prevent GCC from lowering the loops back into
+# self-referential memcpy/memset calls (loop-distribution / memset idioms).
+src/kernel/kmem.o: src/kernel/kmem.c
+	$(CC) $(CFLAGS) -fno-tree-loop-distribute-patterns -fno-builtin -c $< -o $@
 
 src/user/%.o: src/user/%.c
 	$(CC) $(UFLAGS) -c $< -o $@

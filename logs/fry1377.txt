@@ -1,0 +1,68 @@
+fry1377 — Tater Bridge / Claude Code: pid=3 spin located — JSC hash-table probe
+that never finds its -1 empty sentinel. Root-cause chain identified.
+Timestamp: 2026-06-06 12:46:59 CDT
+Author: Claude (Opus 4.8), continuing fry1376
+
+INSTRUMENT ADDED
+  irqdesc.c: userspace-RIP sampler on the LAPIC timer IRQ (vector 0x40). When
+  the interrupted process is the Claude tgid and was in user mode (cs&3==3),
+  sample frame RIP/RSP, rate-limited (every 64th hit, cap 400 logs) so IRQ-
+  context serial stays bounded. Globals g_tb_rip_samples / g_tb_rip_logs.
+
+BOOT (KVM, 75s, g_tb_trace_syscalls=0) -> /tmp/tb_rip_s.log
+  TBRIP histogram (pid=3 userspace RIP):
+     3x 0x060CCF10   2x 0x060CCF21   1x 0x060CCF1D   (+ transient 1x libc/early)
+  => tight ~17-byte spin at 0x060CCF10..0x060CCF21.
+
+DISASSEMBLY (objdump of the Claude binary, sym uv_wtf8_to_utf16+0x163a810 =
+nearest symbol only; this is internal statically-linked Bun/JSC):
+  60ccf10: cmp  $0xffffffffffffffff,%r8   ; slot == empty sentinel (-1)?
+  60ccf14: je   60ccf38                   ; empty -> not found, exit
+  60ccf16: mov  %esi,%edi                 ; edi = mask (table+0xc)
+  60ccf18: and  %ecx,%edi                 ; idx = (hash+probe) & mask
+  60ccf1d: shl  $0x4,%r8                  ; idx*16 (16-byte entries)
+  60ccf21: mov  (%rax,%r8,1),%r8          ; load slot key
+  60ccf25: inc  %ecx                      ; probe++
+  60ccf27: cmp  %rbx,%r8                  ; slot == target key (rbx)?
+  60ccf2a: jne  60ccf10                   ; keep probing
+  It is an open-addressing linear-probe hash lookup, 16-byte entries, empty
+  sentinel = -1. Exits ONLY on target-found or empty-slot-found. It exits on
+  neither -> the table has NO -1 empty slot and does not contain the target.
+  A correct hash table always keeps >=1 empty slot so probes terminate.
+
+ROOT-CAUSE CHAIN (high confidence)
+  - Empty sentinel value is 0xffffffffffffffff (-1) == the value seen in the
+    earlier "corruption" (TBSKIP slotval=0xffffffffffffffff).
+  - The other corrupt value, 0x40000000, == the gigacage mmap length exactly
+    (mmap len=0x40000000). A SIZE value is leaking into slots that should hold
+    -1 empty sentinels (or pointers). With empties overwritten by 0x40000000,
+    the probe never sees -1 -> infinite loop -> main thread (pid=3) wedges
+    holding JSC heap lock 0x63ad6e0 -> all workers starve (10s condvar retry).
+  - This unifies fry1374-1376: the "butterfly corruption" and the "deadlock"
+    are the SAME bug: garbage (0xff / 0x40000000) where JSC expects -1/pointer.
+
+CODEX TBSKIP WORKAROUND IS NOW SUSPECT (irqdesc.c ~445-446)
+  On a #PF at 0x6056F06 with a slot value of 0xffffffffffffffff it does
+  write_user_u64_for_exc(slot,0) and advances RIP. But 0xffffffffffffffff is a
+  LEGITIMATE JSC empty/sentinel, not corruption. Zeroing it can damage these
+  tables. The fault at 0x6056F06 (deref of -1 as a pointer) has a real upstream
+  cause; skipping+zeroing hides it and may create the very inconsistency that
+  later hangs the probe at 0x60CCF10.
+
+NEXT (decision point — see report)
+  Two threads to pull:
+  1) Find who writes 0x40000000 into the cage/table memory. 0x40000000 = cage
+     size; a length is being stored as a value. Candidates: a JSC computation
+     fed by a wrong kernel return (sysconf/_SC_PAGESIZE, mmap result, auxv, or
+     the cage allocator reading back its own size). Trace stores of 0x40000000
+     into cage memory, or audit kernel values JSC uses to size/init this table.
+  2) Re-evaluate / disable the TBSKIP zeroing workaround and see whether the
+     -1 sentinels survive (may change the failure but is more honest than
+     corrupting tables).
+
+STATE OF TREE (uncommitted, on top of eff81672)
+  - syscall.c: MADV_DONTNEED-on-sparse fix (fry1374/75); g_tb_trace_syscalls
+    master switch default OFF (fry1376).
+  - irqdesc.c: rcx/rdx/rsi added to TBWATCH (fry1374); RIP sampler (this log).
+  - process.h/sched.c: dynamic JSC slot watchpoints (Codex).
+  Recommend: run under KVM (-machine q35,accel=kvm -cpu host) going forward.

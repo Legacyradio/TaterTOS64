@@ -1,0 +1,255 @@
+=====================================================================
+fry1329 — HANDOFF: run the REAL Claude Code binary in TaterTOS64
+2026-06-04 09:37 CDT
+=====================================================================
+GOAL (Zack, explicit, unchanged): run the REAL Claude Code binary
+(/home/legacyindieradio/.local/share/claude/versions/2.1.162 — 233 MB,
+ET_EXEC, threaded Bun/JavaScriptCore) NATIVELY in TaterTOS64 via the
+linuxulator. NOT Hermes, NOT a stand-in. TaterTOS stays a LIVE BOOT; the
+NVMe disk is ADDITIVE (claude is streamed from /nvme/RCLAUDE.LXE).
+
+READ THIS FIRST, then the per-step logs fry1310, fry1323..fry1328.
+ALWAYS follow planv3.txt RULES (esp R5 log every step in its own
+logs/fryN.txt WITH a real `date` timestamp; R6 a "why" for code changes;
+R16 SHA-256 only on user-requested rebuilds). Zack is strict on logging.
+
+=====================================================================
+CURRENT STATE — VERIFIED WORKING (huge progress; ~8.5-9 / 10)
+=====================================================================
+The real claude binary LOADS off NVMe and EXECUTES the ENTIRE Bun/JSC
+runtime startup in TaterTOS. On the last boot (fry1327/1328):
+- streamed 233 MB ELF off /nvme, dynamic-linked glibc, ran init.
+- selftest 106 passed / 0 failed (no panic).
+- spawned multiple worker threads (tid 28, 29) via clone3.
+- ran madvise / mprotect / mmap / heavy futex coordination.
+- NO abort, NO USER FAULT through ~1576 lines of serial.
+Only ONE thing stops it now: signal-based GC thread suspension deadlocks
+(see blocker). Everything up to that point is solid.
+
+=====================================================================
+THE CURRENT BLOCKER — real signal DELIVERY is unimplemented
+=====================================================================
+EVIDENCE (serial /tmp/s_fry1327.log):
+- claude installs handlers via rt_sigaction, incl. sig 0x1e=30
+  (line 423: pid=12 nr=13 rt_sigaction a1=1e). Sig 30 is JSC's
+  stop-the-world thread-suspend signal for conservative GC stack scans.
+- pid 28 -> tgkill(tgid=12, tid=29, sig=30) returns rc=0, BUT our kernel
+  NO-OPS it: rt_sigaction/rt_sigprocmask/sigaltstack just `return 0`
+  (syscall.c ~3662) and kill/tgkill never make a signal pending or invoke
+  a handler. tid 29 never runs its sig-30 handler, never parks/acks.
+- pid 12 and pid 29 then block FOREVER in futex_wait on 0x63ad6e0
+  (expected=2, infinite timeout, no waker). Log freezes; qemu stays alive
+  = hung. That is the deadlock.
+
+ROOT CAUSE: thread-directed signal delivery does not exist. Handlers are
+recorded-but-inert; there is no pending-signal state, no frame build, no
+rt_sigreturn, no interruptible blocking.
+
+=====================================================================
+NEXT TASK (#9) — IMPLEMENT REAL SIGNAL DELIVERY (the big one)
+=====================================================================
+This is the largest remaining linuxulator piece. Suggested build order,
+each its own fryN.txt log + boot verify:
+
+1) STATE (process.h / process.c): add per-thread signal state to
+   fry_process (or proc_shared where threads share disposition — in Linux
+   signal DISPOSITIONS (sigaction) are per-PROCESS/shared across threads;
+   the BLOCKED mask and PENDING set are per-THREAD). So:
+     - shared: struct { uint64_t handler; uint64_t flags; uint64_t mask;
+       uint64_t restorer; } sigact[64];   (dispositions, shared by tgid)
+     - per task: uint64_t sig_blocked;  uint64_t sig_pending;
+       plus sigaltstack {sp,size,flags} per task.
+2) rt_sigaction (nr 13): store/return dispositions into shared->sigact[].
+   Honor SA_RESTORER (sa_restorer in a6/act->sa_restorer), SA_SIGINFO,
+   SA_RESTART. Return old act. (Currently returns 0 — replace.)
+   rt_sigprocmask (nr 14): actually update per-task sig_blocked (SIG_BLOCK/
+   UNBLOCK/SETMASK), return old. sigaltstack (nr 131): store per-task.
+3) kill/tkill/tgkill (62/200/234): set the bit in the target task's
+   sig_pending; if the target is blocked interruptibly (futex_wait etc.)
+   and the signal is not blocked, wake it so it returns toward the kernel
+   exit path. (tgkill: target = proc_find_task(tid).) Keep the existing
+   fatal-default behavior for sigs with NO handler (term/core) — see the
+   current tgkill self-kill at syscall.c ~3660 (syscall_exit_current(128+sig)).
+4) INTERRUPTIBLE BLOCKING (sched.c sched_block_futex ~515): a blocked task
+   with a pending, unblocked, handled signal must stop waiting and return
+   -EINTR (futex) so control reaches the syscall-exit path. Add a
+   "has deliverable signal" check to the block/wake conditions.
+5) DELIVERY on kernel->user return: before returning to user (syscall exit
+   and/or IRET in irqdesc/syscall_entry), if the task has a pending,
+   unblocked, handled signal:
+     - pick lowest signal, clear its pending bit.
+     - choose stack: sigaltstack if SA_ONSTACK else current user rsp.
+     - build a frame on the user stack: struct rt_sigframe { ucontext_t
+       (saved GPRs/RIP/RFLAGS + FPU/xsave), siginfo_t, and a return
+       address = sa_restorer (glibc passes one; it does rt_sigreturn) }.
+       Match the x86-64 SysV layout EXACTLY (16-byte align; rdi=signo,
+       rsi=&siginfo, rdx=&ucontext; rax=0).
+     - set RIP=handler, RSP=frame, add signal to blocked mask for the
+       handler's duration (plus sa_mask).
+6) rt_sigreturn: ADD LNX_rt_sigreturn (nr 15) to linux_compat.h and a
+   handler that restores GPRs/RIP/RFLAGS/FPU and the blocked mask from the
+   on-stack ucontext, then resumes. (Currently NOT defined at all.)
+7) DEFAULT ACTIONS for sigs without a handler: term (most), ignore
+   (SIGCHLD/SIGURG/SIGWINCH), core->term. Keep SIGKILL/SIGSTOP unblockable.
+
+WHY sig 30 specifically: JSC suspends each mutator thread by signaling it;
+the handler captures the thread's stack bounds/registers and spins on a
+futex until the collector resumes it. Without real delivery the collector
+waits forever. Once #5+#6 work for sig 30, the GC safepoint completes and
+claude should proceed (watch for the next gap or for `--version` output).
+
+GOTCHA for delivery while a thread sits in futex_wait: you must (a) make
+the wait return -EINTR (step 4), (b) on the way out deliver the frame
+(step 5), (c) the handler runs, parks on JSC's internal futex, (d) the
+collector wakes it. Test incrementally — deliver to a self-signal first
+(simplest), then thread-directed.
+
+=====================================================================
+SESSION FIX CHAIN (all VERIFIED, in-tree) — what got us here
+=====================================================================
+fry1310: 3 boot-blocking bugs found+fixed before claude could load:
+  - tools/totcopy.c read_inode/write_inode used the constant
+    TOTFS_INODE_TABLE_BLK instead of g_sb.inode_table_start -> with the
+    multi-block bitmap the inode table shifted; files staged where the
+    kernel couldn't see them. Fixed -> g_sb.inode_table_start.
+  - build_iso.sh NVMe GPT typecode was wrong-endian vs the kernel's
+    TOTFS_PART_GUID -> /nvme never mounted. Fixed typecode to
+    544F5446-5300-4154-4552-544F53363400 (serializes to the kernel's
+    on-disk bytes). Verified on a scratch image.
+  - NVMe poll-wait (src/drivers/storage/nvme.c poll_cq + wait_cq_irq)
+    called sched_yield() from the pid-0 idle/boot context once the
+    scheduler was up; the yield switched into idle_loop and never
+    returned, abandoning the in-flight read -> hung vfs_open of RCLAUDE.
+    Fix: only yield when proc_current() && pid != 0; else busy-poll.
+fry1323 (Codex): clone3 read the child resume frame from per-CPU GS
+  scratch (clobbered mid-syscall) -> child resumed at .rodata. Fixed to
+  read this task's kernel stack frame (kernel_stack_top - 12*8).
+fry1324: TEMPORARY TBABORT backtrace beacon in the tgkill handler (still
+  in tree — SEE CLEANUP).
+fry1325: claude's silent SIGABRT root-caused: /proc/self/maps returned ""
+  -> glibc pthread_getattr_np couldn't find the main-thread stack ->
+  WTF::Thread RELEASE_ASSERT (m_stackOrigin==0). Fix (tbridgefs.c):
+  /proc/self/maps now emits the real [stack] VMA
+  7fffff800000-800000000000 rw-p ... [stack] (LX_STACK_TOP=0x800000000000,
+  8 MiB; matches prlimit64 RLIMIT_STACK=8 MiB).
+fry1326: updated the tbridgefs_maps selftest (was asserting empty-maps
+  EOF; now non-empty + contains [stack]). selftest 106/0, no panic.
+fry1327: DEMAND PAGING for anon mmap (the gigacage fix). syscall.c
+  lx_try_demand_page() commits a zero page on a not-present user fault
+  inside an anon VMA (prot-checked); lx_map_sparse_anon_private now stores
+  the REAL prot (not 0); irqdesc.c irq_dispatch calls it before logging/
+  kill on a user vec-14 fault and returns to retry; prototype in syscall.h.
+fry1328: verified demand paging; identified the signal-delivery deadlock.
+
+=====================================================================
+KEY CODE LOCATIONS (verify line numbers; they drift)
+=====================================================================
+- Linux syscall dispatch:        src/kernel/proc/syscall.c (big switch)
+  rt_sigaction/sigprocmask/sigaltstack no-op: ~3662 (return 0)
+  tgkill (234): ~3660  kill (62)  tkill (200)
+  mmap (9): ~3247  mprotect (10): ~3354  madvise (28): ~3373 (return 0)
+  lx_map_one(): ~2515   lx_try_demand_page(): just after lx_map_one
+  lx_map_sparse_anon_private(): stores real prot now
+  proc_find_task(tid): ~129
+- Page-fault / exception path:    src/kernel/irq/irqdesc.c
+  irq_dispatch(): demand-page hook + !EXC log + user kill (~226+)
+  exc_kill_current_user(): ~181   pf_find_vm_region(): ~88
+  Frame layout in ctx: [0..14]=gp regs, [15]=vec,[16]=err,[17]=RIP,
+  [18]=CS,[19]=RFLAGS.
+- Scheduler:                      src/kernel/proc/sched.c
+  sched_block_futex(): ~515 (make interruptible)  idle_task[]: ~53
+  TB_TRACE_CLAUDE_TGID = 12 (trace gate)
+- Process/thread struct:          src/kernel/proc/process.h
+  fry_process: kernel_stack_top, user_rsp/rip, cr3, tgid, pid, is_kernel,
+  shared (proc_shared). NO signal state yet — ADD per step 1.
+  fry_vm_region {base,length,prot,flags,backing_id,backing_page_start,
+  kind,used,committed}.
+- Synthetic procfs/sysfs:         src/kernel/fs/tbridgefs.c (/proc /sys
+  /proc/self/maps, /proc/stat, /proc/sys/vm/*, /sys/.../cpu/online, cgroup)
+- Linux ELF load + stack:         src/kernel/proc/linux_elf.c
+  LX_STACK_TOP=USER_VA_TOP=0x800000000000, LX_STACK_PAGES=2048 (8 MiB)
+- Syscall numbers:                src/kernel/proc/linux_compat.h
+  rt_sigaction=13 rt_sigprocmask=14 (rt_sigreturn=15 NOT defined — ADD)
+  kill=62 tkill=200 tgkill=234 futex=202 clone3=435
+- claude launch (LINUXTEST):      src/kernel/main.c ~738
+  vfs_open("/nvme/RCLAUDE.LXE") then process_launch_linux (ASYNC: returns
+  pid, does NOT wait). kernel_selftest() runs right after (~756).
+- Selftest:                       src/kernel/selftest.c
+
+=====================================================================
+BUILD / BOOT / VERIFY RECIPE (exact)
+=====================================================================
+BUILD (incremental ok; clean rebuild waived by Zack). Re-stages the 233 MB
+claude each time (build_iso.sh always re-runs mktotfs/totcopy):
+  cd /home/legacyindieradio/TaterTOS64
+  CLAUDE_BIN="$(readlink -f "$(command -v claude)")" \
+  STAGE_CLAUDE=1 MTOOLSRC=/dev/null \
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" \
+  /bin/bash build_iso.sh
+BOOT (smp2 REQUIRED — claude is multithreaded; do NOT drop to smp1):
+  # kill stale qemu FIRST (see gotchas), then:
+  cp /usr/share/edk2/x64/OVMF_VARS.4m.fd /tmp/v.fd
+  timeout 600 qemu-system-x86_64 -m 6G -machine q35,accel=tcg -cpu max -smp 2 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=/tmp/v.fd -cdrom out/tatertos64v3.iso \
+    -drive file=out/tater_nvme.img,if=none,id=nvm,format=raw \
+    -device nvme,serial=deadbeef,drive=nvm \
+    -serial file:/tmp/s.log -display none -no-reboot 2>/tmp/qemu.err &
+VERIFY ALIVE before walking away: confirm /tmp/s.log grows past ~100 bytes
+within ~5s, and /tmp/qemu.err is empty. EFI prints immediately.
+HARVEST: grep -a /tmp/s.log for: "claude launch rc", "TBTRACE",
+"USER FAULT: pid=12", "tgkill", "selftest:". claude is tgid/pid 12.
+NOTE: streaming the 233 MB under TCG is the slow part (minutes), silent.
+
+=====================================================================
+GOTCHAS (hard-won this session — do not relearn)
+=====================================================================
+- QEMU IMAGE LOCK: a prior boot (timeout 600) holding out/tater_nvme.img
+  makes the next boot die at 0 bytes with "Failed to get write lock". A
+  0-byte /tmp/s.log + alive qemu = you're watching a corpse. ALWAYS reap
+  qemu before booting and confirm the log grows.
+- pkill SELF-KILL: `pkill -f qemu-system` MATCHES YOUR OWN SHELL (the
+  command line contains "qemu-system") and kills the launcher. NEVER use
+  pkill -f for qemu. Reap by comm instead:
+    for p in $(ps -eo pid,comm | awk '$2 ~ /qemu/ {print $1}'); do kill -9 $p; done
+  (comm is truncated to 15 chars "qemu-system-x86", which never matches a
+  grep/awk pipeline.)
+- kprint IS FILTERED: plain kprint() runs through kprint_should_emit()
+  (kprint.c ~731) and most lines are DROPPED from serial. Use
+  kprint_serial_only() for any beacon you must see. (This is why
+  "storage: nvme init" etc never appeared — not lost, filtered.)
+- DEMAND PAGING vs RAM: JSC reserves 128 GB VIRTUAL (MAP_NORESERVE); only
+  touched pages get physical RAM. Do NOT try to eagerly back it.
+- clangd shows a false-positive cascade ('fry_limits.h' not found ->
+  FRY_* undeclared). IGNORE — the x86_64-elf-gcc build uses -Isrc/include
+  and compiles clean. Trust the gcc build, not clangd.
+- smp2: do NOT "simplify" to -smp 1 to get cleaner logs; it changes the
+  threading model and hides SMP-specific bugs (this was a corner-cut Zack
+  called out). Fix VISIBILITY, never simplify the target config.
+
+=====================================================================
+PENDING CLEANUP (do before/with the signal work)
+=====================================================================
+- STRIP the TEMPORARY TBABORT backtrace beacon in src/kernel/proc/syscall.c
+  (LNX_tgkill handler, 2 references; added fry1324). It only fires on the
+  claude tgid + fatal self-signal; once signal delivery handles sig flow,
+  remove it. It is read-only/harmless but should not ship.
+- Any remaining fry13xx kprint_serial_only beacons: the TBTRACE/TBFUTEX/
+  TBSCHED/TBCLONE3 path tracing (Codex, sched.c/syscall.c, gated on
+  TB_TRACE_CLAUDE_TGID==12) is invaluable for the signal work — KEEP it
+  until claude --version runs, then strip.
+
+=====================================================================
+POINTERS
+=====================================================================
+- claude binary: /home/legacyindieradio/.local/share/claude/versions/2.1.162
+  (ET_EXEC, entry 0x24aa400; text ~0x24aa400..0x6100000; glibc ~0x6fff...)
+- Per-step logs: logs/fry1310.txt, fry1323.txt .. fry1328.txt
+- Last serial captures: /tmp/s_fry1326.log (claude pre-demand-paging fault),
+  /tmp/s_fry1327.log (post-demand-paging, the signal deadlock).
+- sudo pw 0420. This box is Zack's PRODUCTION SERVER — QEMU only, no
+  bare-metal experiments.
+- Disassemble the binary with objdump -d --start-address/--stop-address to
+  map TBTRACE rips / fault rips to code (that is how the SIGABRT and the
+  gigacage fault were root-caused).
+=====================================================================

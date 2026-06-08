@@ -10,7 +10,13 @@
 
 #define FRY_FD_MAX          64    /* max open file descriptors per process */
 #define FRY_PROC_MAX       256    /* max simultaneous processes */
-#define FRY_VMREG_MAX      256    /* max VM regions per process */
+#define FRY_VMREG_MAX     2048    /* max VM regions per process (fry1390: was 256.
+                                   * Bun/JSC + glibc + bmalloc + JIT pages + thread
+                                   * stacks exceed 256; when the table filled, eager
+                                   * mmaps stayed UNTRACKED and the cursor allocator
+                                   * could alias them over live heap -> a live
+                                   * CodeBlock's numCalleeLocals read as another
+                                   * object's 0 -> JIT-prologue stack runaway). */
 #define FRY_SHM_MAX        128    /* max global shared-memory objects */
 #define FRY_VM_SHARED_MAX  128    /* max global anonymous shared VM objects */
 #define FRY_PATH_MAX       128    /* max path length in bytes */

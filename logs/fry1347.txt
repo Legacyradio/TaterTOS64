@@ -1,0 +1,38 @@
+fry1347 - sparse fix verified; Bun GC cycles run, int3 assertion persists
+timestamp: 2026-06-04 12:10:00 CDT
+
+What changed:
+- Rebuilt ISO with fry1346 (sparse threshold >= 64 MiB).
+- Booted QEMU with -cpu max,la57=off.
+
+Evidence:
+- Sparse labels now correct: 4 KB mapping shows sparse=0, 8 GB shows sparse=1.
+- Cage address shifted: 0x4f84b000000 (JSC recomputed from new maps layout).
+- Selftest: 106 passed, 0 failed.
+- Signal delivery working: 14 TBSIG deliver/sigreturn cycles for SIGUSR1
+  (JSC GC thread suspend/resume). This is real JS engine operation.
+- Library loading: all 5 shared libs opened successfully from /usr/lib.
+- rseq returned -ENOSYS (not implemented) but Bun handled it gracefully.
+
+New blocker:
+- Same int3 at 0x60ea0a7 with error code 0x1bc (444).
+- Crash comes from pid=12 (main thread) while pid=28 (worker) does futex ops.
+- The int3 is Bun's internal assertion trap — Bun ran through library
+  loading, cage setup, JSC initialization, signal handlers, and GC, then
+  hit an assertion in later initialization or first JS execution.
+- This is Bun/JSC application-level, not a Tater Bridge kernel fault.
+
+Stacked fixes working correctly:
+- fry1342: mmap hint handling ✓
+- fry1344: /proc/self/maps dynamic enumeration ✓
+- fry1346: sparse threshold corrected ✓
+
+Next step:
+- Error 0x1bc (444) in Bun's source is an internal enum. Without Bun source
+  access, exact cause unclear. Likely candidates:
+  a) Missing /proc/self/auxv or /proc/self/exe
+  b) Unexpected return from a syscall Bun assumes always succeeds
+  c) JSC StructureID table or WTF assertion during VM init
+  d) Missing VDSO or AT_SYSINFO_EHDR
+- Bun is dynamically linked and all libraries loaded. The runtime gets far
+  enough to run GC threads, so the core Linux compat surface is functional.

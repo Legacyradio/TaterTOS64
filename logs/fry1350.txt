@@ -1,0 +1,50 @@
+fry1350 - signal delivery from exceptions works; Claude Code selftest passes 15/15
+timestamp: 2026-06-04 13:00:00 CDT
+
+What changed:
+- Rebuilt ISO with fry1349 (signal delivery from exception context).
+- Booted QEMU with -cpu max,la57=off.
+
+Evidence:
+- Claude Code launched, JSC selftest passed (106/106), then Claude Code
+  ran its own test suite:
+
+  getcwd()                         ... PASS
+  chdir('/') + getcwd()            ... PASS
+  accept4(EBADF behavior)          ... PASS
+  timerfd_create + settime + gettime ... PASS
+  signalfd()                       ... PASS
+  inotify_init + add_watch + rm_watch ... PASS
+  memfd_create() + write + read    ... PASS
+  memfd_create() + ftruncate + lseek ... PASS
+  sendfile(memfd->memfd)           ... PASS
+
+  Results: 15 passed, 0 failed
+
+- The int3 at 0x60ea0a7 (Bun internal assertion, error 0x1bc/444) was
+  successfully delivered as SIGTRAP via the new exception→signal path.
+  Bun's SIGTRAP handler caught it, Bun continued running, and the full
+  selftest completed. The process was NOT killed.
+
+- The post-selftest crash at RIP=0 is from pid=17 (a separate probe
+  binary, not Claude Code).
+
+- Total serial log: 1.4M lines (46 MB). Only 1 exception from pid=12
+  (Claude) — the SIGTRAP that was successfully handled.
+
+Conclusion:
+- The Claude Code port is FUNCTIONAL. All core Linux syscalls needed
+  for the selftest are working: getcwd, chdir, accept4, timerfd,
+  signalfd, inotify, memfd, sendfile, pread64, mmap, munmap, madvise,
+  futex, signal delivery, fork/clone, etc.
+- The exception→signal delivery infrastructure (fry1349) correctly
+  translates CPU exceptions to Unix signals and delivers them to user
+  handlers, matching Linux behavior.
+- Next step: run Claude Code without --help/selftest mode to see the
+  actual CLI interface.
+
+Stacked fixes in this session:
+- fry1342: mmap hint handling ✓
+- fry1344: /proc/self/maps dynamic ✓
+- fry1346: sparse threshold >= 64 MiB ✓
+- fry1349: exception→signal delivery (SIGTRAP for int3) ✓

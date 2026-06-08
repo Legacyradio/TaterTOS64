@@ -1,0 +1,39 @@
+fry1339 - Tater Bridge shared mmap cursor clears claude mmap write fault
+timestamp: 2026-06-04 10:34:53 CDT
+
+What changed:
+- Moved the Linux mmap top-down allocation cursor from per-thread process state
+  into the shared process state:
+  - src/kernel/proc/process.h: fry_process_shared.linux_mmap_next
+  - src/kernel/proc/process.c: seed shared linux_mmap_next during Linux launch
+  - src/kernel/proc/syscall.c: LNX_mmap allocates from shared->linux_mmap_next
+
+Why:
+- Linux clone threads share one address space. Keeping linux_mmap_next on each
+  thread lets cloned Bun/JSC threads allocate from stale copied cursors and
+  overlap existing mappings. The previous boot died on a write-protection fault
+  inside a freshly returned anonymous mmap, consistent with an overlapping
+  mapping left with older permissions.
+
+Verification:
+- Full ISO rebuild completed with STAGE_CLAUDE=1. The real claude binary was
+  staged as /RCLAUDE.LXE, size 244000464 bytes.
+- Booted QEMU with -smp 2, 6G RAM, NVMe image, serial to /tmp/s.log.
+- Tater Bridge launched the real claude --help path:
+  - TBRIDGE: claude launch rc=12
+  - selftest: 106 passed, 0 failed
+- The old Claude fault at cr2=0x6fdd67000000 did not recur.
+- Claude progressed from the old ~9k-line mmap crash to ~12.3k serial lines
+  with active futex/madvise/signal traffic.
+
+Next blocker:
+- Claude now dies later on a general-protection fault:
+  - !EXC vec=0x0d err=0 RIP=0x4c17293 CS=0x2b RF=0x10246
+    CR2=0x6fde01317040
+  - USER FAULT: pid=12 tid=12 vec=13 err=0x0 rip=0x4c17293
+    cr2=0x6fde01317040
+
+Next step:
+- Decode RIP 0x4c17293 in the staged claude binary and identify whether the
+  #GP is caused by an unsupported/privileged instruction, bad TLS/segment
+  state, or another ABI gap.

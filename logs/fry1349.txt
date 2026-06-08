@@ -1,0 +1,37 @@
+fry1349 - signal delivery from exception context (int3 → SIGTRAP to handler)
+timestamp: 2026-06-04 12:40:00 CDT
+
+What changed:
+- src/kernel/proc/syscall.h: added lx_deliver_signal_from_exception()
+- src/kernel/proc/syscall.c: implemented lx_deliver_signal_from_exception()
+  - Maps exception vectors to Unix signals (same mapping as fry1348)
+  - Checks if the process has a registered signal handler
+  - Builds an rt_sigframe on the user stack with all saved registers
+  - Modifies the exception frame's RIP→handler, RSP→sigframe, sets
+    RDI=sig, RSI=siginfo_ptr, RDX=ucontext_ptr
+  - Returns 1 if signal delivered, 0 if no handler (fall through to kill)
+
+- src/kernel/irq/irqdesc.c:
+  - exc_kill_current_user: uses exc_unix_signal() for correct exit code
+  - irq_dispatch: before killing for user exceptions, tries to deliver
+    the signal first. If delivered (process has a handler), returns
+    instead of killing — common_isr iretq's to the handler directly.
+
+Why:
+- The int3 at 0x60ea0a7 was killing the process with SIGSEGV (139).
+  Bun likely has a SIGTRAP handler that catches assertions and prints
+  diagnostic info or handles them gracefully. By delivering SIGTRAP
+  properly, Bun can respond to its own assertion rather than being
+  killed outright.
+- This is the correct Linux behavior: CPU exceptions in user mode
+  deliver the appropriate Unix signal to the process.
+
+Expected effect:
+- When Bun hits the int3 at 0x60ea0a7, Tater Bridge will:
+  1. Recognize #BP (vec=3) → SIGTRAP (5)
+  2. Check if Bun has a SIGTRAP handler
+  3. If yes: build sigframe, modify exception frame, iretq to handler
+  4. If no: kill with exit code 133 (128+5)
+- If Bun's SIGTRAP handler prints a backtrace or error message, we'll
+  see diagnostic info on the serial console.
+- If Bun's SIGTRAP handler recovers gracefully, the process may continue.

@@ -1,0 +1,41 @@
+2026-06-04 03:38 CDT  Fry 1326 — maps [stack] fix VERIFIED; claude clears the abort,
+            runs full Bun/JSC init, hits a NEW blocker: anon-mmap demand paging
+
+VERIFIED (fry1325 maps fix + fry1326 stale-selftest fix):
+- /proc/self/maps now emits the real [stack] VMA -> glibc resolves the
+  main thread stack -> WTF::Thread stack-bounds check PASSES. The silent
+  SIGABRT is GONE.
+- Updated the tbridgefs_maps selftest (was asserting empty-maps EOF; now
+  asserts non-empty + contains "[stack]"). selftest: 106 passed, 0 failed
+  (no more kernel panic right after claude launch).
+- claude (pid 12) now executes the ENTIRE Bun/JSC runtime init: hundreds
+  of mmap/mprotect/munmap/futex ops, including JSC gigacage reservations
+  (mmap 128 GB and 8 GB, MAP_NORESERVE|ANON|PRIVATE, flags 0x4022).
+
+NEW BLOCKER (the furthest we've reached):
+  USER FAULT pid=12 rip=0x54effb1 cr2=0x6fde01000000 err=0x6 (write,
+  user, NOT-present).  PTE CHAIN: pml4[223] present, leaf page absent.
+- Fault instr (objdump): mov %rbx,(%r12) with r12=0x6fde01000000.
+- 0x6fde01000000 lies inside the 128 GB MAP_NORESERVE anon mmap from
+  line 404 (a2=0x2000000000). This is JSC's gigacage: reserve a huge
+  RW NORESERVE range, then touch pages on demand.
+- Root cause: our linuxulator mmap returns the address but does NOT
+  lazily back anon pages; the first write to an un-touched page faults
+  fatally instead of getting a demand-allocated zero page. Cannot eagerly
+  map 128 GB — demand paging is required.
+
+NEXT (task #8): implement demand paging for anonymous mmap.
+- On a user page fault, if the faulting VA is inside a known anon mmap
+  region (VMA) and the access matches the region's prot, allocate a
+  zero-filled physical page, vmm_map_user it with the region perms, and
+  return to user (retry the instruction). Else keep the USER FAULT kill.
+- Needs: per-process VMA list with base/len/prot/flags (mmap already
+  tracks regions for munmap/mprotect — extend/consult it in the #PF path).
+- Watch: MAP_NORESERVE + huge ranges; only back touched pages. Respect
+  PROT (no exec unless PROT_EXEC; JIT regions use mprotect RWX later).
+
+PROCESS NOTE: earlier wasted cycle was a QEMU image-lock collision — a
+prior boot (timeout 600) still held out/tater_nvme.img when the next boot
+launched (0-byte serial). Always reap qemu by `comm` (NOT pkill -f
+qemu-system, which self-kills the launcher shell) and confirm the serial
+log grows before walking away.

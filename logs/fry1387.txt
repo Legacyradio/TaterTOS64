@@ -1,0 +1,56 @@
+fry1387 — Tater Bridge / Claude Code: demand stack-growth — works, but JSC zeroes
+a ~67MB frame (huge alloca count) -> hits the 64MB cap
+Timestamp: 2026-06-06 17:25:13 CDT
+Author: Claude (Opus 4.8), continuing fry1386
+
+WHY
+  After the #GP fix (fry1386), Bun reached the event loop then took a #PF at
+  CR2=0x7FFFFF7FFFF8 (vec 0E), RIP=0x3F4CFB6 — JSC's stack-frame ZEROING loop
+  (`mov %rax,%rsp; ... movq $0,(%rdx); sub $8,%rdx; jmp`) walking below the fixed
+  8MB main stack. The main stack is mapped by linux_elf.c ([USER_VA_TOP-8MB,
+  USER_VA_TOP), LX_STACK_PAGES=2048) with NO PROC_VMREGS region, so neither
+  demand-paging nor growth covered the fault. Also JSC touches memory FAR below
+  rsp (whole-frame pre-zero), so the Linux "within 64KB of rsp" heuristic is wrong.
+
+WHAT (fix, in tree)
+  - syscall.c: new lx_try_grow_stack(p, fault_va, rsp, err); decl in syscall.h.
+    First handles the MAIN-STACK WINDOW [USER_VA_TOP-64MB, USER_VA_TOP) with NO
+    rsp-proximity check (that window is exclusively stack VA; heap/cages are at
+    0x6fxx/0x26xx), committing a zero NX page on a not-present fault if the page
+    isn't already a tracked region. Then a generic GROWSDOWN path (near rsp) for
+    tracked anon regions. 64MB cap bounds runaway recursion. Logs TBSTACKGROW.
+  - irqdesc.c: call lx_try_grow_stack in the user #PF path, after lx_try_demand_page.
+  - (Bug found+fixed mid-step: my first version put the rsp check BEFORE the
+    main-stack window and rejected the fault because JSC's frame-zero faults
+    ~8MB below rsp. Moved the window check first, no rsp requirement.)
+
+RESULT (/tmp/tb_sg3_s.log, KVM, 35,005 lines)
+  - TBSTACKGROW fired 14,336 times -> stack growth WORKS. Bun ran far further.
+  - BUT it grew to the 64MB cap and faulted at CR2=0x7FFFFBFFFFF8
+    (= USER_VA_TOP - 64MB - 8), then Bun's panic/UD2. So a SINGLE JSC zeroing loop
+    walked ~56MB down (14336 pages) i.e. it is allocating/zeroing a ~67MB stack
+    frame in one shot (new rsp = rbp - eax*8, eax=[rsi+0x14], rsi=[rbp+0x10]).
+  - socket() (nr=41) still returns -ENOSYS (networking unimplemented).
+
+ASSESSMENT of the 67MB frame
+  67MB for one alloca/frame is unreasonable for JSC (its JS stack is ~MBs). Two
+  possibilities:
+    (a) The count [rsi+0x14] is GARBAGE from a corrupted object -> another bug
+        upstream (could be residual; investigate what rsi points to).
+    (b) JSC is deliberately committing a large JS-stack reservation of a specific
+        size and 64MB is just under it.
+  Distinguish: log eax/[rsi+0x14] and rsi at the fault (or in lx_try_grow_stack
+  when va crosses below USER_VA_TOP-8MB), and check if the size is a sane power-of-2
+  (legit -> raise cap, e.g. to RLIMIT_STACK JSC requested) vs random (corruption).
+
+NEXT
+  1. Determine legit-vs-garbage for the 67MB frame (instrument the count). If
+     legit, raise the stack cap and/or honor JSC's requested stack size. If
+     garbage, trace the corrupt object (rsi=[rbp+0x10]).
+  2. The real end-goal gate remains NETWORKING: socket=-ENOSYS. Implement the
+     Linux socket ABI over netcore + TLS (bearssl) + DNS + auth for the HTTPS
+     call to api.anthropic.com.
+
+STATUS: hang fixed (1379); signal-FPU (1381); #GP fixed (1386); stack grows on
+  demand (this) but JSC wants >64MB in one frame -> next. Then networking.
+  Handoff: HANDOFF_CLAUDE_RUNS.md. KVM, CLAUDE_BIN=2.1.162.

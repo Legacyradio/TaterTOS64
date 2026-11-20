@@ -1,0 +1,31 @@
+fry1469 - Fix fd_path_set fd<3 guard: dup2(/dev/null, 0) was returning
+EINVAL. rg's stdin redirect now succeeds; child advances to a SECOND
+redirect dup2(socket, 1) which exposes the next gap (FD_SOCKET not copied).
+Date: 2026-06-13. Author: Claude (Opus 4.8).
+========================================================================
+
+WHY: fry1468 showed rg does dup2(oldfd=5 /dev/null, newfd=0) with the
+source valid (open=1), yet nr=33 returned EINVAL (rc=-22). Cause: the
+dup2 FD_FILE path calls fd_path_set(shared, newfd, path) to copy the
+file's path, and fd_path_set rejected fd<3 with -EINVAL (the 7th stdio
+guard, after fd_install/fd_release/dup2/write/read/close fixed in fry1467).
+
+CHANGE: src/kernel/proc/syscall.c fd_path_set: guard fd<3 -> fd<0, so a
+path-backed FD_FILE can be dup2'd onto child stdio 0-2.
+
+BUILD: make kernel EXIT 0. Full rebuild EXIT 0 (/tmp/fry1469_build.log).
+NOTE: first boot of this image failed (-EBADF write lock) because a stale
+fry1468 QEMU still held out/tater_nvme.img; re-booted after killing it.
+Operational reminder: kill the prior QEMU before each boot.
+
+BOOT (serial /tmp/s_fry1469.log):
+- rg dup2(5,0) EINVAL is GONE (fd_path_set fix worked).
+- rg child now does a SECOND redirect: TBDUP2 oldfd=20 newfd=1 kind=0
+  open=0 -> EBADF. fd 20 (rg stdout) is NOT in the child table.
+- agent-bus unchanged: dup2(19,0) EBADF.
+- MAIN INFERENCE STILL CLEAN (regression guard holds).
+- Child still _exit 127; claude logs "posix_spawn 'rg' EBADF".
+
+NEXT (fry1470 diag -> fry1471 fix): identify fd 19/20. They are the
+posix_spawn child-stdio fds the parent created; not copied to the vfork
+child. -> dump parent fd table at copy time.

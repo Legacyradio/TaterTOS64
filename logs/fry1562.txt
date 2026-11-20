@@ -1,0 +1,56 @@
+# fry1562 - CORRECTION to fry1561: the freeze is NOT a JSC futex lost-wakeup. The JSC waits all return. The main thread (pid=14) goes SILENT in userspace after a burst of worker wake-calls — it is either spinning in userspace or dropped by the scheduler (runnable-but-never-run). NOT blocked in any logged futex.
+Date: 2026-06-16 01:20 CDT
+Type: diagnosis correction (deeper serial read of the fry1560 run; no code change)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+---------------------------------------------------------------------------------
+WHY fry1561's "JSC futex lost wakeup" CONCLUSION WAS WRONG (corrected here)
+---------------------------------------------------------------------------------
+Traced the JSC futex (key ...063ad6e0) timeline at the freeze:
+- The final jsc-wait-enter (pid=14, line 20746, expected=2 current=2) WAS WOKEN: jsc-wait-return pid=14 rc=0 elapsed=26.
+- Every jsc-wait for pid=14 returns. pid=15/pid=19 also wake it (jsc-wake-ret rc=1). The JSC ParkingLot futex path WORKS.
+So the lost-wakeup theory is REJECTED. (Own it: I called the futex too early; the data says otherwise.)
+
+---------------------------------------------------------------------------------
+WHAT ACTUALLY HAPPENS (pid=14 final sequence, raw lines 20762-20864)
+---------------------------------------------------------------------------------
+pid=14's last operations are a BURST OF FUTEX WAKE-CALLS (waking its worker threads), then it STOPS:
+  20762 wake-call uaddr=63ad6e0 (jsc) rc=0
+  20797 wake-call uaddr=6fbfee694450 rc=1
+  20804 TBTRACE ret nr=21 access rc=-2 (ENOENT)
+  20808 wake-call uaddr=6fbfee694454 rc=1
+  20819 wake-call uaddr=6fbfee694450 rc=0
+  20849 wake-call uaddr=6fbbe4ee5254 rc=1
+  20851 wake-call uaddr=6fbbe4ed11d0 rc=1
+  20855 wake-call uaddr=6fbbe4edd2d4 rc=1
+  20862-20864 wake-call uaddr=6fbfee694454 rc=1   <-- LAST pid=14 activity. Serial continues to 60743. pid=14 SILENT.
+- NO futex wait-begin after this (tgid=14 waits DO log -> so pid=14 is NOT parked in a futex).
+- NO TBEPW after cnt=75 (line 20565) -> pid=14 not in epoll either.
+- NO syscalls at all from pid=14 after 20864.
+- Meanwhile 40,000 more serial lines: pid=15 (100ms timer) 37991, workers pid=19/40/41/42 a little, pid=14 = silent.
+
+=> pid=14 returned to USERSPACE after waking its workers and never came back to the kernel. Two possibilities:
+  (A) USERSPACE SPIN: the main thread is busy-looping in JS/native (e.g. a WTF::Lock/ParkingLot adaptive spin, or a
+      synchronous loop) on a condition a worker is supposed to satisfy — burning a CPU, never returning to the event loop.
+  (B) SCHEDULER DROP: pid=14 was runnable (just finished its wakes) but the scheduler never runs it again -- a
+      runqueue/enqueue bug (woken/ready thread lost). Matches the historical "starvation era" notes. KERNEL-fixable.
+Distinguishing A vs B requires seeing whether pid=14 is RUNNING (consuming a CPU, A) or NOT RUNNING (B) after 20864.
+
+---------------------------------------------------------------------------------
+CONFIRMED CONTEXT (unchanged)
+---------------------------------------------------------------------------------
+- Input PROVEN to work in the live window (screenshot: "hhello" echoed; read(fd0) consumed 6+2 bytes).
+- OS delivery + kernel epoll/poll_check_fd correct. Network + DNS fine. Panic fixed. /proc/self/stat added.
+- The freeze = the main thread (event loop) stops running after coordinating workers -> stdin no longer polled.
+
+---------------------------------------------------------------------------------
+NEXT (own fry log) - the decisive probe
+---------------------------------------------------------------------------------
+Read the scheduler (sched.c): run-queue enqueue on wake (sched_wake_futex / sched path), and pick-next. Look for a
+"woken thread not re-enqueued / lost" bug FIRST (cheap, could fix directly). If none obvious, add a per-tick beacon:
+on the timer tick, log the running pid per CPU + whether tgid=14's main thread is RUNNING vs RUNNABLE-not-run vs
+BLOCKED. That splits (A) userspace spin from (B) scheduler drop. Then fix accordingly (scheduler enqueue fix for B;
+for A, find what userspace condition the spin waits on and why the worker never satisfies it — possibly a worker that
+SEGV'd, cf. the old tid=23 sig=11 pattern). Keep Claude fully networked throughout.
+
+All per planv3 Rules 1/5/6/12. Written immediately on completion of this correction step.

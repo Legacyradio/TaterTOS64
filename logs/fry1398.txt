@@ -1,0 +1,47 @@
+fry1398 — Tater Bridge / Claude Code: boot #1 with sockets live — DHCP/resolver verified; socket-error-callback theory FALSIFIED (byte-identical crash with socket() succeeding)
+Date: 2026-06-11. Author: Claude (Fable 5). Session continues fry1396.
+(Split from the consolidated session log per planv3 rule 5 — one step per file.)
+========================================================================
+[04:25] BOOT RESULT (KVM -smp 1, e1000+slirp, claude 2.1.172) — KEYSTONE:
+
+  NETWORKING SHIPPED AND VERIFIED LIVE:
+  - DHCP:E1000 -> DHCP:OK at boot (first claude boot ever with a NIC).
+  - /etc/nsswitch.conf, host.conf, resolv.conf, hosts ALL OPENED by glibc
+    (TBOPEN -> fd=17 each; were 4x ENOENT in baseline). Staging chain works:
+    build_iso -> FAT /etc -> EFI scanner filter -> ramdisk -> VFS -> openat.
+  - LXSOCK socket pid=4 domain=2 type=80802 -> fd=17: glibc resolver's
+    socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK) SUCCEEDS through
+    the new translator (was -ENOSYS x2 in baseline). Flag decode exact.
+  - Bun proceeded further than baseline ever did: probed TLS CA bundles
+    (/etc/ssl/certs/ca-certificates.crt et al — next staging target),
+    /etc/os-release, managed-settings.
+
+  THEORY FALSIFIED — THE CRASH IS NOT THE SOCKET-ERROR CALLBACK:
+  TBBFDUMP rip=0x3F4D7B6 cb=0x6FBFEF0F4B80 numLocals=0 ret=0x3F6897C,
+  cb+0=0100140001001600 cb+8=0x6FBFEF1C0088 cb+10=0000000000030100 —
+  BYTE-IDENTICAL to the fry1396 2.1.172 baseline (same rip, same heap cb,
+  same neighbors) — with socket() now SUCCEEDING. And the temporal tie is
+  broken: baseline crashed immediately after the 2 failed socket() calls;
+  this boot crashed ~12k serial lines AFTER the successful socket(), ~115s
+  in. errno path is IRRELEVANT to the crash.
+  Pre-crash context (same class as fry1396): event-loop housekeeping —
+  /proc/self/statm read (36B), eventfd read fd=9, pread64 fd=11 len=256->36,
+  while GC thread pid=3 loops cmd=WAIT_BITSET timeout=100ms rc=-110
+  (ETIMEDOUT) and its wake-call on ..e880 wakes 0 waiters — the
+  stop-the-world handshake never completes (matches fry1395's open lead).
+  The numLocals=0 function is invoked on a PERIODIC event-loop path
+  (statm/heap-stats heartbeat), regardless of socket errno.
+
+  NEXT (priority order):
+  1. GENERATION TRAP (fry1396 option 2, now the only live theory family):
+     cb+8=0x6FBFEF1C0088 (the source UnlinkedCodeBlock, deterministic across
+     boots/versions) — arm a DR hardware write-watchpoint on its
+     numCalleeLocals field from early boot (fry1391 TBWATCH infra is still
+     in tree) to decide parsed-empty vs zeroed vs never-written.
+  2. Pursue the pid=3 100ms-timeout handshake (fry1395 lead): why does the
+     futex wake on ..e880 always wake 0 waiters; does pid 2 ever park?
+  3. Networking continuation (after crash fixed): stage a CA bundle at
+     /etc/ssl/certs/ca-certificates.crt (Bun probed it), verify DNS
+     UDP exchange + TCP connect (add temporary sendto/recvfrom beacons —
+     nr=44/45/271 are NOT in the TBTRACE filter, so their absence in this
+     log is NOT evidence they weren't called).

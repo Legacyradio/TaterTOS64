@@ -1,0 +1,92 @@
+fry1432 — TaterTOS networking: receive-path LAYER-DIFF INSTRUMENTATION.
+Uncapped beacons added at every layer between the e1000 ring and the TCP
+established-state handler, so the next boot names the exact layer where
+inbound segments stop. No behavioral changes — counters and serial
+prints only.
+Date: 2026-06-12 02:55 CDT. Author: Claude (Fable 5).
+========================================================================
+
+WHY THIS STEP (rule 6)
+------------------------------------------------------------------------
+fry1431's verdict ("exactly one segment accepted per connection") was
+OVERSTATED by its own sampling: the TBTCP rx print fired only when
+(dbg_in_segs & 0xF) == 1 — i.e. at segment 1, then dark until segment
+17. So "segs=1, no later line" only proves the true count is 1..16.
+Worse, the fry1431 serial log shows NET_POLL rx=12 frames per poll
+ARRIVING AFTER the last TBTCP line — the NIC kept delivering while TCP
+went quiet, but every tracer between them was capped (IP_RX: 5 prints,
+NET_POLL: 10 prints) and went dark exactly when the stall window opened.
+Inspection of e1000_rx_poll, net_rx, ip_process, and tcp_process found
+no bug by reading: RDT recycling is correct, demux has no caps, conn
+lookup is sound. This is now strictly a measurement problem.
+
+CHANGES (all diagnostic; strip with the other beacons before release)
+------------------------------------------------------------------------
+src/drivers/net/e1000.c
+  - File-scope prototype for kprint_serial_only (was block-local in the
+    TX tracer; new call sites need it).
+  - e1000_rx_poll: TBE1K beacons. Uncapped delivered-frame counter
+    (prints every 8th: "TBE1K rx total= len="), and — new visibility —
+    an ALWAYS-printed drop line for any descriptor the loop refuses
+    ("TBE1K DROP n= eop= err= len="). err / missing-EOP / zero-len
+    refusals were previously silent and are a live suspect for frames
+    vanishing between the NIC and net_rx.
+
+src/drivers/net/netcore.c
+  - ip_process: replaced the 5-print-capped IP_RX tracer with an
+    uncapped TCP-forward counter ("TBIP tcp_fwd= len=", every 8th).
+  - struct tcp_conn: added dbg_frames — counts ALL segments matched to
+    the conn (any flags, any state). The diff dbg_frames vs dbg_in_segs
+    separates "segments stopped reaching tcp_process" from "segments
+    reached the conn but were not accepted as data".
+  - tcp_process: dbg_frames++ on every conn match; RST arrivals now log
+    ("TBTCP RST conn= state= frames=") — a server-side RST silently
+    killing the conn would have been invisible before.
+  - tcp_process ESTABLISHED: TBTCP rx now prints EVERY accepted segment
+    (sampling removed — see WHY).
+  - tcp_send_segment: TBTCP tx beacon (first 64 sends + every 32nd):
+    flags, ack number, advertised window, payload len. If our ACKs
+    stop, go stale, or starve the window, slirp stops sending and the
+    stall is ours — this line is the proof either way. Conn index is
+    bounds-guarded because RST replies use a stack dummy conn.
+  - net_poll: TBDUMP quiescence dump every 4096 polls — full live conn
+    table (state, frames, segs, bytes, ooo, trims, unread ring bytes).
+    After the stall the event beacons go silent; this dump carries the
+    final per-conn truth in the post-stall serial log regardless.
+
+WHAT THE NEXT BOOT'S LOG WILL SETTLE
+------------------------------------------------------------------------
+Read the post-stall window and diff adjacent layers:
+  TBE1K total      vs TBIP tcp_fwd   -> frames dying in net_rx/ip_process
+  TBE1K DROP lines                   -> NIC handing us bad descriptors
+  TBIP tcp_fwd     vs TBDUMP frames  -> segments missing the conn lookup
+  TBDUMP frames    vs TBDUMP segs    -> data refused inside the handler
+  TBTCP tx ack/win                   -> our ACKs stale or window starved
+  TBTCP RST lines                    -> server killed the conn, not us
+One of those diffs must be nonzero at the stall boundary; that diff is
+the fry1433 fix target.
+
+TEST COMMANDS (rule 10)
+------------------------------------------------------------------------
+Rebuild (rule 12 clean+verbose, claude staged):
+  cd ~/TaterTOS64 && make clean && \
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" \
+  STAGE_CLAUDE=1 CLAUDE_BIN="$HOME/.local/share/claude/versions/2.1.172" \
+  /bin/bash build_iso.sh
+Boot (fry1431 shape: KVM q35, -smp 2, e1000+slirp, NVMe img with
+RCLAUDE.LXE, serial to file; kill by saved PID only, never pkill -f):
+  qemu-system-x86_64 -m 4G -machine q35,accel=kvm -cpu host -smp 2 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=./OVMF_VARS_copy.fd \
+    -cdrom out/tatertos64v3.iso \
+    -drive file=out/tater_nvme.img,if=none,id=nvme0,format=raw \
+    -device nvme,drive=nvme0,serial=tater \
+    -netdev user,id=n0 -device e1000,netdev=n0 \
+    -serial file:/tmp/s_fry1433.log -display none
+Verdict greps:
+  grep -a "TBE1K DROP\|TBDUMP\|TBTCP RST" /tmp/s_fry1433.log
+  grep -ac "TBE1K rx\|TBIP\|TBTCP rx" /tmp/s_fry1433.log
+
+STATUS: instrumentation complete, compiles not yet verified (build is
+the fry1433 step). No behavioral change intended or made.
+========================================================================

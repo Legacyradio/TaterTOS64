@@ -1,0 +1,65 @@
+# hermes011 — PHASE 2 STEP 10: pause() missing from TaterTOS unistd.h
+Date: 2026-06-17 ~15:07 CDT
+Type: compile fix (Phase 2 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Continue compiling Python/thread.c after the pthread_condattr_setclock fix
+(hermes010). Next error was pause().
+
+---------------------------------------------------------------------------------
+WHAT HAPPENED
+---------------------------------------------------------------------------------
+ERROR:
+  Python/thread_pthread.h:440:9: error: implicit declaration of function 'pause'
+
+---------------------------------------------------------------------------------
+ROOT CAUSE
+---------------------------------------------------------------------------------
+CPython's PyThread_hang_thread() calls pause() to suspend a thread forever
+during interpreter finalization. The function is a standard POSIX function
+declared in <unistd.h>.
+
+TaterTOS unistd.h had sleep() and usleep() but was missing pause(). This is
+a header/libc omission — the function was never needed before.
+
+---------------------------------------------------------------------------------
+FIX
+---------------------------------------------------------------------------------
+1. src/include/unistd.h:
+   Added declaration: `int pause(void);`
+
+2. src/user/libc/posix.c:
+   Added implementation:
+     - Infinite loop calling fry_sleep(0) — suspends the thread
+     - Returns -1 (unreachable, but matches POSIX signature)
+
+WHY: POSIX pause() suspends the calling thread until a signal is delivered.
+TaterTOS doesn't deliver async signals to userland (documented in signal.h),
+so pause() correctly blocks forever. This is exactly what CPython needs —
+PyThread_hang_thread() is called during finalization to prevent exited
+threads from returning. The thread should never wake up.
+
+Using fry_sleep(0) in the loop yields the thread to the scheduler rather
+than busy-waiting, which is the correct behavior.
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+Re-ran thread.c compile:
+  x86_64-elf-gcc ... -DPy_BUILD_CORE -c Python/thread.c
+
+Result: ZERO errors. Compiled clean.
+
+thread.c is CPython's threading layer — with this, all thread/GIL/condvar
+code compiles. Combined with ceval.c (hermes006) and pylifecycle.c
+(hermes005), the entire CPython concurrency subsystem compiles.
+
+---------------------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------------------
+Continue fixing remaining compile errors:
+  - traceback.c: dladdr1, RTLD_DL_LINKMAP
+  - perf_jit_trampoline.c: syscall(), SYS_gettid

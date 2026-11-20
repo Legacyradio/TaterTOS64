@@ -1,0 +1,25 @@
+fry1786 — agent next blocker: add native zlib module — 2026-06-26
+==========================================================================
+WHAT: With _ctypes handled (fry1785), the real hermes CLI advanced further then
+crashed on the NEXT missing module. Diagnosed + fixed by building the stdlib zlib
+C module. Build done + clean; boot verification is the next step (fry1787).
+
+CRASH (serial /tmp/fry1786_serial.log):
+  hermes -> main() -> from hermes_cli import secrets_cli
+    -> from rich.console import Console  (rich/console.py)
+      -> import zlib -> ModuleNotFoundError: No module named 'zlib'
+So `rich` (terminal formatting) needs zlib.
+
+FIX (standard stdlib-C-module recipe, same as _posixsubprocess/select):
+  - config.c: + extern PyObject* PyInit_zlib(void); + inittab {"zlib",
+    PyInit_zlib}.
+  - Python3.mk: + Modules/zlibmodule.c to CPYTHON_MODULES_SRCS; + -Iexternal/include
+    to CPYTHON_CFLAGS for zlib.h.
+  - Link: libz.a was ALREADY in PYEXT_LIBS (external/lib/libz.a, via Pillow's
+    image codec libs) -> no link change needed.
+
+BUILD: make -f Python3.mk python3 -> EXIT=0, zlibmodule.o compiled, linked,
+python3.fry 14909216 bytes @ 17:11:50. No errors/undefined.
+
+NEXT (fry1787): ISO + boot + run `hermes`; read the next blocker or the agent
+starting.

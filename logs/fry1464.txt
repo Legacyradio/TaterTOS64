@@ -1,0 +1,63 @@
+fry1464 - Real vfork semantics: SUSPEND the parent until the child
+execve's or exits. Kills the posix_spawn child "stack smashing detected"
+abort. Verified. Exposed next gap: chdir (nr=80) ENOSYS.
+Date: 2026-06-13. Author: Claude (Opus 4.8).
+========================================================================
+
+ROOT CAUSE (the fry1463 child SIGABRT)
+------------------------------------------------------------------------
+LNX_vfork did:  sched_add(child); sched_yield(); return child->pid;
+That is NOT vfork. A vfork child runs in the PARENT's address space on
+the PARENT's stack (child rsp = parent rsp) until it execve's/exits. Real
+vfork SUSPENDS the parent for that window. Ours only yielded once, then
+the parent resumed and ran CONCURRENTLY with the child on the shared
+stack -> __stack_chk_fail ("stack smashing detected") -> SIGABRT (exit
+134). The fry1463 rt_sigaction EINVAL (correct: EINVAL on SIGKILL/SIGSTOP)
+and mmap ENOMEM (abort handler) were downstream noise, not the cause.
+
+FIX (mirrors existing process_thread_join wait-loop; no shortcut)
+------------------------------------------------------------------------
+1. src/kernel/proc/process.c:
+   - process_vfork_child_active(pid): 1 while child alive AND still
+     linux_vfork_child (pre-exec); 0 once it execs (flag cleared) or exits
+     (slot DEAD/UNUSED).
+   - process_wake_pid_waiters(pid): wake PROC_WAITING procs with
+     wait_pid==pid (execve uses it; child exit already wakes via proc_free).
+2. src/kernel/proc/process.h: prototypes.
+3. src/kernel/proc/syscall.c LNX_vfork: after sched_add(child), block the
+   parent in a recheck loop (wait_pid=child_pid; sched_block; sched_yield;
+   refetch cur) until process_vfork_child_active(child_pid)==0.
+4. src/kernel/proc/syscall.c lx_execve_current: after lx_write_cr3(new_cr3)
+   (child now on its OWN address space), if was_vfork_child ->
+   process_wake_pid_waiters(cur->pid) so the parent resumes safely on the
+   old (its) address space. was_vfork_child already prevents destroying
+   old_cr3, and shared_release skips AS-destroy for a vfork child that
+   exits pre-exec, so the parent's AS is intact either way.
+
+BUILD: make kernel EXIT 0. Full rebuild (fresh creds) BUILD EXIT 0
+(/tmp/fry1464_build.log).
+
+BOOT (-smp 4, serial /tmp/s_fry1464.log; killed by real pid after result)
+------------------------------------------------------------------------
+VERDICT:
+- "stack smashing" count = 0   (was the abort; GONE)
+- child SIGABRT (sig=6) count = 0   (GONE)
+- vfork children reaped cleanly via blocking wait4 (nohang=0):
+    TBWAIT4 pid=5 wpid=17..21 rc=<pid> status=0x7f00
+- MAIN INFERENCE STILL CLEAN: subtype:success, is_error:false,
+  "Hello from TaterTOS — where spuds meet silicon, stay crispy!",
+  cost $0.00626. Auth holds, no regression.
+
+NEXT GAP EXPOSED (fixed in fry1465)
+------------------------------------------------------------------------
+Children now exit cleanly but with status 0x7f00 = exit 127 (exec failed).
+Claude debug: "Ripgrep first use test (mode=embedded, path=/nvme/RCLAUDE
+.LXE)" + "countFilesRoundedRg failed: ENOSYS: function not implemented,
+posix_spawn 'rg'". Ripgrep is EMBEDDED (claude re-execs ITSELF as rg) so
+the binary exists — NOT a staging problem. Trace: every vfork child
+(pid 17-21) hits "unimplemented nr=80" = chdir. Bun's posix_spawn calls
+chdir in the child to set the spawn cwd before execve; ENOSYS there fails
+the whole spawn -> child _exit(127). => implement chdir (next log).
+
+STILL OPEN (low priority): nr=294 inotify_init1, nr=40 sendfile,
+nr=326 copy_file_range, nr=332 statx. OAuth rotates ~8h (restage on rebuild).

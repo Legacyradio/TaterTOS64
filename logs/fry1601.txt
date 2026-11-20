@@ -1,0 +1,13 @@
+# fry1601 - BUILD: reverted to fry1583 known-good baseline (single-page paging, no batch, no lx_map_one lock).
+Date: 2026-06-16 ~21:49 (host clock) CDT
+Type: build (Rule 12)
+COMMAND: make clean && STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 \
+  LINUX_SHELL_BIN=/home/legacyindieradio/tatertos-shell/busybox \
+  CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.177 \
+  bash build_iso.sh   (-> /tmp/build_1601.log)
+RESULT: EXIT 0 clean. syscall.o fresh @21:48, ISO @21:49. nm pt_commit = 0 (lock GONE). Batch GONE (single page).
+  Dormant/inert (no SHELL env): pipe/pipe2, /nvme redirect, busybox staged. KEEP: panic fix, /proc/self/stat.
+NEXT (fry1602 verify): launch -smp 1 (match fry1583). EXPECT: boot -> GUI -> launch claude -> loads from NVMe
+  WITHOUT the loader-futex hard-hang -> reaches prompt (slow page-in is EXPECTED/acceptable) -> MOUSE ALIVE ->
+  TYPE -> keystrokes land + read(fd0) climbs. = restored fry1583 interactive state. Then re-add speed/tools 1 at a time.
+All per planv3 Rules 1/5/6/12. Written immediately on the build.

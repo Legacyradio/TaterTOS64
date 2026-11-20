@@ -1,0 +1,51 @@
+# fry1651 - Re-add native Python/Hermes shell commands onto the recovered VT/TaterWin shell.
+Date: 2026-06-19 15:24:57 CDT
+Type: shell integration fix + narrow compile verification
+Author: Codex, following planv3 Rules 1/5/6/12
+
+WHY
+- fry1638/fry1640/fry1641 left Phase B open: the recovered good VT/TaterWin
+  shell had lost the `python3` and `hermes` commands that DeepSeek had added
+  only to the old green-text stub shell.
+- The native Python/Hermes artifacts were already present, but the current
+  interactive shell did not expose a clean native launch path.
+
+WHAT CHANGED
+- src/user/shell/shell.c:
+  - Added `python3 [...]` command that launches `/apps/python3.fry` with
+    `fry_spawn_args`.
+  - Added `hermes [...]` command that launches native CPython with the staged
+    Hermes source.
+  - Bare `hermes` runs `/opt/hermes-agent/tatertos_bootstrap.py` first so the
+    in-OS validation checks Python, stdlib, filesystem, sqlite/socket imports,
+    and Hermes imports before trying a live provider.
+  - `hermes <args>` runs `/opt/hermes-agent/hermes <args>` through native
+    CPython.
+  - Both commands use the recovered shell's `pump_child_io()` path, not the
+    old stub's blocking `fry_wait`, so output/input stay in the terminal
+    window.
+  - Added native Python environment:
+    PYTHONHOME=/usr/local
+    PYTHONPATH=/opt/hermes-agent:/usr/local/lib/python3.14:/usr/local/lib/python3.14/site-packages
+    HOME=/nvme
+    TMPDIR=/tmp
+    TERM=xterm-256color
+    COLORTERM=truecolor
+
+VERIFY
+- Command:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make shell
+- Result:
+  PASS. `src/user/shell/shell.c` compiled, linked `shell.elf`, and packed
+  `shell.tot`.
+- Only warning observed was pre-existing:
+  `src/user/libc/libc.h:16:51: warning: '/*' within comment [-Wcomment]`
+
+NEXT
+- Rebuild/stage the image so the new `shell.tot` is copied into the ISO/NVMe
+  boot paths.
+- Then boot and verify:
+  1. GUI still comes up.
+  2. Shell still renders the recovered VT/TaterWin terminal.
+  3. `python3 /opt/hermes-agent/tatertos_bootstrap.py` or bare `hermes`
+     launches the native Python validation path.

@@ -1,0 +1,13 @@
+fry1511 - keep serial diagnostics off the desktop terminal
+
+Root cause:
+- After restoring framebuffer console output, the old Tater Bridge diagnostic stream showed up on the visible desktop.
+- The immediate reason was that kprint_serial_only() still called kprint_string(), which writes to both serial and framebuffer.
+
+Change:
+- src/kernel/kprint.c now makes kprint_serial_only() write only to the UART.
+- User stdout/stderr still reaches the framebuffer through kprint_write(), so shell and Claude output remain visible on the desktop.
+
+Why:
+- The user-facing desktop terminal should not be flooded by TBCLK/TBRIDGE serial diagnostics.
+- Serial diagnostics can remain available without taking over the GUI session.

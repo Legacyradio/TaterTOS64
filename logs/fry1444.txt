@@ -1,0 +1,55 @@
+fry1444 — FIX: kernel ToTFS multi-block bitmap support. The on-disk
+format and host tools already supported block bitmaps spanning multiple
+blocks; the kernel cached and scanned only the first one, so any volume
+with more than 128 MB of used data (the 248 MB staged claude binary)
+had ZERO allocatable blocks in-OS — every mkdir/create returned EIO
+(fry1443 root cause, and through it the silent-output bug of
+fry1437-1441).
+Date: 2026-06-12 05:30 CDT. Author: Claude (Fable 5).
+========================================================================
+
+CHANGES (rule 6 whys)
+------------------------------------------------------------------------
+1. src/kernel/fs/totfs.h — TOTFS_KBMP_BLOCKS=8; struct totfs_fs
+   block_bitmap cache grows to 8 blocks (32 KB per mount; covers 1 GB
+   of data blocks, comfortably past the 400 MB image's 4 bitmap
+   blocks). WHY 8: static kernel buffer, headroom for image growth
+   without dynamic allocation in the FS layer.
+2. src/kernel/fs/totfs.c totfs_mount — reads sb.block_bitmap_blocks
+   bitmap blocks (clamped to the cache size) instead of exactly one.
+3. totfs_alloc_block — scans min(total_blocks, cache range) instead of
+   capping at 32,768; new totfs_flush_bmp_block() writes back ONLY the
+   dirty bitmap block (bit/32768 selects it) instead of assuming
+   everything lives in bitmap block 0.
+4. totfs_free_block — cap lifted the same way; targeted write-back.
+   (totfs_alloc_inode unchanged: one inode-bitmap block = 32,768
+   inodes, far beyond any realistic file count here; sb says
+   inode_bitmap_blocks=1.)
+
+CONSISTENCY AUDIT
+------------------------------------------------------------------------
+- mktotfs computes bitmap_blocks from partition size and shifts the
+  inode table/data region after it; kernel reads all positions from
+  the superblock — layouts agree, no on-disk change.
+- bitmap_test/set/clear are uncapped byte-array helpers — safe for the
+  enlarged cache.
+- totcopy (host) uses TOTFS_BLOCK_BMP_MAXBLK=64 — host can handle
+  images up to 8 GB; kernel cache covers 1 GB; the 400 MB image is
+  well inside both.
+
+EXPECTED EFFECT
+------------------------------------------------------------------------
+mkdir /nvme/claude-0, /nvme/.claude/debug, lockfiles, transcript dirs
+all succeed; claude's CLI bootstrap completes; the emitter starts;
+stream-json (init -> ... -> result) flows to stdout -> kprint_write ->
+serial. This is the last known blocker in the chain.
+
+TEST COMMANDS (rule 10): rebuild per rule 12 with STAGE_CLAUDE=1
+CLAUDE_BIN=$HOME/.local/share/claude/versions/2.1.172; boot as fry1432,
+serial to /tmp/s_fry1445.log. Verdict greps:
+  grep -a '"result"' /tmp/s_fry1445.log
+  grep -a "TBFAIL mkdir" /tmp/s_fry1445.log     # expect none on /nvme
+  grep -a "TBWRDATA" /tmp/s_fry1445.log | head  # transcript/debug writes
+
+STATUS: edits complete; build/boot/verdict is the fry1445 step.
+========================================================================

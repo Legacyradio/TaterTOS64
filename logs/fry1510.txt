@@ -1,0 +1,36 @@
+fry1510 - 2026-06-14. Author: Codex.
+
+STEP: Move Claude launch back into the visible TaterTOS user session.
+
+ROOT CAUSE / POLICY:
+- The prior Claude path launched /nvme/RCLAUDE.LXE from kernel boot scaffolding when
+  STAGE_CLAUDE=1, then skipped INIT.FRY/GUI.FRY. That was wrong for the requested
+  product goal: Claude must be available from the TaterTOS desktop/terminal, not
+  piped through a serial-only boot harness.
+
+CHANGES:
+- src/kernel/main.c: disabled Tater Bridge boot autorun and prompt-only mode.
+  Staging Claude now only makes the binary available on NVMe; it no longer hijacks boot.
+- src/include/tatertos/syscall.h, src/kernel/proc/syscall.c, src/user/libc/libc.c,
+  src/user/libc/fry.h: added SYS_SPAWN_LINUX_ARGS / fry_spawn_linux_args so ring-3
+  userland can launch Linux-personality binaries through the existing Tater Bridge loader.
+- src/kernel/proc/syscall.c: Linux fd0 console reads now use ps2_kbd_read() instead of
+  returning EOF when no redirect is installed.
+- src/user/shell/shell.c: added `claude [...]`, launching /nvme/RCLAUDE.LXE with the
+  same HOME=/nvme, Python, TLS, PATH, and no-color environment previously hardcoded
+  in the kernel harness.
+- src/user/init/init.c: launch GUI.FRY as the desktop surface, then launch SHELL.TOT
+  as the terminal session instead of waiting forever on the GUI.
+- src/kernel/kprint.c: restored framebuffer console output so shell/Claude stdout is
+  visible on screen, not serial-only.
+- src/user/gui/gui.c: maps the framebuffer and paints a visible desktop surface once,
+  then leaves the terminal layer visible.
+
+VERIFY:
+- make kernel init shell gui
+- Result: success. Warnings were existing unused/style warnings, no build failure.
+
+NEXT:
+- Build ISO with STAGE_CLAUDE=1 CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.177.
+- Boot headed QEMU and verify the screen reaches GUI + shell, then run `claude` from the
+  visible TaterTOS terminal.

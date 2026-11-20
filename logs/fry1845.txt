@@ -1,0 +1,10 @@
+fry1845 - ISOLATION: the startup crash needs NO Hermes - python3.fry with an ABSOLUTE argv[0] crashes in getpath (2026-11-17 14:33:41 CST)
+WHY: fry1844 NEXT - find why route1 differs from route2 without involving Hermes. Sur's GO (fry1842). No code changed.
+WHAT / HOW: fresh-boot runs of ~/tatertos-test-20261117/run.sh. Harness note (NOT an OS finding... but see below): monitor key typing at 0.06-0.25 s/key randomly DOUBLED letters ("hhermes","pythhon3","python33","11","oopen") in 4 of 4 runs; at 0.5 s/key hold 50 ms the echo was clean. Verified by screenshot each time. Serial copy also moved to AFTER qemu quit (earlier copy was taken before QEMU flushed).
+  Test: command  /nvme/apps/python3.fry -c print(2)   (generic shell route: resolve_program -> fry_spawn_args, argv[0] = "/nvme/apps/python3.fry").
+WHERE: ~/tatertos-test-20261117/run-iso4.{png,serial.log} (also iso1-3: typing-corrupted, not used as evidence).
+RESULT (observed, run iso4): serial: "HERMESMAIN argc=3 -c", "TLSDBG get MAIN...", then the IDENTICAL crash: getpath.py:358 OSError [Errno 0] Error / Fatal Python error: error evaluating path. Screen: HERMESSTDOUT-OK, no "2".
+  Earlier, same boot type: builtin  python3 -c print(1)  (argv[0] = bare "python3") ran fine and printed 1 (iso2 screen).
+  => ROUTE 1 CRASH IS NOT A HERMES BUG AND NOT A '#!'/SHEBANG BUG. It is: python3.fry started with an absolute argv[0] fails in CPython's getpath. Bare argv[0] ("python3") passes it. 
+  getpath.py:340-362 (source): executable_dir=dirname(executable) -> /nvme/apps; venv_prefix=dirname -> /nvme; it reads /nvme/pyvenv.cfg and only catches FileNotFoundError/PermissionError. An open() of a missing file whose error comes back as errno 0 raises plain OSError and kills startup. (HYPOTHESIS, to be tested next: open("/nvme/pyvenv.cfg") returns errno 0 instead of ENOENT.)
+NEXT: fry1846 = prove the errno-0 open() directly (python3 -c with open of a missing absolute path) on the working bare route.

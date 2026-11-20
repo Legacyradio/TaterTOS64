@@ -1,0 +1,40 @@
+fry1459 - Restaged refreshed Claude auth and current Claude binary before rerun.
+
+Date: 2026-06-13
+
+Why:
+- User clarified that "refresh OAuth" meant: take the refreshed host Claude
+  JSON files and use them in the TaterTOS image.
+- The previous full-window run reached Claude's stream-json result but ended
+  with 401 Invalid authentication credentials.
+- A later rebuild refreshed out/etc/clauth from the host, but the NVMe image
+  ended up without /RCLAUDE.LXE because the old CLAUDE_BIN path
+  (/home/legacyindieradio/.local/share/claude/versions/2.1.172) no longer
+  exists.
+
+What changed:
+- Restaged host auth inputs:
+  - /home/legacyindieradio/.claude.json
+  - /home/legacyindieradio/.claude/.credentials.json
+- Staged them into out/tater_nvme.img as:
+  - /.claude.json
+  - /.claude/.credentials.json
+- Staged the current host Claude binary:
+  - /home/legacyindieradio/.local/share/claude/versions/2.1.177
+  - copied into the NVMe image as /RCLAUDE.LXE
+
+Verification:
+- out/tater_nvme.img root listing shows:
+  - /.claude.json, size 32930
+  - /RCLAUDE.LXE, size 250480336
+- out/tater_nvme.img /.claude listing shows:
+  - /.claude/.credentials.json, size 358
+- Host timestamps at staging time:
+  - ~/.claude.json: 2026-06-13 10:05:35 -0500
+  - ~/.claude/.credentials.json: 2026-06-13 03:26:04 -0500
+  - Claude binary 2.1.177: 2026-06-13 03:26:20 -0500
+
+Important:
+- No token contents were printed or logged.
+- Next step is the same long q35/e1000/-smp 4 QEMU run, allowed to finish its
+  full timeout window unless the VM exits naturally.

@@ -1,0 +1,115 @@
+fry1757 — FULL HANDOFF (pre-reboot) — 2026-06-23 (session 2026-06-22/23)
+=========================================================================
+NATIVE HERMES AGENT IN TATERTOS — complete state. READ FIRST after reboot.
+Supersedes fry1750_HANDOFF. Frys 1730–1756 have per-step detail.
+=========================================================================
+
+BOOT NOTE (last action): rebuilt ISO + launched; serial /tmp/fry1757_serial.log showed
+  selftest 106/0 + SPAWN_OK GUI.FRY, but Zack reported "it didn't boot" on his RustDesk
+  screen. Likely a display/render hiccup or a late hang AFTER GUI spawn. ON NEXT BOOT:
+  bash launch_debug.sh ; read /tmp serial to END (don't trust GUI.FRY spawn alone —
+  see feedback_verify_before_claiming_success). Then type `hermes`.
+
+=========================================================================
+1. NATIVE RUST TOOLCHAIN FOR x86_64-tatertos  (the foundation — all verified)
+=========================================================================
+- Target spec: ~/TaterTOS64/x86_64-tatertos.json (os=tatertos, family=unix, own ABI
+  from src/include + tatertos/syscall.h; zero Linux). Subsystem (LXE) untouched.
+- libc FORK: ~/TaterTOS64/rust/forks/libc (vendored 0.2.185 + src/unix/tatertos/).
+  build-std reads the REGISTRY copy. After editing the fork:
+    touch rust/forks/libc/src/lib.rs
+    rsync -a --delete rust/forks/libc/src/ ~/.cargo/registry/src/index.crates.io-*/libc-0.2.185/src/
+    rm -rf <cratedir>/target/x86_64-tatertos   # force clean build-std
+  (~/.cargo + ~/.rustup persist across reboot, so the mirror likely survives; re-mirror
+   if a build can't find tatertos in libc.)
+- std FORK: ~/TaterTOS64/rust/forks/rust-std-edits/ -> re-apply with
+  rust/forks/apply_std_fork.sh  (rsyncs onto the nightly rust-src). RE-RUN AFTER any
+  `rustup update`. Adds tatertos arms (random->SYS_GETRANDOM, os/tatertos, current_exe
+  via argv[0], std/build.rs full-std list, etc.).
+- Rust pyext recipe: Cargo.toml crate-type staticlib; .cargo/config.toml = build-std
+  [core,alloc,std,panic_abort] + json-target-spec + target + rustflags
+  --cfg getrandom_backend="rdrand"; PYO3_CONFIG_FILE=rust/pyo3_tatertos.cfg;
+  cargo update -p libc --precise 0.2.185 ; cargo +nightly build --release.
+- C pyext recipe: tools/host/bin/x86_64-elf-gcc + CPYTHON_CFLAGS (see Python3.mk;
+  add -Iexternal/include for codec libs); /usr/bin/x86_64-elf-ar rcs lib.a; extern
+  PyInit_* + DOTTED inittab entry in external/Python-3.14.5/Modules/config.c; add .a to
+  PYEXT_LIBS in Python3.mk.
+- LINK: python3 target in Python3.mk uses --allow-multiple-definition (each Rust
+  staticlib bundles its own identical std runtime). After config.c change:
+    touch external/Python-3.14.5/Modules/config.c ; make -f Python3.mk python3
+
+=========================================================================
+2. NATIVE EXTENSION SCORECARD
+=========================================================================
+DONE native + linked into python3.fry (VERIFIED importing in-OS where noted):
+  - pydantic_core 2.46.4 [Rust]  — VERIFIED in-OS (serial "pydantic_core: OK v2.46.4")
+  - httptools 0.7.1 [C]          — parser + url_parser
+  - watchfiles 1.1.1 [Rust]      — _rust_notify (notify->PollWatcher, no inotify)
+  - Pillow 12.2.0 [C]            — _imaging/_imagingft/_imagingmath/_imagingmorph
+                                   (webp/avif/cms omitted — libs not fully in-tree)
+PURE-PYTHON deps: all staged (rsync from ~/hermes-agent/venv, .so excluded) ->
+  sysroot/usr/local/lib/python3.14/site-packages. Native (run on native CPython).
+NOT yet built (heavy sub-ports, Zack wants for a FULL instance):
+  - cryptography 46.0.7 [Rust] -> needs a real OpenSSL libcrypto backend (only stubs).
+  - psutil 7.2.2 [C] -> needs more /proc kernel surface (have /proc/self/{stat,auxv}).
+  - Pillow _webp -> build libwebpmux + libsharpyuv from src/user/ports/libwebp-1.3.2.
+  sdists already downloaded in rust/pyext-src/.
+
+=========================================================================
+3. ToTFS INODE SCALING  (fixed this session — 3 implementations)
+=========================================================================
+Problem: 8GB disk ran out of INODES (not bytes) staging ~35k agent files — fixed
+TOTFS_MAX_INODES 16384 + single-block inode bitmap (32768 cap). Now SCALES with drive
+(inodes = total_blocks/8, multi-block inode bitmap). Fixed in ALL THREE impls:
+  - tools/mktotfs.c        (formatter)         — fry1752
+  - src/kernel/fs/totfs.c  (kernel driver)     — fry1752 (heap inode_bitmap, no cap)
+  - tools/totcopy.c        (host staging tool) — fry1753 (was the actual blocker)
+Now 262,144 inodes on the 8GB image; agent (4159 files) stages clean.
+
+=========================================================================
+4. /tmp = RAM-BACKED ToTFS  (DONE + VERIFIED this session)
+=========================================================================
+- NEW in-kernel formatter: totfs_format() in src/kernel/fs/totfs.c (+.h) — mirrors
+  mktotfs. The OS can format ToTFS volumes itself.
+- src/kernel/fs/vfs.c: 64MB RAM block device + vfs_mount_tmp() (totfs_format ->
+  totfs_mount -> vfs_mount("/tmp") with the existing totfs_*_vfs wrappers). Hooked into
+  vfs_mount_tbridgefs() (runs every boot path), idempotent. Ephemeral, no NVMe wear.
+- VERIFIED on-screen: SUMMARY "FS operations [OK]" (was [Errno 2] /tmp FAIL). fry1754/1755.
+
+=========================================================================
+5. HERMES BOOTSTRAP FIX  (this session — fry1756)
+=========================================================================
+- The persistent "Hermes core FAIL — No module named 'hermes'" was a BUG IN OUR
+  DIAGNOSTIC: there is no top-level `hermes` module. Real entry = hermes_cli.main:main
+  (pyproject [project.scripts]; the `hermes` file is a 262-byte launcher).
+- shell.c cmd_hermes: bare `hermes` -> tatertos_bootstrap.py (diagnostic);
+  `hermes <arg>` -> the real launcher.
+- FIXED sysroot/opt/hermes-agent/tatertos_bootstrap.py to `import hermes_cli.main`
+  (the real entry), report type(e) on failure, and gate the "needs deps" message behind
+  actual failure. Rebuilt+staged (image bootstrap now 6526 bytes). NOT yet seen the new
+  result on screen (boot issue above).
+
+=========================================================================
+6. CURRENT in-OS STATE (last good screen read, fry1755 shot1755.png)
+=========================================================================
+Python 3.14 [OK] · Stdlib [35/36] · SQLite [OK] · FS operations [OK] ·
+pydantic_core OK · socket OK · 4 hermes_* submodules OK.
+KNOWN remaining blockers for the live agent:
+  - _ssl: "No module named '_ssl' - SSL not implemented" -> NO HTTPS -> no API calls.
+    Candidate backend: in-tree BearSSL (src/user/apps/bearssl). Biggest remaining piece.
+  - The real hermes_cli.main import result (unknown until next boot with fixed bootstrap).
+  - cryptography + psutil native builds (for full instance).
+
+=========================================================================
+7. NEXT STEPS (in order)
+=========================================================================
+1. Boot; read serial to END; type `hermes`; screenshot (import -window <QEMU wid>
+   /tmp/shot.png; wmctrl -l | grep QEMU for the id). Read the REAL hermes_cli.main line.
+2. If it names a missing pure-Python dep -> stage it; a C/Rust ext -> build native.
+3. Stand up _ssl on BearSSL (HTTPS) — required for any API/network agent work.
+4. cryptography (OpenSSL backend) + psutil (/proc) + Pillow _webp.
+5. Once core imports: run the REAL agent via `hermes <subcommand>` (e.g. doctor).
+
+DISCIPLINE (honored, keep doing): native or nothing (no linux_like); FRY PER STEP;
+serial not screenshots for truth; verify-before-claiming; no hardcoded constraints
+(scale with the drive). Sudo pwd 0420 in memory if needed.

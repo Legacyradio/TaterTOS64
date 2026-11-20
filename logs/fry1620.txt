@@ -1,0 +1,69 @@
+# hermes015 — PHASE 2 STEP 14: wmem* functions missing from wchar.h declarations
+Date: 2026-06-17 ~15:24 CDT
+Type: compile fix (Phase 2 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Compile Objects/unicodeobject.c — CPython's Unicode string implementation.
+The most complex object type in CPython (16,000+ lines).
+
+---------------------------------------------------------------------------------
+WHAT HAPPENED
+---------------------------------------------------------------------------------
+After fixing memrchr (hermes014), unicodeobject.c revealed a new error:
+
+  Objects/stringlib/ucs4lib.h:26:16: error: implicit declaration of function
+  'wmemchr'; did you mean 'memchr'?
+
+---------------------------------------------------------------------------------
+ROOT CAUSE
+---------------------------------------------------------------------------------
+CPython's UCS4 string library uses wmemchr() — the wide-character equivalent
+of memchr(). It searches through an array of wchar_t for a specific value.
+
+TaterTOS already had wmemchr/wmemcpy/wmemmove/wmemset/wmemcmp implementations
+in string_ext.c (lines 501-524) — they were added for libc++ compatibility
+but never declared in wchar.h. The functions existed in the .c file but the
+header was missing the declarations, so CPython couldn't see them.
+
+This is a header/implementation mismatch — the code was written but the
+declarations were never added to the public header.
+
+---------------------------------------------------------------------------------
+FIX
+---------------------------------------------------------------------------------
+src/include/wchar.h:
+  Added declarations (5 functions):
+    wchar_t *wmemcpy(wchar_t *d, const wchar_t *s, size_t n);
+    wchar_t *wmemmove(wchar_t *d, const wchar_t *s, size_t n);
+    wchar_t *wmemset(wchar_t *d, wchar_t c, size_t n);
+    int     wmemcmp(const wchar_t *s1, const wchar_t *s2, size_t n);
+    wchar_t *wmemchr(const wchar_t *s, wchar_t c, size_t n);
+
+No new implementation needed — the implementations already existed in
+string_ext.c. Removed the duplicate implementations I initially added
+(before discovering the existing ones).
+
+WHY: These are C99 standard wide-character memory functions. The
+implementations already existed for libc++ — they just weren't visible
+through wchar.h. Adding declarations is the correct fix.
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+Re-ran unicodeobject.c compile:
+  x86_64-elf-gcc ... -DPy_BUILD_CORE -c Objects/unicodeobject.c
+
+Result: ZERO errors. Compiled clean (11.6s — large file).
+
+unicodeobject.c is CPython's Unicode implementation — the most complex
+object type. Compiling it clean means the TaterTOS wchar_t surface is
+complete for CPython's string operations.
+
+---------------------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------------------
+Fix fileobject.c (flockfile/funlockfile) and obmalloc.c (mimalloc.h).
+Then Parser/*.c and Modules/*.c.

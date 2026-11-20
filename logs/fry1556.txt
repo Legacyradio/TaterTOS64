@@ -1,0 +1,41 @@
+# fry1556 - VERIFY/DIAGNOSIS: dead-input wedge CLASSIFIED = case (A). The main thread stops epolling stdin (epfd=5) after startup and busy-loops on recvfrom(EAGAIN)+stat, so fd0 is unwatched when the user types.
+Date: 2026-06-16 00:00 CDT
+Type: verify (TBFD0 beacon run, user typed a few keys, no Enter) + diagnosis
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+---------------------------------------------------------------------------------
+DECISIVE RESULT (TBFD0 beacon, fry1554)
+---------------------------------------------------------------------------------
+TBFD0 fired only 12 times TOTAL, all "pid=14 epfd=5", all early:
+  TBFD0 epoll pid=14 epfd=5 chk=1  rawrev=1 asked=11 inbuf=1   <-- epoll DID see a key: poll_check_fd(fd0)=POLLIN when inbuf had data. KERNEL SIDE IS CORRECT.
+  TBFD0 ... chk=3..12 rawrev=0 inbuf=0                          <-- then inbuf empty, then NEVER fires again.
+- read(fd=0) count = 1 (one early read). The user's later keystrokes (TBPROCIN b0=6c 'l', 0d, 68 'h') arrived AFTER chk=12 -> NO TBFD0 for them -> epoll on epfd=5 was not running when he typed.
+
+=> CASE (A) CONFIRMED. The kernel epoll + poll_check_fd + delivery are all correct (fd0 reports POLLIN when a key is buffered). The bug is that Claude's MAIN THREAD (pid=14) stops calling epoll_pwait2 on epfd=5 (the set that contains fd0) after startup (~12 calls), so there is no waiter on stdin when input arrives.
+
+---------------------------------------------------------------------------------
+WHAT THE MAIN THREAD DOES INSTEAD (pid=14, after chk=12)
+---------------------------------------------------------------------------------
+Not blocked — actively busy-looping on:
+  nr=45 recvfrom -> rc=-11 EAGAIN (polling a socket for data that isn't there)
+  nr=4  stat     -> rc=-2 ENOENT
+  nr=89 readlink, nr=262 newfstatat, nr=83 mkdir, nr=257 openat
+  nr=233 epoll_ctl -> rc=-17 EEXIST (re-adding an already-present fd)
+  nr=202 futex -> WAKE calls (rc=1, waking workers) -- i.e. it is the producer, not parked
+Plus /proc/self/stat read ~114x (periodic ~100ms monitor; benign now that it succeeds).
+
+The recvfrom(EAGAIN) spin is the tell: the main thread is polling a socket waiting for a NETWORK RESPONSE and is NOT returning to the interactive epoll(stdin) loop. So Claude is most likely stuck waiting on an in-flight network/API operation to complete (or an init step that depends on it) and never reaches the "idle, epoll stdin for the prompt" state. That is why the UI renders but input is dead.
+
+---------------------------------------------------------------------------------
+NEXT (own fry log) - the probe that should crack it
+---------------------------------------------------------------------------------
+Identify the socket pid=14 is recvfrom-spinning on and whether the network exchange is hung:
+  - which fd / which remote (api.anthropic.com? statsig? an OAuth/token endpoint?),
+  - is the request fully sent and is ANY response data arriving (tcp rx), or is it stalled,
+  - is TLS completing.
+If a specific request is hung (e.g. a telemetry/statsig/sentry endpoint that never responds in slirp, or a TLS/cert issue), Claude may be blocking startup on it. Levers: make that call fail-fast / be skipped, or fix the network path so it completes, so the main thread finishes init and returns to epoll(stdin).
+Also worth: confirm whether Claude is at the interactive REPL at all vs stuck in a loading/onboarding state that gates input.
+
+STATUS: panic FIXED+verified; input DELIVERY + kernel epoll/poll_check_fd CORRECT; /proc/self/stat added. Remaining gate = main thread stuck in a recvfrom-EAGAIN/network-wait busy loop, never returning to epoll(stdin). Beacon TBFD0 still in (remove when fixed). CLAUDE_NO_MCP=1 in use.
+
+All per planv3 Rules 1/5/6/12. Written immediately on completion of the verify+classification step.

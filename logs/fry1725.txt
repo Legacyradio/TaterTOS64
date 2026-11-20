@@ -1,0 +1,34 @@
+fry1725 — 2026-06-21 17:12 CDT
+STEP: PHASE 1 (builtin-ext pipeline) — built CPython's HACL* hash modules as static
+      builtins so hashlib is complete. Built + linked clean. Reboot-verify next.
+
+WHY: hashlib found NO hash constructors (md5/sha1/sha2/sha3/blake2/shake all
+  "unsupported"/"code not found") because NONE were registered in config.c inittab.
+  This also proves the static builtin-extension PIPELINE reused by every later
+  compiled dep (psutil/Pillow C, pydantic_core/cryptography Rust).
+
+CHANGES:
+  - pyconfig.h: _Py_HACL_CAN_COMPILE_VEC128/256 -> 0 (use portable HACL ref impl;
+    SIMD is only acceleration + would drag cpuid/AVX runtime detection into the
+    static freestanding build). blake2 then needs only the portable Blake2b/Blake2s.
+  - Python3.mk CPYTHON_CFLAGS: +`-I Modules` +`-I Modules/_hacl` +`-I Modules/_hacl/
+    include` +`-DHACL_CAN_COMPILE_VEC128=0 -DHACL_CAN_COMPILE_VEC256=0`.
+  - Python3.mk CPYTHON_MODULES_SRCS: +md5/sha1/sha2/sha3/blake2 module.c +
+    _hacl/Hacl_Hash_{MD5,SHA1,SHA2,SHA3,Blake2b,Blake2s}.c + _hacl/Lib_Memzero0.c.
+  - config.c: extern PyInit__{md5,sha1,sha2,sha3,blake2} + 5 _PyImport_Inittab entries
+    (after _ssl).
+
+BUILD (gotcha + fix): first relink failed — Hacl_Hash_Blake2b.c needs
+  `internal/Hacl_Streaming_Types.h` resolved from Modules/_hacl (had only
+  _hacl/include). Added -I Modules/_hacl; rm'd the partial hash/HACL/config .o; clean
+  rebuild. make -f Python3.mk python3 EXIT=0. nm confirms PyInit__md5/_sha1/_sha2/
+  _sha3/_blake2 all in python3.elf. build_iso EXIT=0; ISO 17:12:29; claude auto-
+  staged; python3.fry staged.
+
+EXPECTED on hermes: the "code for hash <X> was not found" / "unsupported hash type"
+  ERROR spam is GONE; hashlib.sha256/sha512/sha3_256/blake2b all construct. Phase 1
+  pipeline proven. Bootstrap SUMMARY otherwise same (hermes core still needs Phases
+  2-4: C exts, Rust exts, agent staging).
+
+NEXT: reboot, Zack runs hermes, grep serial for absence of hashlib errors -> fry1726.
+  Then PHASE 2 (psutil/Pillow C builtins).

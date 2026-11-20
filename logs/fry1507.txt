@@ -1,0 +1,69 @@
+fry1507 — 2026-06-14 19:07 CDT (2026-06-15 00:07 UTC). Author: Claude (Opus 4.8).
+STEP TYPE: TOOL-TEST ATTEMPT + "claude on the DESKTOP" investigation. Continues fry1506 (deadlock
+fixed, 3/3 green). Logged late — Zack (rightly) flagged the missing fry logs; this captures
+everything since fry1506 in one honest record.
+
+=== CODE CHANGE (why) — src/kernel/main.c (snapshot /tmp/main.c.pre-fry1507.*) ===
+Changed the baked claude prompt (line 759) from "say hello..." to a TOOL-EXERCISING prompt
+("Create hello.html ... run ls -la with Bash, search with Grep, read it back") + added
+"--dangerously-skip-permissions" (REQUIRED so -p non-interactive actually EXECUTES tools instead
+of emitting an unanswerable permission request) + bumped argc 7->8 at line 806. Goal: stress the
+subprocess spawn/reap path (Bash=/bin/sh, Grep=rg) the deadlock lived in, to confirm the fix holds
+under real tool use. Kernel deadlock FIX (fry1506 sched.c/process.c) untouched and still in tree.
+
+=== RUNS / OBSERVATIONS ===
+- fry1507_tooltest (headless, timeout 900s): TIMED OUT (exit 124) still in STARTUP, never reached
+  init. Startup was crawling: claude internal clock advanced ~30s while ~13min wall elapsed (~25x
+  slow this run). NOT wedged (line count + claude debug ts advancing), just very slow.
+- RED HERRINGS I chased and Zack corrected (twice): "429"/"401"/"403" in the log are TIMESTAMP/HPET
+  DIGITS (hpet=...429, nsec=401999872), NOT HTTP statuses. We are NOT rate-limited — it's the SAME
+  Anthropic account this very session uses, which is working; OAuth checked VALID (40-49 min left).
+  Do NOT pattern-match raw 3-digit substrings to HTTP codes (this is the documented 429 red herring).
+- Headed-window attempts: launching qemu -display gtk via run_in_background SIGHUP'd the window on
+  shell return (clean exit 0 at ~26s). setsid-detached launch fixed persistence (window stayed),
+  but in -p (prompt-only) mode the FRAMEBUFFER shows boot text then FREEZES because claude runs to
+  the serial harness and the run hadn't reached claude's stdout yet -> looked "hung" but was fine
+  (serial showed DHCP:OK, CA certs, configureGlobalAgents). The frozen-window confusion = mine.
+
+=== THE REAL FINDING: "Claude Code on the TaterTOS DESKTOP" was never wired up ===
+Zack's actual goal (the original plan): boot TaterTOS to the GUI desktop, open a terminal, run
+claude, watch it on screen. Current reality in src/kernel/main.c:
+  - Mode A (line 806->816): if RCLAUDE.LXE is staged, the KERNEL launches claude with output to
+    SERIAL and SKIPS the GUI ("skipping ... INIT.FRY").
+  - Mode B (line 831): only if claude is NOT staged does it run /system/INIT.FRY -> GUI.FRY -> the
+    real desktop (init.c spawns GUI then SHELL.TOT).
+  => The two are MUTUALLY EXCLUSIVE: the OS today runs claude (no graphics) OR the desktop (no
+     claude), never both. The claude effort got the binary to EXECUTE (serial harness) + reliable
+     (fry1506); it was never connected to the GUI. That is the gap Zack is (correctly) angry about.
+Desktop stack state: init.c -> GUI.FRY (src/user/gui/gui.c is a ~70-line window-server stub) ->
+SHELL.TOT (src/user/shell/shell.c). The shell runs external programs via fry_spawn (NATIVE .fry/
+.tot loader) only — it does NOT route the Linux RCLAUDE.LXE through the Linux-compat loader, set
+claude's env (OAuth/PATH/PYTHONHOME/SSL_CERT_FILE — the 9-var `ce` array main.c builds), or have a
+framebuffer TTY. No fb-console/keyboard TTY exists for userspace (shell I/O has been serial).
+(Aside: src/user/apps/claude.c is a SEPARATE native DeepSeek agent — NOT the real Claude Code; not
+relevant to this goal.)
+
+=== KEY ENABLER (good news): the framebuffer text console ALREADY exists ===
+src/kernel/kprint.c has a full fb text renderer (5x7 font, fb_draw_char, scroll); kprint() writes
+to BOTH serial AND framebuffer (boot text on screen proves it). And claude's stdout fd=1 ALREADY
+flows through kprint_write() (syscall.c:4806-4809) when no dup2 redirect is installed. So claude's
+stdout CAN render on screen TODAY — the headed runs just never reached claude's stdout (stuck in
+slow startup) and used --output-format stream-json (unreadable JSON) anyway.
+
+=== PLAN (build, in stages; stage 1 = visible on-screen claude) ===
+STAGE 1 (fast, high-impact — "see claude answer on the monitor"): keep the kernel-launch path but
+(a) drop --output-format stream-json/--debug so claude emits READABLE TEXT to stdout (fd1 ->
+kprint_write -> framebuffer), (b) verify kprint_write renders fb (next), (c) run headed (setsid)
+and confirm claude's answer appears on the TaterTOS screen. Not yet interactive, but real on-screen
+proof.
+STAGE 2 (interactive desktop terminal): boot Mode B (GUI) WITH claude staged; add a `claude`
+command to the shell that launches RCLAUDE.LXE via the Linux-compat loader WITH the env main.c
+builds, and a framebuffer keyboard TTY so the shell reads PS/2 input + renders on screen. This is
+the full "log in, open terminal, type claude, watch it" experience and is the larger build.
+
+=== STATE / RULES ===
+- Tree: fry1506 deadlock fix INTACT (sched.c/sched.h/process.c). main.c has the fry1507 tool prompt
+  (will revisit for Stage 1). Snapshots in /tmp/*.pre-*.
+- NOT rate-limited; OAuth valid ~40min (rotate/restage before long runs).
+- Headed runs MUST be setsid-detached (run_in_background SIGHUPs the GTK window).
+- Per Rule 5: resume one-fry-log-per-step discipline from here (this log covers the fry1507 span).

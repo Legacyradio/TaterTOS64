@@ -1,0 +1,30 @@
+fry1659 - rebuild image with refreshed native Python
+Timestamp: 2026-06-19 15:48:34 CDT
+
+What changed:
+- Rebuilt TaterTOS64v3 boot artifacts after the libc/Python startup fixes from
+  fry1658.
+- Restaged the refreshed native python3.fry plus the Python stdlib and Hermes
+  Agent tree into out/tater_nvme.img.
+
+Why:
+- The fixes in fry1658 produced a new python3.fry, but QEMU still needed a
+  rebuilt image with that interpreter staged at /apps/python3.fry on the NVMe
+  ToTFS image.
+- The clean rebuild also ensured the standard userland apps were relinked
+  against the corrected libc objects and netdb.h declaration.
+
+Commands:
+- make clean
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+- ./tools/totcopy out/tater_nvme.img 1048576 --list /apps
+
+Verification:
+- Clean rebuild completed and produced:
+  out/tatertos64v3.iso
+  out/tater_nvme.img
+- /apps in out/tater_nvme.img contains:
+  SHELL.TOT size 160120
+  python3.fry size 7328304
+- Host python3.fry is also size 7328304, confirming the rebuilt interpreter
+  was staged into the image.

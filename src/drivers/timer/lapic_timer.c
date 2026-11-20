@@ -6,6 +6,7 @@
 #include "hpet.h"
 #include "../../kernel/irq/irqdesc.h"
 #include "../../kernel/mm/vmm.h"
+#include "../../kernel/proc/process.h"
 #include "../../boot/efi_handoff.h"
 #include "../../boot/early_serial.h"
 #include "../../include/tater_trace.h"
@@ -42,7 +43,31 @@ static void boot_diag_stage(uint64_t stage) {
 }
 
 static void lapic_timer_handler(uint32_t vector, void *ctx, void *dev_id, uint64_t error) {
-    (void)vector; (void)ctx; (void)dev_id; (void)error;
+    (void)vector; (void)dev_id; (void)error;
+    /* fry1572 DIAG: live spin PC of the claude main thread. When the timer
+     * interrupts the JS main/event-loop thread (pid==tgid) in USERSPACE, emit
+     * its IRQ-frame RIP — the actual busy-spin instruction (user_rip is stale
+     * for a pure userspace spin, fry1571). Frame layout (irqdesc.c:496):
+     * [17]=RIP [18]=CS; (cs&3)==3 => userspace. Throttled. REMOVE once fixed. */
+    if (ctx) {
+        uint64_t *frame = (uint64_t *)ctx;
+        struct fry_process *c = proc_current();
+        if (c && g_tb_trace_claude_tgid &&
+            c->tgid == g_tb_trace_claude_tgid && c->pid == c->tgid) {
+            /* fry1577: log the main thread's PC in ANY mode. cs&3: 0=kernel,
+             * 3=user. TBSPIN never fired userspace-only (fry1574) -> the thread
+             * runs but stays in the KERNEL. A kernel RIP symbolizes directly via
+             * nm/objdump on kernel.elf, naming the exact kernel loop it spins in. */
+            static uint64_t tb_spin_n;
+            if ((++tb_spin_n & 0xFFU) == 0) {
+                early_serial_puts("TBSPIN cs=");
+                early_serial_puthex64(frame[18]);
+                early_serial_puts(" rip=");
+                early_serial_puthex64(frame[17]);
+                early_serial_puts("\n");
+            }
+        }
+    }
     /* BSP boot diagnostic: first-tick marker */
     if (!g_first_bsp_tick_seen) {
         uint32_t count = smp_cpu_count();

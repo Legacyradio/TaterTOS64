@@ -1,0 +1,65 @@
+# hermes005 — PHASE 2 STEP 4: signal.h missing stack_t definition
+Date: 2026-06-17 ~14:43 CDT
+Type: compile fix (Phase 2 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Continue compiling Python/pylifecycle.c after the _POSIX_THREADS fix (hermes004).
+
+---------------------------------------------------------------------------------
+WHAT HAPPENED
+---------------------------------------------------------------------------------
+After fixing the condvar detection, new errors appeared:
+
+  Include/internal/pycore_faulthandler.h:84:5: error: unknown type name 'stack_t'
+  Include/internal/pycore_faulthandler.h:85:5: error: unknown type name 'stack_t'
+
+---------------------------------------------------------------------------------
+ROOT CAUSE
+---------------------------------------------------------------------------------
+CPython's pycore_faulthandler.h uses stack_t (for sigaltstack support —
+the faulthandler module installs an alternate signal stack to catch
+segfaults). stack_t is a POSIX type defined in <bits/types/stack_t.h>.
+
+TaterTOS defines stack_t in src/include/bits/types/stack_t.h (struct with
+ss_sp, ss_flags, ss_size). This header is included by sys/ucontext.h, but
+NOT by signal.h. CPython includes signal.h (not sys/ucontext.h) before
+using stack_t, so the type is not visible.
+
+On Linux/glibc, signal.h transitively includes bits/types/stack_t.h through
+bits/signal.h. TaterTOS signal.h was missing this include chain.
+
+---------------------------------------------------------------------------------
+FIX
+---------------------------------------------------------------------------------
+Added `#include <bits/types/stack_t.h>` to src/include/signal.h, after the
+existing includes.
+
+  #include <sys/types.h>
+  +#include <bits/types/stack_t.h>  /* stack_t — used by sigaltstack, faulthandler */
+
+WHY: stack_t is part of the POSIX signal API (used by sigaltstack and
+SA_ONSTACK). signal.h is the correct place to expose it. The type already
+exists in the TaterTOS include tree — it just wasn't reachable through
+signal.h. This is a missing include, not a new definition.
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+Re-ran pylifecycle.c compile:
+  x86_64-elf-gcc ... -DPy_BUILD_CORE -c Python/pylifecycle.c
+
+Result: ZERO errors. Compiled clean. Object file at /tmp/pylifecycle_test.o.
+
+This is a significant milestone — pylifecycle.c is the most platform-dependent
+file in CPython core. It exercises threading init, signal handling, filesystem
+paths, environment variables, and process lifecycle. Compiling it clean means
+the TaterTOS header/libc surface is sufficient for CPython's core platform layer.
+
+---------------------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------------------
+Continue compiling remaining core files (ceval.c, pythonrun.c, etc.) with
+-DPy_BUILD_CORE. Move toward a full link attempt.

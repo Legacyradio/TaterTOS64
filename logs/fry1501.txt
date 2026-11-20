@@ -1,0 +1,77 @@
+fry1501 — 2026-06-14 12:30 CDT (17:30 UTC). Author: Claude (Opus 4.8).
+STEP TYPE: DEEP DIAGNOSIS of the timerfd-spin wedge (advances fry1486's open lead). Pure analysis
+of existing serials (fry1499 DEADLOCK sock=64 vs serial_fry1483.log SUCCESS sock=16) + source. NO
+rebuild, NO run, NO edit. Continues fry1500.
+
+=== GOAL ===
+fry1486 left UNPINNED: "WHY does pid 14 service only the timerfd and never advance to socket I/O."
+This step identifies pid 14 and characterizes its epoll set in both runs.
+
+=== WHAT pid 14 IS (NEW — not known at fry1486) ===
+pid 14 = a DNS/network WORKER thread. Evidence (fry1499):
+- L2691: TBCLONE3 child pid=14 tgid=5 (real thread, early; clear_child_tid=6fbbd7c00ce8 — note this
+  is the e8c8-region tid, but e8c8 wakeup is NOT the bug per fry1487).
+- L2989/L3405: LXSOCK socket pid=14 domain=2 (AF_INET) -> fd=17  => it opens AF_INET sockets.
+- It runs DNS: LXDNS pid=14 nr=441 (epoll_pwait2) and reads 8-byte timer/eventfd payloads.
+pid 14's epfd=14 interest-set over the run = { transient AF_INET DNS sockets fd=17/18/19 (kind=4),
+cross-thread eventfds fd=7/9/16 (kind=6), the timerfd fd=15 (kind=8) }.
+
+=== THE WEDGE (fry1499), precisely ===
+- Network fully worked: TLS conn=0/conn=1; conn=1 received 90,153 bytes and DRAINED to unread=0
+  (L16183 rx, L17618 dump unread=0). So the API response was consumed; the socket is NOT stuck
+  with unread data. conn=1 then sits idle ESTABLISHED (periodic identical TBDUMP to L29702).
+- pid 14 progressively REMOVES every I/O fd from epfd=14 via op=2 (DEL):
+  fd=21@L20428, fd=19@L28784, fd=17@L28785, fd=18@L32024.
+  Sockets are torn down after epoll reports them HUP/done (e.g. L3215 fd=17 revents=0x10 EPOLLHUP
+  asked-only-EPOLLIN -> immediate op=2). This HUP-then-DEL is DNS-query lifecycle churn and occurs
+  THROUGHOUT the run from L3215 on — it is NOT unique to the wedge.
+- After L32024 the ONLY fd still producing events in epfd=14 is fd=15 (timerfd). pid 14 loops:
+  epoll_pwait2(nr=441) rc=1  ->  read(fd=15,8) rc=8  ->  repeat, forever (L29016..32022 pattern,
+  then to EOF). The cross-thread eventfds fd=7/9/16 go SILENT (no LXEVFD wr targeting them, no
+  LXEPRDY kind=6 after the wedge). 23.7k lines of this + pid 6's benign e8c8 100ms heartbeat.
+
+=== SUCCESS CONTRAST (serial_fry1483.log, sock=16) ===
+- Reaches "subtype":init AND "subtype":success, then EXITS CLEAN: L30102 TBEXIT group pid=5 code=0.
+- The driving event loop is epfd=5 (main thread pid 5), woken by WORKER EVENTFD WRITES:
+  L29979/29983/30044 "LXEVFD wr fd=7 val=1 counter=254..256 pid=12/pid=11" — workers signal the
+  main loop via eventfd fd=7, main processes, completes, exits.
+- epfd=14 is BARELY used in success (first real add at L29195, near the very end).
+=> In the 16-socket run the work stays on the main loop (epfd=5 + worker eventfd fd=7), which
+completes. In the 64-socket run an extra/!-busier DNS worker loop (pid14/epfd=14) becomes load-
+bearing and degenerates to the timerfd spin. This matches the rg-fix handoff: >16 sockets => full
+worker set => the worker that wedges.
+
+=== WHAT IS / IS NOT ROOT-CAUSED ===
+PROVEN: pid14 is a DNS/net worker; its wedge state = no DNS sockets + silent eventfds + timerfd-
+only spin; the API response (90KB) was received and read; success completes via main-loop eventfd
+signaling that the deadlock lacks.
+NOT YET PINNED (single line/root): WHY pid14 ends up with nothing to do but the timer, and what
+it (or the main thread) is ultimately waiting for. Two concrete candidates, both TESTABLE:
+  (C1) Lost cross-thread wakeup: eventfds fd=7/9/16 are pid14's work-signal from other threads.
+       They go silent at the wedge. If a thread SHOULD write one of them (to hand pid14 the next
+       DNS job or to tell it to park) and doesn't — that is the lost signal. poll_check_fd treats
+       eventfd readable only when counter>0 (syscall.c:1004); a write that never happens => never
+       ready. Need: log every LXEVFD wr (target fd + writer pid) in the wedge window and find the
+       fd7/9/16 write that fires in SUCCESS but not in DEADLOCK.
+  (C2) Spurious socket HUP: poll_check_fd reports POLLHUP for a TCP socket in state CONNECTED when
+       tcp_is_connected()==false (syscall.c:972-973) and for SHUTDOWN/CLOSED (990-991). If a DNS
+       or API socket is HUP'd prematurely (e.g. transient not-yet-connected, or fd-reuse race),
+       libuv tears it down and the resolver/loop stalls. Need: tag each POLLHUP with the branch +
+       sk->state + tcp_is_connected(), scoped to claude tgid.
+
+=== NEXT STEP (fry1502) — INSTRUMENT, then BUILD + RUN ===
+Add serial-only, claude-tgid-scoped beacons (no behavior change):
+  1. In the eventfd write path: "LXEVFDW pid=<w> fd=<n> -> counter=<c>" for fd in {7,9,16}.
+  2. In poll_check_fd socket branch: when revents has POLLHUP, log the branch (CONNECTED-not-conn
+     vs SHUTDOWN/CLOSED), fd, sk->state, tcp_is_connected().
+  3. In the epoll_pwait2 return for epfd=14: when the ONLY ready fd is the timerfd for >N
+     consecutive returns, emit a one-shot "LXSPIN pid=14 timerfd-only" marker (rate-limited) so the
+     wedge onset is unambiguous in the next serial.
+Then: full clean rebuild (Rule 12), KVM run with NIC (sock=64), capture serial, compare fd7/9/16
+writes + HUP branches vs serial_fry1483.log. This decides C1 vs C2 without guessing.
+
+=== STATE / RULES ===
+- No source modified this step. No build. No run. FRY_SOCK_MAX still 64.
+- Codex co-edits syscall.c/process.c — serialize before the fry1502 edit.
+- Makefile has no header-dep tracking: touch all kernel .c after any header edit.
+- Build = clean+verbose (planv3 Rule 12). Run cmd template in HANDOFF_rg_fix_2026-06-13.md.

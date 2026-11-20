@@ -1,0 +1,55 @@
+fry1535 - PRECISE ROOT CAUSE: interactive input dead because epoll_ctl(fd0) -> EBADF (libuv stdin watcher can't arm)
+Date: 2026-06-15 15:46:49 CDT
+
+Type: INVESTIGATION / DIAGNOSIS. No code changed. Refines/supersedes fry1534's
+("main-loop wakeup stall") with the exact mechanism, prompted by the user's insight:
+"it takes text until claude takes over the terminal, then once claude is asking
+about accessing the workspace it no longer accepts my inputs."
+
+The user's framing is exactly right: the break is at the SHELL -> CLAUDE terminal
+takeover (raw mode), not the input delivery.
+
+Smoking gun (/tmp/fry1533_serial.log, per-keystroke pattern at the trust prompt):
+    read fd=0 len=262144 -> 1                         (Claude reads the keystroke)
+    TBTRACE ret pid=14 nr=233 epoll_ctl rc=0xff..f7   (= -9 EBADF)
+    ...only pid=15 100ms heartbeat... (main thread parks)
+Each keystroke: Claude reads 1 byte, then its libuv loop calls epoll_ctl on stdin
+to (re)arm the watcher, gets EBADF, and parks WITHOUT dispatching the key to the Ink
+prompt. Raw-mode ioctls TCGETS2/TCSETSW2 (cmd 802c542a / 402c542c) fire at line
+16350 right as the trust prompt renders = the takeover moment.
+
+Code confirm (src/kernel/proc/syscall.c lx_epoll_ctl_fd, ~line 4210):
+    if (!shared->fd_ptrs[target_fd] || shared->fd_kind[target_fd] == FD_NONE)
+        return -EBADF;
+fd 0 (stdin) has NO fd object (fd_ptrs[0] is null) - stdin is handled specially via
+the inbuf ring in lx_read_fd, not as a registered fd. So epoll_ctl(ADD, fd0) -> EBADF.
+
+Why pre-takeover input works: before Claude, the SHELL (native app) reads the
+keyboard via its own native read path and handles it directly (typing "claude"
+works). Once Claude takes over and goes interactive, it manages stdin through libuv
+which REQUIRES registering fd 0 with epoll - unsupported here - so the watcher never
+arms and keystrokes are read-then-dropped. (epoll_ctl ADD fd0 -> EBADF was already
+visible in fry1523; its consequence for interactivity is now understood.)
+
+FIX PLAN (next step, with user's go):
+  1) lx_epoll_ctl_fd: accept fd 0 (stdin) as a valid epoll target - special-case it
+     so it does not require fd_ptrs[0] (add/mod/del an epoll item with fd==0).
+  2) epoll readiness (lx_poll / epoll_wait readiness computation, ~syscall.c:911-912
+     where fd 0 currently returns FRY_POLLIN unconditionally): report EPOLLIN for
+     fd 0 ONLY when the inbuf has data (shared->inbuf_head != inbuf_tail), so libuv
+     is woken exactly when a keystroke is available and does not busy-spin on an
+     always-ready empty stdin.
+  3) Ensure fd 0 reads in this path return data when present and -EAGAIN when empty
+     under O_NONBLOCK (already implemented in lx_read_fd fry1524); libuv sets stdin
+     non-blocking + epoll, so it will read only when ready. The blocking yield-loop
+     path stays for non-epoll blocking readers.
+  Expected result: libuv arms the stdin watcher, epoll_wait wakes on each keystroke,
+  Ink dispatches it, the trust prompt becomes navigable (arrows + Enter), and Claude
+  enters its main UI - the last interactivity blocker.
+
+Session wins still standing (verified, logged 1521-1533): TUI renders in the GUI
+Shell; stays alive on stdin; loads in seconds; reads config intact; reaches the real
+trust prompt. fry1534 "wakeup stall" is now explained precisely by this epoll(fd0)
+gap. Also still pending: C2 color (fry1530), and the cosmetic post-exit Shell repaint.
+
+No code changed. No build. No hashes (Rule 16). VM left running.

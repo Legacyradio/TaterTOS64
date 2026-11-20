@@ -1,0 +1,44 @@
+fry1414 — Tater Bridge / Claude Code: epoll close-purge did NOT move the
+needle; instrument the resolver's epoll registration directly.
+Date: 2026-06-11 ~1:50 PM CDT. Author: Claude (Opus 4.8). Follows fry1413.
+========================================================================
+
+WHAT (fry1413 boot)
+====
+epoll_purge_fd_everywhere shipped (correct Linux close semantics, kept),
+but EEXIST count = 59 (was 60) and STILL no LXUDP send. So either the
+EEXIST is benign normal behavior (EPOLL_CTL_ADD on an already-registered
+fd legitimately returns EEXIST; uSockets is supposed to fall back to MOD)
+OR the fd in question is never closed (no purge trigger). Either way it
+is NOT the proven blocker. Walking back the over-eager conclusion.
+
+GROUND TRUTH (unchanged across boots)
+====
+DNS UDP socket connect() to 10.0.2.3:53 returns 0, then ZERO send from
+any thread; resolver thread blocks on a futex (ETIMEDOUT). The query is
+never written. Need to see the epoll handshake on the SOCKET fd, not guess.
+
+CHANGES (instrumentation only, compile clean)
+====
+1. LXEPCTL beacon in lx_epoll_ctl_fd: logs epfd/op/fd/events for every
+   epoll op whose TARGET is an FD_SOCKET, plus an explicit "-> EEXIST
+   fd=N (had events=X)" when ADD collides. Shows exactly how Bun
+   registers the DNS socket and with which event mask.
+2. LXEPRDY beacon in lx_epoll_wait_fd: logs when a SOCKET fd is returned
+   ready (revents vs asked) — shows whether the main loop is ever told
+   the DNS socket is writable (EPOLLOUT) so it can send.
+
+DECISION TREE FOR NEXT BOOT
+====
+- No LXEPCTL for the DNS fd: Bun never registers it for write -> the
+  send is gated on something else (check the futex the resolver waits on
+  / a c-ares vs glibc path question).
+- LXEPCTL with events lacking EPOLLOUT(0x4): Bun waits for readable only;
+  it expects connect()+send inline -> our connect or send path is the
+  issue, not epoll.
+- LXEPCTL EPOLLOUT present but no LXEPRDY: poll_check_fd not reporting
+  POLLOUT for a connected DGRAM socket, or epoll_wait not pumping it.
+- LXEPRDY EPOLLOUT fires but still no send: the bug is above us (userspace
+  callback) — re-examine; unlikely.
+
+Boot -> fry1415.

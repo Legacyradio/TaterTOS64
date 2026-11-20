@@ -1,0 +1,103 @@
+fry1761 — FULL HANDOFF — native hermes agent — 2026-06-26
+=========================================================================
+READ FIRST. Supersedes fry1757_HANDOFF. Per-step detail: fry1758 (_posixsubprocess),
+fry1759 (select+builtins, code+build), fry1760 (stage+ISO rebuild).
+Goal: get hermes_cli.main to IMPORT in TaterTOS, then run the real agent.
+=========================================================================
+
+CURRENT STATE (ready to boot — NOT yet verified on screen):
+  - ISO out/tatertos64v3.iso rebuilt 06-26 09:18, EXIT=0.
+  - python3.fry 14717672 bytes (08:57) staged to /apps/python3.fry (inode 33).
+  - Two import blockers fixed since fry1757; a THIRD fix (select) is BUILT+STAGED
+    but its on-screen result is UNVERIFIED (this is the immediate next action).
+
+=========================================================================
+PROGRESS THIS SESSION (the import chain is advancing one module at a time)
+=========================================================================
+Each boot revealed the next missing stdlib C module in hermes_cli.main's chain:
+  1. fry1758: "No module named '_posixsubprocess'"  -> FIXED + VERIFIED on screen
+       (error then advanced to 'select', shot1759.png).
+  2. fry1759: "No module named 'select'"            -> FIXED, BUILT, STAGED.
+       Result NOT yet seen on screen.
+
+=========================================================================
+WHAT WAS CHANGED (all native, no linux_like)
+=========================================================================
+fry1758 — _posixsubprocess (subprocess needs it):
+  - Python3.mk: + Modules/_posixsubprocess.c
+  - config.c: extern + inittab {"_posixsubprocess", PyInit__posixsubprocess}
+  - src/user/libc/gap_stubs.c: LINK stubs because _posixsubprocess.c's
+    do_fork_exec is compiled UNCONDITIONALLY (not under HAVE_FORK) and refs
+    fork + PyOS_BeforeFork/AfterFork_Parent/AfterFork_Child. TaterTOS has NO
+    fork (spawns via posix_spawn), so: fork()->ENOSYS, PyOS_*Fork*->no-ops.
+    Dead at runtime (subprocess uses posix_spawn path); only needs to link.
+
+fry1759 — select + asyncio-chain builtins:
+  - src/user/libc/posix.c: IMPLEMENTED select() over poll() (+ pselect()).
+    libc had poll/epoll/fcntl but no select(). Added #include <sys/select.h>.
+  - external/.../Modules/selectmodule.c: + #include <sys/select.h> (TaterTOS
+    puts fd_set/FD_SETSIZE there, not in <sys/types.h>; without it = compile err).
+  - config.c: extern + inittab for select, _heapq, _bisect, _queue.
+  - Python3.mk: + selectmodule.c, _heapqmodule.c, _bisectmodule.c, _queuemodule.c
+    (_heapq/_bisect/_queue = pure stdlib C, no ext libs, added proactively for
+     the asyncio/selectors/queue chain to save boot cycles).
+
+=========================================================================
+BUILD RECIPE (IMPORTANT — non-obvious gotchas)
+=========================================================================
+  - Add stdlib C module: source -> Python3.mk CPYTHON_MODULES_SRCS; extern +
+    inittab entry -> config.c; then `touch config.c; make -f Python3.mk python3`.
+  - Python3.mk has NO rule for libc .o EXCEPT gap_stubs.o. If you edit posix.c
+    (or any other libc .c), rebuild it via the MAIN Makefile FIRST:
+        make src/user/libc/posix.o
+    THEN `make -f Python3.mk python3` to relink. Otherwise the stale .o links.
+  - Verify BUILD_EXIT=0 + fresh python3.fry mtime before staging.
+  - Stage + ISO: `bash build_iso.sh` (sources stage_hermes.sh; totcopy's
+    python3.fry -> /apps + stdlib + hermes into out/tater_nvme.img, rebuilds ISO).
+
+=========================================================================
+BOOT / RUN / VERIFY LOOP (the slow part — be patient, ~30-60s to desktop)
+=========================================================================
+  1. QEMU MUST be dead before build_iso.sh or it hangs on the locked NVMe img.
+     Kill is SLOW (gtk): `kill <pid>`; WAIT for it to actually exit (pgrep
+     qemu-system-x86_64) before rebuilding. (This bit me this session — kill +
+     immediate build_iso = 10-min hang.)
+  2. Boot:  bash launch_debug.sh  (DISPLAY=:0 GUI on Zack's RustDesk; serial to
+     stdio — capture with `| tee /tmp/fryNNNN_serial.log`, run in background).
+  3. Wait for "SPAWN_OK path=/system/GUI.FRY" in serial = desktop up. (Desktop
+     DOES render — last session's "didn't boot" was a RustDesk hiccup.)
+  4. ZACK types at the keyboard: open Shell, type `hermes`, Enter. (Bare `hermes`
+     = tatertos_bootstrap.py diagnostic which imports hermes_cli.main. Do NOT try
+     to "drive" QEMU — it's a physical keypress.)
+  5. The bootstrap REPORT prints to the Shell WINDOW (not serial). Screenshot it:
+        WID=$(DISPLAY=:0 wmctrl -l | grep -i qemu | awk '{print $1}')
+        DISPLAY=:0 import -window "$WID" /tmp/shotNNNN.png
+     Read the "HERMES AGENT IMPORT" section -> the hermes_cli.main line.
+
+NEXT EXPECTED RESULTS (in order):
+  a. If hermes_cli.main now shows a NEW "No module named 'X'" -> add X (same
+     recipe). Likely candidates next: fcntl, termios, _multiprocessing, _csv,
+     unicodedata, zlib (have via Pillow?), or a pure-Python dep to stage.
+  b. If it shows an _ssl error -> see below (the big one).
+  c. If hermes_cli.main = OK -> Hermes core [OK]; then run the REAL agent:
+     `hermes <subcommand>` (e.g. doctor). shell.c routes `hermes <arg>` to the
+     real launcher (hermes_cli.main:main), bare `hermes` to the diagnostic.
+
+=========================================================================
+THE BIG REMAINING BLOCKER: _ssl (no HTTPS = no API calls)
+=========================================================================
+  _ssl is currently a STUB (src/user/apps/python_stubs/_ssl_stub.c) — imports but
+  cannot do TLS. For a live agent that hits an API you must back _ssl with a real
+  TLS lib. Candidate: in-tree BearSSL (src/user/apps/bearssl). This is the largest
+  remaining piece of real engineering. Not started.
+
+ALSO deferred (for a FULL instance, not needed for first import/run):
+  cryptography (Rust, needs OpenSSL libcrypto backend), psutil (/proc surface),
+  Pillow _webp. sdists in rust/pyext-src/.
+
+=========================================================================
+DISCIPLINE
+=========================================================================
+  native or nothing (no linux_like); FRY PER STEP (I slipped this session, Zack
+  called it out — don't); serial is truth, read to END; verify-before-claiming
+  (built != works); sudo pwd 0420 in memory. Logs: fry1758, fry1759, fry1760(this).

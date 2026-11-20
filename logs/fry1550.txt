@@ -1,0 +1,50 @@
+# fry1550 - VERIFY (MCP-free build): MCP was NOT the wedge. Input still not consumed. Narrowed to a synchronous /proc/self/stat openat storm starving the loop + missing procfs entries.
+Date: 2026-06-15 23:15 CDT
+Type: verify (headed run, user-driven) + diagnosis (live serial) of the fry1549 CLAUDE_NO_MCP=1 image
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+---------------------------------------------------------------------------------
+WHY (Rule 6)
+---------------------------------------------------------------------------------
+fry1547 hypothesised MCP-spawn churn wedged Claude out of the stdin read loop. fry1548/1549 built an MCP-free image to test it. This run tests + re-diagnoses.
+
+---------------------------------------------------------------------------------
+RESULT: FAIL (still cannot type) -> MCP hypothesis DISPROVEN
+---------------------------------------------------------------------------------
+User: "if its typing im not seeing shit and i hit enter and it didnt seem to move it along or initiate the search."
+
+Live serial (/tmp/serial.log, this run):
+- MCP churn GONE: 0 references to agent-bus / mcp-logs / tbridge-agent. So the strip worked and it was NOT the cause.
+- Keystrokes STILL delivered to Claude inbuf: TBPROCIN req=14 ... nw=1 b0=79/70/69/6e/67/20 ("yping "). Delivery still fine.
+- Claude read(fd=0) only TWICE, both at startup (lines 7522, 9808: TBREAD read fd=0 len=262144 -> 1), then NEVER again in the main UI. So the read path works when called; the app stops calling it.
+- epoll IS running: nr=441 (epoll_pwait2) fired 50x (TBTRACE labels 441 "unknown"; earlier "epoll_wait never called" was a mislabel — Bun uses epoll_pwait2). fd 0 is registered in epfd=5.
+- VM ALIVE (panic fix holding).
+
+KEY NEGATIVE on the EPOLLONESHOT theory:
+- The kernel epoll IGNORES EPOLLONESHOT. struct epoll_item has only {fd,events,data,et,et_valid,et_token,next} — no oneshot field; lx_epoll_ctl_fd only sets item->et from EPOLLET (syscall.c:4268,4279). lx_epoll_to_fry drops the ONESHOT bit. So fd 0 is LEVEL-triggered POLLIN and poll_check_fd(fd=0) reports ready whenever the inbuf is non-empty. => fd 0 would be reported ready every epoll pass that has buffered input. Oneshot is not the blocker.
+
+---------------------------------------------------------------------------------
+WHAT IS ACTUALLY WEDGING IT (evidence)
+---------------------------------------------------------------------------------
+The main thread is buried in a SYNCHRONOUS openat storm and isn't returning to epoll_pwait2 often enough / at the right time to consume stdin. Top openat targets this run:
+   119  /proc/self/stat        (ENOENT every time -- procfs has no self/stat)
+    45  /EFI/FRY, /EFI/BOOT/FRY, /EFI/BOOT, /EFI   (path search churn)
+    16  /nvme/.claude.json
+    12  /etc/claude-code/managed-settings.d
+     7  /proc/version          (ENOENT)
+     6  /proc/self/maps        (ENOENT)
+   + repeated /usr/lib/python3.14, /usr/lib/.../librt.so.1 (a child being spawned/retried even without MCP)
+The tail of the run is almost pure /proc/self/stat (fail) — a hot loop reading a procfs file that does not exist. Whatever component polls /proc/self/stat is spinning on ENOENT and not yielding the main thread back to the interactive read.
+
+So: NOT the OS keyboard path (delivery works), NOT MCP (ruled out), NOT epoll oneshot (not implemented/ignored). The remaining wedge is app-runtime busy-looping on missing procfs (/proc/self/stat, /proc/self/maps, /proc/version) + residual subprocess spawn churn (python/librt), which keeps the main thread off the stdin read.
+
+---------------------------------------------------------------------------------
+NEXT (own fry log each) - concrete, in priority order
+---------------------------------------------------------------------------------
+1) Implement the missing procfs entries the runtime hot-loops on: /proc/self/stat (the 52-field stat line), /proc/self/maps, /proc/version. Most-likely-tractable lever: if the stat read stops failing, the spin should break and the main thread should return to epoll_pwait2 + read(fd0). Build + re-test typing.
+2) If still wedged: instrument which thread calls epoll_pwait2 vs which does the openat storm, and whether poll_check_fd(fd=0) ever returns POLLIN during typing (add a one-shot beacon in lx_epoll_wait_fd when item->fd==0 && rev&POLLIN). That tells us if epoll SEES the keystroke but Bun doesn't read, vs the loop never re-polls.
+3) Separate/lower: Grok's tcp_conn accept-path refs=0 regression.
+
+STATUS SUMMARY (for the handoff): panic on teardown FIXED+verified (fry1544-1546). Input DELIVERY to Claude works. Input CONSUMPTION blocked by app-runtime busy-loop on missing procfs; that is the remaining gate to an interactive prompt.
+
+All per planv3 Rules 1/5/6/12. Written immediately on completion of the verify+diagnosis step.

@@ -1,0 +1,9 @@
+fry1832 - SNAPSHOT of uncommitted work before any change (2026-11-17 13:59 CST)
+WHY: new session, 656 uncommitted status entries; Sur/Marshmallow ordered snapshot first.
+HOW: git ls-files -m + -o --exclude-standard (43,438 files, 0 deleted) -> tar --zstd; plus git diff HEAD --binary patch.
+WHERE: ~/backups/tatertos64-snapshot-20261117/
+  tatertos64-uncommitted-20261117.tar.zst  588,380,207 B (2.28 GB uncompressed)  sha256 in SHA256SUM.txt
+  tracked-changes.patch 608,274 B (72 files), filelist.txt, status-short.txt, HEAD.txt (733c2f1a)
+VERIFIED: zstd -t OK; tar entry count 44,046 = 43,438 files + dirs; 5 random files byte-equal to live tree.
+NOT INCLUDED: gitignored build outputs (out/, *.o, *.elf, *.fry, *.iso, *.img) - rebuildable, not source.
+NO PROJECT FILE WAS CHANGED besides this log. Step 1 (reading handoffs + fry1831) done same session.

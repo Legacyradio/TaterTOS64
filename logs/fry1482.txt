@@ -1,0 +1,91 @@
+fry1482 - INSTRUMENT (not bump) the rg/Grep-spawn "ENFILE: file table
+overflow" — add an SPCEN census/high-water trace at the kernel resource
+choke points so the next run settles leak-vs-need with data, per the
+fry1481 regroup decision.
+Date: 2026-06-13. Author: Claude (Opus 4.8).
+Baseline: fry1476/fry1481 known-good (boots, claude runs clean, MCP
+Python child executes, 0 segfaults). rg ENFILE is the one open blocker
+to "claude runs FULLY like on Linux" — every Grep/Bash subprocess goes
+through the same spawn path.
+========================================================================
+
+WHY THIS APPROACH (instrument, do NOT bump)
+------------------------------------------------------------------------
+fry1481 reverted three speculative pool bumps that chased this same
+ENFILE blind. Hard data already on the table from that drift:
+  - fry1477 FRY_SOCK_MAX 16->128: ENFILE UNCHANGED -> the socket pool is
+    NOT the binding limit.
+  - fry1479 FRY_PIPE_MAX 128->256: BROKE boot -> pipes were never
+    actually tested as the limit.
+By elimination the PIPE pool (FRY_PIPE_MAX=128) is the prime suspect.
+The discipline here (diagnose don't loop): prove WHICH global pool
+starves and WHY (leak = slots pinned across close/exit, vs need = real
+concurrent demand > ceiling) BEFORE changing any limit. Raising
+FRY_FD_MAX is independently blocked: fd_paths[N][128] lives on the
+process struct; 256 -> ~40KB > KSTACK_SIZE(32KB) -> claude ELF load
+halts (fry1478). fd_paths must move off the stack first.
+
+WHAT WAS ADDED (all serial-only, all capped, tag = "SPCEN")
+------------------------------------------------------------------------
+src/kernel/proc/syscall.c
+  1. pipe_alloc() rewritten to also count live pipes:
+     - "SPCEN pipehw used=N/128"  -> printed ONLY on a new high-water.
+       Bounded output; a monotonic climb to 128 = leak, a plateau below
+       = genuine concurrent need.
+     - "SPCEN pipefull used=N/128" -> at exhaustion (return -1), cap 64.
+     This choke point catches EVERY pipe-ENFILE path (socketpair stdio,
+     pipe2, etc.), not just one call site.
+  2. sock_alloc() mirrored:
+     - "SPCEN sockhw used=N/16" (new high-water)
+     - "SPCEN sockfull used=N/16" (exhaustion, cap 64)
+  3. SYS_SOCKETPAIR (inlines its own socket-slot scan, does NOT call
+     sock_alloc):
+     - "SPCEN exhaust pid=P sock=.../pipe=..." at both ENFILE returns
+       (sidx0<0, sidx1<0), cap 64 each.
+     - "SPCEN new pid=P sock=.../pipe=..." on each successful pair, cap
+       500 (per-pair pid + live census).
+  4. SYS_CLOSE AF_UNIX socket free path:
+     - "SPCEN close pid=P sock=.../pipe=..." after sk->used=0, cap 500
+       (explicit-close reclaim signal).
+  + static helper sp_census(tag,pid) after sock_alloc walks g_sockets +
+    g_pipes and prints both live counts.
+
+src/kernel/proc/process.c (shared_release teardown, FD_SOCKET branch)
+  5. "SPCEN exit pid=P sock=.../pipe=..." when an AF_UNIX socketpair slot
+     is reclaimed at process teardown, cap 500. This is the leak-vs-need
+     discriminator: if rg's child exits but the census count does NOT
+     fall here, slots are pinned (parent holds dup'd refs / refcount bug)
+     = leak; if it falls and the pool still hits the ceiling = real need.
+
+NO behavior change. No limit changed. Append-only diagnostics matching
+the house kprint_serial_only(...) + static-counter beacon idiom
+(TBWR/TBCOPYFD style). Distinct from the fry1479 TBSPAIR beacon that
+fry1481 removed — no collision.
+
+BUILD
+------------------------------------------------------------------------
+make: kernel.elf relinked clean (17:31 CDT). Only pre-existing warnings
+(syscall.c:5572 region_ok unused, :3180 slots maybe-uninit) — both
+predate this change, neither on an SPCEN line. syscall.o + process.o
+rebuilt, no errors.
+
+NEXT STEP (its own log)
+------------------------------------------------------------------------
+Full image rebuild (STAGE_CLAUDE=1 STAGE_PYTHON=1) + OAuth restage
+(rotates ~8h, restage = rebuild) -> QEMU boot -> drive claude to a Grep
+call so rg spawns -> capture serial -> read the SPCEN trace:
+  - which tag fires at failure (pipefull vs sockfull vs exhaust)
+  - the high-water shape (climb-to-ceiling vs plateau)
+  - whether exit/close reclaim counts actually drop
+That settles leak-vs-need; the FIX (close/refcount path, or a
+data-justified limit change with fd_paths moved off-stack first) is the
+step after.
+
+COORDINATION
+------------------------------------------------------------------------
+Codex and I both edit syscall.c/process.c — this change is append-only
+beacons localized to pipe_alloc/sock_alloc/socketpair/close +
+shared_release; serialize the subsystem so we don't clobber. A second
+long-running claude instance (pid 991332) was up during this edit; no
+codex process was live. 2406 lines remain uncommitted in these two files
+(the verified fry1463-1481 chain) — still not committed.

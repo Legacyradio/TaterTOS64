@@ -1,0 +1,91 @@
+fry1792 — boot fry1790/1791 ISO + run `hermes`: TLS abort GONE, new earlier fault in fry_tls_get — 2026-08-07
+==========================================================================
+WHAT: Booted the fry1791-verified ISO and ran `hermes` in the Shell — the first
+real test of the fry1790 per-thread TLS fix. RESULT: the fry1788
+`_PyThreadState_Attach: non-NULL old thread state` abort DID NOT REPRODUCE.
+A different, MUCH EARLIER user fault now kills the process, inside libc's
+fry_tls_get() — before any Python import work.
+
+ARTIFACTS VERIFIED BEFORE LAUNCH (no rebuild — this is the fry1791 ISO):
+  kernel.elf            2026-06-26 20:22:46
+  python3.fry           2026-06-26 17:32:22  (fry1787 build, 15,820,064 B)
+  out/tatertos64v3.iso  2026-06-26 20:24:58  (newer than both => contains both)
+Launch: launch_debug.sh command line, -serial file:/tmp/fry1792_serial.log.
+
+BOOT (serial /tmp/fry1792_serial.log):
+  selftest: 106 passed, 0 failed
+  SPAWN_OK path=/system/GUI.FRY  pid=7 parent=2      <- fry1791 init fix holds
+  SPAWN_OK path=/apps/SHELL.TOT  pid=8 parent=7
+  (no smoketest, no halted console — desktop up)
+  NOTE: "E1000: not found (scanned 7 PCI devs)" / NET:NONIC — launch_debug.sh
+  passes NO -netdev/-device e1000, so this boot has NO NIC. Irrelevant to this
+  crash (it dies long before networking) but the agent will need a NIC.
+
+THE CRASH (serial :69-76), after Zack typed `hermes`:
+  TBPROCIN req=9 -> pid=9 name=/nvme/apps/python3.fry
+  HERMESMAIN argc=2 /nvme/opt/hermes-agent/hermes
+  !EXC vec=0E err=04 RIP=0x0040350E CR2=0x0000000000000020 CS=0x2B
+  !REG rax=0x8 rbx=0x2 rcx=0x403507 rdx=0x0 rdi=0x2 rbp=0x7FFFFFFFF620
+  USER FAULT: pid=9 tid=9 vec=14 err=0x4 rip=0x40350e cr2=0x20
+  Total elapsed ~20k ticks (fry1788 crashed at ~7.7M ticks, deep in imports)
+  => this is a NEW, EARLIER failure, not the old one.
+
+FAULT SITE RESOLVED (objdump python3.elf; python3.fry is FRY0-wrapped so it must
+be disassembled from python3.elf):
+  0x4034f0 <fry_tls_get>:
+    4034f6  mov  $0x47,%eax        ; SYS_GET_TLS_BASE (71)
+    403505  syscall
+    403507  test %rax,%rax
+    40350a  je   403520            ; NULL -> return 0 (safe path)
+    40350c  mov  %ebx,%edi         ; edi = key
+    40350e  mov  0x8(%rax,%rdi,8),%rax   <-- FAULTS
+  This is fry_tls_block_ensure()/fry_tls_block_current() INLINED into
+  fry_tls_get() (src/user/libc/libc.c:1030 -> :396 -> :495): it treats the %fs
+  base as a `struct fry_tls_block *` and reads block->slots[key] at
+  base + 8 + key*8.
+
+ROOT CAUSE (arithmetic, confirmed): rax=8, rdi=key=2 -> 8 + 8 + 2*8 = 0x20 = CR2.
+Exactly matches. So **SYS_GET_TLS_BASE returned 8**, i.e. cur->user_fs_base == 8
+for pid 9's MAIN thread. 8 is neither a valid variant-II TCB (the ELF loader puts
+it at 0x7FFF8000_xxxx, see elf.c:431 `*tls_base_out = tp`) nor NULL — so it slips
+past the `test/je` NULL guard and derefs low memory.
+  rcx=0x403507 == the syscall return address, confirming rax is genuinely the
+  syscall's return value and not a clobber.
+
+STATIC AUDIT DONE THIS STEP (no code changed):
+  - syscall.c:8544 SYS_GET_TLS_BASE just returns cur->user_fs_base (0 if kernel).
+  - process.c:925 / :992 — BOTH process_launch and process_launch_args set
+    p->user_fs_base = tls_base from elf_load_fry BEFORE
+    process_tls_stash_template(); the fry1790 stash does NOT touch user_fs_base
+    (it only writes shared->tls_tmpl + tls_thread_next). So the fry1790 change
+    does not obviously corrupt the MAIN thread's base.
+  - elf.c:181 defaults *tls_base_out = 0 and only overwrites with tp on a valid
+    PT_TLS; a failed/absent PT_TLS gives 0, which would take the SAFE je branch.
+    => 8 cannot come from the loader; something SETS it to 8 after start.
+  - Candidate setters of user_fs_base after launch: SYS_SET_TLS_BASE
+    (syscall.c:8541, from libc fry_tls_set_base) and arch_prctl ARCH_SET_FS
+    (syscall.c:6072). The lx_execve path (syscall.c:5475/5527) zeroes it, but
+    that is the Linux-ABI path and python3.fry is native.
+  - Note pid 9 got NO "SPAWN_OK" line, so it was NOT launched via SYS_SPAWN
+    (syscall.c:8376); with argc=2 it came through the args path. Which exact
+    launch path the Shell used for `hermes` is NOT yet pinned down.
+  - PRE-EXISTING DESIGN COLLISION (worth flagging): libc's fry_tls_block scheme
+    wants %fs to point at a malloc'd `struct fry_tls_block`, while the fry1701-
+    1706 ELF-TLS work points %fs at the variant-II TCB. They coexist only because
+    the TCB has FRY_TLS_TCB_RESERVE (0x1000) of slack above tp that libc uses for
+    slots[] (elf.c:429 documents this). Any code path that calls
+    fry_tls_set_base() with a heap block, or that leaves a stale/garbage base,
+    breaks one of the two.
+
+NOT DETERMINED: who writes 8. Static reading is exhausted — the next step needs
+one instrumented boot.
+
+NEXT (fry1793, PROPOSED — awaiting Zack's go-ahead):
+  Add kprint_serial_only tracing (temporary diagnostics, to be stripped):
+   1. SYS_SET_TLS_BASE  — print pid/tid + the value being set + caller RIP.
+   2. SYS_GET_TLS_BASE  — print pid/tid + returned value (rate-limit: first N).
+   3. process_launch_args — print the tls_base handed back by elf_load_fry.
+  Then one boot + `hermes`, read serial, identify the writer of 8 and fix it.
+  Only after that is the fry1790 per-thread TLS fix actually testable — the
+  process now dies before it ever spawns a second thread, so fry1790 is still
+  UNVERIFIED (not disproven).

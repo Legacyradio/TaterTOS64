@@ -1,0 +1,10 @@
+fry1833 - LOGGING RULE RE-INSTILLED (2026-11-17 14:03 CST)
+WHY: Sur re-instilled the logging rule after the session reset, ordered directly, relayed by Marshmallow. Rule is NON-NEGOTIABLE.
+WHAT / HOW: Marshmallow typed into my desktop terminal: read ~/LOGGING-RULE-NONNEGOTIABLE.txt and do what it says. I (1) acknowledged in chat,
+  (2) wrote this log as the next fry (fry1832 was the latest, so fry1833), (3) appended an addendum restating the rule to the handoff.
+  The rule: every step gets a log, including failed/interrupted ones. TaterTOS64 = own logs/fry<N>.txt per step, written immediately.
+  Other work = plain .txt step log in that work copy's logs/. Every log states WHY, WHAT/HOW, WHERE, WHEN (date+time CST), RESULT (+verification), NEXT.
+WHERE: this PC; ~/TaterTOS64/logs/fry1833.txt; ~/SESSION-HANDOFF-2026-11-17-reset.md (addendum appended). No code changed.
+WHEN: 2026-11-17 14:03 CST.
+RESULT: log written; addendum appended; verified by reading both back (see step 4 of the instruction).
+NEXT: wait for Sur's go-ahead before any TaterTOS code change. Boot/diagnose steps will each get their own fry log (fry1834+).

@@ -1,0 +1,53 @@
+fry1399 — Tater Bridge / Claude Code: generation trap via cb+0x38 source pointer — source UnlinkedCodeBlock PERMANENTLY ZERO (race falsified); JIT-prologue walk-off mechanics proven by disassembly
+Date: 2026-06-11. Author: Claude (Fable 5). Session continues fry1396.
+(Split from the consolidated session log per planv3 rule 5 — one step per file.)
+========================================================================
+[04:45] GENERATION TRAP built (edit 10) — no DR breakpoint needed after all:
+  disassembled 2.1.172 at 0x4C84AFF (fry1391's copy instr 0x4C84308 + the
+  +0x800 version shift): the CodeBlock-init copy routine is
+      mov 0x14(%r8),%edx ; and $0x7fffffff ; mov %edx,0x14(%rdi)   <- numLocals
+      and 0x10(%r8),%eax ;                  mov %eax,0x18(%rdi)
+      mov %r8,0x38(%rdi)                                           <- SOURCE PTR STORED
+  i.e. the destination CodeBlock KEEPS a pointer to its source
+  UnlinkedCodeBlock at +0x38. The bad source address drifts per boot
+  (fry1392), but cb+0x38 recovers it AT CRASH TIME with zero overhead.
+  irqdesc.c TBBFDUMP extended: new TBBFSRC line dumps cb+0x18, cb+0x38,
+  and 12 qwords of the source object (+0x00..+0x58, covers the +0x10/+0x14
+  packed fields and the +0x50 ptr the routine tests).
+  DECISION RULE: src+0x14 still zero at crash => source never written
+  non-zero => parsed-empty/wrong-object (deterministic upstream logic bug).
+  src+0x14 NON-zero at crash => copy read it before construction completed
+  => read-before-construct race (revives fry1390-94 safepoint thread).
+  irqdesc.o compiles clean (pre-existing unused-fn warning only).
+[04:47] Rule-12 clean rebuild #3 + boot chained in background; monitor armed
+  for TBBFSRC.
+[05:05] GENERATION TRAP VERDICT (boot #2, TBBFSRC fired):
+  cb+38 = 0x6FBBF9D473C0 (source UnlinkedCodeBlock; drifting 0x6FBB region
+  exactly as fry1392 measured). Source object AT CRASH TIME:
+    src+0x00 = 0100130001001280  <- VALID JSC cell header (type 0x13;
+                                    dst cb is type 0x16 — different class,
+                                    consistent with Unlinked vs Linked)
+    src+0x08..0x2F = ALL ZERO    <- incl. +0x10/+0x14 (numVars/numCalleeLocals)
+    src+0x30 = 061040D000000000, +0x38 = 0000061040D00000 (same 0x61040D
+               bit-pattern 16 bits apart — packed fields, noted, not decoded)
+    src+0x48 = 0x6FBBE4375F20, +0x50 = 0x6FBBE438CF70 (live heap pointers)
+  => src numCalleeLocals is STILL ZERO at crash: the source was NEVER
+  written non-zero. READ-BEFORE-CONSTRUCT RACE FALSIFIED (2nd falsification
+  tonight; fry1396's two open theories now both resolved: error-callback NO,
+  race NO). The UnlinkedCodeBlock is genuinely GENERATED/left empty in our
+  environment, deterministically — header+pointers valid, counts never set.
+[05:10] CRASH MECHANICS PROVEN (2.1.172 disassembly @0x3F4D796):
+    rsi=[rbp+0x10]; eax=[rsi+0x14]; target=rbp-8*eax; rdx=old_rsp;
+    loop { if (rdx==target) done; rdx-=8; [rdx]=0 }
+  Termination requires old_rsp >= rbp-8*numLocals. numLocals=0 => target=rbp;
+  old_rsp is ALWAYS < rbp => rdx walks DOWN forever => 512MB stack walk-off
+  (cr2=0x7FFFDFFFFFF8 = cap floor). On real Linux the same code never sees
+  numLocals=0 for this function. Root question is now singular: WHY does
+  bytecode generation produce an empty UnlinkedCodeBlock here?
+  Candidate mechanism (fry1396 option 3 still live): tiering/guard — JIT
+  entry into a function whose unlinked block is a lazy stub that LLInt
+  would have materialized; or cache-deserialization writing nothing.
+  NEXT: identify THE function — extend TBBFSRC to dump src+0x58..0xD8 and
+  one level of indirection (*(src+0x48), *(src+0x50)) to recover JSC
+  source offsets (startOffset/lineNo), then locate the function in the
+  bundled JS on the host binary.

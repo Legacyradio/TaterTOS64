@@ -1,0 +1,64 @@
+fry1523 - CODE-LEVEL root cause confirmed: child fd0 read returns EOF on empty stdin (syscall.c lx_read_fd)
+Date: 2026-06-15 12:39:00 CDT
+
+Type: DIAGNOSTIC / CODE CONFIRMATION. No code changed in this step.
+Builds on fry1522 (confirmed: Claude renders trust prompt then exits 129 on EOF stdin).
+
+Goal: locate, in source, exactly why the child's stdin returns EOF, and determine
+whether the child reads fd0 in blocking or non-blocking mode (decides the fix shape).
+
+Findings:
+
+1) The Shell-side I/O is already complete and correct (NOT the bug):
+   src/user/shell/shell.c
+     - pump_child_io() (line 274): bidirectional loop. Reads fry_read(0) (TaterWin
+       events) -> process_input_stream(pid); drains fry_proc_output(pid) -> renders.
+     - process_input_stream() (line 233): parses TW_MSG_KEY_EVENT, forwards each
+       ascii byte to the child via fry_proc_input(pid) = SYS_PROC_INPUT.
+   Kernel ring plumbing:
+     - SYS_PROC_INPUT (syscall.c:8476) writes bytes into shared->inbuf ring.
+     - SYS_PROC_OUTPUT (syscall.c:8435) drains shared->outbuf ring.
+   => Keyboard -> compositor -> Shell fd0 -> SYS_PROC_INPUT -> child inbuf is wired.
+
+2) THE BUG - child fd0 read returns EOF when inbuf is empty:
+   src/kernel/proc/syscall.c, lx_read_fd(), fd==0 branch (lines 4655-4673):
+     if (fd == 0) {
+         if (shared->inbuf_head != shared->inbuf_tail) { drain ring; return nr; }
+         if (gui_process_running() && !process_name_is_gui(cur->name)) {
+             if (cur) sched_yield();
+             return 0;            // <-- EOF when empty (GUI path: our case)
+         }
+         int n = ps2_kbd_read(...);
+         if (n > 0) return n;
+         if (cur) sched_yield();
+         return 0;                // <-- EOF when empty (non-GUI path)
+     }
+   read()==0 is POSIX EOF. node/Ink sees stdin end -> exits the prompt -> exit 129.
+   It fires on the FIRST empty read, with or without user input.
+
+3) Mode determined = BLOCKING (empirical, from /tmp/fry1520c_desktop_serial.log):
+   - line 5584: epoll_ctl(epfd=5, ADD, fd=0) rc=0xfffffffffffffff7 = -9 EBADF.
+     node could NOT register stdin with epoll -> libuv fell back to direct reads.
+   - line 5580: read fd=0 len=262144 -> 1   (one streaming blocking read, 1 byte)
+   - line 6421: read fd=0 len=262144 -> 0   (the fatal EOF read)
+   - kernel poll path (syscall.c:912): fd==0 always returns FRY_POLLIN ("readable"),
+     which combined with read()->0 forces an EOF.
+   => The child reads fd0 in blocking mode. Correct behavior: block until data.
+
+Conclusion / fix shape (to be applied next step, pending build):
+   In lx_read_fd fd==0, when inbuf is empty:
+     - if fd0 is O_NONBLOCK (shared->fd_flags[0] & O_NONBLOCK): return -EAGAIN.
+     - else: cooperative block - sched_yield() and re-check inbuf in a loop until
+       data is available (the Shell pump fills inbuf via SYS_PROC_INPUT when the
+       user types), or the process is being torn down. NEVER return 0 while stdin
+       is open.
+   This is the minimal correct fix and the actual gate to interactivity (user's
+   step B). The async-spawn UI-freeze (~15s during the 250MB eager-load) and full
+   epoll-on-fd0 support are SEPARATE, lower-priority follow-ups.
+
+Plan-sequence note (reconciles with user's reordering):
+   The "master pump" (user's E) already exists, so it is not a prerequisite to
+   build. The confirmed first blocker is this fd0 EOF-on-empty bug. Async spawn
+   remains a tracked follow-up, not the verification gate.
+
+No code changed. No rebuild. No hashes (Rule 16).

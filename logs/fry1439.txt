@@ -1,0 +1,60 @@
+fry1439 — Write-path beacon boot + host strace diff. VERDICT: the guest
+inference is REAL and reproducible to the byte (conns sent 1,556 / 774 /
+10,356 B — same as fry1437; host reference shows the same two-small-
+plus-one-big-POST shape, host's big conn 34,108 B because its system
+prompt carries hooks/MCP/settings the guest lacks; one DNS lookup both
+sides). Claude answers inside TaterTOS and exits 0. The output gap is
+now precisely bounded: Bun's stdout sink setup is SYSCALL-IDENTICAL to
+the host (fcntl(1,F_DUPFD_CLOEXEC)->12, F_SETFL O_NONBLOCK, TCGETS2->
+ENOTTY), the host then writes all stream-json through the dup
+(write(12, "{\"type\":...")), and the guest NEVER issues the first
+write — TBWR census: 29 eventfd wakeups + 1 stderr warning = claude's
+ENTIRE write traffic for the run. No transcript file writes either:
+BOTH consumers of Bun's writer layer are silent. fd 12 is never
+epoll-registered, never written, never polled after setup.
+Date: 2026-06-12 04:2x CDT. Author: Claude (Fable 5).
+========================================================================
+
+KEY EVIDENCE
+------------------------------------------------------------------------
+- TBWR by fd: 22x fd7(eventfd), 7x fd16(eventfd), 1x fd13(stderr dup).
+  Zero to fd12/fd1/any FD_FILE/any socket-via-write.
+- TBF12 (after dup): ioctl TCGETS2=ENOTTY, fcntl F_GETFL=1,
+  fcntl F_SETFL 0x801 (O_NONBLOCK set by Bun), then NOTHING for 17s.
+  (Other TBF12 lines are a1==12 coincidences: early fd-12 file reads
+  before the dup existed, rt_sigaction(SIGUSR2).)
+- Host strace (same binary, stdout=/dev/null): identical setup sequence,
+  then write(12, stream-json) x11 from the main pid. The "first write"
+  has no gating syscall — Bun writes when the CLI emits its first event.
+  Guest emits none.
+- TBFAIL paths (guest): /proc/self/stat ENOENT x9, managed-settings
+  probes, cert-dir probes (TLS works anyway — BearSSL anchors built in),
+  /.claude/settings.json ENOENT, and ONE notable:
+  /home/claude/.claude/remote/.oauth_token ENOENT — claude probes for
+  the remote-sandbox marker. Plus mkdir EIO x1 (path unknown, fixed in
+  fry1440 forensics) and readlink EINVAL on /usr, /etc.
+- Transcript writes absent: on host claude appends
+  ~/.claude/projects/<dir>/<session>.jsonl during the run; guest HOME=/
+  sits on read-only boot media (staged via mcopy into the ESP image) —
+  the mkdir EIO is consistent with transcript-dir creation dying there.
+
+INTERPRETATION
+------------------------------------------------------------------------
+The CLI's event-emission layer produced nothing all run: no init event,
+no assistant event, no result, no transcript appends — while the agent
+loop underneath (auth, gating, inference) ran perfectly. Either the
+emitter initialization failed silently (a guest probe answered
+non-Linux: /proc/self/stat missing is a live suspect — Bun/libuv reads
+it for process info) or claude routed output to a mode that writes
+nowhere (remote-sandbox probe is suggestive but it returned ENOENT =
+not-remote). Syscall inference has hit its ceiling; fry1440 makes
+claude narrate itself (--debug) and mirrors its file writes to serial.
+
+TEST COMMANDS (rule 10): boot as fry1432, serial /tmp/s_fry1439.log.
+Host reference: strace -f -e trace=fcntl,dup3,ioctl,fstat,write,writev
+  <claude 2.1.172> -p "hi" --output-format stream-json --verbose
+  >/dev/null; first main-pid write(12 is the stream-json channel.
+NOTE: totcopy already has an undocumented --get <src> <host_dst>
+extraction mode (main(), tools/totcopy.c) — usable to pull claude's
+files off the NVMe image post-run.
+========================================================================

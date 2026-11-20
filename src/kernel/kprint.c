@@ -399,10 +399,10 @@ void kprint_init(struct fry_handoff *handoff) {
     early_debug_putc('0');
     spinlock_init(&kprint_lock);
     early_debug_putc('1');
-    /* fry453: disable framebuffer output from kprint — screen stays black
-     * until the GUI process takes over. All kernel debug goes to serial;
-     * user-facing diagnostics go through the shell/sysinfo TaterWin apps. */
-    kcon.fb_base = 0;
+    /* Keep the framebuffer console live as the visible desktop terminal.
+     * GUI.FRY may paint the desktop underneath; shell/Claude stdout still
+     * needs a real on-screen terminal instead of serial-only output. */
+    kcon.fb_base = handoff->fb_base ? VMM_FB_BASE : 0;
     kcon.fb_width = handoff->fb_width;
     kcon.fb_height = handoff->fb_height;
     kcon.fb_stride = handoff->fb_stride;
@@ -713,7 +713,9 @@ void kprint_serial_only(const char *fmt, ...) {
     va_start(ap, fmt);
     vkformat_buf(buf, (int)sizeof(buf), fmt, ap);
     va_end(ap);
-    kprint_string(buf);
+    for (char *p = buf; *p; p++) {
+        serial_write_char(*p);
+    }
     spin_unlock_irqrestore(&kprint_lock, flags);
 }
 

@@ -1,0 +1,42 @@
+fry1739 — 2026-06-21 21:45 CDT
+STEP 2e (native std phase): finish the libc ABI TYPE surface for tatertos. All "cannot
+       find type" errors cleared. Build advanced from type-checking into the
+       function/const + std-PAL layer.
+
+CHANGES (rust/forks/libc/src/unix/tatertos/mod.rs), all sourced from src/include:
+  - `use crate::{gid_t, pid_t, uid_t};` (defined in common unix layer, not prelude —
+    were "cannot find in this scope" inside my passwd/group/siginfo structs).
+  - typedefs: fsblkcnt_t/fsfilcnt_t=c_ulong (sys/statvfs.h), sa_sigaction_t=size_t,
+    wchar_t=i32, sigset_t=u64, rlim_t=c_ulong, speed_t/tcflag_t=c_uint, cc_t=u8;
+    consts NCCS=32, FD_SETSIZE=1024.
+  - struct cluster: sockaddr, addrinfo (netdb.h), dirent, tm, passwd, group, termios
+    (NCCS), lconv, Dl_info, sem_t, rlimit, fd_set, statvfs, sigval, siginfo_t,
+    sigaction (union->sa_sigaction:size_t + sa_restorer:Option<fn>). Layouts verified
+    field-by-field against the headers.
+
+ERROR TRAJECTORY (build-std on probe_std):
+  unsupported-PAL(no std) -> 105 -> 70 (pthread) -> 10 -> TYPES ALL RESOLVED.
+  Count now 304 but it is FORWARD motion, not regression: with every type known, the
+  compiler now type-checks the libc fn/const surface AND std itself. New fronts:
+    * E0425 (200): missing libc FUNCTIONS (bind, clock_gettime, ioctl, pthread_create,
+      readv, writev, recvfrom, getpwuid_r, utimensat, futimens, dirfd, setgroups ...)
+      and the wait-status macros (WEXITSTATUS/WIFEXITED/WTERMSIG/... — fns in libc crate).
+    * E0422 (5): missing NET structs in_addr, ip_mreq, sockaddr_in, sockaddr_in6.
+    * E0432/E0433 (13): unresolved imports/paths (consts e.g. AF_INET, SOCK_*, etc.).
+    * E0531 (64): missing tuple struct/variant (W* macros used in patterns / consts).
+    * E0599/E0609 (21): methods/fields on the above once defined.
+    * std-PAL GAP: `fill_bytes` in module sys / this scope = std's randomness backend
+      (sys::random) has no tatertos impl. This is the FIRST std-side (not libc) gap —
+      std PAL for tatertos needs random wired to SYS_GETRANDOM (85). Tracks the broader
+      std unix-PAL tatertos-arm work coming after the libc fn surface.
+
+ASSESSMENT (honest, per verify-before-claiming): NOT working yet, NOT close to running.
+  But the hardest-to-scope part — the full libc TYPE ABI — is DONE and the approach is
+  decisively validated (monotone progress, every fix sourced from TaterTOS headers,
+  zero Linux). Two well-defined fronts remain and are multi-session:
+    (A) libc crate: extern fn decls + net structs + wait macros + socket/af consts.
+    (B) std unix PAL: tatertos arms (random via SYS_GETRANDOM first, then time/thread/
+        fs as they surface), then rebuild pydantic_core natively + relink + serial verify.
+STATE: libc tatertos TYPE surface complete; fn/const surface + std PAL pending.
+NEXT: add the libc fn/const/net-struct surface (front A) from unistd.h/sys/socket.h/
+  netinet/in.h/sys/wait.h; rebuild; measure. -> fry1740.

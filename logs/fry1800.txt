@@ -1,0 +1,115 @@
+fry1800 — ROOT CAUSE FOUND: libc thread trampoline DESTROYS the kernel's ELF TLS — 2026-08-10
+==========================================================================
+WHAT: Ran the fry1799 instrumented kernel. The probe answered the question
+conclusively. The bug is in USERSPACE libc, not the kernel. fry1790's per-thread
+ELF TLS works correctly and has worked since it was written; libc throws it away
+microseconds after the thread starts. No source changed this step (diagnosis only).
+
+=== THE DECISIVE SERIAL EVIDENCE (logs/fry1800_serial.log) ===
+  TLSDBG get MAIN tid=9 tgid=9 fs=7fff80000138 (baseline, printed once)
+  TLSDBG build tid=10 OK fs=7fff80100138 bbase=7fff80100000 alloc=312 next=7fff80102000
+  TLSDBG spawn path=NATIVE tid=10 parent=9 fs=7fff80100138 entry=400150
+  TLSDBG set tid=10 tgid=9 old_fs=7fff80100138 new_fs=10005592c30
+  TLSDBG get THREAD tid=10 tgid=9 fs=10005592c30      (x20, until the abort)
+  Fatal Python error: _PyThreadState_Attach: non-NULL old thread state
+  USER FAULT: pid=9 tid=10 rip=0x4e5c79 cr2=0x27      (~598s)
+
+READ IT IN ORDER:
+ 1. The kernel BUILT a correct private TLS block for tid=10 at 0x7FFF80100138 —
+    bbase 0x7FFF80100000, alloc=312 (0x138 = PT_TLS memsz exactly), in the thread
+    arena, and GENUINELY DISTINCT from the main thread's 0x7FFF80000138.
+    => fry1790 IS CORRECT. It was never the bug.
+ 2. path=NATIVE confirms hermes/python3 uses the native thread path
+    (SYS_THREAD_CREATE -> process_create_user_thread), NOT the Linux clone path.
+ 3. Then userspace called SYS_SET_TLS_BASE and REPLACED %fs with 0x10005592C30 —
+    a HEAP address (shared->heap_start = 0x10000000000, process.c:67).
+ 4. Every subsequent get on tid=10 returns the heap value. The thread runs its
+    entire life on the wrong TLS base and then aborts.
+
+=== ARCHITECTURE CORRECTION (Zack, this session) — fry1797 WAS WRONG ===
+fry1797 flagged process_clone_linux_thread (process.c:492, takes %fs verbatim
+from the clone3 arg) as the likely culprit. THAT HYPOTHESIS IS DEAD.
+Zack: hermes/python3 is NATIVE; the Linux compat layer (clone3/linux_elf) is for
+Claude Code ONLY. Verified in code: native libc pthread_create -> fry_thread_create
+(libc.c:935) -> syscall3(SYS_THREAD_CREATE) (libc.c:973); there is NO call to
+clone/clone3 anywhere in src/user/libc. path=NATIVE on the serial confirms it.
+=> fry1790 was EXERCISED, so it was never "irrelevant"; and it produced a correct
+   block, so it is not "ineffective" either. It is simply OVERWRITTEN.
+Do not revisit the clone-path theory for hermes.
+
+=== ROOT CAUSE (userspace, exact) ===
+src/user/libc/libc.c:935 fry_thread_create()
+    tls_block = (struct fry_tls_block *)calloc(1, sizeof(*tls_block));
+    ...
+    ctx->tls_base = tls_block;            /* heap pointer handed to the thread */
+
+src/user/libc/libc.c:418 fry_thread_trampoline()   <- EVERY native thread starts here
+    if (fry_tls_set_base(ctx.tls_base) < 0)        /* libc.c:421 — THE DEFECT */
+        fry_thread_exit(1);
+
+The trampoline UNCONDITIONALLY replaces the kernel-provided %fs with a calloc'd
+`struct fry_tls_block` (libc.c:376-386: {void *tls_base; void *slots[]; tid;
+stack_base; stack_len;}).
+
+WHY THAT KILLS CPython: `struct fry_tls_block` is a BARE STRUCT ON THE HEAP. It
+has NO ELF TLS IMAGE BENEATH IT. x86-64 variant II puts __thread variables at
+NEGATIVE offsets from tp. python3.elf's PT_TLS is FileSiz 0x79 / MemSiz 0x138 /
+align 8, and the symbols are:
+    _mi_heap_default   TLS offset 0x00   (.tdata)
+    _Py_tss_tstate     TLS offset 0x88   (.tbss — past FileSiz, so ZERO in a
+                                          properly built block)
+With tp = heap block, _Py_tss_tstate resolves to (heap_block - 0x138 + 0x88) =
+heap_block - 0xB0 — i.e. WHATEVER HEAP BYTES PRECEDE THE ALLOCATION. Non-zero
+garbage => _PyThreadState_Attach sees a non-NULL "old thread state" => Fatal
+Python error. Identical reasoning applies to mimalloc's _mi_heap_default at
+offset 0 (tp - 0x138).
+This is TWO TLS MECHANISMS FIGHTING OVER %fs: TaterTOS's legacy key-slot TLS
+(heap `fry_tls_block`, predates ELF TLS) vs the kernel PT_TLS support added in
+fry1790. The main thread never breaks because nothing overwrites what elf.c set.
+
+=== THE DESIGN ALREADY ANTICIPATED THIS (so the fix is the intended shape) ===
+  src/kernel/proc/elf.c:66
+      #define FRY_TLS_TCB_RESERVE 0x1000ULL  /* room for libc struct fry_tls_block */
+  src/kernel/proc/process.c:377
+      #define FRY_TLS_TCB_RESERVE_P 0x1000ULL
+  process.c:417  map_end = (tp + FRY_TLS_TCB_RESERVE_P + 0xFFF) & ~0xFFF
+  process.c:425  *(uint64_t *)tp = tp;   /* variant-II self-pointer */
+  libc.c:377-381 comment: "tls_base MUST be the first member: it sits at offset
+      0 == %fs:0, the x86-64 variant-II TLS self-pointer".
+The reserve above tp EXISTS to hold libc's fry_tls_block, and the kernel ALREADY
+writes the self-pointer that is that struct's first member. The main thread uses
+exactly this arrangement. Only the spawned-thread path fails to.
+
+=== INSTRUMENTATION NOTE ===
+The fry1799 per-class budget redesign worked: 26 lines total, main-thread
+baseline printed once, and every rare event captured. The SYS_SET_TLS_BASE probe
+— added beyond the fry1797 plan on the suspicion that a thread might overwrite
+its own %fs — is the probe that caught the bug. Without it this would have looked
+like "kernel builds a good block, thread still aborts."
+COSMETIC: TLSDBG output interleaves with the app's stdout on the same serial
+line (e.g. "Fatal Python error: TLSDBG get THREAD..."). Harmless, but grep the
+serial with care; the Python message is split across lines 915-933.
+
+=== STATUS OF PRIOR CONCLUSIONS ===
+  fry1789 (static: threads get no private TLS)        — WRONG, refuted.
+  fry1790 (per-thread variant-II ELF TLS)             — CORRECT, keep it.
+  fry1793/1794 (stale objects)                        — CORRECT, still holds.
+  fry1797 (clone-path bypass hypothesis)              — WRONG, refuted above.
+  Network (fry1797 launch-line fix)                   — CORRECT, DHCP:OK again
+                                                        on this boot.
+
+=== NEXT (fry1801, PROPOSED — NOT approved, awaiting Zack) ===
+Make spawned threads use the kernel's block instead of a heap one, matching the
+main thread:
+  1. libc.c fry_thread_trampoline(): DELETE the fry_tls_set_base() call. The
+     kernel has already set a correct %fs before the thread's first instruction
+     (process_start -> write_user_fs_base, process.c:162).
+  2. libc.c fry_thread_create(): stop calloc'ing tls_block. stack_base/stack_len
+     must still reach pthread_getattr_np (pthread.c:184) — carry them in the
+     bootstrap ctx and have the trampoline write them into the block AT tp
+     (inside FRY_TLS_TCB_RESERVE), where the kernel already wrote tls_base=tp.
+  3. Keep a guarded fallback: if the kernel gave %fs == 0 (a binary with no
+     PT_TLS), retain the legacy heap path so non-ELF-TLS apps keep working.
+BUILD IMPACT — DO NOT MISS: python3.fry STATICALLY LINKS libc, so a libc change
+requires RELINKING python3.fry (`make -f Python3.mk python3`), not just `make
+kernel`. Then rebuild/restage the ISO.

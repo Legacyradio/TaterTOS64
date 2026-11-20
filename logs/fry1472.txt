@@ -1,0 +1,39 @@
+fry1472 - Narrowing the fry1471 regression: restrict socket copy to
+AF_UNIX (domain==1). Confirmed the copy targets the right fds, but the
+SIGSEGV PERSISTED (717x) -> root is sharing the AF_UNIX socketpair itself
+(pipe-backed), not AF_INET. Approach abandoned; REVERTED in fry1473.
+Date: 2026-06-13. Author: Claude (Opus 4.8).
+========================================================================
+
+CHANGE (reverted in fry1473): copy_vfork_fd_table FD_SOCKET branch only
+copies sockets with domain==1 (AF_UNIX socketpair stdio); skip AF_INET/
+netlink (claude's API/DNS). Added domain to the TBCOPYFD beacon.
+
+RESULT (serial /tmp/s_fry1472.log):
+- Domain restriction works AS INTENDED:
+    TBCOPYFD fd=17,18 kind=4 dom=2 (AF_INET)  -> NOT copied
+    TBCOPYFD fd=19-24 kind=4 dom=1 (AF_UNIX)  -> copied
+  child still inherits the stdio sockets (TBDUP2 19/22/24->0/1/2 open=1).
+- REGRESSION NOT FIXED: 717x SIGSEGV (worse), still no result. So the
+  crash is NOT from sharing claude's AF_INET sockets.
+
+CONCLUSION: SIGSEGV scales with copying the AF_UNIX socketpairs
+themselves (fry1470=0 segfaults/no copy; fry1471=496/copy-all;
+fry1472=717/copy-AF_UNIX-only). AF_UNIX socketpairs in TaterTOS are
+PIPE-BACKED ("AF_UNIX pairs over pipe buffers" — g_pipes via
+tcp_handle/listen_handle). My socket-level refcount did NOT manage the
+underlying g_pipes readers/writers, so sharing a socketpair end across
+processes corrupts pipe accounting -> claude faults.
+
+PROPER NEXT APPROACH (for a fresh session, do it carefully + test):
+Treat an AF_UNIX socketpair end like FD_PIPE in copy_vfork_fd_table —
+i.e. bump the BACKING g_pipes[tcp_handle] and g_pipes[listen_handle]
+reader/writer counts (the two directions) when copying to the child, and
+ensure lx_close_fd's socketpair path decrements them symmetrically. The
+socket struct itself can stay shared but its lifetime must follow the
+pipe refcounts, not a separate socket refcount. Verify: no SIGSEGV, main
+result prints, AND child rg dup2 works + exits clean.
+
+ACTION: reverted all fry1471/1472 socket changes -> fry1473 (restore the
+known-good fry1470 state: main inference clean, rg blocked on socketpair
+inheritance, NO regression).

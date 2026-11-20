@@ -1,0 +1,43 @@
+# fry1551 - CODE: implement /proc/self/stat in tbridgefs (procfs) to stop the runtime hot-loop on ENOENT that starves Claude's stdin read loop
+Date: 2026-06-15 23:30 CDT
+Type: code change (src/kernel/fs/tbridgefs.c, 5 hunks)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+---------------------------------------------------------------------------------
+WHY (Rule 6)
+---------------------------------------------------------------------------------
+fry1550: with MCP ruled out, the remaining input wedge is the main thread busy-looping on missing procfs. The dominant failing open is /proc/self/stat (119x ENOENT this run). tbridgefs (mounted at /proc) implements /proc/stat (system), /proc/self/maps, /proc/self/statm, /proc/self/status, /proc/version, etc., but lookup_proc() has NO entry for "self/stat" -> it returns TBRIDGEFS_NODE_NONE -> ENOENT. Bun/Node + libuv read /proc/self/stat for process state / CPU accounting; the failing open is retried in a hot loop, keeping the main thread off the interactive stdin read. Add the file.
+
+This is also a legitimate procfs gap independent of Claude.
+
+---------------------------------------------------------------------------------
+CHANGE (src/kernel/fs/tbridgefs.c) - 5 hunks
+---------------------------------------------------------------------------------
+1. enum tbridgefs_node: add TBRIDGEFS_NODE_PROC_SELF_STAT (after TBRIDGEFS_NODE_PROC_MEM).
+2. lookup_proc(): add  if (streq(path, "self/stat")) return TBRIDGEFS_NODE_PROC_SELF_STAT;
+   (distinct from the existing "stat" -> /proc/stat system node.)
+3. add buffer:  static char g_self_stat_buf[256];  (next to g_statm_buf).
+4. add self_stat_regenerate(): builds the Linux /proc/self/stat 52-field line
+   (man 5 proc). Real-ish fields: 1 pid (proc_current()->tgid, fallback 3),
+   2 comm "(claude)", 3 state "R", 4 ppid 1, 5 pgrp=pid, 6 session=pid,
+   8 tpgid -1, 18 priority 20, 20 num_threads 1; all other fields 0; '\n'
+   terminated. Field count verified = 52. Uses existing dec_append/str_append
+   helpers; mirrors statm_regenerate() style. WHY-comment ties it to fry1550/1551.
+5. node_text(): add  case TBRIDGEFS_NODE_PROC_SELF_STAT: self_stat_regenerate(); return g_self_stat_buf;
+
+No readdir change needed: Claude opens /proc/self/stat by full path (tbridgefs_open -> lookup_node -> lookup_proc), which now resolves; /proc/self is not enumerated for this.
+
+Note: /proc/self/maps and /proc/version already resolve (they were opened, not failed, in fry1550). Only self/stat was missing. /proc/self/maps content is regenerated on read; if a future run shows it failing, revisit — but evidence says only self/stat 404s.
+
+---------------------------------------------------------------------------------
+EXPECTED EFFECT / HOW TO VERIFY
+---------------------------------------------------------------------------------
+After rebuild: openat /proc/self/stat should succeed (no more TBFAIL ... /proc/self/stat). If the hot loop was the wedge, the main thread should return to epoll_pwait2 + read(fd0) and the TUI should accept typing (echo + Enter submits). If still wedged, the next lever is to instrument lx_epoll_wait_fd for fd0 readiness during typing (fry1550 NEXT item 2).
+
+---------------------------------------------------------------------------------
+NEXT (own fry log each)
+---------------------------------------------------------------------------------
+- fry1552: clean rebuild (STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 kept so MCP churn stays out of the way for this test).
+- fry1553: headed verify run -> user types.
+
+All per planv3 Rules 1/5/6/12. Written immediately on completion of the code change, before the build.

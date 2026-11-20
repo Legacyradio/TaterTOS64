@@ -1,0 +1,108 @@
+fry1389 — Tater Bridge / Claude Code: re-verified the corrupt-CodeBlock crash on
+2.1.170 (2.1.162 was deleted), and RULED OUT fry1388's leading hypothesis: the
+three traced VM ops (dontneed / unmap / release) and demand-refault do NOT touch
+the corrupt CodeBlock page. The numCalleeLocals=0 zeroing comes from a DIFFERENT
+path. No net code change this session (one redundant diagnostic was added then
+reverted — see PROCESS NOTE).
+Timestamp: 2026-06-10 04:44 CDT
+Author: Claude (Opus 4.8), continuing fry1388. HEAD = 733c2f1a (the fry1374-1388
+work is COMMITTED there now, no longer dangling). CLAUDE_BIN = 2.1.170.
+
+PROCESS NOTE (planv3 rule 5/6 — logged honestly)
+  I started this session saying I'd read the fry logs, then did NOT read fry1388
+  before working. I burned three build/boot cycles re-deriving fry1388's exact
+  result (numCalleeLocals=0) and added a redundant CodeBlock dump (TBFRAMEOBJ in
+  irqdesc.c) that duplicated the TBBFDUMP fry1388 already put at irqdesc.c:456.
+  Reverted it: `git checkout -- src/kernel/irq/irqdesc.c`. The committed tree is
+  unchanged by this session except this log + the HANDOFF note. Lesson recorded:
+  on TaterTOS, read the latest fry log FIRST. Non-negotiable.
+
+GROUND TRUTH RE-ESTABLISHED ON 2.1.170
+  2.1.162 (every prior RIP/addr was derived against it) was deleted in the Jun-8
+  GitHub backup; only 2.1.168/169/170 remain on host. Staged 2.1.170 fresh via
+  STAGE_CLAUDE=1 (inode 25, 247,469,776 bytes, 1 extent). Same Bun/JSC basis,
+  ET_EXEC (fixed addresses), entry 0x24aa400. The crash reproduces IDENTICALLY:
+  - Streaming loader opens/parses RCLAUDE.LXE (phnum=10); Bun boots, spawns the
+    thread pool (pid 3-10), reaches the event loop.
+  - Main thread (pid=3) faults in the JSC prologue zero-loop at RIP 0x3F4CFB6.
+  - TBBFDUMP (existing, ungated, fires on first deep stack fault):
+      rip=0x3F4CFB6 rbp=0x7FFFFFFE2530 rsi=cb=0x6FBFF50F42C0
+      rsi.numLocals=0 cb.numLocals=0
+      cb+0=0x0100140001001600 cb+8=0x6FBFF51C0088 cb+10=0x0000000000030100
+      vm=0x6FBFF5400000 softLimit=0x7FFFFFB02F80 ret=0x3F6817C
+      callerfp=0x7FFFFFFE25F0
+  - cb address is STABLE across versions/boots (fry1388/2.1.162 had the SAME
+    cb=0x6FBFF50F42C0, numLocals=0). Deterministic -> a kernel vm bug, not ASLR.
+  - register proof of the mechanism: rax=rbp exactly => target rsp = rbp =>
+    count*8 = 0 => numCalleeLocals = 0. With old_rsp < rbp (callee-saved already
+    pushed) the downward zero-loop (rdx-=8; *rdx=0; until rdx==rsp=rbp) underflows
+    and walks to the 512MB cap (TBBIGFRAME 8MB..512MB) -> #PF CR2=0x7FFFDFFFFFF8
+    -> Bun crash reporter -> ud2 (#UD vec6/SIGILL, handler=0) -> fatal. (All of
+    this was already in fry1388; re-confirmed on 2.1.170.)
+
+NEW RESULT — fry1388's hypothesis is RULED OUT
+  fry1388 NEXT#1 was: "trace every vm op (dontneed/MADV_FREE/munmap/mremap/brk)
+  whose range covers the CodeBlock page; find the op that zeros/unmaps the live
+  page." The trace infra is already wired:
+    - g_tb_target_page = 0x6FBFF50F4000 (syscall.c:83) — ALREADY armed to the cb
+      page (committed). tb_log_vm_touch (syscall.c:2459) logs TBVMTOUCH for
+      dontneed/unmap/release whose range covers g_tb_target_page, gated to tgid 3.
+    - syscall.c:3498 logs "demand-refault" when the target page demand-faults.
+  In this boot (trace ARMED, correct page): **0 TBVMTOUCH lines, 0 demand-refault
+  lines for the cb page.** => Before the crash, NONE of dontneed / unmap / release
+  / demand-refault touched the CodeBlock page. fry1388's leading suspects are
+  INNOCENT for this corruption.
+
+REVISED HYPOTHESIS (numLocals zeroed via a path NOT yet traced)
+  Candidates, in rough priority:
+  1. mmap/mremap ALIASING: a later anonymous mmap (or mremap move) is handed a
+     physical page that still backs the live CodeBlock's page (kernel vm
+     bookkeeping returns an overlapping/!committed slot — cf. TBVMREG "old-256
+     ceiling / aliasing bug" note at syscall.c:2205). A zero-init of the new
+     mapping then zeroes cb+0x14 through the alias. NOT covered by tb_log_vm_touch
+     (which only watches dontneed/unmap/release).
+  2. A second VA mapping the same PA (shared/file map, or a TBridge fd mmap) whose
+     write lands on the CodeBlock page.
+  3. The field was never written non-zero: a CodeBlock copy/relink/relocation in
+     JSC that our loader/relocation handling truncated (less likely — cb+0/+8/+10
+     look structurally valid; only +0x14 is 0).
+
+NEXT (instrumented hunt — drives next session)
+  1. WIDEN the page watch: make tb_log_vm_touch (or a new hook) also fire for
+     mmap / mremap / and EVERY map-of-a-physical-page-already-mapped-elsewhere.
+     Specifically: in the mmap/demand-page commit path, when a PA is installed at
+     a VA, check if that PA already backs g_tb_target_page (reverse check) and log
+     TBALIAS pid/va/pa. That catches the double-hand-out directly.
+  2. Add a one-shot WATCH that records WHEN cb+0x14 transitions to 0: poll/trap
+     writes to PA(g_tb_target_page)+0x14. (DR watchpoint infra exists:
+     tb_handle_jsc_slot_watchpoint / TBWATCH, currently disabled — re-point it at
+     PA-of-cb+0x14 once cb PA is known. The cb PA = vmm_virt_to_phys_user(cr3,
+     0x6FBFF50F42C0) at TBBFDUMP time.)
+  3. Confirm the cb PA, then watch that PA for the zeroing write -> get the RIP/op
+     that does it. THAT is the corruptor.
+  THEN: revert the 512MB diagnostic cap back to 64MB (syscall.c lx_try_grow_stack)
+  and strip TBBFDUMP/TBBIGFRAME. THEN networking (LNX_socket ABI -> native stack
+  + TLS + DNS + auth); socket()=-ENOSYS / epoll_pwait=-EINVAL remain a downstream
+  worker-thread gate, untouched until the main thread survives.
+
+BUILD/RUN (KVM) — note 2.1.162 master is now stale
+  Stage 2.1.170 (2.1.162 deleted): CLAUDE_BIN=~/.local/share/claude/versions/2.1.170
+  Kernel: export PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH"; make src/kernel/irq/irqdesc.o kernel
+          (cross gcc is now /usr/bin/x86_64-elf-gcc, NOT /opt/cross/bin)
+  ISO:    CLAUDE_BIN=.../2.1.170 STAGE_CLAUDE=1 MTOOLSRC=/dev/null /bin/bash build_iso.sh
+          (build_iso bakes RCLAUDE.LXE into out/tater_nvme.img directly with
+          STAGE_CLAUDE=1 — no separate MASTER-img restore needed for 2.1.170.)
+  Boot:   cp /usr/share/edk2/x64/OVMF_VARS.4m.fd /tmp/v.fd; ensure NO other qemu
+          holds out/tater_nvme.img (write-lock) — pkill -9 qemu-system first;
+          timeout 200 qemu-system-x86_64 -m 6G -machine q35,accel=kvm -cpu host -smp 2 \
+            -drive if=pflash,format=raw,readonly=on,file=.../OVMF_CODE.4m.fd \
+            -drive if=pflash,format=raw,file=/tmp/v.fd -cdrom out/tatertos64v3.iso \
+            -drive file=out/tater_nvme.img,if=none,id=nvm,format=raw \
+            -device nvme,serial=deadbeef,drive=nvm -serial file:/tmp/s.log -display none -no-reboot
+  grep -a (serial has NUL bytes).
+
+STATUS: corrupt-CodeBlock crash reproduced on 2.1.170 (numCalleeLocals=0, same as
+  fry1388). NEW: dontneed/unmap/release/demand-refault all ruled out for the cb
+  page (trace armed, 0 hits). Corruptor is an untraced path (mmap/mremap aliasing
+  or a second PA mapping). Next: PA-level watch on cb+0x14 to catch the zeroing
+  write. ~9/10 "binary runs"; "prints reply" gated on this + networking.

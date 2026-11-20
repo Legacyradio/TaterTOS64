@@ -1,0 +1,7 @@
+# fry1587 - BUILD: rebuild with the SHELL=/nvme/bin/sh path fix (fry1586) + busybox staged
+Date: 2026-06-16 ~15:12 (host clock) CDT
+Type: build (Rule 12)
+COMMAND: make clean && STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 LINUX_SHELL_BIN=/home/legacyindieradio/tatertos-shell/busybox CLAUDE_BIN=.../2.1.177 ... bash build_iso.sh (bg -> /tmp/build_1587.log)
+RESULT: EXIT 0 clean. No errors. busybox staged to ToTFS /bin/sh (= guest /nvme/bin/sh) + /bin/bash; ISO produced; Live-app fallback verification complete. shell.c (SHELL=/nvme/bin/sh + PATH=/nvme/bin) in the ISO. Artifacts @ 15:12.
+NEXT (fry1588 verify): boot -> claude -> ask it to run a shell command. Expect execve(/nvme/bin/sh) to SUCCEED (no more ENOENT/exit 127). Watch: LINUXELF load done for /nvme/bin/sh; busybox runs; then whether stdout flows back via the socketpair stdio (dup2 fd->0/1/2) to Claude = the last Bash-tool gate (fry1463-1481).
+All per planv3 Rules 1/5/6/12.

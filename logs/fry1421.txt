@@ -1,0 +1,72 @@
+fry1421 — Tater Bridge / Claude Code: TLS tracer extended to :443 +
+FIRST MULTICORE RUN (-smp 2, now the standard per Zack).
+***TLS HANDSHAKES COMPLETE. HTTPS REQUESTS SENT. API RESPONSES
+RECEIVED INSIDE TATERTOS — including a 12,332-byte body from
+api.anthropic.com.*** Remaining gap: claude's printed reply (window
+ended with the event loop still processing; no crash, no error).
+Date: 2026-06-11 ~6:40 PM CDT. Author: Claude (Fable 5).
+Follows fry1419/1420 (client went silent mid-handshake on -smp 1).
+========================================================================
+
+CONFIG CHANGE — MULTICORE IS THE STANDARD NOW
+====
+Zack's directive (recorded as policy): TaterTOS targets modern 64-bit
+multicore machines; single-core validation is a shortcut under planv3.
+ALL boots from fry1421 on are -smp 2 minimum; end-to-end must ALSO pass
+-smp 4 before this arc is called done. The old -smp 1 line was a
+crash-hunt determinism aid that outlived its justification.
+
+INSTRUMENTATION (in tree)
+====
+LNX_connect tracer now also arms on dport 443, budget 150 syscalls
+(53 stays at 40). Same LXDNS beacon name. STRIP with the LX* set.
+
+THE TRACE (pid=9 = uSockets loop thread; fd 0x11/0x12/0x13 = 17/18/19,
+all to 160.79.104.10:443; full log /tmp/s.log preserved this session)
+====
+per connection:
+  nr=42 connect rc=0
+  nr=54 setsockopt (TCP_NODELAY etc.) x several, rc=0
+  nr=233 epoll_ctl ADD/MOD rc=0
+  nr=44 sendto a3=0x205 rc=0x205      <- 517B ClientHello
+  nr=45 recvfrom a3=0x80000 rc=0xc25  <- 3109B server flight (SH+EE+
+                                         Cert+CV+Fin) read in ONE call
+  nr=201 time x N + openat hash-dir misses  <- cert chain verification
+  nr=44 sendto a3=0x40 rc=0x40        <- 64B ChangeCipherSpec+Finished
+  nr=44 sendto a3=0x3cf rc=0x3cf      <- 975B ENCRYPTED HTTP REQUEST
+       (fd18: 0x23f=575B; fd17: 0xa9=169B — three parallel requests)
+  ...
+  nr=45 recvfrom fd19 rc=0x302c       <- 12,332-BYTE RESPONSE BODY
+  nr=45 recvfrom fd17 rc=0x3b6, fd18 rc=0x484  <- responses on all 3
+  nr=44 sendto a3=0x18 rc=0x18        <- 24B (TLS ticket ack/close-ish)
+  nr=55 getsockopt x2, nr=54 setsockopt      <- post-response socket mgmt
+  nr=1 write fd=7 (eventfd) + nr=441 epoll_pwait2 rc=1..5  <- loop
+       dispatching response events to JS
+- THE SMOKING-GUN DIFFERENCE vs fry1419/1420 (-smp 1): there the client
+  sent ClientHello, read the flight, started cert verification (hash-
+  dir lookups observed) and NEVER produced Finished — server HUP'd it.
+  On TWO CORES the same image completes everything. Cert verification
+  (or its continuation) appears to depend on a second runnable thread;
+  on one core it starved. Zack's multicore instinct was CORRECT and
+  single-core validation was actively masking working code.
+
+WHERE IT STOPPED (not a failure — a clock)
+====
+900s window expired with the event loop alive and processing (pwait2
+returning events, futex churn normal, no crash, no error surfaced, no
+TLS alert sent). claude's stdout reply not yet printed. The guest makes
+slow wall-clock progress (serial-heavy diagnostics + KVM overhead).
+
+NEXT (fry1422, running): same image, -smp 2, 1800s window. If the reply
+prints -> e2e DONE pending -smp 4 pass + beacon strip. If the loop is
+still churning without output at 1800s, profile WHERE the time goes
+(suspects: sync UART kprint volume from TBFUTEX/TBSCHED chatter — the
+crash-era diagnostics are now the dominant serial load — or guest clock
+running slow vs host).
+
+WATCHLIST
+====
+- ioctl FIONREAD (-ENOTTY) still probed occasionally — tolerated.
+- nr=83 (-EIO) from fry1416: did not recur.
+- Under -smp 2 the process/tgid layout shifts (tgid=3, loop thread
+  pid=9) — beacons that assume tgid=2 would mislead; LXDNS pins by pid.

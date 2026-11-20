@@ -1,0 +1,12 @@
+fry1848 - TLS design re-read + RE-RUN of failing open(): HANG this time, not fault (2026-11-17 14:39:12 CST)
+WHY: fry1847 NEXT. Sur's GO (fry1842). No code changed.
+WHAT / HOW: read elf.c:360-430 and libc.c:374-440. Ran fresh boot iso6: python3 -c open("/nvme/pyvenv.cfg") alone, clean typing, then looked at serial + screen.
+WHERE: src/kernel/proc/elf.c; src/user/libc/libc.c; ~/tatertos-test-20261117/run-iso6.{png,serial.log}
+EVIDENCE
+ - CORRECTION to fry1847 theory: the fs:0 self-pointer collision is ALREADY handled in source. elf.c:412-426 writes tp into the TCB at fs:0, and libc's struct fry_tls_block has tls_base as FIRST member (comment libc.c:377-380). So that mechanism is NOT the explanation (HANDOFF_HERMES_TLS.md text is stale on this point).
+ - iso6 result: same command as iso5 (missing-file open on the bare route). This time NO fault: serial shows only HERMESMAIN + TLSDBG baseline (fs=7fff80000138), screen shows HERMESSTDOUT-OK and a cursor, no Python traceback, no prompt = SILENT HANG.
+   iso5 (same command, other boot) gave the NULL-%fs fault. So a failing open() either hangs or faults - non-deterministic between boots.
+ - Contrast: a Python exception NOT involving a failed syscall (NameError, iso1) printed its traceback and returned to the prompt; open() of an existing file works.
+ => The common trigger of every failure observed on the bare route: a syscall that RETURNS AN ERROR (errno path). Hermes startup performs many failing opens/stats (config search, optional files), so this fits the "sits there, then crashes" symptom Sur described.
+RESULT: narrowed to: error-return path of a syscall in python3.fry (libc posix_error -> errno -> __errno_location -> fry_tls_get/fry_tls_block_ensure, errno.c / libc.c:1041) or the kernel's failing-open path. Not yet proven which half.
+NEXT: fry1849 = split kernel vs libc: run the shell's own commands on a missing file (shell uses fry_open directly, no libc errno): 'cat /nvme/nothere'. Clean ENOENT message => kernel fine, bug is libc errno/TLS side.

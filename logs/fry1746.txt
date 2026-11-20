@@ -1,0 +1,43 @@
+fry1746 — 2026-06-22 06:49 CDT
+MILESTONE: native pydantic_core VERIFIED in-OS. + Zack directive: EVERY pyproject dep
+       goes in, incl. the ones with native extensions -> each gets a real x86_64-
+       tatertos build (no .py-only, no "optional" skips).
+
+VERIFIED (serial /tmp/fry1745_serial.log:900): `NATIVEEXT pydantic_core: OK (v2.46.4)`.
+  => the natively-built Rust extension (x86_64-tatertos target + our forked std + libc,
+  zero Linux) imports + runs inside in-OS CPython. The rejected linux-gnu shortcut is
+  fully replaced and PROVEN. pydantic_core is the working template for all that follow.
+
+DEP STAGING so far: rsync'd all pure-Python deps from the reference venv into
+  sysroot/usr/local/lib/python3.14/site-packages (dotenv, fire, yaml, ruamel, jwt,
+  fastapi, uvicorn, starlette, click, h11, ptyprocess, websockets, watchfiles,
+  httptools, psutil, PIL, + transitive). Their .py is staged; the EXTENSION halves are
+  NOT yet built for tatertos. ISO rebuilt 06:48:37.
+
+DIRECTIVE (Zack): "if they're part of the program they go in" — optional status is
+  irrelevant. So the native-extension queue MUST be built natively for tatertos:
+
+NATIVE-EXTENSION BUILD QUEUE (each = its own port; pydantic_core is the template):
+  RUST exts (use the toolchain we just built):
+    - watchfiles  (_rust_notify; `notify` crate -> needs inotify; TaterTOS has
+      SYS_INOTIFY_* 127-129) — tractable.
+    - cryptography (Rust + needs an OpenSSL/equiv backend; TaterTOS has
+      src/user/apps/openssl stubs) — harder (crypto backend).
+  C exts (cross-compile via the CPython C toolchain, like the stdlib modules):
+    - httptools (bundles http-parser; self-contained) — tractable, good first.
+    - charset_normalizer (cd.c; has pure-python fallback) — tractable.
+    - websockets speedups (small C) — tractable.
+    - _yaml (pyyaml; wraps libyaml -> need libyaml for tatertos) — medium.
+    - _ruamel_yaml (wraps libyaml) — medium.
+    - psutil (_psutil_linux/_psutil_posix; parse /proc -> need TaterTOS /proc) — harder.
+    - Pillow/_imaging (+ zlib/libjpeg/libpng/freetype) — hardest (image libs).
+
+HONEST SCOPE: this is a multi-step grind; the hard items (Pillow image libs,
+  cryptography OpenSSL backend, psutil /proc) have real native prerequisites. Order by
+  tractability: httptools -> charset_normalizer -> websockets -> watchfiles(Rust) ->
+  _yaml/_ruamel(libyaml) -> cryptography(OpenSSL) -> psutil(/proc) -> Pillow(img libs).
+  Each gets its own fry + a runtime import check.
+
+STATE: pydantic_core native+verified; all dep .py staged; native-ext queue defined.
+NEXT: build native ext #1 = httptools for x86_64-tatertos (Cython C, self-contained);
+  link/stage; then proceed down the queue. -> fry1747.

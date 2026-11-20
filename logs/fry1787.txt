@@ -1,0 +1,22 @@
+fry1787 — agent reaches httpx/idna; add unicodedata + _csv/_statistics/_asyncio — 2026-06-26
+==========================================================================
+WHAT: With zlib in (fry1786), the CLI advanced into the real HTTP stack, then hit
+the next missing module. Added it plus the other dep-free C modules the async
+agent will need, batched to cut boot cycles. Built clean; boot verify = fry1788.
+
+CRASH (serial /tmp/fry1787_serial.log) — good progress, deep in httpx now:
+  hermes -> ... -> httpx._auth -> _models -> _urls -> import idna
+    -> idna/core.py -> import unicodedata
+      -> ModuleNotFoundError: No module named 'unicodedata'
+
+FIX (config.c externs+inittab + Python3.mk sources), all self-contained stdlib C
+modules, no external libs:
+  - unicodedata (the blocker; idna needs it for hostname encoding)
+  - _csv, _statistics (commonly pulled by the agent's libs)
+  - _asyncio (the C accelerator for asyncio — the agent + async httpx WILL need it)
+  Deferred: _decimal (needs the libmpdec tree) — add only if it surfaces.
+
+BUILD: make -f Python3.mk python3 EXIT=0, python3.fry 15820064 bytes @ 17:32:22
+(grew ~0.9 MB with _asyncio + unicodedata's tables). No errors/undefined.
+
+NEXT (fry1788): boot + `hermes`; read the next blocker or the agent starting.

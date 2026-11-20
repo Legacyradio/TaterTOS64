@@ -16,6 +16,7 @@
  *   92-100   GUI / Audio / Chdir
  *   101-131  Chrome port POSIX expansion (Phase 1/2/9)
  *   132-144  Chrome/GN probe stubs (Phase 10)
+ *   145      Tater Bridge user launch
  *
  * Adding a new syscall: edit this file, then add the dispatch case in
  * syscall.c and the wrapper in libc.c.  The number is THE ABI — do not
@@ -205,6 +206,15 @@ enum {
     SYS_MUNLOCK           = 142,
     SYS_SPLICE            = 143,
     SYS_TEE               = 144,
+
+    /* --- Tater Bridge user launch --- */
+    SYS_SPAWN_LINUX_ARGS  = 145,
+
+    /* fry1697: enumerate the process environment by index (mirror
+     * GET_ARGC/GET_ARGV) so libc can populate the `environ` global — there is
+     * no crt0 to do it, which left CPython's os.environ empty. */
+    SYS_GET_ENVC          = 146,
+    SYS_GET_ENV           = 147,
 };
 
 #ifdef __cplusplus

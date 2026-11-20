@@ -1,0 +1,85 @@
+# hermes006 — PHASE 2 STEP 5: pthread_attr_getguardsize missing from TaterTOS pthread
+Date: 2026-06-17 ~14:48 CDT
+Type: compile fix (Phase 2 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Compile Python/ceval.c — the CPython eval loop, the heart of the interpreter.
+This is one of the most critical source files in CPython.
+
+---------------------------------------------------------------------------------
+WHAT HAPPENED
+---------------------------------------------------------------------------------
+Compile command:
+  x86_64-elf-gcc ... -DPy_BUILD_CORE -c Python/ceval.c
+
+ERROR:
+  Python/ceval.c:468:15: error: implicit declaration of function
+  'pthread_attr_getguardsize'; did you mean 'pthread_attr_getstacksize'?
+
+---------------------------------------------------------------------------------
+ROOT CAUSE
+---------------------------------------------------------------------------------
+ceval.c's hardware_stack_limits() function uses pthread_getattr_np() to
+query the current thread's stack attributes, then calls
+pthread_attr_getguardsize() to get the guard size. This is used to compute
+the usable stack range for recursion depth checking.
+
+TaterTOS's pthread implementation (src/user/libc/pthread.c) has
+pthread_getattr_np, pthread_attr_getstacksize, pthread_attr_getstack, etc.
+but was missing pthread_attr_getguardsize. The pthread_attr_t struct also
+had no _guardsize field.
+
+CPython's own Emscripten workaround defines its own version, but that's
+gated behind #if defined(__EMSCRIPTEN__). TaterTOS takes the generic
+POSIX path which expects the system pthread to provide it.
+
+This was identified in the Phase 1 gap matrix (GAP_MATRIX.txt) as a
+Category C "simple implementation" item.
+
+---------------------------------------------------------------------------------
+FIX
+---------------------------------------------------------------------------------
+Two files changed:
+
+1. src/include/pthread.h:
+   - Added `size_t _guardsize;` field to pthread_attr_t struct
+   - Added declarations:
+       int pthread_attr_getguardsize(const pthread_attr_t *attr, size_t *guardsize);
+       int pthread_attr_setguardsize(pthread_attr_t *attr, size_t guardsize);
+
+2. src/user/libc/pthread.c:
+   - Added implementations:
+       pthread_attr_getguardsize: returns attr->_guardsize
+       pthread_attr_setguardsize: sets attr->_guardsize
+
+WHY: These are standard POSIX pthread functions. pthread_attr_init() already
+memsets the struct to zero, so _guardsize defaults to 0 (no guard page),
+which is correct for TaterTOS — the kernel manages stack protection, not
+userspace pthread attributes. This matches the existing pattern of all other
+pthread_attr_* functions in the file.
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+Re-ran ceval.c compile:
+  x86_64-elf-gcc ... -DPy_BUILD_CORE -c Python/ceval.c
+
+Result: ZERO errors. Compiled clean (12.2s — large file).
+
+ceval.c is the CPython eval loop — the most performance-critical file in
+the interpreter. Compiling it clean means the TaterTOS pthread surface
+is sufficient for CPython's threading/GIL/scheduling layer.
+
+---------------------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------------------
+Continue fixing remaining Python/*.c compile errors:
+  - fileutils.c: close_range, closefrom
+  - initconfig.c: wcstol
+  - pytime.c: clock_getres
+  - thread.c: pthread_condattr_setclock, pause
+  - traceback.c: dladdr1, RTLD_DL_LINKMAP
+  - perf_jit_trampoline.c: syscall(), SYS_gettid

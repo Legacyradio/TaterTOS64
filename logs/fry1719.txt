@@ -1,0 +1,27 @@
+fry1719 — 2026-06-21 09:48 CDT
+STEP: VERIFIED claude back in business on the dynamic 8GB ToTFS. Disk-full root
+      cause (fry1717) fixed by the dynamic-bitmap + 8GB-image work (fry1718).
+
+PROOF (serial /tmp/fry1719_qemu_serial.log):
+  - Boot clean: kernel ok, selftest 106/0, GUI up. No ToTFS errors, no OOM on the
+    dynamic block-bitmap kmalloc.
+  - RCLAUDE.LXE loaded from /nvme (LINUXELF + PROC linux launch ok pid=10).
+  - THE fix confirmed: line 2364 `TBOPEN openat path="/nvme/claude-0" -> fd=18`
+    (succeeded). Before (400MB full) this was `TBFAIL mkdir /nvme/claude-0 rc=-5
+    EIO` -> claude died. Now it creates its working dir.
+  - claude RUNNING multi-threaded: pids 10/11/13/14 under tgid=10, 4729+ TBFUTEX/
+    thread events (Node event loop alive). No fatal / "could not start" /launch
+    failed. qemu alive. Zack confirms: "back in business".
+
+SEPARATE (pre-existing, NOT the startup issue): LXDNS pid=13/14 nr=307 (unimpl Linux
+  net syscall) rc=-5 — claude network/DNS path hits an unimplemented syscall. Does
+  not stop startup. Track under the existing claude-networking work, not here.
+
+STATE OF THE WORLD NOW:
+  - claude: WORKING (auto-staged every build now; 8GB dynamic disk).
+  - disk: dynamic/hardware-agnostic (fry1718).
+  - hermes: still at fry1712 state (PT_TLS NOT yet in user_linker.ld). RESUMING next.
+
+NEXT (resume hermes, already greenlit): edit user_linker.ld to emit PT_TLS +
+  collect .tdata/.tbss -> rm+relink python3 -> rebuild ISO (claude stays, auto) ->
+  reboot -> verify hermes past _PyThreadState_Attach -> fry1720.

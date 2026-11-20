@@ -1,0 +1,33 @@
+fry1764 — implement: anon-private mmap lazy-by-default (kill eager-commit churn) — 2026-06-26
+==========================================================================
+WHAT: Implemented the fry1763 design. Two edits, both in the source (build is the
+separate next step fry1765).
+
+CHANGES:
+  1. src/kernel/proc/linux_compat.h — added the missing Linux flag:
+        #define LNX_MAP_POPULATE    0x8000
+     (placed after LNX_MAP_ANONYMOUS, before LNX_MAP_NORESERVE). Lets a caller
+     that explicitly wants eager population opt out of the lazy default.
+
+  2. src/kernel/proc/syscall.c (~5768, LNX_mmap) — replaced the >= 64 MiB
+     sparse gate:
+        OLD: sparse_reserve = anon_private
+                              && map_len >= 64 MiB
+                              && (NORESERVE || map_len >= LX_SPARSE_RESERVE_MIN);
+        NEW: sparse_reserve = anon_private && ((flags & LNX_MAP_POPULATE) == 0);
+     => anon-private maps now take the LAZY path (lx_map_sparse_anon_private +
+     demand-fault) unless MAP_POPULATE is set. Matches Linux zero-fill-on-demand.
+     LX_SPARSE_RESERVE_MIN #define left in place (now unused; harmless — macros
+     don't warn). Updated the surrounding comment to record the rationale.
+
+UNCHANGED (verified by reading the surrounding code): file-backed maps and shared
+maps still take the eager path below; the >= 4 GiB gigacage still has anon_private
+&& !POPULATE true so it stays sparse and its TBWATCH arming
+(map_len==0x40000000) is preserved; the demand-fault handler is NOT touched
+(fry1600 batch-hang landmine avoided).
+
+LSP NOISE: clang flagged 'fry_limits.h not found' + undeclared FRY_* — that is the
+editor LSP lacking the kernel's freestanding -I paths, NOT a real error. `make
+kernel` (fry1765) is the source of truth.
+
+NEXT (fry1765): make kernel; verify BUILD_EXIT=0 + fresh kernel mtime.

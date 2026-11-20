@@ -1,0 +1,64 @@
+fry1824 — SHELL: real external command execution — PATH search, argv and
+          environment. The generic path is no longer weaker than the builtins
+          — 2026-09-26
+==========================================================================
+WHAT: Piece 2 of 3 toward `hermes` being an ordinary file. Code edited; log
+written BEFORE the build per planv3 rule 5/6. Not built at time of writing.
+
+=== THE DEFECT (established in fry1822, restated in one line) ===
+  src/user/shell/shell.c, old fallback:
+      if (fry_spawn(argv[0]) < 0) printf("shell: %s: command not found\n", ...)
+fry_spawn() takes ONLY a path (fry.h:225): no argv, no envp, no PATH search.
+Every program the shell could not name at compile time therefore ran with no
+arguments and no environment — which is precisely why python3, hermes and
+claude each needed their own hardcoded builtin.
+
+=== CHANGES — src/user/shell/shell.c ===
+1. native_python_env RENAMED to shell_env, and it is now THE shell environment
+   handed to every spawn rather than a private thing for Python. The name was
+   describing its only caller, not its purpose. Contents unchanged except PATH.
+   + #define SHELL_ENVC — the count, so no call site recomputes sizeof/sizeof.
+2. PATH extended to the directories where programs actually live in the guest:
+       /nvme/apps:/nvme/bin:/nvme/usr/bin:/nvme/usr/local/bin:
+       /nvme/opt/hermes-agent:/bin:/usr/bin
+   /nvme/opt/hermes-agent is on PATH deliberately. The hermes launcher cannot
+   simply be copied into /nvme/bin: it does `from hermes_cli.main import main`,
+   and CPython puts the SCRIPT'S OWN directory on sys.path[0]. Run a copy from
+   /bin and hermes_cli is not importable. Putting the real location on PATH is
+   what a normal system does for a program that is not installed into /usr/bin,
+   and it keeps sys.path[0] correct. Checked against the staged launcher
+   (sysroot/opt/hermes-agent/hermes) rather than assumed.
+3. static int resolve_program(name, out, outsz)
+   - A name containing '/' is treated as a path: absolute as given, relative
+     resolved against cwd — which is what a shell must do, and what
+     fry_spawn(argv[0]) never did.
+   - A bare name is searched along PATH, trying the plain name and then the
+     suffixes this OS actually uses: .fry (native binaries), .tot (the shell's
+     own format), plus uppercase .FRY/.TOT because the image carries
+     /apps/SHELL.TOT in caps. So `python3` finds /nvme/apps/python3.fry without
+     the user knowing the extension.
+   - Existence is tested with fry_stat() (fry.h:356). Returns 1 + filled out[],
+     or 0.
+   - PATH parsing tolerates empty entries and skips any entry longer than
+     FRY_PATH_MAX rather than truncating it into a wrong path that might exist.
+4. The fallback now: resolve -> fry_spawn_args(prog, argv, argc, shell_env,
+   SHELL_ENVC) -> pump_child_io(pid). It waits for the child like every builtin
+   does, so an external command behaves like a normal foreground job instead of
+   being fired and forgotten.
+   A failed spawn now reports the actual error number instead of the blanket
+   "command not found", which was previously indistinguishable from a typo.
+
+=== WHAT IS DELIBERATELY UNCHANGED ===
+The python3/hermes/claude builtins are LEFT IN PLACE this step. They still work
+and they still take precedence, because the strcmp chain runs first. Removing
+them belongs after the new path is proven on a boot — deleting the working route
+in the same step that introduces its replacement would leave no way to tell
+which one broke. They are scheduled for removal, not forgotten.
+
+=== WHAT THIS DOES NOT YET ACHIEVE ===
+`hermes` still will not run as a file. The launcher's first line is
+"#!/usr/bin/env python3", so the chain needs its third piece:
+    shell PATH lookup (THIS STEP)  ->  kernel shebang (fry1822)
+      ->  /usr/bin/env  ->  PATH lookup  ->  python3
+/usr/bin/env does not exist in this OS. That is the next step. Nothing is
+claimed to work until all three are in and booted together.

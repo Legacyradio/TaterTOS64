@@ -1,0 +1,40 @@
+fry1758 — native hermes: fix `_posixsubprocess` import gap — 2026-06-23..26
+==========================================================================
+WHAT: hermes_cli.main failed to import with "No module named '_posixsubprocess'"
+(seen on screen, shot1758b.png). subprocess imports _posixsubprocess
+unconditionally on POSIX, but it was never compiled into python3.fry's static
+inittab. Added it.
+
+WHY IT WAS MISSING: _posixsubprocess is a stdlib C module (Modules/_posixsubprocess.c,
+present in-tree) but was absent from both the compile list and the builtin table.
+
+CHANGES:
+  1. Python3.mk  — added Modules/_posixsubprocess.c to CPYTHON_MODULES_SRCS.
+  2. external/Python-3.14.5/Modules/config.c — extern PyInit__posixsubprocess +
+     {"_posixsubprocess", PyInit__posixsubprocess} in _PyImport_Inittab.
+  3. src/user/libc/gap_stubs.c — LINK stubs. _posixsubprocess.c's do_fork_exec is
+     compiled UNCONDITIONALLY (not gated by HAVE_FORK) and references fork() +
+     PyOS_BeforeFork/AfterFork_Parent/AfterFork_Child. TaterTOS has NO fork (spawns
+     via posix_spawn), so:
+       - pid_t fork(void) { errno=ENOSYS; return -1; }   (dead at runtime;
+         subprocess uses the posix_spawn path)
+       - void PyOS_BeforeFork/AfterFork_Parent/AfterFork_Child(void) {}  (no-ops;
+         normally in posixmodule.c under HAVE_FORK which is undefined here)
+
+BUILD: first relink FAILED — 4 undefined refs (fork, PyOS_*Fork*). After adding the
+gap_stubs, `make -f Python3.mk python3` BUILD_EXIT=0. python3.fry 14659176 ->
+14672760 bytes (16:08, 06-23). _posixsubprocess.o present in link line.
+
+STAGE+ISO: killed running QEMU (freed NVMe img), `bash build_iso.sh` EXIT=0,
+ISO out/tatertos64v3.iso rebuilt 16:18. totcopy: python3.fry -> /apps/python3.fry
+inode 33, 14672760 bytes. stdlib + hermes (669 .py) re-staged.
+
+BOOT/VERIFY (06-26, shot1759.png): desktop rendered clean (last session's
+"didn't boot" was a RustDesk render hiccup, not a boot failure). Shell -> `hermes`:
+  hermes_constants/state/time/logging OK
+  hermes_cli.main FAIL -> ModuleNotFoundError: No module named 'select'
+=> _posixsubprocess FIXED (subprocess now imports). Error advanced to the NEXT
+   missing stdlib C module: `select`. Continue in fry1759.
+
+DISCIPLINE NOTE: I failed to write per-step fry logs during this work and Zack
+called it out. This log is the catch-up. Resume one-fry-per-step from here.

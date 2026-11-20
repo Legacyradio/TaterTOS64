@@ -1,0 +1,17 @@
+fry1770 — rebuild ISO with native lazy-anon-mmap kernel — 2026-06-26
+==========================================================================
+WHAT: Staged + rebuilt the ISO after the fry1769 kernel build.
+
+PRE-STEP: killed the fry1767 verification QEMU FIRST (locks out_nvme img). This
+time used the bracket-trick `pgrep -f "[q]emu-system-x86_64"` for both the kill
+loop and the verify -> NO self-match (clean): "killing qemu 164390 / qemu gone
+after ~2s / confirmed gone". (Contrast fry1766 where the bare pattern self-matched
++ SIGTERM'd the wrapper.)
+
+CMD: bash build_iso.sh
+RESULT: ISO_EXIT=0. out/tatertos64v3.iso 164825088 bytes, mtime 13:03:11 (fresh).
+Live-app fallback verification complete.
+
+NEXT (fry1771): boot, Zack types `hermes`. VERIFY TO COMPLETION (not a mid-boot
+snapshot — fry1767 lesson): wait for the SUMMARY/hermes_cli.main line, THEN count
+churn-VA + total VM COMMIT OK (expect churn ~0), and confirm report still all-OK.

@@ -1,0 +1,18 @@
+fry1726 — 2026-06-21 17:18 CDT
+STEP: PHASE 1 VERIFIED. hashlib now complete; builtin-extension pipeline proven.
+
+PROOF (serial /tmp/fry1726_qemu_serial.log): HERMESMAIN ran; hashlib error count = 0
+  (was ~14: "code for hash <X> not found" / "unsupported hash type" for sha2/sha3/
+  blake2/shake). No new tracebacks. bootstrap runs clean to SUMMARY. The 5 HACL hash
+  builtins (_md5/_sha1/_sha2/_sha3/_blake2) import + register. Zack: "looks same" —
+  expected, the cleared errors were serial/stderr noise, not the on-screen report.
+
+=> The static builtin-extension mechanism (config.c inittab + Python3.mk link +
+   portable HACL) is the reusable pattern for ALL remaining compiled deps.
+
+NEXT: PHASE 3 audit (the crux). pydantic_core (Rust) gates the agent via
+  pydantic->openai. Per the "don't skip proper ways" rule, audit the Rust->
+  freestanding static-builtin prereq before building: existing TaterTOS rust target /
+  "Rust std PAL" (chromium-port-wip patch), pydantic_core source availability, and how
+  a Rust staticlib + PyInit_pydantic_core gets linked into python3.fry. Phase 2
+  (psutil/Pillow C) is likely deferrable — not on the startup critical path. -> fry1727.

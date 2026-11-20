@@ -1,0 +1,66 @@
+# hermes007 — PHASE 2 STEP 6: Disable close_range/closefrom in pyconfig.h
+Date: 2026-06-17 ~14:52 CDT
+Type: compile fix (Phase 2 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Compile Python/fileutils.c — CPython's file utility layer (path resolution,
+file descriptor management, locale/encoding handling for filenames).
+
+---------------------------------------------------------------------------------
+WHAT HAPPENED
+---------------------------------------------------------------------------------
+ERROR:
+  Python/fileutils.c:3008:9: error: implicit declaration of function 'close_range'
+  Python/fileutils.c:3019:15: error: implicit declaration of function 'closefrom'
+
+---------------------------------------------------------------------------------
+ROOT CAUSE
+---------------------------------------------------------------------------------
+The host-generated pyconfig.h had three defines set that TaterTOS doesn't
+support:
+  HAVE_CLOSE_RANGE    — Linux 5.9+ close_range() syscall
+  HAVE_CLOSEFROM     — FreeBSD/Solaris closefrom() function
+  HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCLOSEFROM_NP — glibc extension
+
+These are used in fileutils.c's _Py_closerange() function which closes all
+file descriptors in a range. CPython has a fallback path: if none of these
+are available, it does a plain close() loop from first to last.
+
+TaterTOS has close() but not close_range() or closefrom(). The correct fix
+is to undef these in pyconfig.h so CPython uses the fallback loop.
+
+---------------------------------------------------------------------------------
+FIX
+---------------------------------------------------------------------------------
+Changed pyconfig_tater.h (3 defines):
+  HAVE_CLOSE_RANGE    — #define 1 → #undef
+  HAVE_CLOSEFROM     — #define 1 → #undef
+  HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCLOSEFROM_NP — #define 1 → #undef
+
+WHY: TaterTOS doesn't have these functions. The close() loop fallback is
+correct and functional — it's the same path CPython uses on older Linux
+and other Unix systems that lack these extensions. No performance concern
+for a single-user OS with a small number of open file descriptors.
+
+Copied updated pyconfig_tater.h to pyconfig.h.
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+Re-ran fileutils.c compile:
+  x86_64-elf-gcc ... -DPy_BUILD_CORE -c Python/fileutils.c
+
+Result: ZERO errors. Compiled clean.
+
+---------------------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------------------
+Continue fixing remaining compile errors:
+  - initconfig.c: wcstol
+  - pytime.c: clock_getres
+  - thread.c: pthread_condattr_setclock, pause
+  - traceback.c: dladdr1, RTLD_DL_LINKMAP
+  - perf_jit_trampoline.c: syscall(), SYS_gettid

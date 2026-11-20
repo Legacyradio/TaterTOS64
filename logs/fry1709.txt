@@ -1,0 +1,27 @@
+fry1709 — 2026-06-21 08:51 CDT
+STEP: Implemented the TLS self-pointer fix (kernel + libc) and built the kernel.
+      Per fry1708 plan, Zack greenlit.
+
+CODE CHANGES:
+  1. src/kernel/proc/elf.c (PT_TLS layout, after .tdata copy): write the x86-64
+     variant-II self-pointer into the TCB so fs:0 == tp. Goes through
+     pml4_virt_to_phys(tp & ~0xFFF) + vmm_phys_to_virt + (tp & 0xFFF) like the
+     .tdata copy (kernel can't deref the user VA). tp is >=16-aligned so the 8B
+     store can't cross the page. Replaced the wrong "leaving fs:0 zero is
+     intentional" comment. Error path: ELF_LOAD_ERR_SEG_TRANSLATE on bad xlate.
+  2. src/user/libc/libc.c (struct fry_tls_block): moved `void *tls_base` to be the
+     FIRST member (offset 0 == fs:0), slots[] now follow at +8. Stops pthread
+     key-0 / slots[0] from clobbering the ABI self-pointer. All accesses are by
+     field name (verified grep) so the reorder is safe; sizeof ~552B < TCB_RESERVE
+     0x1000.
+
+VERIFY (this step):
+  - All fry_tls_block accesses by field name, no raw offsets/casts (grep clean).
+  - elf.c helpers pml4_virt_to_phys/vmm_phys_to_virt/ELF_LOAD_ERR_SEG_TRANSLATE
+    exist + used identically by the existing .tdata copy.
+  - LSP "fry_input.h/tatertos/syscall.h not found" = pre-existing clang include-
+    path noise, not from this edit (Makefile build has correct -I paths).
+  - make kernel EXIT=0; kernel.elf 08:50:09 (2614256B, +40B vs prior 2614216B).
+
+NEXT: relink python3.fry (make -f Python3.mk python3) so its statically-embedded
+  libc picks up the reordered struct -> fry1710. Then rebuild ISO -> fry1711.

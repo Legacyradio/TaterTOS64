@@ -1,0 +1,72 @@
+fry1799 — TLS probe redesigned (per-class budgets) + rebuilt/restaged — 2026-08-10
+==========================================================================
+WHAT: Fixed the fry1798 instrumentation failure so the probe can actually answer
+its question. Diagnostic-only changes; NO KERNEL LOGIC WAS ALTERED.
+
+WHY (the fry1798 defect, in one line): one global budget, shared between a HOT
+probe (SYS_GET_TLS_BASE on the main thread) and RARE decisive probes
+(build/spawn/set). The hot one burned all 96 lines by serial line 171 of 981;
+the spawn/abort events at line ~975 printed nothing. Rare events must not
+compete with hot events for the same counter.
+
+CHANGES:
+  src/kernel/proc/process.c:398-399 — replaced the single counter with two:
+      int g_tlsdbg_spawn_budget = 64;   /* build/spawn/set: rare */
+      int g_tlsdbg_get_budget   = 64;   /* get: hot, and now gated */
+    All four process.c probe sites (build early-out, build OK, spawn NATIVE,
+    spawn LINUX_CLONE) now draw from g_tlsdbg_spawn_budget, so they can no
+    longer be starved by syscall traffic.
+
+  src/kernel/proc/syscall.c SYS_GET_TLS_BASE — the important change:
+    - main thread (cur->pid == cur->tgid): printed EXACTLY ONCE as a baseline
+      via a static flag, then silent forever. This is what ate fry1798.
+        "TLSDBG get MAIN tid=%u tgid=%u fs=%lx (baseline, printed once)"
+    - spawned threads (cur->pid != cur->tgid): logged against the dedicated
+      get budget. THIS IS THE DATA THE WHOLE STEP EXISTS FOR — tid=10 is a
+      spawned thread (tgid=9), so it now cannot be missed.
+        "TLSDBG get THREAD tid=%u tgid=%u fs=%lx"
+    Gating on pid!=tgid is exact, not heuristic: the aborting context is
+    literally reported as "pid=9 tid=10" by the fault handler.
+
+  src/kernel/proc/syscall.c SYS_SET_TLS_BASE — moved to spawn budget, added
+    tgid to the line so an overwrite can be attributed to a specific thread.
+
+BUILD — VERIFIED BEFORE LAUNCH:
+  make kernel        BUILD_EXIT=0, 0 errors, no new warnings
+  Objects rebuilt: EXACTLY process.o + syscall.o (two .c edits, no header
+  touched) — fry1796 dep tracking behaving correctly again.
+  kernel.elf   2026-08-10 21:54:49
+  ALL 7 PROBE STRINGS CONFIRMED PRESENT IN THE BINARY (not assumed):
+    strings kernel.elf | grep TLSDBG  ->  7 lines, including the two new
+    "get MAIN"/"get THREAD" forms.
+
+  bash build_iso.sh  ISO_EXIT=0
+    Staged: claude 2.1.227 (note: auto-resolved, was 2.1.226 in fry1797 — the
+    host updated between builds; harmless, it just tracks ~/.local/bin/claude),
+    python3.fry, Python stdlib, Hermes Agent 669 .py files.
+    No WARNING and no "NOT staged" lines.
+  ARTIFACT ORDERING VERIFIED:
+    kernel.elf            2026-08-10 21:54:49
+    out/tatertos64v3.iso  2026-08-10 21:56:52   <- NEWEST, carries this kernel
+
+WHAT THIS STEP DOES NOT DO: it does not fix, or attempt to fix, the
+_PyThreadState_Attach abort. It only makes the next run capable of explaining
+it. Standing position from fry1795 unchanged — fry1789's static diagnosis is
+contradicted by experiment and nothing gets built on it until observed data
+says otherwise.
+
+NEXT: kill the fry1798 VM (verify dead), relaunch on this ISO, Zack types
+`hermes`. Then read the serial for:
+  - "TLSDBG get MAIN ... fs=X"     (expect 0x7fff80000138, the fry1798 baseline)
+  - "TLSDBG get THREAD tid=10 ... fs=Y"
+  - "TLSDBG spawn path=NATIVE|LINUX_CLONE tid=10 ..."
+  - "TLSDBG build tid=10 ..." (or its absence, which is itself the answer)
+DECISION TABLE:
+  Y != X and build/spawn=NATIVE  -> %fs IS distinct; TLS isolation is NOT the
+    problem; fry1789/fry1790's entire premise is dead and the tstate collision
+    is elsewhere (CPython's tstate is not where fry1789 assumed).
+  Y == X, or path=LINUX_CLONE with no "build" line for tid=10 -> the clone path
+    (process.c:492, takes %fs verbatim from the clone3 arg) bypassed
+    process_build_thread_tls entirely => fry1790 is IRRELEVANT, never exercised.
+  A "TLSDBG set tid=10" after a "TLSDBG build tid=10" -> userspace overwrote the
+    kernel's block.

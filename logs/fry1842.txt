@@ -1,0 +1,11 @@
+fry1842 - SUR'S GO + STANDING CONDITIONAL ORDER FOR HERMES (2026-11-17 14:19:33 CST)
+WHY: Sur's answers via Marshmallow (~14:13-14:18), file ~/HERMES-GO-ONE-ATTEMPT.txt. Logging rule (fry1833) applies to every step.
+WHAT: recorded, no code yet.
+ 1. Debug app CONFIRMED by Sur: "the bootstrap diagnostic" = tatertos_bootstrap.py (the fry1780 "working" run). Closes the open question in fry1840/1841. It was not supposed to be treated as, or switched with, the real app.
+ 2. Symptom confirmed by Sur: "It'll just sit there and then eventually it'll crash. There's multiple documented situations of that."
+ 3. ONE focused fix attempt authorised. STANDING CONDITIONAL ORDER (Sur's words: "if this doesn't work this time I'm absolutely commanding it gets ripped out and it needs to be started from scratch"): if this attempt fails to get Hermes starting clean, I stop, report the failure plainly, and the next step is rip-out-and-restart-from-scratch of Hermes. I do NOT rip anything out until I have reported and Sur gives the final word at that moment (destructive).
+ 4. Attempt = fry1841 NEXT then the fix it points to: (a) each route twice on fresh boots, (b) capture argv[0]/sys.executable and the failing open() errno on route 1, (c) Python stack of the route-2 hang (faulthandler on), (d) fix what the evidence shows (suspects: errno 0 on failed open(), worker threads/locks).
+ 5. SCOPE: fixes ONLY on the TaterTOS runtime/compat side (kernel, libc, shell, launcher, staging). Do NOT modify Claude Code. Do NOT modify the Hermes agent code as the fix. Goal: TaterTOS runs the program as-is.
+WHERE: ~/HERMES-GO-ONE-ATTEMPT.txt; this PC; ~/TaterTOS64.
+RESULT: recorded. Snapshot of the pre-change tree remains fry1832 (~/backups/tatertos64-snapshot-20261117/).
+NEXT: fry1843 = order test harness + 4 fresh-boot runs (route1,route2 each twice).

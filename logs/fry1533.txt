@@ -1,0 +1,52 @@
+fry1533 - FIX: totfs read fast-path bounces through a kernel buffer (correct for user-VA reads)
+Date: 2026-06-15 15:28:33 CDT
+
+Type: CODE CHANGE + BUILD (headed verification in progress at time of writing).
+Fixes the regression identified in fry1532: the fry1526 totfs read fast path DMA'd
+a contiguous block-run DIRECTLY into the caller's buffer 'out'. That is correct
+only when 'out' is a kernel buffer (ELF load path), but corrupts reads whose 'out'
+is a USER virtual address (lx_read_fd FD_FILE passes the user destination straight
+to vfs_read -> totfs_read_file_data). The NVMe PRP builder resolves buffers via the
+kernel map and cannot target a user VA, so Claude's runtime file reads (its 33657-
+byte /nvme/.claude.json) came back truncated -> "JSON Parse error: Unexpected EOF".
+
+Why (Rule 6): keep the multi-block NVMe speed but make it correct for any caller
+buffer (kernel or user) by DMAing into a kernel bounce buffer, then CPU-copying to
+'out' (CPU stores reach the user mapping active in the current address space).
+
+Change (src/kernel/fs/totfs.c):
+  - Added externs: pmm_alloc_pages, pmm_free_pages, vmm_phys_to_virt.
+  - Added #define TOTFS_READ_BOUNCE_BLOCKS 64 (256 KiB max per fast-path I/O).
+  - totfs_read_file_data fast path: cap the contiguous run at
+    TOTFS_READ_BOUNCE_BLOCKS; pmm_alloc_pages(run) a kernel bounce (halving-retry on
+    contiguous-alloc failure, mirroring lx_stream_to_user); bd->read the run into
+    the bounce; CPU-copy bounce -> out; pmm_free_pages. On total alloc failure, fall
+    through to the existing per-block slow path. No more DMA into 'out'.
+  - totfs_read_block multi-sector change (fry1526) is unchanged - it is safe (only
+    ever receives the kernel stack 'blk' buffer).
+  - rename rewrite (fry1531) unchanged - correct and kept.
+
+Correctness notes:
+  - ELF LOAD path (lx_stream_to_user, kernel 'out'): still multi-block; now with an
+    extra bounce copy. Still seconds-class (256 KiB per command vs per-sector).
+  - Claude runtime reads (user 'out'): bounce + CPU copy = correct full reads.
+  - Bounce is per-call (reentrant); cap bounds the contiguous allocation.
+
+Build (Rule 12, clean): BUILD_EXIT=0, no errors. totfs.o compiled. Log
+  /tmp/fry1533_build.log.
+
+Verification - SUCCESS (headed run /tmp/fry1533_serial.log; screenshot
+  /tmp/fry1533_render.png):
+  - NO "corrupted" / "Configuration error" / "Unexpected EOF" anywhere in serial.
+  - Claude read its config INTACT and proceeded to the NORMAL first-run trust
+    prompt ("Quick safety check: Is this a project you created or one you trust ...
+    1. Yes, I trust this folder  2. No, exit  Enter to confirm  Esc to cancel"),
+    rendered cleanly by the C1 parser. This replaces the config-corruption menu of
+    fry1528/1531/1532 -> the truncated-read bug is resolved.
+  - node alive, TBEXIT group = 0. Load still fast (desktop + claude up promptly;
+    bounce copy did not reintroduce the 10-min stall).
+  => totfs user-buffer read corruption FIXED. Claude-in-TaterTOS now reaches its
+     real first-run flow. Next: select "1. Yes, I trust this folder" to enter the
+     main UI (input path already verified in fry1529).
+
+No commit. No hashes (Rule 16).

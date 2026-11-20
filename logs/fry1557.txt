@@ -1,0 +1,51 @@
+# fry1557 - DIAGNOSIS: screenshot confirms Claude is fully AT the interactive REPL (not loading). Input delivery proven (your keystrokes hit the buffer). Offline/disable-traffic workaround REJECTED. Spurious-socket-readiness theory RULED OUT. Remaining = main thread never re-enters epoll(stdin) after init.
+Date: 2026-06-16 00:30 CDT
+Type: diagnosis (live screenshot + serial + source read; no code change)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+---------------------------------------------------------------------------------
+NEW FACTS THIS STEP
+---------------------------------------------------------------------------------
+1) SCREENSHOT of the QEMU window (/tmp/shot1556b.png) shows Claude Code FULLY at the interactive prompt:
+   "Welcome back John Lathall!", Sonnet 4.6 / Claude Pro, the input box with placeholder
+   > "write a test for <filepath>", cursor, "for shortcuts / for agents" footer.
+   => Not a spinner, not loading, not onboarding. The app reached the REPL and is sitting ready.
+2) INPUT DELIVERY PROVEN to the user directly: 29 keystrokes this session all delivered to Claude's
+   stdin inbuf (TBPROCIN req=14 nw=1 with the literal bytes: s a k j f s k, ESC 0x1b, Enter...).
+   Claude READ its stdin only 1 time all session (TBREAD read fd=0 = 1). So keys arrive; Claude does not pick them up.
+3) NETWORK IS HEALTHY (not hung): TBTCP shows conn=1 ~90 KB over 70 segments, conn=4 ~9.8 KB, conn=2 ~4.7 KB,
+   big successful recvfrom on the worker (pid=22). DNS works. So this is NOT a stuck network op.
+
+---------------------------------------------------------------------------------
+DIRECTION CORRECTION (Zack, this step)
+---------------------------------------------------------------------------------
+The in-OS Claude is CONSUMER software and MUST stay fully connected. Disabling non-essential traffic
+(CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC etc.) is REJECTED as a fix — it would cripple the product and
+is not a real fix. The bug must be fixed on the OS side so Claude works with its network fully live.
+(I proposed the offline lever; Zack correctly killed it. Do not revisit.)
+
+---------------------------------------------------------------------------------
+HYPOTHESIS RULED OUT THIS STEP
+---------------------------------------------------------------------------------
+"Spurious socket readability (kernel reports a connected TCP socket readable with no data -> recvfrom EAGAIN
+spin)": RULED OUT. poll_check_fd FD_SOCKET / SOCK_ST_CONNECTED (syscall.c:982-988) sets FRY_POLLIN ONLY when
+tcp_rx_available(handle) > 0. POLLIN is accurate. (Note: a connected socket is ALWAYS reported FRY_POLLOUT
+writable, line 985-986 — flagged in-code at the epoll loop as a known spin hazard for EPOLLOUT waits; not yet
+confirmed relevant. The recvfrom-EAGAIN on the main thread is most likely normal end-of-drain, not epoll-driven.)
+
+---------------------------------------------------------------------------------
+WHERE IT STANDS / WHAT WE CAN DO
+---------------------------------------------------------------------------------
+Confirmed: OS keyboard path is DONE (delivery + kernel epoll/poll_check_fd correct). App is at the REPL.
+The single remaining fact: Claude's MAIN thread (pid=14) stops calling epoll_pwait2 on epfd=5 (the set holding
+fd0) after ~12 startup passes, then busy-loops on recvfrom(EAGAIN)+stat+futex-wake and never returns to it.
+So nothing watches stdin when the user types.
+
+DECISIVE NEXT (fry1558, code beacon): trace the main thread's post-init loop precisely:
+  - beacon EVERY epoll_pwait2 entry: which epfd, timeout_ms, and nready returned (is epfd=5 ever entered after init?)
+  - beacon EVERY recvfrom (nr=45) on the main thread: which fd, rc (is it draining one socket forever, or polling many?)
+This splits it into: (a) main loop wedged draining/▒servicing a specific socket/handle and never idling -> fix that
+handle's readiness/drain semantics; (b) main loop blocked in a different epfd that lacks fd0; (c) the EPOLLOUT-always
+hazard spinning an out-wait. Then fix the specific OS behavior — with the network fully active.
+
+All per planv3 Rules 1/5/6/12. Written immediately on completion of this diagnosis step.

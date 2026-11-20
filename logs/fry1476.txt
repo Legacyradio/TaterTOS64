@@ -1,0 +1,55 @@
+fry1476 - native/Linux Python runtime staging + PIE exec support
+
+Goal:
+- Give TaterTOS/Linux compat enough native Python support for Claude MCP child
+  processes, specifically the absolute path Claude launches:
+  /home/legacyindieradio/mcp-servers/.venv/bin/python
+
+Changes:
+- Expanded ToTFS inode capacity from 1024 to 16384 inodes so the MCP Python
+  venv can be staged as real files instead of being forced into a fragile zip.
+- Increased the NVMe ToTFS image from 400 MB to 1024 MB for Claude + Python
+  runtime headroom.
+- Added STAGE_PYTHON build staging:
+  - /usr/bin/python3.14, /usr/bin/python3, /usr/bin/python
+  - /usr/lib/python314.zip
+  - /usr/lib/python3.14/lib-dynload
+  - Python/lib dependency .so files
+  - /home/legacyindieradio/mcp-servers, including the venv site-packages tree
+- Added Linux-compat path aliasing so /home/... and /usr/... resolve to
+  /nvme/home/... and /nvme/usr/... when the NVMe-staged path exists.
+- Added Linux ELF support for PIE/ET_DYN main executables using a fixed
+  LX_PIE_BASE, needed by host /usr/bin/python3.14.
+- Extended Claude launch env with PATH, PYTHONHOME, PYTHONPATH,
+  PYTHONUNBUFFERED, SSL_CERT_FILE.
+
+Verification:
+- make src/kernel/proc/linux_elf.o src/kernel/proc/syscall.o kernel: PASS.
+- STAGE_CLAUDE=1 STAGE_PYTHON=1 build_iso.sh: PASS.
+  Output artifacts:
+  - out/tatertos64v3.iso
+  - out/tater_nvme.img (1.0 GB)
+- Build log evidence:
+  - MCP venv staged through inode 2672.
+  - root ToTFS listing shows /usr and /home staged.
+- QEMU TCG boot, serial /tmp/s_fry1476c.log, timeout 300s:
+  - old Python ENOENT is gone.
+  - agent-bus child loads:
+    LINUXELF: load start /nvme/home/legacyindieradio/mcp-servers/.venv/bin/python
+  - Python PIE validates:
+    LINUXELF: validate main entry=1020 phnum=15
+  - Python exec reaches load done:
+    LINUXELF: load done entry=60000001f300 rsp=7ffffffffb20 brk=555555405000
+  - Claude polls the Python child with wait4 WNOHANG and gets rc=0 twice,
+    meaning the child did not immediately exit 127.
+  - segfault count: 0.
+
+Current boundary:
+- Tool subprocess mechanics are past both previous blockers:
+  - no more missing /home/.../.venv/bin/python
+  - no more ENOEXEC on Python PIE
+  - no 765-style segfaults
+- Full MCP handshake is still not proven in the 300s TCG boot.
+- Known remaining network-side symptom remains:
+  claudeai-mcp fetch to https://api.anthropic.com/v1/mcp_servers reports
+  ECONNREFUSED. That is separate from Python staging/exec.

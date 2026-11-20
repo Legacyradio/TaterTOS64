@@ -1,0 +1,32 @@
+fry1664 - Shell launch then hard QEMU exit evidence
+Timestamp: 2026-06-19 23:54:54 CDT
+
+Context:
+- User clicked Shell in the persistent headed QEMU run from fry1663.
+- The VM window disappeared after Shell interaction.
+
+Evidence:
+- QEMU process was no longer alive when checked after the disappearance.
+- Serial log: /tmp/fry1664_qemu_serial.log
+- GUI path was intact before the event:
+    SPAWN_OK path=/system/GUI.FRY pid=11 parent=5
+- Shell did open:
+    SPAWN_OK path=/apps/SHELL.TOT pid=12 parent=11
+- Shell received GUI/window input:
+    TBPROCIN req=12 -> pid=12 name=/apps/SHELL.TOT ...
+- A child process pid=13 began memory commits after Shell input, likely the
+  native Python/Hermes launch path:
+    VM COMMIT OK: pid=13 va=0x100000000000 ...
+    VM COMMIT OK: pid=13 va=0x100000266000 ...
+- The serial log then stops without a logged kernel panic, USER FAULT for
+  pid 12/13, Python traceback, or Hermes traceback.
+
+Interpretation:
+- This is not the old "Shell never spawned" condition. Shell did spawn.
+- The disappearance is consistent with a hard guest reset/triple fault or
+  host-side QEMU exit after pid 13 startup, because normal kernel/user fault
+  logging did not print before QEMU went away.
+
+Next:
+- Relaunch headed QEMU with persistent mode plus QEMU debug logging enabled:
+  serial log, QEMU reset/interrupt/guest-error log, and no timeout wrapper.

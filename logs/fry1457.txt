@@ -1,0 +1,48 @@
+fry1457 - Runtime result after fry1456 vfork bridge: vfork advanced, wait4 is next.
+
+Date: 2026-06-13
+
+Command:
+- timeout 1200s qemu-system-x86_64 \
+  -m 4G -machine q35,accel=kvm -cpu host -smp 4 \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+  -drive if=pflash,format=raw,file=/tmp/OVMF_VARS_fry1456.fd \
+  -cdrom out/tatertos64v3.iso \
+  -drive file=out/tater_nvme.img,if=none,id=nvme0,format=raw \
+  -device nvme,drive=nvme0,serial=tatertos-nvme \
+  -netdev user,id=n0 -device e1000,netdev=n0 \
+  -display none \
+  -serial file:/tmp/s_fry1456.log
+
+Serial:
+- /tmp/s_fry1456.log
+
+Result:
+- q35/e1000 booted.
+- DHCP succeeded.
+- /nvme/RCLAUDE.LXE loaded and reached runtime.
+- vfork(58) is no longer the ENOSYS blocker.
+- TBVFORK fired repeatedly:
+  - parent=5 child=19
+  - parent=5 child=21
+  - parent=5 child=22
+  - parent=5 child=23
+  - parent=5 child=24
+- No "unimplemented nr=58" appeared in this run.
+
+New blocker:
+- wait4(61) is now unimplemented in the observed path:
+  - LINUXSYS: unimplemented nr=61 ...
+- Spawned children then default-exit with SIGABRT (sig=6).
+- Claude still reports rg ENOSYS:
+  - rg error (signal=undefined, code=ENOSYS, stderr: ), 0 results
+
+Interpretation:
+- fry1456 successfully moved the subprocess path past vfork.
+- The next required slice is Linux wait4(61), wired to the existing
+  process_wait_status() machinery, so posix_spawn can reap/report child status
+  instead of surfacing ENOSYS.
+
+Cleanup:
+- QEMU stopped.
+- Confirmed no qemu-system-x86_64 process remained after stop.

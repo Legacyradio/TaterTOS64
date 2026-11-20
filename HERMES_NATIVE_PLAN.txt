@@ -1,0 +1,457 @@
+================================================================================
+  HERMES NATIVE PORT PLAN — TaterTOS64v3
+  Porting Hermes Agent to the TaterTOS native syscall ABI (not Tater Bridge)
+================================================================================
+
+GOAL
+----
+Port Hermes Agent to run as a native TaterTOS64 application (.FRY format)
+using the kernel's own syscall interface (src/include/tatertos/syscall.h),
+NOT through the Tater Bridge Linux ABI translation layer. This makes Hermes
+a first-class TaterTOS citizen that can modify the kernel it runs on, rebuild,
+reboot into its own changes, and self-host the development loop.
+
+ARCHITECTURE
+------------
+Hermes is a Python application. Porting Hermes natively means porting CPython
+to the TaterTOS native ABI, then running the Hermes Python package on top of
+that native Python runtime. The native libc (src/user/libc/) already wraps
+145 native syscalls as standard POSIX functions. BearSSL is already compiled
+as native objects. The gap is smaller than expected.
+
+The chain is:
+  CPython (TaterTOS-native build)
+    -> BearSSL (already native, wrapped as Python ssl backend)
+    -> SQLite (native, with TaterTOS OS abstraction layer)
+    -> Hermes Python package (pure Python, runs on native CPython)
+    -> Native launch from shell.c (cmd_hermes, like cmd_claude)
+
+WHY NATIVE (not Tater Bridge)
+-----------------------------
+Tater Bridge exists because we cannot legally modify third-party binaries
+(Claude Code, proprietary software). It is permanent and necessary for
+software we don't own. Hermes is open source — we own it and can compile it
+natively. Native Hermes can directly access kernel internals, edit kernel
+source, trigger rebuilds, and reboot into its own changes. The self-modifying
+dev loop requires native — a Tater Bridge guest cannot own the OS it runs on.
+
+TECH STACK
+----------
+- CPython 3.14 (source, cross-compiled with x86_64-elf-gcc)
+- BearSSL (already in tree at src/user/apps/bearssl/)
+- SQLite (amalgamation, compiled against TaterTOS headers)
+- TaterTOS native libc (src/user/libc/libc.c, posix.c, pthread.c, etc.)
+- TaterTOS native syscall ABI (src/include/tatertos/syscall.h)
+- Cross-compiler: /opt/cross/bin/x86_64-elf-gcc (GCC 15.2.0)
+- Hermes Agent (Python source, pure Python + C extensions)
+
+================================================================================
+RULES (from planv3.txt — adapted for this project)
+================================================================================
+
+1. Follow the plan step by step. No shortcuts or cut corners.
+2. No "minimal" implementations; do thorough, functional work.
+3. No Linux or Windows code inside the OS. (Native CPython port targets
+   TaterTOS ABI only. No Linux-specific code paths. Tater Bridge remains
+   separate.)
+4. Use patch-based edits only. Do actual fixes; do not script edits.
+5. Log every completed step in its own logs/hermesNNN.txt with timestamps.
+   (Using hermesNNN prefix to distinguish from kernel fry logs. Both are
+   in the same logs/ directory under TaterTOS64.)
+6. If you change code, include a brief "why" in the log.
+7. Don't pause after saying you'll continue; just continue.
+8. Branding is TaterTOS64v3 (never FryOS).
+9. Hardware lock: Dell Precision 7530, Intel Core i5-8300H (Coffee Lake-H).
+   UEFI-only boot path.
+10. When testing, always include the necessary commands to run the test.
+11. QEMU logs are off limits unless expressly stated otherwise.
+12. All apps built and run must follow the TaterWin protocol.
+13. Hardware lock for bare-metal validation: Dell Precision 7530.
+14. All fixes must end in hardware-agnostic behavior and architecture.
+15. Only verify and record SHA-256 hashes after a user-requested rebuild.
+
+ENFORCEMENT: No Shortcuts, No Regression
+- One fix per hermes log, per rebuild cycle. No batching.
+- Do not pre-stub. Let each build failure reveal the next gap.
+- No "quick win" batch patches.
+- Root-cause fixes over band-aids. Always.
+- Each rebuild cycle is the cost of accountability.
+
+================================================================================
+WHAT ALREADY EXISTS (do not re-implement)
+================================================================================
+
+NATIVE SYSCALL ABI (src/include/tatertos/syscall.h):
+  145 syscalls covering:
+  - File I/O: open, close, read, write, lseek, stat, fstat, mkdir, unlink,
+    rename, ftruncate, readdir, openat, readv, writev, faccessat, fstatat,
+    mkdirat, unlinkat, renameat, readlinkat, getcwd, chdir, sendfile,
+    memfd_create
+  - Memory: mmap, munmap, mprotect, madvise, sbrk, shm_alloc/map/free
+  - Sockets: socket, connect, bind, listen, accept, send, recv, sendto,
+    recvfrom, sendmsg, recvmsg, shutdown, getsockopt, setsockopt,
+    getsockname, getpeername, accept4, socketpair, dns_resolve
+  - Events: epoll_create/ctl/wait, eventfd, timerfd, signalfd, inotify,
+    poll, pipe, pipe2
+  - Threads: thread_create, thread_exit, thread_join, gettid, futex_wait,
+    futex_wake, set_tls_base, get_tls_base
+  - Process: spawn, spawn_args, wait, kill, getpid, proc_input, proc_output
+  - Time: gettime, clock_gettime, nanosleep
+  - Randomness: getrandom
+  - FS diagnostics: storage_info, path_fs_info, mounts_info, readdir_ex
+  - GUI: fb_info, fb_map, kbd_event, mouse_get, clipboard_get/set
+  - Audio: audio_open, audio_write, audio_close, audio_info
+  - Chrome/POSIX expansion: prctl, uname, sysinfo, getrusage, fsync,
+    fdatasync, sched_getaffinity, sched_setaffinity, mlock, munlock,
+    splice, tee
+  - Tater Bridge: spawn_linux_args (for legacy binaries)
+
+NATIVE LIBC (src/user/libc/):
+  - libc.c (2014 lines): string/mem, malloc/free/calloc/realloc, printf,
+    snprintf, sscanf, errno, abort/exit, byte order, qsort, bsearch
+  - posix.c (816 lines): POSIX wrappers for ALL socket/fs/mmap/epoll/
+    eventfd/timerfd/signalfd/inotify/pipe/dup operations
+  - pthread.c: pthread_create, pthread_mutex, pthread_cond
+  - netdb.c: DNS resolution (gethostbyname, getaddrinfo)
+  - stdio.c: FILE* operations, fprintf, fgets, fopen/fclose
+  - math.c: math functions
+  - time_ext.c: time extensions
+  - dlfcn.c: dynamic loading stubs
+  - setjmp.S: setjmp/longjmp
+  - cxx_runtime.cpp: C++ runtime (ctor/dtor lists)
+  - gfx.c: graphics helpers
+  - taterwin.h: TaterWin protocol definitions
+
+BEARSSL (src/user/apps/bearssl/):
+  Full BearSSL TLS library compiled as native objects. Includes:
+  - SSL engine (client + server)
+  - X.509 certificate handling
+  - AES, ChaCha20, Poly1305, RSA, EC
+  - Trust anchor system (ts_trust_anchors.h with Mozilla CA bundle)
+
+BUILD SYSTEM (Makefile):
+  - Cross-compiler: x86_64-elf-gcc (GCC 15.2.0)
+  - Native app flags: UFLAGS = -ffreestanding -fno-stack-protector -O2
+    -std=gnu11 -Wall -Wextra -Isrc/include -Isrc/user/libc
+  - Native C++ flags: UCXXFLAGS = -ffreestanding -fno-stack-protector
+    -mno-red-zone -O2 -std=gnu++23 -fno-exceptions -frtti
+  - LIBC_OBJ links into every native app
+  - CLAUDE_OBJS already links BearSSL + libc (precedent for TLS apps)
+  - Ports tree exists: zlib, libpng, libjpeg, libwebp, freetype
+
+EXISTING NATIVE APPS (reference implementations):
+  - SHELL.TOT, GUI.FRY, INIT.FRY, NETMGR.FRY, FILEMAN.FRY
+  - CLAUDE.FRY (native Claude launcher — uses BearSSL for TLS)
+  - VMTEST, THTEST, SMOKETEST, EVLOOP, ABITEST
+  - CHROME_PROBE
+
+PYTHON ALREADY STAGED (via Tater Bridge, not native):
+  build_iso.sh stages Python 3.14 + libpython3.14.so + stdlib zip +
+  lib-dynload + OpenSSL + SQLite + ncurses + readline + libffi onto
+  NVMe ToTFS. This is the Tater Bridge Python — NOT native. The native
+  port replaces this with a TaterTOS-compiled CPython.
+
+================================================================================
+GAP ANALYSIS: What CPython Needs That May Be Missing
+================================================================================
+
+CPython's platform layer (Modules/posixmodule.c, ~8000 lines) calls POSIX
+functions. The TaterTOS native libc already provides most of them. The
+gaps fall into three categories:
+
+CATEGORY A: Missing POSIX functions (stubs needed)
+  These are functions CPython references but TaterTOS libc doesn't implement.
+  Most can be stubbed (return 0, return -ENOSYS, or return identity values).
+
+  - fork() — TaterTOS uses spawn, not fork. CPython os.fork() needs a
+    real implementation or can be disabled (Hermes doesn't use fork).
+  - execve() — Same. TaterTOS uses spawn_args. CPython os.execve() can
+    wrap spawn_args or be disabled.
+  - waitpid() / wait4() — SYS_WAIT exists but semantics may differ from
+    POSIX waitpid. Need to verify the wait API matches.
+  - chmod() / fchmod() / chown() / fchown() — ToTFS may not support
+    permissions. Stub as return-0.
+  - symlink() / readlink() — May not be supported on ToTFS. Stub.
+  - umask() — Stub as return-0.
+  - truncate() / ftruncate() — SYS_FTRUNCATE exists. Verify.
+  - getuid/getgid/geteuid/getegid — Return 0 (single-user OS).
+  - gethostname() — Can use uname data or hardcode.
+  - getppid() — May need kernel support.
+  - utime() / utimes() — Stub or implement via utimensat.
+  - readlink() — Stub if no symlinks.
+
+CATEGORY B: Header gaps (CPython expects certain headers)
+  CPython's configure script probes for headers. TaterTOS include tree
+  already has many (stdio, stdlib, string, unistd, fcntl, sys/stat,
+  sys/socket, sys/mman, sys/time, time, errno, signal, sched, poll,
+  netdb, netinet/in, netinet/tcp, pthread, math, locale, inttypes).
+  Missing headers that CPython may need:
+  - sys/types.h (may need to be added or already exists)
+  - sys/wait.h (for waitpid)
+  - sys/utsname.h (for uname — SYS_UNAME exists)
+  - sys/resource.h (for getrusage — SYS_GETRUSAGE exists)
+  - sys/uio.h (for readv/writev — already implemented)
+  - dirent.h (for readdir — SYS_READDIR exists)
+  - termios.h (for terminal control — may need stubs)
+  - pwd.h / grp.h (stub — single user)
+  - shadow.h (stub)
+  - dlfcn.h (dlfcn.c exists)
+
+CATEGORY C: Build system adaptation
+  CPython uses autoconf/configure/make. The configure script probes for
+  OS features and generates pyconfig.h. For a freestanding cross-compile,
+  we need either:
+  - A TaterTOS-specific config file (hand-crafted pyconfig.h), OR
+  - A configure wrapper that answers probes based on known TaterTOS support
+  The hand-crafted approach is more reliable for cross-compilation and
+  matches how the Chromium port was done (GN toolchain config, not autoconf).
+
+================================================================================
+DEVELOPMENT PHASES
+================================================================================
+
+Each phase = a sequence of hermesNNN.txt logs. One fix per log, per rebuild.
+No batching. No pre-stubbing. Let each build failure reveal the next gap.
+Phase exit gates are mandatory — no phase advances until its gate is met.
+
+--------------------------------------------------------------------------------
+PHASE 1: NATIVE SYSCALL ABI GAP AUDIT
+  hermes001.txt — hermesNNN.txt
+--------------------------------------------------------------------------------
+
+OBJECTIVE: Document every POSIX function CPython needs, check if TaterTOS
+native libc provides it, and catalog the gaps. Produce a gap matrix that
+drives Phase 2.
+
+This is a research phase — no kernel changes, no code changes. Pure audit.
+
+STEPS:
+1. Download/locate CPython 3.14 source (or use system python3.14 source).
+2. Grep Modules/posixmodule.c for every POSIX function call.
+3. Grep Python/pylifecycle.c for OS initialization calls.
+4. Grep Modules/socketmodule.c for networking calls.
+5. Grep Modules/_ssl.c for TLS API usage.
+6. Cross-reference each function against src/user/libc/posix.c and libc.c.
+7. Cross-reference against src/include/ headers.
+8. Produce GAP_MATRIX.txt: function | CPython usage | TaterTOS status | action.
+
+EXIT GATE: GAP_MATRIX.txt exists and is reviewed. Every missing function has
+an action (stub, implement, or disable). User approves the matrix before
+Phase 2 begins.
+
+--------------------------------------------------------------------------------
+PHASE 2: CPYTHON TATER-NATIVE CROSS-COMPILE
+  hermesNNN.txt — hermesNNN.txt
+--------------------------------------------------------------------------------
+
+OBJECTIVE: Cross-compile CPython 3.14 as a TaterTOS-native binary that can
+execute `print("Hello from native Python on TaterTOS")` and basic file I/O.
+
+APPROACH:
+1. Create a TaterTOS CPython configuration (pyconfig.h hand-crafted for
+   the TaterTOS ABI, similar to how Chromium's GN toolchain was configured).
+2. Create a Makefile target in the TaterTOS Makefile for CPython objects.
+3. Compile CPython core (Python/, Objects/, Parser/, Modules/) with
+   x86_64-elf-gcc using UFLAGS + TaterTOS include paths.
+4. Link against LIBC_OBJ + any additional native libs needed.
+5. Stage the resulting python3.14 binary + stdlib onto NVMe ToTFS.
+6. Launch from TaterTOS shell and verify basic execution.
+
+EACH LOG covers:
+  - One missing header, one missing function, one compile error, or one
+    link error. Root-cause fix. Rebuild. Verify.
+  - Pattern: same as Chromium cross-compile fry logs (one stub per log,
+    one fix per rebuild cycle).
+
+EXIT GATE: `python3 -c "print('Hello from TaterTOS native Python')"` runs
+successfully in TaterTOS and prints to the screen. File I/O (open/write/
+read/close) works. Socket connect to a known IP works.
+
+--------------------------------------------------------------------------------
+PHASE 3: BEARSSL PYTHON SSL BACKEND
+  hermesNNN.txt — hermesNNN.txt
+--------------------------------------------------------------------------------
+
+OBJECTIVE: Make Python's ssl module use BearSSL instead of OpenSSL, enabling
+HTTPS connections from native Python.
+
+APPROACH:
+CPython's ssl module (Modules/_ssl.c) wraps OpenSSL. Two paths:
+  A. Write a BearSSL backend that implements the same _ssl module API.
+     ~500-1000 lines of C. Cleaner, more native, lighter weight.
+  B. Statically link OpenSSL as a native library. Heavier but less code.
+     Path A is preferred (BearSSL is already native, already tested with
+     Claude Code's TLS, and is the TaterTOS TLS stack).
+
+STEPS:
+1. Audit _ssl.c's API surface (SSLContext, SSLSocket, certificate handling).
+2. Map each OpenSSL call to BearSSL equivalent.
+3. Implement _ssl.c replacement using BearSSL API.
+4. Compile as a CPython C extension against BearSSL objects.
+5. Test: `python3 -c "import ssl; import urllib.request; print(urllib.request.urlopen('https://httpbin.org/get').read())"`
+
+EXIT GATE: Native Python can make an HTTPS GET request to a real URL and
+receive a response. TLS certificate validation works (using BearSSL trust
+anchors already in tree).
+
+--------------------------------------------------------------------------------
+PHASE 4: SQLITE TATER-TOS OS LAYER
+  hermesNNN.txt — hermesNNN.txt
+--------------------------------------------------------------------------------
+
+OBJECTIVE: Compile SQLite as a native TaterTOS library with a custom OS
+abstraction layer, enabling Hermes session storage.
+
+APPROACH:
+SQLite has a portable OS abstraction (sqlite3_os_init). We implement a
+TaterTOS VFS that uses native file I/O (open/read/write/lseek/ftruncate)
+and native memory allocation (malloc/free). SQLite amalgamation is a
+single .c file — compile with UFLAGS against TaterTOS headers.
+
+STEPS:
+1. Download SQLite amalgamation (sqlite3.c + sqlite3.h).
+2. Implement sqlite3_tater_vfs.c using POSIX wrappers from posix.c.
+3. Compile sqlite3.c + tater_vfs.c as a CPython C extension.
+4. Test: `python3 -c "import sqlite3; conn=sqlite3.connect(':memory:'); conn.execute('CREATE TABLE t(x)'); conn.execute('INSERT INTO t VALUES(42)'); print(conn.execute('SELECT x FROM t').fetchone())"`
+
+EXIT GATE: Native Python can create an in-memory SQLite database, execute
+SQL, and retrieve results. File-backed SQLite database on ToTFS works
+(create, write, close, reopen, read).
+
+--------------------------------------------------------------------------------
+PHASE 5: NATIVE HERMES STAGING AND LAUNCH
+  hermesNNN.txt — hermesNNN.txt
+--------------------------------------------------------------------------------
+
+OBJECTIVE: Stage the Hermes Agent Python package onto NVMe ToTFS and launch
+it from the TaterTOS shell as a native application.
+
+APPROACH:
+Hermes is pure Python (plus C extensions for ssl/sqlite which we already
+have from Phases 3-4). Stage the hermes-agent source tree + dependencies
+onto ToTFS. Add a cmd_hermes to shell.c (like cmd_claude) that sets
+HOME=/nvme, PATH, SHELL, and execs python3 with the Hermes entry point.
+
+STEPS:
+1. Identify Hermes Python dependencies (pyyaml, httpx or urllib, etc.).
+2. Stage pure-Python dependencies onto ToTFS site-packages.
+3. Compile any C-extension dependencies natively (if any beyond ssl/sqlite).
+4. Stage Hermes config.yaml + .env onto /nvme/.hermes/.
+5. Add cmd_hermes to shell.c (sets env, launches python3 -m hermes_cli.main).
+6. Add hermes build target to Makefile.
+7. Add Hermes staging to build_iso.sh (STAGE_HERMES=1).
+8. Test: launch hermes from shell, verify it connects to an LLM API, sends
+   a query, receives a response.
+
+EXIT GATE: `hermes chat -q "What is 2+2?"` runs natively on TaterTOS,
+connects to an LLM provider via HTTPS, and prints the response. Session
+state persists to SQLite on ToTFS.
+
+--------------------------------------------------------------------------------
+PHASE 6: SELF-HOSTING DEV LOOP (NATIVE COMPILER)
+  hermesNNN.txt — hermesNNN.txt
+--------------------------------------------------------------------------------
+
+OBJECTIVE: Enable the self-modifying dev loop — Hermes edits kernel source
+on NVMe, triggers a native rebuild, reboots, and boots into its own changes.
+
+This is the endgame phase. It requires a native compiler (gcc or tcc) that
+runs ON TaterTOS and can compile the TaterTOS kernel.
+
+APPROACH:
+Start with Tater Bridge gcc (already available — Linux gcc through Tater
+Bridge) to compile the kernel from within TaterTOS. Then migrate to a
+native gcc or tcc port for full self-hosting.
+
+STEPS:
+1. Verify Tater Bridge gcc can compile the TaterTOS kernel from within
+   TaterTOS (gcc + make + nasm running through Tater Bridge, kernel source
+   on NVMe, output kernel.elf on NVMe).
+2. Add a Hermes tool/skill that can: read kernel source, make changes,
+   trigger `make`, trigger `build_iso.sh`, trigger reboot.
+3. On boot, Hermes verifies the kernel loaded correctly and checks its
+   changes are present.
+4. (Future) Port tcc or gcc natively to TaterTOS for full self-hosting
+   without Tater Bridge dependency for compilation.
+
+EXIT GATE: Hermes can edit a kernel source file, rebuild the kernel, reboot
+TaterTOS, and the changes are live in the new kernel. The self-modifying
+dev loop is functional.
+
+================================================================================
+PROJECT STRUCTURE
+================================================================================
+
+TaterTOS64/
+  Makefile                    — add python3, hermes targets
+  build_iso.sh                — add STAGE_HERMES=1 staging
+  HERMES_NATIVE_PLAN.txt      — this file
+  GAP_MATRIX.txt              — Phase 1 output (created during audit)
+  logs/
+    hermes001.txt             — Phase 1, step 1
+    hermesNNN.txt             — each subsequent step
+  src/
+    user/
+      python/                 — CPython source (downloaded, patched for TaterTOS)
+        pyconfig.h            — hand-crafted TaterTOS config
+        Modules/
+          _ssl_bearssl.c      — BearSSL backend for Python ssl module
+        tater_vfs.c           — SQLite TaterTOS VFS
+      libc/
+        libc.c                — existing (may add stubs for gap functions)
+        posix.c               — existing (may add missing wrappers)
+      apps/
+        hermes.c              — native Hermes launcher (like claude.c)
+      shell/
+        shell.c               — add cmd_hermes
+  external/
+    cpython-3.14/             — CPython source tree
+    sqlite-amalgamation/      — SQLite amalgamation source
+
+================================================================================
+DEPENDENCY ORDER
+================================================================================
+
+Phase 1 (audit) -> Phase 2 (CPython) -> Phase 3 (BearSSL ssl) -> Phase 4 (SQLite)
+  -> Phase 5 (Hermes staging) -> Phase 6 (self-hosting)
+
+Phase 3 and Phase 4 are independent of each other and could run in parallel
+after Phase 2 completes. But under planv3 discipline, we do them sequentially
+(one at a time, one fix per log).
+
+================================================================================
+RISKS AND MITIGATIONS
+================================================================================
+
+RISK: CPython's configure/autoconf doesn't work in freestanding cross-compile.
+MITIGATION: Hand-craft pyconfig.h (same approach as Chromium GN config).
+The configure script is just a probe-and-generate tool — we can provide the
+answers directly.
+
+RISK: CPython needs fork()/execve() which TaterTOS doesn't have natively.
+MITIGATION: Hermes doesn't use os.fork(). The subprocess module can use
+spawn() (SYS_SPAWN_ARGS) instead. Disable fork in pyconfig.h.
+
+RISK: CPython's threading needs a full pthread implementation.
+MITIGATION: src/user/libc/pthread.c already exists. Verify it covers
+pthread_create, pthread_mutex_lock/unlock, pthread_cond_wait/signal.
+
+RISK: Python's import system needs directory listing (os.listdir).
+MITIGATION: SYS_READDIR exists. Verify it works for ToTFS directories.
+
+RISK: Large memory allocations trigger slow demand paging (fry1583 issue).
+MITIGATION: CPython's allocator uses smaller chunks than Bun/JSC. May be
+less affected. If it is, the batch-fault fix (planned for Claude Code too)
+benefits all native apps.
+
+RISK: BearSSL API differs significantly from OpenSSL for _ssl.c.
+MITIGATION: PEP 543 defines a backend-agnostic TLS interface. Write a
+BearSSL backend that implements the _ssl module's C API directly. BearSSL
+is already proven with Claude Code's TLS stack.
+
+================================================================================
+NEXT ACTION
+================================================================================
+
+Begin Phase 1: Native syscall ABI gap audit.
+First log: hermes001.txt — locate CPython source, begin posixmodule.c audit.

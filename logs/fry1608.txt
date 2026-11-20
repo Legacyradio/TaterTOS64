@@ -1,0 +1,75 @@
+# hermes003 — PHASE 2 STEP 2: TaterTOS pyconfig.h creation from host configure
+Date: 2026-06-17 ~14:37 CDT
+Type: build configuration (Phase 2 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Create a pyconfig.h for CPython that reflects TaterTOS64v3 capabilities.
+CPython requires pyconfig.h — it's the autoconf output that tells the source
+which POSIX features are available. Without it, nothing compiles.
+
+---------------------------------------------------------------------------------
+WHY NOT HAND-CRAFT FROM SCRATCH
+---------------------------------------------------------------------------------
+The autoconf template (pyconfig.h.in) has 642 #undef directives. Hand-crafting
+all of them would be error-prone and violate the "no shortcuts" principle —
+guessing at values is worse than probing. Instead, use the host Linux configure
+run as a probe tool (same x86_64 POSIX surface), then make surgical adjustments
+for TaterTOS differences. This is the same approach the plan describes:
+"configure is just a probe-and-generate tool — we can provide the answers
+directly."
+
+---------------------------------------------------------------------------------
+METHOD
+---------------------------------------------------------------------------------
+1. Ran `./configure --quiet --without-doc-strings` on host Linux.
+   Result: pyconfig.h with 459 defines set to 1, 160 undef. Exit code 0.
+2. Copied to pyconfig_tater.h.
+3. Applied TaterTOS-specific adjustments:
+
+   DISABLED (TaterTOS doesn't support these):
+     HAVE_FORK       — TaterTOS uses spawn/spawn_args, not fork
+     HAVE_FORKPTY    — depends on fork + pty
+     HAVE_EXECV      — TaterTOS uses spawn_args
+     HAVE_SYSTEM     — no shell exec in the POSIX sense
+     HAVE_DLOPEN     — static linking only, no dynamic loading
+     HAVE_DYNAMIC_LOADING — same reason
+     HAVE_LINUX_*    — all Linux-specific headers removed (linux/can.h,
+                       linux/netlink.h, etc.) TaterTOS has some linux/ headers
+                       but not most of these. Replaced with undef.
+
+   KEPT (TaterTOS supports these):
+     HAVE_PTHREAD_H  — pthread.c exists in native libc
+     HAVE_SOCKET     — full socket syscall set
+     HAVE_EPOLL      — epoll_create/ctl/wait exist
+     HAVE_MMAP       — mmap syscall exists
+     HAVE_GETRANDOM  — SYS_GETRANDOM exists
+     HAVE_FTRUNCATE  — SYS_FTRUNCATE exists
+     HAVE_SIGACTION  — signal.h has sigaction
+     HAVE_WAITPID    — SYS_WAIT exists
+     HAVE_POLL       — poll syscall exists
+     HAVE_PIPE       — pipe/pipe2 syscalls exist
+     SIZEOF_* values — same as x86_64 Linux (long=8, void*=8, int=4, etc.)
+
+4. Added TaterTOS platform identifier:
+     #define TATERTOS 1
+     #define PLATFORM "tatertos64"
+
+5. Copied pyconfig_tater.h over pyconfig.h (where CPython's Python.h expects it).
+
+Final: 435 defines set to 1, rest undef.
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+Programs/python.c compiled successfully with this pyconfig.h (verified in
+hermes002). The fork/dlopen/system/execv disables will be tested when we
+compile the modules that reference them (posixmodule.c, etc.).
+
+---------------------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------------------
+Compile Python/pylifecycle.c with -DPy_BUILD_CORE. First real core file
+that exercises the platform layer (threading, signals, filesystem).

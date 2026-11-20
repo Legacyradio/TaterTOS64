@@ -1,0 +1,38 @@
+fry1780 — VERIFY: serial-strip killed the crawl — hermes boot is fast now — 2026-06-26
+==========================================================================
+WHAT: Booted the fry1779 ISO and ran `hermes`. PASS — the crawl is GONE. The
+fry1778 removal of the per-mmap "VM COMMIT OK" serial print was the actual fix.
+
+OBJECTIVE EVIDENCE:
+  - Serial volume: 338378 bytes (fry1777, with spam) -> 28634 bytes (fry1780) =
+    ~12x less. "VM COMMIT OK" count: 2927 -> 0.
+  - shot1780.png: report renders FULLY and FAST — hermes_cli.main OK; SUMMARY
+    Python 3.14 [OK], Stdlib 35/36, SQLite [OK], FS [OK], Hermes core [OK] ->
+    "Run a subcommand, e.g. hermes doctor". Prompt back at `/>`.
+  - Zack confirmed directly it loaded MUCH faster (contrast fry1777 "30 years").
+  (No clean stopwatch t0/t1 — the run is Zack-paced at the keyboard — but the 12x
+   serial-volume drop + his direct observation are unambiguous.)
+
+ROOT CAUSE (corrected, final): the boot crawl was NOT the buddy allocator
+(fry1773 was wrong — that was ~14%) and NOT the mmap churn itself. It was the
+SERIAL VM-EXIT TAX: under KVM every byte to the emulated UART is a VM-exit, and
+the "VM COMMIT OK" diagnostic fired on every mmap (2927x, 291 KB). The
+instrumentation studying the churn WAS the bottleneck. Removing it = 12x less
+serial = fast.
+
+LESSON: stop optimizing the thing that's loud in the logs; the loudness (serial
+I/O) can itself be the cost under virtualization. Measure serial volume early.
+
+TREE STATE (vs fry1761 baseline) — both changes native, no compat surface:
+  1. src/kernel/mm/pmm.c — hot-page cache (fry1774). Real but small (~14%), safe,
+     eager backing preserved. Kept (no downside); revert is trivial if Zack wants
+     a minimal diff.
+  2. src/kernel/proc/syscall.c — removed the VM COMMIT OK diagnostic (fry1778).
+     THE fix for the crawl.
+  (The fry1764/1768 compat + native-lazy attempts were fully reverted in fry1772.)
+
+STATUS: hermes core imports fast and runs. Bootstrap reports 35/36 modules — the
+only missing one is _ssl (still a stub). That is the LAST blocker for a LIVE agent
+(no HTTPS/API without TLS). Next real step when Zack greenlights: back _ssl with
+native TLS (in-tree BearSSL at src/user/apps/bearssl). SSL remains parked per his
+earlier call; do not start without his go.

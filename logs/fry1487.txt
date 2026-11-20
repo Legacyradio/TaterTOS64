@@ -1,0 +1,47 @@
+fry1487 — 2026-06-14 (early AM). Author: Claude (Opus 4.8).
+STEP TYPE: ROOT CAUSE FOUND for the rg-exposed "deadlock". Pure analysis of existing serials + code (no rebuild, no run, no edit). Continues fry1486.
+Serials: /tmp/s_32.log (32-slot DEADLOCK), /tmp/s_fry1483.log (16-slot SUCCESS). Code: src/kernel/proc/syscall.c lx_execve_current.
+
+=== THE ANSWER ===
+The hang is NOT a futex lost-wakeup, NOT sockets, NOT python. It is a vfork PARENT held suspended for the entire duration of a vfork CHILD's pathologically slow 250 MB eager-streamed execve of RCLAUDE.LXE (claude's embedded-ripgrep = it re-execs its own 250 MB binary to act as `rg`).
+
+=== CHAIN (proven) ===
+1. claude's Grep "first use test" runs rg in embedded mode: path=/nvme/RCLAUDE.LXE (the claude binary itself).
+2. At 16 sockets: socketpair() ENFILEs first, so the spawn fails EARLY with EBADF and claude catches it and CONTINUES (degraded, rg broken). Evidence (success run): `[ERROR] Ripgrep first use test threw (mode=embedded, path=/nvme/RCLAUDE.LXE): EBADF`. This is WHY 16 "works".
+3. At 32 sockets: socketpair succeeds, so claude proceeds to actually spawn. `TBVFORK parent=5 child=23` — claude MAIN thread pid 5 vforks child 23 (tgid=23, separate process).
+4. Per this kernel's REAL-vfork semantics (syscall.c:7180, LNX_vfork), the parent is SUSPENDED until the child execve's or exits.
+5. child 23: a couple rt_sigaction (rc=-EINVAL, harmless), dup2 /dev/null to 0/2 + fd24->1, then `TBEXECVE enter path=/nvme/RCLAUDE.LXE`.
+6. The execve calls elf_load_linux (syscall.c:5140) which EAGER-STREAMS all PT_LOAD segments of the 250,480,336-byte binary BEFORE doing anything else. Trace shows it crawling:
+   - PT_LOAD2 va=200000: line 15032 -> done 26042
+   - PT_LOAD3 va=24aa400: 26044 -> done 43057
+   - PT_LOAD4 va=60ed9a0 (mem=8fe7660 ~150MB): started 43059 -> NEVER finishes before the 900s timeout.
+   Timing from TBCLK/futex now=: execve entered ~175s; at end-of-run ~897s it is still inside PT_LOAD4. ~722s to stream ~100MB ≈ 150 KB/s. Starved while pid 14 busy-spins a timerfd at 100%.
+7. `TBEXECVE ok` count in the ENTIRE deadlock = 0 => the parent-wake at syscall.c:5220-5221 (process_wake_pid_waiters, only fires AFTER elf_load_linux returns) NEVER runs.
+8. So pid 5 stays vfork-suspended for the whole load. pid 5 is the thread-pool driver; with it frozen, pool workers pid 13 & pid 15 block on a global lock uaddr=62661cc with wake_time=UINT64_MAX (infinite, no timeout) forever. Whole process freezes; pid 6 just does its benign 100ms e8c8 heartbeat (NOT the bug — woken 0x in BOTH runs).
+
+=== WHY THE PRIOR HANDOFF WAS WRONG (so we stop regressing) ===
+- e880 "lost wakeup": red herring. SUCCESS run has identical wake-call e880 rc=0 x1408, 0 waiters. Normal condvar-signal.
+- e8c8 "main thread hung on a word nothing wakes": red herring AND it was the centerpiece. e8c8 is woken 0x in BOTH runs; pid6's e8c8 waits ALL return rc=-110 (100ms timeout) in success too. It's a heartbeat, not the deadlock. Instrumenting the futex path (handoff's next step) would have burned runs on a non-bug.
+- The real stuck threads were pid 13/15 on uaddr=62661cc (infinite timeout) and pid 23 in execve — neither is e8c8/e880.
+
+=== CODE LOCATION ===
+src/kernel/proc/syscall.c lx_execve_current():
+  5140  rc = elf_load_linux(...)          <-- 250MB eager load happens here, parent still suspended
+  5212  lx_write_cr3(new_cr3)             <-- child switches to its own AS
+  5220  if (was_vfork_child) process_wake_pid_waiters(cur->pid)  <-- parent woken ONLY here, too late
+Linux contrast: wakes the vfork parent right after the new mm is ACTIVATED (exec_mmap), then DEMAND-PAGES the binary. We eager-load all segments before activating/waking.
+
+=== FIX OPTIONS (not yet implemented — needs Zack's pick + Codex coordination on syscall.c/process.c) ===
+A. EARLY VFORK-PARENT WAKE: restructure execve so the parent is released as soon as the child has committed to its own new address space (point of no return), with the heavy segment streaming continuing afterward in the child. Removes the freeze; parent + pool resume in parallel. Closest to Linux. Risk: must ensure child no longer touches parent's shared user stack/fd-table before wake (it doesn't after syscall_vm_process_exit + cr3 swap).
+   -> NOTE: even with A, the rg subprocess still takes ~700s to load 250MB => rg's first-use test will still TIME OUT. A removes the DEADLOCK (claude reaches init + runs) but does NOT make Grep usable.
+B. REUSE ALREADY-LOADED IMAGE: RCLAUDE.LXE is already resident as pid 5's image. When execve targets a binary identical to one already loaded, share/COW its pages instead of re-streaming 250MB. Makes the re-exec near-instant. Bigger change to elf loader; highest payoff (fixes deadlock AND makes Grep fast).
+C. DEMAND-PAGE the Linux ELF loader (map segments lazily, fault pages from the file on access) instead of eager-streaming. Matches Linux; fixes the root slowness for ALL large execs, not just rg. Largest change.
+RECOMMENDATION: A as the immediate deadlock-killer (small, surgical), then B or C to make Grep actually fast. A alone gets claude to a green session WITH the pool alive even at 32 sockets; rg stays slow until B/C.
+
+=== PYTHON (Codex's suggestion) — NOT the cause ===
+python refs are EQUAL (5) in both the WORKING and HANGING runs. build_iso.sh DOES stage python (STAGE_PYTHON, /usr/bin/python3.14, stdlib zip). The hang is the vfork+execve of RCLAUDE.LXE (embedded rg), which has nothing to do with python. Python may be a separate gap for MCP servers, but it is not this deadlock.
+
+=== STATE / RULES ===
+- No source modified. No build. No run. FRY_SOCK_MAX still 16 (safe, booting).
+- Next step (fry1488) = implement the chosen fix. Codex co-edits syscall.c/process.c — serialize before editing.
+- Makefile has no header-dep tracking: touch all kernel .c after any header edit.

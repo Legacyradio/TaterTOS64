@@ -1,0 +1,38 @@
+# fry1653 - Fix ToTFS ancestor directory creation for Hermes/Python sysroot staging.
+Date: 2026-06-19 15:30:18 CDT
+Type: staging script follow-up fix
+Author: Codex, following planv3 Rules 1/5/6/12
+
+WHY
+- fry1652 added tree staging, but direct verification still showed:
+  `/usr/local/lib/python3.14` missing
+  `/opt/hermes-agent` missing
+- Manual test proved `tools/totcopy --mkdir /usr` worked.
+- Manual test also proved nested creation only works after its parent exists:
+  `tools/totcopy out/tater_nvme.img 1048576 --mkdir /usr/local`
+  succeeded only after `/usr` already existed.
+- Root cause: `stage_tree_totfs()` tried to create the full destination root
+  such as `/usr/local/lib/python3.14` before creating `/usr`, `/usr/local`,
+  and `/usr/local/lib`.
+
+WHAT CHANGED
+- stage_hermes.sh:
+  - Added `mkdir_p_totfs(path)`.
+  - It walks a ToTFS absolute path one component at a time and calls
+    `tools/totcopy --mkdir` for each ancestor.
+  - `stage_tree_totfs()` now calls `mkdir_p_totfs "$dest"` before copying the
+    source tree.
+
+VERIFY
+- Command:
+  bash -n stage_hermes.sh
+- Result:
+  PASS. Script syntax is valid.
+
+NEXT
+- Rerun Hermes staging against `out/tater_nvme.img`.
+- Verify exact ToTFS paths instead of trusting the script output:
+  `/usr/local/lib/python3.14`
+  `/usr/local/lib/python3.14/site-packages`
+  `/opt/hermes-agent`
+  `/opt/hermes-agent/hermes_cli`

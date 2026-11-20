@@ -1,0 +1,26 @@
+fry1834 - HERMES DIAGNOSIS STEP A: re-read the Hermes record (2026-11-17 14:08 CST)
+WHY: Sur's go (14:04, via Marshmallow) for diagnosis-first on Hermes; HERMES-DIAGNOSE-BRIEF.txt Step A. No code changes this phase.
+WHAT / HOW: read HANDOFF_HERMES_TLS.md, HERMES_FULL_AGENT_PLAN.txt, HERMES_NATIVE_PLAN.txt (first 140 of 457 lines),
+  memory handoff_hermes_tls.md + reference_hermes_mcp_launcher.md, fry1831, fry1812 (first 120 lines); grepped code + logs for "hermes"
+  (191 fry logs mention it); read shell.c cmd_hermes/shell_env/resolve_program and stage_hermes.sh head.
+WHERE: ~/TaterTOS64/{HANDOFF_HERMES_TLS.md,HERMES_*_PLAN.txt,logs/fry1812,1831,src/user/shell/shell.c,stage_hermes.sh}; memory dir.
+
+FINDINGS (what Hermes IS in TaterTOS)
+ - Hermes = Nous "hermes-agent" Python agent (host copy ~/hermes-agent, staged copy sysroot/opt/hermes-agent -> image /nvme/opt/hermes-agent).
+   Runs on a NATIVE CPython 3.14.5 built as python3.fry (freestanding, static, no dlopen; extensions linked in as builtins via
+   Modules/config.c + Python3.mk). NOT Tater Bridge / Linux ABI. (Tater Bridge is the separate path for the real Claude Code binary.)
+ - NOTE: the memory file reference_hermes_mcp_launcher.md is about the HOST Hermes MCP messaging bridge (serve_mcp.py) - unrelated to the in-OS port.
+ - Launch: shell builtin cmd_hermes (shell.c:924) -> fry_spawn_args("/nvme/apps/python3.fry", argv ["python3","/nvme/opt/hermes-agent/hermes",...],
+   shell_env). Env: PYTHONHOME=/nvme/usr/local, PYTHONPATH=.../python3.14[:site-packages], HOME=/nvme, PYTHONFAULTHANDLER=1, etc. (shell.c:816-840).
+   fry1822-1828 added a second route: "#!" kernel support + PATH search so /nvme/opt/hermes-agent/hermes runs as an ordinary file
+   (launcher shebang rewritten to #!/nvme/apps/python3.fry by stage_hermes.sh). Builtin still shadows plain `hermes`.
+ - Where code lives: kernel/loader src/kernel/proc/{elf.c,process.c,syscall.c}; libc src/user/libc/{libc.c,posix.c,time_ext.c,pthread.c};
+   shell src/user/shell/shell.c; CPython external/Python-3.14.5 + Python3.mk; staging stage_hermes.sh + build_iso.sh (sources it);
+   agent code sysroot/opt/hermes-agent (copy of ~/hermes-agent); plans HERMES_NATIVE_PLAN.txt, HERMES_FULL_AGENT_PLAN.txt.
+ - Not in code but on the image: /.hermes/{logs/agent.log,errors.log,state.db,auth.json,config.yaml,.env}.
+ - Plan docs are older than the code: HERMES_FULL_AGENT_PLAN.txt says Rust deps (pydantic_core) are the hard wall; project memory says
+   native Rust toolchain + native Python exts now exist (fry1791). Plans NOT re-verified against tree this step.
+RESULT: record read; facts above are from files (sources named), nothing booted or changed. Claims inherited from logs are labelled so.
+NEXT: fry1835 = Step B (map what is broken, evidence vs theory): read fry1810, fry1813, fry1814-1830 summaries and verify key claims against source.
+
+CORRECTION (written 2026-11-17 14:06 CST): the 'WHEN 14:08' above was my estimate, not a clock read. The clock read at the end of this step was ~14:05. Time before this was not taken from date; later logs use date.

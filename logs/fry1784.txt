@@ -1,0 +1,26 @@
+fry1784 — full hermes CLI run -> crash: No module named '_ctypes' — 2026-06-26
+==========================================================================
+WHAT: First run of the real agent CLI (bare `hermes`, fry1783 launcher). It got
+FURTHER than the diagnostic ever did, then crashed. Diagnosed from serial; not
+hung, not isatty.
+
+OBSERVED: screen showed `hermes` -> HERMESSTDOUT-OK -> (heavy import, ~45-90s,
+silent now that the fry1778 VM-COMMIT-OK print is gone) -> returned to `/>` with
+nothing visible. Looked like a silent exit. Serial (/tmp/fry1785_serial.log) had
+the real reason — a traceback to stderr (not the shell window):
+
+  hermes -> main() -> _set_process_title() (hermes_cli/main.py:92)
+    -> import ctypes -> from _ctypes import ... -> ModuleNotFoundError:
+       No module named '_ctypes'
+
+ROOT CAUSE: _set_process_title() sets the process name (cosmetic) via ctypes
+(prctl PR_SET_NAME). Its `import ctypes` sits OUTSIDE the try/except that guards
+the prctl call, so on a CPython without _ctypes the bare import propagates and
+kills the whole agent. _ctypes needs libffi — far too heavy to build for a
+cosmetic title. Correct fix is graceful degradation, not building libffi.
+
+PROCESS NOTE: this is exactly the "get it running, debug after" loop Zack asked
+for — the real CLI surfaces real blockers one at a time.
+
+NEXT (fry1785): move the ctypes import inside the try so a missing _ctypes just
+skips the title.

@@ -1,0 +1,154 @@
+fry1461_HANDOFF - TaterTOS real Claude Code run: auth is now the live blocker.
+Date: 2026-06-13 10:44 CDT. Author: Codex.
+========================================================================
+
+Read this first
+---------------
+The kernel/network path is no longer stuck at the old one-segment TCP receive
+bug. The latest run reached real Claude Code 2.1.177, initialized stream-json,
+made HTTPS API requests, received API responses, and exited cleanly with:
+
+  Failed to authenticate. API Error: 401 Invalid authentication credentials
+
+This means the next session should not go back to the e1000 one-segment theory
+as the primary blocker. The live blocker is auth/account-token semantics or the
+exact auth material Claude is deriving from the staged JSON.
+
+Current artifacts
+-----------------
+- Serial log: /tmp/s_fry1459.log
+- Test-result log: logs/fry1460.txt
+- This handoff: logs/fry1461_HANDOFF.txt
+- NVMe image tested: out/tater_nvme.img
+- ISO tested: out/tatertos64v3.iso
+- OVMF vars used for this run:
+  /tmp/OVMF_VARS_fry1459.fd, copied from the official vars on the 115 GB flash
+  drive at /mnt/usb115/TaterTOS_claude_milestone_2026-06-12/OVMF_VARS_copy.fd
+
+What was staged before the test
+-------------------------------
+The user clarified that "refresh OAuth" meant copying the refreshed host JSON
+into the guest image for now, not implementing full refresh semantics first.
+
+Manually restaged into out/tater_nvme.img:
+
+- host ~/.claude.json -> guest ToTFS /.claude.json
+- host ~/.claude/.credentials.json -> guest ToTFS /.claude/.credentials.json
+- host Claude Code 2.1.177 binary -> guest ToTFS /RCLAUDE.LXE
+
+Important: ToTFS root paths above appear inside the guest as /nvme paths
+because the real Claude launch uses HOME=/nvme.
+
+No token or credential contents are included in this handoff.
+
+Evidence from the latest run
+----------------------------
+Command shape:
+
+  timeout 1200s qemu-system-x86_64
+    -m 4G -machine q35,accel=kvm -cpu host -smp 4
+    OVMF pflash
+    -cdrom out/tatertos64v3.iso
+    -drive file=out/tater_nvme.img,if=none,id=nvme0,format=raw
+    -device nvme,drive=nvme0,serial=tatertos-nvme
+    -netdev user,id=n0 -device e1000,netdev=n0
+    -display none
+    -serial file:/tmp/s_fry1459.log
+
+The run reached real Claude:
+
+- claude_code_version: 2.1.177
+- model: claude-sonnet-4-6
+- stream-json system init emitted
+- apiKeySource: none
+- HOME was /nvme from src/kernel/main.c launch env
+- runtime files were written under /nvme/.claude/debug and
+  /nvme/.claude/projects
+
+Network evidence:
+
+- conn 0 reached at least 142 segments / 186,362 bytes
+- conn 4 reached at least 60 segments / 72,740 bytes
+- the final failure was an HTTP/API 401, not a TCP receive stall
+
+Final Claude result:
+
+- api_error_status: 401
+- terminal_reason: completed
+- result: Failed to authenticate. API Error: 401 Invalid authentication
+  credentials
+
+What this proves
+----------------
+Working inside TaterTOS in this run:
+
+- real 2.1.177 Claude binary loading from /nvme/RCLAUDE.LXE
+- Linux vfork path introduced earlier is good enough to advance past the
+  previous nr=58 blocker
+- DNS/HTTPS/API reachability is good enough to receive Anthropic 401 responses
+- TCP receive does not stop after one segment anymore
+- stream-json output path works
+- /nvme HOME writes work for Claude debug/project files
+
+Not solved:
+
+- auth is rejected by the API even after staging the refreshed host JSON
+- wait4/waitpid syscall nr=61 is still unimplemented
+- watcher/stat metadata syscalls are still noisy
+
+Known syscall gaps from /tmp/s_fry1459.log
+------------------------------------------
+These are real but were not the final blocker for the latest run:
+
+- nr=61 wait4/waitpid: causes rg helper failures:
+  "ENOSYS: function not implemented, waitpid"
+- nr=294 watcher setup: settings watcher ENOSYS
+- nr=332 statx/metadata-style syscall appeared early
+- nr=326 and nr=40 appeared around helper subprocess/file transfer activity
+
+Recommended next step
+---------------------
+Do auth first, then wait4.
+
+Reason: this run already reaches the remote API and gets a clean 401. That is
+closer to the user's goal than polishing rg/helper subprocess behavior first.
+Fixing wait4 will make Claude Code more complete, but it will not make rejected
+credentials authenticate.
+
+Concrete auth investigation path:
+
+1. Keep using the JSON for now, per user direction. Do not implement full OAuth
+   refresh semantics before proving the staged credentials can authenticate.
+2. Verify whether host Claude Code 2.1.177 currently authenticates with the same
+   JSON files. Do this without printing token contents.
+3. Compare host environment assumptions with the guest launch environment:
+   guest currently has PATH=/apps, LD_LIBRARY_PATH=/usr/lib:/lib64,
+   HOME=/nvme, TMPDIR=/nvme, TATERTOS=1.
+4. Check whether Claude 2.1.177 needs additional auth/account state outside:
+   ~/.claude.json and ~/.claude/.credentials.json.
+5. If the two JSON files are sufficient on host but not in guest, instrument
+   file opens/reads for auth-related paths only, with redaction. The target is
+   path/size/status, not contents.
+6. If the two JSON files are not sufficient on host either, the blocker is
+   external account/session validity and not TaterTOS.
+
+After auth is solved:
+
+1. Implement Linux wait4 syscall nr=61.
+2. Re-run the same long-window QEMU command.
+3. Keep serial to a new /tmp/s_fryNNNN.log.
+4. Write one fry log per completed fix/test.
+
+Logging rules reminder
+----------------------
+The user explicitly restated that logging rules are non-negotiable. Every
+completed fix or material test result needs its own logs/fryN.txt. Do not
+collapse multiple changes into one vague summary. Never put secret/token values
+in logs.
+
+Current run-state note
+----------------------
+At handoff creation time, the useful Claude result had already completed in the
+serial log. The QEMU timeout wrapper had been intentionally left alone per the
+user's "let it run the full window" correction. If still running, let it exit by
+timeout/natural shutdown unless the user explicitly tells you to stop it.

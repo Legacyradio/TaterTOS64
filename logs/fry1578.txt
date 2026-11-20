@@ -1,0 +1,16 @@
+# fry1578 - BUILD: clean rebuild with the fry1577 any-mode TBSPIN kernel-PC catch (+ CLAUDE_NO_MCP=1)
+Date: 2026-06-16 05:08 CDT
+Type: build (Rule 12)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+WHY: build so TBSPIN logs the main thread's PC in any mode -> capture the KERNEL rip it spins in (fry1577).
+
+COMMAND: make clean && STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 CLAUDE_BIN=.../2.1.177 PATH=... bash build_iso.sh
+  (backgrounded -> /tmp/build_1578.log; QEMU killed first)
+
+RESULT: EXIT 0 (clean). No errors. ISO/NVMe fresh @ 11:10. Beacons: TBFD0/TBEPW/TBMAIN/TBSPIN(any-mode) + TBREQUEUE.
+
+NEXT (fry1579): headed verify -> type until frozen -> grep TBSPIN -> resolve the kernel rip:
+  nm -n kernel.elf | awk to find the function containing the cs=0x08 rip -> names the kernel loop -> fix the wake.
+
+All per planv3 Rules 1/5/6/12. Written immediately on build completion, before relaunch.

@@ -1,0 +1,36 @@
+fry1443 — Writable-HOME boot. PARTIAL SUCCESS, NEW ROOT CAUSE ISOLATED:
+ToTFS file WRITES work in-OS — claude read its staged auth from
+/nvme/.claude.json and WROTE its 33 KB config update back (TBWRDATA:
+'{"numStartups": 112, ...' twice) — but every in-OS ALLOCATION fails:
+  TBFAIL mkdir /nvme/claude-0          rc=EIO
+  TBFAIL mkdir /nvme/.claude/debug     rc=EIO
+  TBFAIL mkdir /nvme/.claude.json.lock rc=EIO   (lockfile dir pattern)
+  (mkdir /nvme itself = EEXIST, correct — resolution works)
+Cause found by code audit: totfs_alloc_block() in the KERNEL caps its
+scan at one bitmap block (TOTFS_BLOCK_SIZE*8 = 32,768 blocks = 128 MB)
+and struct totfs_fs caches only ONE bitmap block. The staged 248 MB
+RCLAUDE.LXE occupies ~60,700 blocks — the entire sub-128MB region is
+full, so the allocator never finds a free bit and every create/mkdir
+returns EIO. The HOST tools (mktotfs/totcopy) already handle
+multi-block bitmaps (the on-disk format is correct; 400 MB image = 4
+bitmap blocks, sb.block_bitmap_blocks=4) — only the kernel was capped.
+Config rewrite worked because it reused the file's EXISTING blocks.
+Date: 2026-06-12 05:2x CDT. Author: Claude (Fable 5).
+========================================================================
+
+RUN NOTES
+------------------------------------------------------------------------
+- Build staged auth onto NVMe ToTFS (totcopy --mkdir /.claude, inode
+  26) — staging + in-OS READ both proven by claude's successful auth
+  and config load (numStartups counter incremented and written back).
+- Run shape otherwise unchanged: healthy network, exit 0, no
+  stream-json (emitter still dead — its work dirs still failed).
+- TBWR census: eventfds + 1 stderr + 2 FD_FILE writes (the config) —
+  first in-OS ToTFS file writes ever exercised by claude. Write path
+  itself is sound.
+
+FIX = fry1444 (next step): multi-block bitmap cache + full-range
+allocator in the kernel, mirroring the host tools.
+TEST COMMANDS (rule 10): boot as fry1432, serial /tmp/s_fry1443.log;
+  grep -a "TBWRDATA\|TBFAIL mkdir" /tmp/s_fry1443.log
+========================================================================

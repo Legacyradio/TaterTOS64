@@ -1,0 +1,48 @@
+fry1486 — 2026-06-13 (night). Author: Claude (Opus 4.8).
+STEP TYPE: diff-verify of the handed-off tree + re-diagnosis of the rg-exposed deadlock from EXISTING serials (no rebuild, no run).
+Reason: handed this branch to verify-then-continue because the prior working instance was drifting (fabricated a 429 rate-limit, contradicted itself). Logs/serials referenced: /tmp/s_32.log (32-slot DEADLOCK run, 23:09), /tmp/s_fry1483.log (16-slot SUCCESS run, 17:46). No source files modified this step.
+
+=== PART A: tree diff verification ===
+Working tree is the uncommitted fry1463–1485 chain. Verified the ship-critical invariant:
+- src/include/fry_limits.h: FRY_SOCK_MAX == 16 (NOT 32). FRY_FD_MAX 64, FRY_PIPE_MAX 128 — both with revert-comments (256 broke boot via fd_paths stack overflow / DHCP halt).
+- src/kernel/selftest.c:122: st_check("FRY_SOCK_MAX", ..., 16) — MATCHES the header. A normal boot will NOT panic. (selftest.c:77 FRY_VMREG_MAX assertion also correctly updated 256->2048.)
+- CONTRADICTION FOUND + RESOLVED: HANDOFF_rg_fix_2026-06-13.md prose line 65 says "Current tree is at FRY_SOCK_MAX=32 (deadlocks)." That is STALE DOC. The actual code is 16 and self-consistent. Final action (revert to 16) was done correctly; only the .md narrative lagged. Tree boots working-claude. No code fix needed for this.
+
+=== PART B: deadlock re-diagnosis (CORRECTS the handoff) ===
+Method: compared the post-"LSP notification handlers registered" window of the DEADLOCK serial vs the SUCCESS serial.
+
+B1. THE HANDOFF'S e880 LOST-WAKEUP IS A RED HERRING.
+   Handoff claim: main pid6 waits on e8c8, "5658 wakes go to adjacent ...e880, 0 to ...e8c8" => lost wakeup on e880/e8c8 is the bug.
+   Reality from BOTH serials:
+     - DEADLOCK s_32: `TBFUTEX wake-ret ... e880 rc=0` (nobody woken), and ZERO `wait-begin uaddr=...e880` ever.
+     - SUCCESS s_fry1483: IDENTICAL — `wake-ret ... e880 rc=0` x1408, and ZERO waits on e880.
+   => pid6 signalling e880 to 0 waiters is NORMAL condvar-signal behavior (predicate-based wakeup; the signal is absorbed when no one is parked). It happens the same in the run that SUCCEEDS. It is NOT the differentiator. This is the same class of mistake as the prior 429/timerfd red herrings — do not chase e880.
+
+B2. THE PERPETUALLY-READABLE fd IS A TIMERFD, NOT AN EVENTFD.
+   pid14's tight loop: `epoll_pwait2(fd=0xe) -> rc=1` then `read(fd=0xf, len=8) -> rc=8`, repeating.
+   - fd 0xf (15) reads return 8 bytes but produce ZERO `LXEVFD` beacons => NOT FD_EVENTFD.
+   - `LXEPRDY ... fd=15 kind=8 revents=1 (asked 1)` repeating => fd 15 kind == 8 == FD_TIMERFD (process.h:51).
+   So the handoff's own earlier "timerfd fd=15 spin" suspicion was RIGHT about the fd; its later "RULED OUT (success has identical timerfd activity)" dismissal was premature. The fd is confirmed a timerfd.
+
+B3. THE REAL SIGNATURE (what actually differs success vs deadlock):
+   - DEADLOCK pid14: locked in a PURE 2-syscall loop — epoll_pwait2(fd14) + read(fd15 timerfd). NO socket I/O, no openat, no other progress. After its beacon budget exhausts (line 18046) the serial tail is 100% pid6 futex-spin; pid14 never emits again (budget exhausted, not proven dead).
+   - SUCCESS pid14: interleaves VARIED work — read(90), nr=54(83), epoll_pwait2(82), nr=228 clock_nanosleep(77), time(35), nr=44 sendto/nr=45 recvfrom (SOCKET I/O), openat(21), write(16). It PROGRESSES.
+   So the timerfd readiness is present in BOTH; the difference is that in the deadlock pid14 services ONLY the timerfd and never advances to the socket/other work that would let the loop run the callback that ultimately satisfies pid6's e8c8 wait.
+
+B4. timerfd_update_expirations (syscall.c:820-834) is itself correct: periodic timers go unreadable after a drain until the next deadline; one-shots disarm. So a timerfd alone does not explain an infinite spin UNLESS the interval is pathologically small OR the loop never reaches the drain+advance. Not yet determined which.
+
+=== ESTABLISHED (high confidence) ===
+1. Tree is safe/consistent at SOCK_MAX=16; boots working-claude; selftest matches. Handoff line 65 is stale prose only.
+2. e880 wake-to-0-waiters is NOT the bug (identical in the success run). Stop chasing e880/e8c8 "lost wakeup".
+3. The spin fd is a TIMERFD (fd15, kind8), not an eventfd.
+4. Deadlock = pid14 stuck servicing only the timerfd; success = pid14 also does socket I/O and progresses.
+
+=== NOT YET ESTABLISHED (next step = fry1487) ===
+A. THE TRUE DIFFERENTIATOR TEST: does pid6's e8c8 wait in the SUCCESS run terminate via a WAKE on e8c8, or via a predicate write (value at e8c8 becomes nonzero)? Grep both serials for any wake-call/wait-return on e8c8 with a state change. This tells us whether we need a missing WAKE or a missing predicate update.
+B. WHY pid14 services only the timerfd in the 32-slot case: get the timerfd's it_interval_ms/deadline at fd15 (instrument timerfd_settime or dump tm fields in the read beacon), and determine whether the libuv loop is computing a 0ms poll-timeout off an always-"due" timer and therefore starving its own I/O phase. Tie-in to the handoff's socketpair-worker-wiring lead: in success pid14 does nr=44/45 socket I/O; in deadlock it does none — check whether the worker's socket(s) exist/are readable in the 32-slot spawn or whether copy_vfork_fd_table handed it a dud.
+
+=== RULES/COORDINATION ===
+- Logging: this is fry1486, its own file, written at step completion (Rule 5). Next step gets fry1487.
+- Codex co-edits syscall.c/process.c — serialize before any edit there.
+- No source modified this step. No build, no run. Pure analysis of existing serials.
+- Makefile has NO header-dep tracking: after any header edit, `find src/kernel -name '*.c' | xargs touch` before make.

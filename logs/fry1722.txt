@@ -1,0 +1,31 @@
+fry1722 — 2026-06-21 14:01 CDT
+STEP: stdlib bring-up #1 — fixed sys.abiflags + the sysconfig/_sysconfigdata gap
+      behind it (the zoneinfo import chain that crashed hermes in fry1721). Built
+      clean. NOT yet verified.
+
+CHANGES (3, all on the zoneinfo->sysconfig path, batched for one rebuild):
+  1. Python3.mk: added -DABIFLAGS='""' to CPYTHON_CFLAGS. sysmodule.c sets
+     sys.abiflags only `#ifdef ABIFLAGS` (-DABIFLAGS='"..."'); the build never
+     passed it. Now sys.abiflags = "" (matches upstream release build).
+  2. shell.c native_python_env: added _PYTHON_SYSCONFIGDATA_NAME=_sysconfigdata.
+     sysconfig._get_sysconfigdata_name() honors this env var; otherwise it builds
+     `_sysconfigdata_<abiflags>_<platform>_<multiarch>` which doesn't exist (no
+     configure on-target) -> ImportError.
+  3. sysroot/usr/local/lib/python3.14/_sysconfigdata.py: hand-authored
+     build_time_vars (prefix/exec_prefix/VERSION/SOABI/EXT_SUFFIX/TZPATH/...). This
+     is the legitimate embedded approach (upstream generates it at configure time).
+     sysconfig._init_posix does `vars.update(build_time_vars | vars)`.
+
+BUILD VERIFY:
+  - touch sysmodule.c + relink: make -f Python3.mk python3 EXIT=0; confirmed the
+    sysmodule.c compile line carried -DABIFLAGS='""'. python3.fry 14:00:19.
+  - build_iso EXIT=0: shell.c recompiled + shell.elf relinked (env var in);
+    _sysconfigdata.py staged inode 5785; python3.fry staged; claude auto-staged.
+    ISO 14:01:03. 8GB nvme intact.
+
+EXPECTED on hermes: sys.abiflags exists; zoneinfo->sysconfig imports _sysconfigdata
+  stub (TZPATH present) -> zoneinfo import completes -> bootstrap continues past
+  hermes_time. shake_256 hashlib gap is separate + non-fatal. Likely more stdlib
+  import gaps after this (normal bring-up) -> iterate.
+
+NEXT: reboot, Zack types hermes, read serial to END -> fry1723 (next gap or success).

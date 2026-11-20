@@ -1,0 +1,23 @@
+# fry1570 - BUILD: clean rebuild with the fry1569 sched.c tgid fix + TBMAIN main-thread state line (+ CLAUDE_NO_MCP=1)
+Date: 2026-06-16 03:10 CDT
+Type: build (Rule 12)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+WHY: build the image so the sched-side census/traces track claude's real tgid and TBMAIN reports the main thread's
+exact state, to pin spin-vs-blocked-vs-starved (fry1569).
+
+COMMAND
+  make clean
+  STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.177 \
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+  (backgrounded -> /tmp/build_1570.log; QEMU killed first)
+
+RESULT: EXIT 0 (clean)
+- src/kernel/proc/sched.c compiled, NO errors (clangd FRY_PROC_MAX/fry_limits.h diagnostics are LSP-only).
+- sched.o rebuilt (23960 bytes); kernel relinked. ISO + NVMe fresh.
+- Beacons in this image: TBFD0 (fry1554), TBEPW (fry1558), TBMAIN + corrected sched tgid (fry1569).
+
+NEXT (fry1571): headed verify -> type into the UI -> let it freeze -> grep TBMAIN after the freeze to read pid=14's
+state (RUNNING+oncpu=spin / WAITING+futex_key=blocked / RUNNING+oncpu=0=starved). Also TBCLK t3 now reflects claude.
+
+All per planv3 Rules 1/5/6/12. Written immediately on build completion, before relaunch.

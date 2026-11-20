@@ -1,0 +1,13 @@
+fry1844 - ORDER TEST: each launch route twice on FRESH boots (2026-11-17 14:26:44 CST; written after the runs finished ~14:25)
+WHY: fry1842 step (a) / fry1841 NEXT: rule out a first-run/order effect between the two routes.
+WHAT / HOW: harness ~/tatertos-test-20261117/run.sh (fresh copy of out/tater_nvme.img + OVMF_VARS each run, headless, Shell opened via monitor mouse, command typed via monitor sendkey, screenshot + serial saved). No code changed.
+WHERE: ~/tatertos-test-20261117/run-{r1a,r2a,r1b,r2b}.{serial.log,png}
+RESULT (4 runs, each from a fresh boot, command typed FIRST in the Shell):
+  r1a route1 '/nvme/opt/hermes-agent/hermes -z hello' -> getpath.py:358 OSError [Errno 0]; Fatal Python error: error evaluating path
+  r2a route2 'hermes -z hello' (builtin cmd_hermes)    -> HERMESMAIN, TLSDBG, then nothing (silent hang)
+  r1b route1 again                                      -> same getpath crash
+  r2b route2 again                                      -> same silent hang
+  => DETERMINISTIC. No order/first-run effect. Route difference is real. (Closes fry1841 hypothesis 'order effect'.)
+SOURCE FACT (shell.c ~1139-1160): route1 = generic path: resolve_program -> fry_spawn_args(prog, argv, shell_env) where argv[0] is the typed path; route2 = cmd_hermes -> fry_spawn_args("/nvme/apps/python3.fry", ["python3", script,...], shell_env).
+  So route1's python3.fry should receive argv[0] = interpreter via kernel '#!' (absolute path) vs route2 argv[0] = bare "python3". (Serial lacks the 'PROC: shebang' line, so even that is unverified.)
+NEXT: fry1845 = isolate without Hermes: python3.fry run with absolute vs bare argv[0], and open() of a missing file, to see if getpath's crash follows argv[0].

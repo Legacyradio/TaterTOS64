@@ -1,0 +1,37 @@
+fry1749 — 2026-06-22 07:17 CDT
+STEP 4c (native deps): Pillow 12.2.0 built NATIVELY (core + freetype) + linked. 5 of 7
+       extension packages now native in python3.fry.
+
+PILLOW build (all C, cross-gcc + CPYTHON CFLAGS):
+  - libImaging core: ALL 70 .c compiled clean (OK=70/FAIL=0) — highly portable C.
+  - module C: _imaging (+ decode/encode/map/display/path/outline), _imagingmath,
+    _imagingmorph, _imagingft (freetype). Needed -DHAVE_LIBZ -DHAVE_LIBJPEG
+    -DPILLOW_VERSION='"12.2.0"'. (Pillow does PNG via zlib itself.) Compiled clean.
+  - in-tree codec libs used: external/lib/{libz,libjpeg,libfreetype,libpng}.a.
+  - libpillow.a (~950KB) -> PyInit__imaging/_imagingmath/_imagingmorph/_imagingft.
+  - config.c: 4 externs + dotted inittab {"PIL._imaging" ...}. Python3.mk: PILLOW_LIB
+    + PILLOW_IMGLIBS in PYEXT_LIBS. relink LINK_EXIT=0; python3.fry 07:17:02.
+
+OMITTED Pillow codecs (libs NOT in-tree -> graceful omit, like real Pillow builds):
+  - _webp: compiles, but link needs libwebpmux + libsharpyuv which are NOT built (only
+    libwebp/decoder/demux .a exist; mux/sharpyuv have only .pc.in in the port). Dropped
+    for now; webp is an optional format. FOLLOW-UP: build libwebpmux + libsharpyuv from
+    src/user/ports/libwebp-1.3.2 to re-enable _webp.
+  - _avif (needs libavif), _imagingcms (needs littlecms): libs absent. Niche.
+
+NATIVE-EXT SCORECARD: DONE(5 pkgs / 8 modules) = pydantic_core[Rust], httptools[C x2],
+  watchfiles[Rust], Pillow[C x4: _imaging/ft/math/morph].
+  REMAINING(2, the heavy sub-ports):
+    - cryptography 46.0.7 [Rust] -> needs a REAL OpenSSL libcrypto backend
+      (src/user/apps/openssl is stubs). The Rust binds compile, but link needs real
+      crypto. Sub-port.
+    - psutil 7.2.2 [C] -> _psutil_linux/_psutil_posix parse /proc; kernel exposes only
+      /proc/self/{stat,auxv}. Needs real /proc expansion = KERNEL work. Sub-port.
+
+LINK NOTE: --allow-multiple-definition (fry1748) still required (pydantic + watchfiles
+  each bundle std). Pillow (C) adds no std dup.
+
+STATE: 5/7 ext pkgs native+linked into python3.fry; ISO not rebuilt yet (finishing the
+  last 2 heavy sub-ports first, or rebuild now to verify the 5 in-OS — Zack's call).
+NEXT: cryptography (OpenSSL backend) + psutil (/proc kernel). Both are real sub-projects
+  — flag to Zack before sinking days. -> fry1750.

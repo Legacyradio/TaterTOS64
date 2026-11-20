@@ -1,0 +1,14 @@
+fry1404 — Tater Bridge / Claude Code: launch-env audit: JSC_useJIT=0 bisect leftover removed (full JIT restored); no-credentials auth gap surfaced to Zack
+Date: 2026-06-11. Author: Claude (Fable 5). Session continues fry1396.
+(Split from the consolidated session log per planv3 rule 5 — one step per file.)
+========================================================================
+[12:30 PM] Launch-env audit (main.c TBRIDGE): found JSC_useJIT=0 +
+  JSC_dumpOptions=1 STILL SET (fry1395 bisect leftovers) — every fry1397
+  boot ran JIT-disabled; the crash reproduced anyway (consistent: the bug
+  was data corruption via madvise, not a JIT-publication race; the faulting
+  rip is the LLInt/entry thunk prologue which runs with JIT off too).
+  REMOVED both for boot #10 — full JIT restored now that the root cause is
+  fixed. envc 7 -> 5. Compiles clean.
+  ALSO: env has NO ANTHROPIC credentials — claude -p will stop at auth
+  before any API TCP. Surfaced to Zack as a decision (staging his OAuth
+  .claude.json/.credentials into the image vs API key env var).

@@ -1,0 +1,25 @@
+# fry1595 - REGRESSION-ISOLATION TEST: temporarily revert the shell-tool env (SHELL=/nvme/bin/sh + /nvme/bin PATH) to test Zack's hypothesis that ADDING THE TOOLS regressed input consumption (it worked in fry1583, broke after the shell work).
+Date: 2026-06-16 ~17:00 (host clock) CDT
+Type: code change (shell.c env revert, diagnostic) + build
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+WHY (Rule 6): Zack (correct to demand a real test, not my dismissal): it WAS working (fry1583 full conversation),
+we added shell tools, now input is dead. I had attributed it to "always-intermittent livelock," but I owe a clean
+A/B. Screenshot this run: Claude DID reach the interactive prompt (UI fully rendered, "92% weekly limit") — so the
+tools did not jam startup. And the main-thread condvar livelock starts at serial line ~1426, long BEFORE the /bin/sh
+spawn (line 18845) — so the shell SPAWN isn't the trigger. But the SHELL env PRESENCE could change Claude's Bash-tool
+INIT. This test removes only the env (SHELL + /nvme/bin PATH); busybox staging + pipe() + the /nvme path redirect
+remain in but are INERT without SHELL (Claude won't invoke the shell).
+
+PREDICTION / READ:
+- If input WORKS again with the env out -> the Bash-tool init (triggered by SHELL) is the regression -> fix that
+  (e.g. make the persistent-shell/snapshot non-blocking or the subprocess stdio flow) BEFORE re-adding SHELL.
+- If input is STILL dead -> NOT the shell env; it is the deeper main-thread futex/condvar livelock (fry1579/1594),
+  which would mean fry1583 was just a lucky intermittent success, not a regression.
+
+BUILD: make clean && STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 LINUX_SHELL_BIN=.../busybox CLAUDE_BIN=.../2.1.177 ... bash build_iso.sh
+
+NEXT (fry1596 build, fry1597 verify): boot -> claude -> TYPE. read(fd0) climbing + visible echo = env was the
+regression. Still read(fd0)=1 = deeper livelock. Either way we KNOW, not guess.
+
+All per planv3 Rules 1/5/6/12. Written immediately on the change, before the build.

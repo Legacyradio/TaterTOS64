@@ -1,0 +1,28 @@
+fry1744 — 2026-06-22 06:31 CDT
+STEP 3b (native ext): register native _pydantic_core under its DOTTED package name,
+       stage the pure-Python wrapper, build ISO, boot. Awaiting runtime serial verify.
+
+CHANGES:
+  - external/Python-3.14.5/Modules/config.c:157 inittab entry changed
+      {"_pydantic_core", ...}  ->  {"pydantic_core._pydantic_core", PyInit__pydantic_core}
+    so the wrapper's relative `from ._pydantic_core import ...`
+    (pydantic_core/__init__.py:8) resolves to the builtin submodule. This is the
+    fry1732 ModuleNotFoundError fix (top-level name -> dotted package-submodule name).
+    Confirmed `pydantic_core._pydantic_core` string is in the rebuilt config.o.
+  - Staged the pure-Python wrapper into the image (NOT the linux .so):
+      sysroot/usr/local/lib/python3.14/site-packages/pydantic_core/
+        __init__.py, core_schema.py, _pydantic_core.pyi, py.typed
+  - Relinked python3.fry (LINK_EXIT=0, 0 undefined refs) 06:30:08.
+  - build_iso.sh: ISO_EXIT=0, out/tatertos64v3.iso 06:30:55. Verified in totcopy log:
+    python3.fry(12.6MB)->/apps/python3.fry; pydantic_core wrapper files staged.
+  - Booted launch_debug.sh: selftest 106 passed/0 failed, GUI.FRY spawned. One VM up.
+
+VERIFY-BEFORE-CLAIMING: NOT yet confirmed at runtime. The tatertos_bootstrap.py probe
+  emits `NATIVEEXT pydantic_core: OK (v2.46.4)` or `FAIL — <err>` to stderr -> serial
+  (/tmp/fry1744_serial.log). Need Zack to run `hermes`, then read the serial line.
+
+STATE: native _pydantic_core (built for x86_64-tatertos, dotted-registered) + wrapper
+  in the booted image. Awaiting `hermes` run.
+NEXT: Zack runs hermes; read NATIVEEXT line. If OK -> the native Rust-extension path is
+  END-TO-END VERIFIED (replaces the rejected linux-gnu shortcut). If FAIL -> read the
+  exact error, likely pyo3 module-name assert or a runtime libc/TLS gap. -> fry1745.

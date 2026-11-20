@@ -1,0 +1,45 @@
+# fry1563 - ROOT AREA FOUND: the freeze is a JSC stop-the-world GC barrier that never completes. pid=15 (GC coordinator) signals all threads (sig=30) to suspend at a safepoint; threads handle+return but DON'T stay suspended; 16 sig=30 queued-but-undelivered; pid=15 keeps re-signaling 19/41 after the freeze; the main thread (pid=14) is stuck waiting for the world to stop.
+Date: 2026-06-16 01:35 CDT
+Type: diagnosis (serial; no code change). Supersedes the fry1561 futex theory and the worker-crash theory.
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+---------------------------------------------------------------------------------
+EVIDENCE (fry1560 run)
+---------------------------------------------------------------------------------
+- No worker crash at the freeze: the only sig=11 USER FAULTs are pid=10/11 (early, NOT tgid=14). tgid=14 sig=11 lines are TBSIGACT (handler REGISTRATION), not faults.
+- sig=30 is a thread-SUSPEND signal (handler=0x4c23470, restorer set): pid=15 sends it to EVERY other tgid=14 thread (targets 16,17,18,19,26,27,28,40,41,42). sender is ALWAYS pid=15 => pid=15 is the JSC GC / stop-the-world coordinator.
+- sig=30 lifecycle: queue=122, deliver=106, sigreturn=106. deliver==sigreturn (delivered ones return), but queue-deliver = 16 SIGNALS QUEUED AND NEVER DELIVERED.
+- After the freeze (line 20864+, main thread pid=14 silent): sig=30 traffic CONTINUES — pid=15 keeps queue->deliver->(sigreturn) cycling sig=30 to workers 19 and 41 repeatedly (20 events). i.e. pid=15 is RE-SIGNALING the same threads because they are NOT reaching/holding the safepoint.
+- sig=30 mask: blocked=0xfffffffe5ffbfeff does NOT block sig=30 (bit 29) -> not a signal-mask block.
+
+---------------------------------------------------------------------------------
+INTERPRETATION
+---------------------------------------------------------------------------------
+JSC garbage collection on Linux suspends all mutator threads via a signal (here sig=30) so the collector can scan
+their stacks/registers at a safepoint, then resumes them. The handler is supposed to PARK the thread (wait on a
+semaphore/condition) until the GC says resume. In TaterTOS the threads run the handler and RETURN immediately
+(sigreturn) instead of staying parked -> the GC coordinator (pid=15) never gets all threads stopped -> the
+stop-the-world barrier never completes -> the GC-initiating MAIN thread (pid=14) busy-waits in userspace for "world
+stopped" and never returns to the event loop -> stdin stops being polled -> input freezes (after working in the
+pre-GC window: "hhello" got through).
+
+Likely OS-side causes (to confirm): (a) the sig=30 handler's park primitive (a futex/semaphore/sigsuspend) doesn't
+actually block in TaterTOS, so the thread resumes immediately; and/or (b) 16 sig=30 are not delivered to threads
+blocked in syscalls (futex/epoll) -> those threads never reach the safepoint. Either breaks stop-the-world.
+
+---------------------------------------------------------------------------------
+NEXT (own fry log each)
+---------------------------------------------------------------------------------
+1) Identify the park primitive JSC's sig=30 handler uses to hold a suspended thread (read what the threads do right
+   after the sig=30 deliver — sigsuspend? a futex wait? a read on a pipe?). Confirm whether that primitive actually
+   blocks in TaterTOS.
+2) Confirm the 16 undelivered sig=30: which target threads, and what state are they in (blocked in futex/epoll where
+   the kernel isn't delivering a pending signal?). If the kernel doesn't deliver pending signals to threads blocked
+   in futex/epoll waits, fix that (interrupt the wait with EINTR + run the handler) — a real, networked-safe kernel fix.
+3) Then verify: GC completes, main thread resumes, typing stays live through a GC; type a prompt + Enter -> response.
+
+STATUS: panic FIXED; input DELIVERY correct; input PROVEN to echo ("hhello"); freeze ROOT AREA = JSC stop-the-world GC
+thread-suspend not holding threads / signal-delivery gap. Deep but specific. Keep Claude fully networked. Beacons
+TBFD0/TBEPW still in; CLAUDE_NO_MCP=1 diagnostic control.
+
+All per planv3 Rules 1/5/6/12. Written immediately on completion of this diagnosis step.

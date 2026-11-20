@@ -1,0 +1,22 @@
+fry1785 — _ctypes graceful-skip in _set_process_title — 2026-06-26
+==========================================================================
+WHAT: Fixed the fry1784 _ctypes crash so the agent degrades gracefully instead of
+dying over a cosmetic process title. No libffi/_ctypes build (would be overkill).
+
+CHANGE: sysroot/opt/hermes-agent/hermes_cli/main.py, _set_process_title().
+Moved `import ctypes` and `import platform` from BEFORE the try block to INSIDE
+it. The existing `except Exception: pass` now also catches the
+ModuleNotFoundError, so a CPython without _ctypes (TaterTOS) simply skips setting
+the process title and continues. (Arguably an upstream bug — the import belonged
+in the try.) Edited the STAGED copy (what stage_hermes builds into the image).
+
+RESTAGE: build_iso (stage_hermes recopies /opt/hermes-agent), ISO rebuilt, booted.
+
+STATUS: boot up (/tmp/fry1786_serial.log), awaiting Zack running `hermes` to see
+the NEXT blocker (or the agent starting). NOT yet verified — next fry logs the
+on-screen result. Likely-next candidates if it crashes again: another missing C
+module, or the interactive-terminal guard (main.py:286 requires
+sys.stdin.isatty()).
+
+TODO (sync): mirror this one-line fix to the host source ~/hermes-agent so staged
+and source-of-truth don't drift.

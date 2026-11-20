@@ -1,0 +1,60 @@
+fry1419 — Tater Bridge / Claude Code: recvfrom uint16_t clamp fixed.
+***DNS RESOLUTION COMPLETE — claude OPENED TCP TO api.anthropic.com:443
+AND THE TLS HANDSHAKE IS IN FLIGHT (cert chain verification observed).***
+Date: 2026-06-11 ~6:05 PM CDT. Author: Claude (Fable 5).
+Follows fry1418 (POLLOUT fix; query sent; recvfrom returned 0).
+========================================================================
+
+THE FIX (4 sites, same line)
+====
+  if (copylen > (uint16_t)a3)  ->  if ((uint64_t)copylen > a3)
+  syscall.c recv-side clamps at (pre-edit) 6965/8567/8585/8763 —
+  SYS_RECV, SYS_RECVMSG iov x2, SYS_RECVFROM. glibc's 64KB answer
+  buffer (a3=0x10000) cast to uint16_t was 0 -> every datagram clamped
+  to empty. If the new clamp fires, a3 < copylen <= 0xFFFF so the
+  uint16_t cast remains exact. Send sides already clamp in LNX wrappers.
+
+VERIFIED IN SERIAL (rule-12 clean build, KVM line, 420s window)
+====
+  LXCONN pid=5 fd=17 dst=10.0.2.3:53 rc=0
+  LXUDP tx src_port=49200 len=35 / LXUDP rx len=51     <- A answer
+  (only TWO DNS connects this boot — no retry loop; answers consumed)
+  LXCONN pid=7 fd=17 dst=160.79.104.10:443 rc=0   <- api.anthropic.com!
+  LXCONN pid=7 fd=18 dst=160.79.104.10:443 rc=0      (Bun parallel
+  LXCONN pid=7 fd=19 dst=160.79.104.10:443 rc=0       connections)
+  LXUDP tx/rx 49201 len=52/68                      <- second lookup
+  LXCONN pid=7 fd=17 dst=34.149.66.137:443 rc=0    <- GCP (statsig/
+                                                      sentry telemetry)
+  TBOPEN /etc/ssl/certs/ca-certificates.crt -> fd   (CA bundle, twice)
+  LXEPCTL epfd=14 op=ADD fd=17 events=EPOLLOUT
+  LXEPRDY fd=17 revents=4          <- TCP writable: ClientHello SENT
+  LXEPCTL epfd=14 op=MOD fd=17 events=EPOLLIN
+  LXEPRDY fd=17 revents=1          <- response ARRIVED and was read
+  TBFAIL openat "/etc/ssl/certs/9f4c149e.0" / "d32dabf0.0"
+       <- OpenSSL-style HASHED CERT DIR lookups = BoringSSL is
+          VERIFYING THE SERVER CERTIFICATE CHAIN. ServerHello +
+          Certificate made it through. (Hash-dir misses are normal —
+          we ship the bundle file, which it already opened.)
+- DNS resolution end-to-end CLOSED: getaddrinfo returns real addresses.
+  160.79.104.10 = Anthropic's 160.79.104.0/23.
+- No crash; process alive and scheduling when the 420s window ended.
+  Boot simply ran out of wall clock mid-TLS (KVM -smp 1 + serial-heavy
+  instrumentation; everything is slow).
+
+WATCHLIST (seen, not yet blocking)
+====
+- nr=16 ioctl FIONREAD(0x541b) on sockets = -ENOTTY (glibc tolerates;
+  implement if anything downstream insists).
+- nr=233 epoll_ctl rc=-17 EEXIST on pid 2 once post-connect — watch
+  whether uSockets recovers with MOD (fry1413 purge made EEXIST honest).
+
+NEXT (fry1420): same image, LONGER window (timeout 900+), watch for TLS
+completion -> HTTP -> claude's stdout reply (fd=1 write -> kprint). The
+chain DNS -> TCP -> TLS is now three-quarters done. If TLS stalls,
+suspect the FIONREAD/ioctl or a recv path edge under BoringSSL's
+nonblocking reads.
+
+SESSION SCORE so far (fry1416-1419): __check_pf netlink gate OPENED,
+POLLOUT ABI bug FIXED (5-session blocker), recv clamp FIXED, DNS fully
+working, first-ever TCP+TLS to the real API from inside TaterTOS.
+STRIP LIST: LXNL + LXDNS + LXSOCK/LXCONN/LXUDP/LXEPCTL/LXEPRDY.

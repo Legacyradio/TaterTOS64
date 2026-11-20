@@ -32,6 +32,12 @@ uint64_t hpet_read_counter(void) {
     return read_counter();
 }
 
+/* fry1424: raw GEN_CONF for the TBCLK clock-freeze tracer — bit 0 is
+ * ENABLE_CNF; if it reads 0 at freeze time, something halted the counter. */
+uint64_t hpet_read_config(void) {
+    return hpet ? hpet->config : 0;
+}
+
 void hpet_sleep_ms(uint64_t ms) {
     if (!hpet || hpet_freq_hz == 0) return;
     uint64_t start = read_counter();

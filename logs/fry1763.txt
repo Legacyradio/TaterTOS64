@@ -1,0 +1,42 @@
+fry1763 — fix design + de-risk for the mmap eager-commit churn — 2026-06-26
+==========================================================================
+WHAT: Designed the fix for the fry1762 churn and verified, by reading the code,
+that the lazy machinery needed already exists and is correct — so the fix is a
+routing change, not a new mechanism. No code changed in this step.
+
+DESIGN: Make anon-private mmap LAZY by default (Linux zero-fill-on-demand
+semantics), eager only when MAP_POPULATE is explicitly requested. Route small
+anon-private maps through the EXISTING lazy path (lx_map_sparse_anon_private +
+lx_try_demand_page) instead of the eager vm-commit loop.
+
+DE-RISK EVIDENCE (all read-verified this step):
+  1. lx_map_sparse_anon_private (syscall.c:3969) has NO size floor. It registers
+     a FRY_VM_REGION_ANON_PRIVATE region with FRY_MAP_RESERVE, committed=0,
+     storing the REAL prot. Works for any size, incl. 132 KB.
+  2. lx_try_demand_page (syscall.c:3801) commits ONE zero page on a not-present
+     fault inside such a region, with correct prot (handles PROT_NONE and
+     write-to-readonly as real faults). lx_map_one (3783) zero-fills the page
+     (loop 0..4095) -> correct anon zero semantics.
+  3. user_buf_accessible already demand-faults lazy pages on the syscall boundary
+     (forward decls at syscall.c:1356) — so the kernel won't trip over an
+     un-backed lazy user page when a syscall writes a user buffer.
+  4. LNX_MAP_POPULATE is NOT defined anywhere in syscall.c -> must add it
+     (Linux value 0x08000) so an explicit eager request is still honored.
+
+LANDMINE AVOIDED (fry1600 note at syscall.c:3825): a 16-page BATCH in the DEMAND
+handler hard-hung the loader's futex coordination during NVMe binary load. The
+single-page demand commit is the KNOWN-GOOD baseline. This fix does NOT touch
+demand-fault batching — it only changes which maps ENTER the lazy path.
+
+BLAST RADIUS: one decision expression in LNX_mmap (the `sparse_reserve` calc).
+  - File-backed maps: UNCHANGED (still eager; they must read data in).
+  - Shared maps: UNCHANGED.
+  - 1 GiB gigacage watchpoint arming (TBWATCH, map_len==0x40000000): preserved.
+  - Reversible by restoring the 64 MiB threshold.
+
+EXPECTED EFFECT: the churn VA's eager commits drop to ~0; only the handful of
+pages CPython actually touches per cycle fault in. ~46k page ops at import time
+eliminated.
+
+NEXT (fry1764): implement in syscall.c — add LNX_MAP_POPULATE; rewrite the
+sparse_reserve decision so anon_private is lazy unless MAP_POPULATE.

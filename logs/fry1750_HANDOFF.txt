@@ -1,0 +1,69 @@
+fry1750 — HANDOFF — 2026-06-22 07:20 CDT
+=========================================================================
+NATIVE RUST TOOLCHAIN FOR TATERTOS + NATIVE PYTHON EXTENSIONS — session summary.
+READ FIRST for any native-Rust / hermes-agent-dependency work. Frys 1730-1749 detail.
+=========================================================================
+
+THE BIG WIN (verified): a COMPLETE native Rust toolchain now exists for TaterTOS, and
+the linux-gnu shortcut Zack rejected is fully replaced. pydantic_core runs in-OS.
+  - Target spec: /home/.../TaterTOS64/x86_64-tatertos.json (os="tatertos",
+    family=unix, llvm x86_64-unknown-none, panic=abort, static). 100% native — its
+    own ABI from src/include + tatertos/syscall.h (SYS_WRITE=0/READ=1/EXIT=2/... — NOT
+    linux's numbers). Zero linux_like. Subsystem (LXE personality) untouched.
+  - libc FORK: rust/forks/libc (vendored 0.2.185 + first-class src/unix/tatertos/mod.rs
+    + src/new/tatertos/). Sourced from TaterTOS headers. build-std reads the REGISTRY
+    copy, so after editing the fork you MUST:
+       touch rust/forks/libc/src/lib.rs
+       rsync -a --delete rust/forks/libc/src/ ~/.cargo/registry/src/index.crates.io-*/libc-0.2.185/src/
+       (and rm -rf <crate>/target/x86_64-tatertos for a true clean read)
+  - std FORK: rust/forks/rust-std-edits/ (canonical) -> re-apply via
+    rust/forks/apply_std_fork.sh onto the nightly rust-src. Adds tatertos arms:
+    sys/random(->SYS_GETRANDOM 85), os/tatertos/{mod,raw,fs}, sys/fs/unix(timespec
+    path), sys/thread/unix(set_name no-op), sys/paths/unix(current_exe via argv[0]),
+    sys/args/unix, std/build.rs(full-std list). VERIFIED: std + a Vec/Mutex crate
+    compile to a tatertos staticlib (fry1742).
+  - PATTERN to build ANY Rust pyext: cdylib->staticlib in Cargo.toml; .cargo/config.toml
+    = build-std[core,alloc,std,panic_abort] + json-target-spec + target + rustflags
+    --cfg getrandom_backend="rdrand"; PYO3_CONFIG_FILE=rust/pyo3_tatertos.cfg;
+    cargo update -p libc --precise 0.2.185 (force the fork); cargo +nightly build
+    --release. NB getrandom CRATE has no tatertos arm -> rdrand backend.
+
+C-EXTENSION pattern (fry1747): compile .c with tools/host/bin/x86_64-elf-gcc + CPYTHON
+  CFLAGS (see Python3.mk CPYTHON_CFLAGS; -Iexternal/include for codec libs); ar rcs
+  with /usr/bin/x86_64-elf-ar; add extern PyInit_* + DOTTED inittab entry to
+  external/Python-3.14.5/Modules/config.c; add the .a to PYEXT_LIBS in Python3.mk.
+
+LINKING into python3.fry (Python3.mk python3 target):
+  - PDC_LIB + PYEXT_LIBS (httptools, watchfiles, pillow + image libs) on the ld line.
+  - --allow-multiple-definition REQUIRED (each Rust staticlib bundles its own identical
+    std runtime -> dup rust_panic/eh_personality/__rdl_alloc; first-wins is safe).
+  - To rebuild after config.c change: touch config.c; make -f Python3.mk python3.
+
+EXTENSION SCORECARD:
+  DONE native + linked (5 pkgs / 8 modules):
+    pydantic_core 2.46.4 [Rust]  — VERIFIED in-OS (serial fry1745:900 "OK v2.46.4")
+    httptools 0.7.1 [C]          — parser + url_parser
+    watchfiles 1.1.1 [Rust]      — _rust_notify (notify->PollWatcher, no inotify)
+    Pillow 12.2.0 [C]            — _imaging/_imagingft/_imagingmath/_imagingmorph
+  PURE-PYTHON deps: all staged in sysroot/usr/local/lib/python3.14/site-packages
+    (rsync'd from ~/hermes-agent/venv, .so excluded). These are native (run on native
+    CPython). Optional accelerators left pure-python (charset_normalizer/websockets/
+    pyyaml _yaml/ruamel) — full functionality, speed-only C omitted, NOT necessary.
+  REMAINING (2 heavy sub-ports, Zack wants them for a FULL instance):
+    cryptography 46.0.7 [Rust]   — Rust binds compile; link needs a REAL OpenSSL
+                                   libcrypto (src/user/apps/openssl = STUBS). = OpenSSL port.
+    psutil 7.2.2 [C]             — _psutil_linux/_posix parse /proc; kernel exposes only
+                                   /proc/self/{stat,auxv}. = real /proc kernel expansion.
+  Pillow webp: one sub-lib build away (build libwebpmux + libsharpyuv from
+    src/user/ports/libwebp-1.3.2) to re-enable PIL._webp. avif/cms libs absent.
+
+CURRENT STATE: python3.fry 07:17:02 has all 5 done pkgs. out/tatertos64v3.iso 06:48:37
+  is STALE (predates the watchfiles+Pillow link) — REBUILD before booting.
+NEXT (recommended order):
+  1. ./build_iso.sh ; boot launch_debug.sh ; Zack runs hermes -> verify the 5 native
+     ext pkgs import in-OS + see what the agent demands next (serial = source of truth).
+  2. cryptography: port/stand-up an OpenSSL libcrypto backend for tatertos.
+  3. psutil: expand kernel /proc (proc tables, meminfo, per-PID) -> rebuild _psutil.
+  4. (opt) Pillow webp via libwebpmux+libsharpyuv.
+DISCIPLINE REMINDERS honored this session: native or nothing (no linux_like); fry per
+  step; serial not screenshots; verify-before-claiming (pydantic OK is serial-proven).

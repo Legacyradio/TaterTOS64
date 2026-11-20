@@ -1,0 +1,93 @@
+fry1803 — ✅ TLS fix HOLDS under real SMP (4 vCPU); asyncio NameError reproduces identically — 2026-08-10
+==========================================================================
+WHAT: Re-ran the fry1801 fix with `-smp 4` — the first run with genuine
+parallelism. The fix holds. The asyncio NameError from fry1802 reproduces
+byte-identically, proving it is deterministic and NOT concurrency- or TLS-related.
+No source changed this step. Only the QEMU core count differs from fry1802.
+
+=== CONTROLLED COMPARISON (only variable changed: 1 vCPU -> 4 vCPU) ===
+Same ISO (out/tatertos64v3.iso 22:26:06), same kernel, same python3.fry, same
+probes. Launch identical to fry1802 except `-smp 4` added.
+
+SMP GENUINELY ACTIVE (verified, not assumed):
+  - Scheduler ran on all four: TBCLK cpu=0, cpu=1, cpu=2, cpu=3 all present.
+  - Process IDs shifted vs the 1-CPU boot (GUI pid=10 parent=5, SHELL pid=11
+    parent=10; on 1 vCPU they were pid=7 parent=2 / pid=8 parent=7) — extra
+    kernel threads for the APs. hermes therefore ran as tid=12 with its spawned
+    thread tid=13 (was 9/10 on 1 vCPU).
+  - Boot: selftest 106 passed / 0 failed, DHCP:OK, SHELL up ~30s.
+
+=== RESULT 1 — THE TLS FIX HOLDS UNDER REAL PARALLELISM ✅ ===
+  TLSDBG get MAIN tid=12 tgid=12 fs=7fff80000138 (baseline, printed once)
+  TLSDBG build tid=13 OK fs=7fff80100138 bbase=7fff80100000 alloc=312 next=7fff80102000
+  TLSDBG spawn path=NATIVE tid=13 parent=12 fs=7fff80100138 entry=400150
+  TLSDBG get THREAD tid=13 tgid=12 fs=7fff80100138   (every call, unchanging)
+  >>> ZERO "TLSDBG set" LINES IN THE ENTIRE LOG <<<
+  Distinct spawned-thread fs values seen: exactly ONE (7fff80100138), belonging
+  to exactly one thread (tid=13). No two threads shared a base.
+  NO "Fatal Python error", NO "USER FAULT", NO "!EXC" anywhere.
+
+WHY THIS RUN MATTERED: on 1 vCPU threads only timeshare and never execute
+simultaneously. sched.c:1135 restores next->user_fs_base on every context switch;
+with 4 CPUs those switches happen concurrently on different cores. A %fs fix can
+pass single-core and still be wrong under true parallelism. It is not.
+=> fry1801 is now validated on both 1 and 4 cores. Treat the
+   _PyThreadState_Attach blocker (open since fry1788, 2026-06-26) as CLOSED.
+
+PERFORMANCE OBSERVATION (not a claim — uncontrolled beyond core count): reached
+the failure point at ~136s vs ~600s on 1 vCPU, roughly 4x. Consistent with the
+demand-paging crawl being CPU-bound, but the two runs differ only in cores so
+this is worth treating as real. Recorded for whoever revisits boot performance.
+
+=== RESULT 2 — asyncio NameError REPRODUCES IDENTICALLY (serial :870) ===
+  File ".../hermes_cli/main.py", line 2137, in cmd_chat
+      from cli import main as cli_main
+  File "/nvme/opt/hermes-agent/cli.py", line 57
+      from prompt_toolkit.history import FileHistory
+  ... prompt_toolkit/application/application.py line 3 -> import asyncio
+  File "/nvme/usr/local/lib/python3.14/asyncio/__init__.py", line 26
+      __all__ = (base_events.__all__ + ...)
+  NameError: name 'base_events' is not defined
+Byte-identical to fry1802 on 1 vCPU, at the same point in the same chain.
+=> DETERMINISTIC. Not a race, not concurrency, not TLS. A plain import defect.
+
+=== asyncio: WHAT IS RULED OUT SO FAR (evidence, not reasoning) ===
+  - STAGING IS COMPLETE: sysroot/usr/local/lib/python3.14/asyncio/ contains 35
+    .py files, EXACTLY matching upstream external/Python-3.14.5/Lib/asyncio/
+    (35). base_events.py present, 81,191 bytes. So "missing file" is dead.
+  - NOT concurrency/TLS: identical on 1 and 4 vCPU (this step).
+
+=== asyncio: THE MECHANISM AT ISSUE (stated precisely, NOT yet diagnosed) ===
+asyncio/__init__.py:8 does `from .base_events import *`, then line 26 references
+the BARE NAME `base_events`. In CPython that name resolves only because importing
+a submodule binds it as an attribute on the parent package —
+_bootstrap._find_and_load_unlocked() does:
+      setattr(parent_module, name.rpartition('.')[2], module)
+and __init__.py's globals ARE the asyncio module's __dict__. The failure is on
+the FIRST submodule in the list, so the suspicion is that parent-attribute
+binding, not anything asyncio-specific. Note that path only executes when the
+submodule is NOT already in sys.modules; if it is, _handle_fromlist takes over
+instead. A partially-initialised asyncio in sys.modules would therefore change
+which path runs.
+DO NOT act on the above as a conclusion — it is the hypothesis to TEST. fry1789
+was wrong from exactly this kind of static reading.
+
+=== NEXT (fry1804) — ONE CHEAP IN-OS EXPERIMENT, NO REBOOT NEEDED ===
+The VM is still up and the Shell is responsive (hermes exited via a normal
+traceback, so pump_child_io returned). Run at the prompt:
+  1. python3 -c "import asyncio; print('PKG OK')"
+       -> reproduces outside hermes? isolates it from prompt_toolkit entirely.
+  2. python3 -c "import asyncio.base_events; import sys; print(hasattr(sys.modules['asyncio'],'base_events'))"
+       -> directly tests whether the parent-attribute binding happens at all.
+       True  => binding works; the problem is specific to the __init__ execution
+                order / a partial import.
+       False => the import system's setattr-on-parent is broken in this port,
+                which is a CORE import defect affecting far more than asyncio.
+  3. python3 -c "from asyncio import base_events; print('FROM OK')"
+Read serial to the END for each. These are seconds each, not the ~136s agent run.
+
+=== STILL OWED (unchanged) ===
+  - Python3.mk has no -MMD/-MP header tracking (fry1793 class hazard).
+  - 🔴 603 uncommitted files; last commit 733c2f1a 2026-06-08. Two months, at
+    least three different agents (me, Codex, DeepSeek per fry1651). No diff to
+    audit, no revert path. `gh auth setup-git` first (stored PATs expired).

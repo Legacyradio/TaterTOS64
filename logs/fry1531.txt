@@ -1,0 +1,58 @@
+fry1531 - Fix 1 (totfs rename rewrite): BUILT, but config-corruption NOT cleared - rename unverified
+Date: 2026-06-15 15:10:56 CDT
+
+Type: CODE CHANGE + HEADED GUI VERIFICATION (INCOMPLETE - see result).
+Implements the rename fix designed in fry1530.
+
+Why (Rule 6): totfs_rename_vfs failed with -EIO (-5) when the destination existed
+(old code called totfs_create_vfs on an existing target) and risked freeing the
+new name's blocks (copy-extents-then-unlink). Claude's atomic config write renames
+tmp -> .claude.json (already exists) -> -5 -> corrupt/truncated config.
+
+Change (src/kernel/fs/totfs.c):
+  - New static totfs_remove_dirent(fs, parent_inum, name, namelen, target_inum):
+    marks the dirent inode=0 WITHOUT freeing the inode or its blocks.
+  - Rewrote totfs_rename_vfs: resolve src; split src/dst parent+base; if dst exists
+    unlink it (POSIX overwrite, the -5 fix; same-inode -> no-op); add_dirent(dst ->
+    SAME old inode); remove_dirent(src) without freeing. No new inode, no extent
+    copy, no premature block free.
+
+Build (Rule 12, clean): BUILD_EXIT=0, no errors. totfs.o compiled. Log
+  /tmp/fry1531_build.log.
+
+Headed run (/tmp/fry1531_serial.log; screenshots fry1531_render.png,
+fry1531_after.png): user opened Shell + typed "claude".
+
+RESULT - NOT VERIFIED. Claude STILL shows the corrupt-config menu:
+  - fd-12 UI write of 637 bytes (line 5980) = the same "Configuration error /
+    .claude.json contains invalid JSON / Unexpected EOF / 1. Exit  2. Reset"
+    menu as fry1528. New backup name: .claude.json.corrupted.1781553902521
+    (fresh timestamp -> re-detected this run).
+  - No "rename" syscall appeared in the serial: Claude is blocked at the menu
+    (reading the existing corrupt file) and has not attempted a config WRITE yet,
+    so the rename path was never exercised this run.
+  - Then Claude exited cleanly: TBEXIT group pid=14 code=0 (line 13084) - user
+    keypress landed on "1. Exit". QEMU guest-error log EMPTY (no fault/crash).
+
+Why the corruption persisted: build_iso.sh only (re)creates out/tater_nvme.img when
+  it is missing or the wrong size (line 640); otherwise it reuses the existing
+  image. mktotfs reformats the partition, but the corrupt /nvme/.claude.json
+  evidently survived (re-detected with a new backup timestamp). => the test state is
+  dirty; rename cannot be judged until Claude actually performs a write.
+
+Incident (user resized the QEMU window mid-run): NO crash. System fine (qemu alive,
+  guest-error log empty, kernel idle). The Shell window showed colored-static garbage
+  in its content area - a COSMETIC post-child-exit + resize render glitch (the SHM
+  terminal surface not cleanly repainted after the alt-screen child exited). Window
+  geometry went 1280x800 -> 1318x1017 (QEMU scales the fixed-size guest fb). Tracked
+  as a cosmetic issue; not a regression of the rename change.
+
+Next (to actually verify rename): eliminate the dirty-state variable - regenerate a
+  PRISTINE disk image (rm out/tater_nvme.img then rebuild so dd+mktotfs make it
+  clean), so Claude starts with NO .claude.json and must CREATE one via the
+  write+rename path. If it then boots clean -> rename verified. If it still
+  corrupts on a pristine image -> the bug is in the config WRITE/truncate path, not
+  rename, and that gets its own investigation. Also revisit the cosmetic
+  post-exit/resize Shell repaint.
+
+No commit. No hashes (Rule 16).

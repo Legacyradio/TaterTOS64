@@ -1,0 +1,80 @@
+# fry1633 — HERMES PORT: Full integration into build_iso.sh + Makefile
+Date: 2026-06-17 ~17:15 CDT
+Type: build integration (Phase 5/6 completion)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Integrate the Hermes port into TaterTOS build system so `make all` +
+`./build_iso.sh` produces a QEMU-bootable image with Hermes ready.
+
+---------------------------------------------------------------------------------
+WHAT WAS DONE
+---------------------------------------------------------------------------------
+
+1. Makefile:
+   - Added `python3` target to main Makefile
+   - Added `python3` to `all` target
+   - `make all` now builds python3.fry along with kernel, shell, apps
+
+2. build_iso.sh:
+   - Increased NVME_SIZE_MB from 1024 to 2048 (217 MB sysroot headroom)
+   - Added stage_native_hermes_totfs() function:
+     * Copies python3.fry to /apps/python3.fry on ToTFS
+     * Copies Python stdlib (2,410 files) to /usr/local/lib/python3.14/
+     * Copies 22 site-packages to /usr/local/lib/python3.14/site-packages/
+     * Copies Hermes Agent source (669 .py files) to /opt/hermes-agent/
+   - Function is called automatically when STAGE_HERMES=1 (default)
+   - Staging is skipped gracefully if python3.fry doesn't exist
+
+3. Shell (shell.c):
+   - Added `python3` command → spawns python3.fry via fry_spawn, waits
+   - Added `hermes` command → spawns python3 with bootstrap script
+   - Both commands listed in `help` output
+   - Shell rebuilt: shell.tot (137 KB)
+
+---------------------------------------------------------------------------------
+BOOT PROCEDURE (QEMU)
+---------------------------------------------------------------------------------
+  cd /home/legacyindieradio/TaterTOS64
+  make all              # builds kernel + shell + apps + python3.fry
+  ./build_iso.sh        # creates bootable image with everything staged
+  ./launch_debug.sh     # boots in QEMU
+
+  Once TaterTOS boots:
+    hermes               # bootstrap validation (checks Python, SQLite, imports)
+    hermes --agent       # full Hermes Agent (needs OPENAI_API_KEY)
+    python3              # Python 3.14 REPL
+    help                 # lists all commands including python3 + hermes
+
+---------------------------------------------------------------------------------
+FILES CHANGED
+---------------------------------------------------------------------------------
+  Makefile               +3 lines (python3 target + all dependency)
+  build_iso.sh           +40 lines (stage_native_hermes_totfs + NVME size bump)
+  src/user/shell/shell.c +60 lines (python3/hermes commands + forward decls)
+
+FILES CREATED (entire port)
+  Python3.mk             205 lines — CPython build system
+  src/user/libc/gap_stubs.c  330 lines — POSIX stubs
+  src/user/apps/openssl_stubs.c  260 lines — SSL stubs
+  src/user/apps/openssl/openssl/  11 header files
+  sysroot/               8,713 files (217 MB) — staged for ToTFS
+  logs/fry1606–fry1633   28 build logs
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+  make shell  — compiles clean, shell.tot has python3/hermes strings
+  All edits to build_iso.sh verified (STAGE_HERMES default=1, totfs_copy_tree calls)
+  make all will build python3.fry automatically (make -f Python3.mk python3)
+
+---------------------------------------------------------------------------------
+NEXT FOR USER
+---------------------------------------------------------------------------------
+  cd ~/TaterTOS64
+  make all
+  ./build_iso.sh
+  ./launch_debug.sh
+  (at TaterTOS shell prompt) hermes

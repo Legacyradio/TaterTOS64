@@ -1,0 +1,32 @@
+# fry1581 - CODE (diagnostic): TBDPF beacon in the demand-page #PF handler — is pid=14 demand-paging a HUGE userspace zero (cr2 advancing) or stuck in a fault loop (cr2 fixed)?
+Date: 2026-06-16 07:30 CDT
+Type: code change (src/kernel/irq/irqdesc.c, 1 hunk, diagnostic, read-only)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+WHY (Rule 6) — the freeze pinned down step by step:
+- pid=14 frozen: state=RUNNING, but makes NO syscall returns (TBTRACE) for ~64k serial lines, user_rip FROZEN at
+  0x60000001f300, yet TBSPIN catches it executing KERNEL code (cs=0x08) deep in the tail. Not a syscall.
+- NOT orphaned (TBREQUEUE=0), NOT on_cpu-deferred (oncpu-defer=0), NOT a futex wait (the 6fbff9434190 mutex
+  contention was the EARLIER active phase, gone after the 14 workers exited at ~line 24208), NOT an epoll wait
+  (pid=14 only epolls epfd=5 with tmo=0/short, stopped at cnt=69).
+- The kernel PC sample that explains it: TBSPIN hit 0x80086300 = linux_syscall_dispatch_impl+0x1800, which disassembles
+  to pmm_alloc_page -> vmm_map_user -> vmm_phys_to_virt -> a `movb $0,(%rax)` page-ZERO loop = the per-page COMMIT path.
+  Combined with a FROZEN user RIP (one rep-stos-like instruction) and faults (not syscalls), the leading theory is:
+  pid=14's userspace is running a MASSIVE zero/memset over a huge region and TaterTOS demand-pages it 4KB at a time via
+  #PF -> effectively frozen. The dominant TBSPIN (spin_unlock_irqrestore ret) = pmm_alloc_page's lock release per page.
+
+CHANGE (src/kernel/irq/irqdesc.c, inside the vector==14 USER #PF demand-page success path before `return`)
+- For the claude main thread, emit: TBDPF n=<count> cr2=<fault addr> rip=<faulting RIP>. First 64 + every 4096th.
+  Uses proc_current()/g_tb_trace_claude_tgid/early_serial_* (all already used in this file). Read-only.
+
+HOW TO READ (next run, after it freezes): grep TBDPF.
+- cr2 ADVANCING (rip fixed) -> a huge userspace memset/region being slow-paged page-by-page. Fix = make that allocation
+  lazy/uncommitted (MAP_NORESERVE/anon-on-demand) or stop eager-zeroing, OR find what Bun/JSC allocates+zeroes so big.
+- cr2 FIXED (same addr) -> lx_try_demand_page returns true but does NOT actually map/satisfy that page -> infinite
+  fault loop = a demand-paging BUG -> fix lx_try_demand_page for that vaddr/region.
+- n climbing fast = high fault rate (consistent with the freeze being page-fault-bound).
+
+NEXT: fry1582 build (CLAUDE_NO_MCP=1); fry1583 verify -> type/freeze -> read TBDPF -> advancing vs stuck -> fix.
+Keep Claude fully networked.
+
+All per planv3 Rules 1/5/6/12. Written immediately on the code change, before the build.

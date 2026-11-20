@@ -1,0 +1,37 @@
+fry1428 — Tater Bridge / Claude Code: --debug DEAD END (claude's -p
+mode sends debug to log files, NOT stderr — host-verified: stderr 0
+bytes on a --debug -p run). Guest boot identical to fry1427: stdin
+warning (the only TBSTDOUT write), API responses received, clean
+exit_group(0), empty result. HOST LAB RESULTS (no boot needed):
+Date: 2026-06-12. Author: Claude (Fable 5).
+========================================================================
+
+HOST EXPERIMENTS (same binary 2.1.172, same auth)
+====
+1. --debug -p: reply on stdout (460B), stderr EMPTY -> --debug useless
+   for serial narration in -p mode. Reverting argv in fry1429.
+2. READ-ONLY HOME (guest-condition repro attempt): chmod -R a-w on a
+   HOME with only auth staged -> claude STILL prints the reply, exits
+   0, and emits the SAME 157B stdin warning. Read-only FS does NOT
+   cause the silent-empty-exit-0. (Also confirms the stdin warning is
+   benign and matches guest behavior exactly.)
+3. Network fingerprint of a successful run: 10 connections to :443
+   (+DNS). Guest runs open only 3. Suggests later/completion
+   connection(s) never get opened in guest — not yet conclusive
+   (keep-alive reuse possible), needs claude's own event stream.
+4. --output-format stream-json --verbose: VERIFIED on host — every
+   lifecycle stage (system/init, hooks, assistant, result) is one
+   JSON line on STDOUT, real-time. Guest stdout is proven working
+   (fry1427), so this turns serial into claude's own flight recorder.
+5. Hook note: host runs fire a SessionStart hook from
+   ~/.claude/settings.json — that file is ENOENT in guest (TBFAIL
+   list), so guest runs are hookless. One less variable.
+
+NEXT (fry1429)
+====
+argv: {"claude","-p","say hello from TaterTOS in 10 words",
+"--output-format","stream-json","--verbose"} (argc 6; --debug
+removed). Expect JSON events on serial up to the failing stage; the
+last event (or its absence after init) names the broken phase —
+auth, request dispatch, streaming, or result assembly.
+Raw serial: /tmp/s_fry1428.log.

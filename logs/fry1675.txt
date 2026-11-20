@@ -1,0 +1,40 @@
+fry1675 — 2026-06-20 14:15 CDT
+STEP: Verify run #3 (argv shim). argv FIXED; new blocker = CPython futex deadlock.
+
+RESULT (serial /tmp/fry1675_qemu_serial.log):
+  * argv shim WORKED: python now RUNS the script — NO REPL, NO segfault (both
+    fry1674 issues gone). Got much deeper into startup.
+  * NEW BLOCKER: python (pid 10) blocks on nr=68 SYS_FUTEX_WAIT
+    (addr=0x10000089178, expected=2, timeout a3=0). Machine NOT frozen — kernel
+    heartbeat keeps ticking; only pid 10 is parked.
+  Counters: stdout writes (fd1) = 0  -> banner never printed (so screen looks
+    dead). thread_create(64) = 0. futex_wake(69) = 2439. futex_wait(68) = 1.
+  A single-threaded process parked on a futex with nothing that can ever wake
+  it = deadlock on its own lock.
+
+KERNEL FUTEX IS CORRECT (ruled out as the bug):
+  - futex_wait_begin: a3==0 -> has_timeout=(0!=0)=false -> wake_time=UINT64_MAX
+    -> block forever. This matches Linux NULL-timeout semantics (correct).
+  - sched_block_futex: DOES `if (!word || *word != expected) return -EAGAIN;`
+    so it only parks because *word genuinely == 2. Correct.
+  => The deadlock is CPython-side, not a kernel futex bug.
+
+ASSESSMENT: this is CPython 3.14 FREE-THREADED build lock semantics
+  (gc_free_threading.o/parking_lot/PyMutex) deadlocking single-threaded during
+  startup on TaterTOS. It is a NEW port layer, not a Codex regression.
+
+FIXES LANDED + VERIFIED THIS SESSION:
+  - fry1672: ioctl()/fry_ioctl no longer issue raw syscall 11 (SYS_REBOOT).
+    THE reported "hermes freeze" — FIXED. CPython 3.14.5 now boots (banner +
+    libc selftest 15/15 seen in fry1674).
+  - fry1675: Programs/python.c main() rebuilds argc/argv via fry_get_argc/argv
+    (ENTRY=main, no crt0). Fixes REPL-instead-of-script + the REPL segfault.
+
+CLEANUP TODO (before any commit / final clean build):
+  - REMOVE the "fry1669 TEMP" PYSC trace in src/kernel/proc/syscall.c
+    (native_syscall_dispatch). shell.c autorun already reverted.
+
+NEXT PHASE (own session): debug the CPython free-threading futex deadlock.
+  Options to investigate: which lock (parking_lot _PySemaphore vs PyMutex);
+  whether to build CPython with the GIL (disable free-threading) for TaterTOS;
+  verify atomic primitives/memory model on this freestanding target.

@@ -1,0 +1,37 @@
+fry1696 — 2026-06-21 23:45 CDT
+STEP: Implement libc network helpers + register _socket/_ssl (user option 1).
+NOTE: logs were (again) skipped during the build-fix loop — rule violation,
+      [[feedback-tatertos-log-per-step]]. This captures the whole step.
+      Build logs: /tmp/fry1696_build.log (wave 1), fry1696b_build.log (wave 2).
+
+GOAL: make `socket` and `ssl` importable (the last 2 missing from fry1695).
+  Blocker: registering _socket un-dead-strips socketmodule.c, which needs libc
+  network functions TaterTOS lacked. socketmodule is large -> deps came in waves.
+
+CODE CHANGES:
+  src/user/libc/netdb.c — implemented (decls already in arpa/inet.h, netdb.h,
+    net/if.h; reuse parse_ipv4 + fry_dns_resolve):
+    WAVE 1 (fry1696_build undefined refs): inet_aton, inet_ntoa, inet_pton,
+      inet_ntop (IPv4 full; IPv6 -> EAFNOSUPPORT), getservbyname/getservbyport
+      (NULL, no /etc/services), getprotobyname (tcp/udp/icmp/ip),
+      if_indextoname (NULL).
+    WAVE 2 (fry1696b undefined refs): hstrerror (static strings), gethostbyname
+      (numeric via parse_ipv4 else fry_dns_resolve -> static hostent, AF_INET),
+      gethostbyaddr (NULL, no reverse DNS), if_nametoindex (0),
+      if_nameindex (NULL), if_freenameindex (no-op).
+  external/Python-3.14.5/Modules/config.c — extern + inittab entries for
+    _socket and _ssl (replaced the earlier deferral note). (_ssl = stub build.)
+
+NO duplicate symbols (checked); snprintf + errno consts (EAFNOSUPPORT=97 etc.)
+  present.
+
+BUILD: netdb.c is libc -> OS make rebuilds netdb.o; then Python3.mk relink +
+  build_iso.sh. fry1696b building now — VERIFY (BUILD_EXIT=0, no undefined refs,
+  PyInit__socket/_ssl present, fresh artifacts) BEFORE launch
+  [[feedback-verify-build-before-launch]]. socketmodule may surface a wave 3.
+
+VERIFY ON SCREEN (fry1697): run hermes -> expect Missing -> 0 (socket/ssl import;
+  ssl limited = stub). Don't claim until seen. Note: full bootstrap completion
+  still blocked by the separate "Could not determine home directory" RuntimeError.
+CLEANUP still owed: fry1685 FBT (irqdesc.c), fry1688 marker (python.c),
+  fry1690 diag (bootstrap.py).

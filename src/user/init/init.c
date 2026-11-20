@@ -82,33 +82,18 @@ int main(void) {
                        vmtest_paths, (uint32_t)(sizeof(vmtest_paths) / sizeof(vmtest_paths[0])));
     maybe_run_autotest("vmfault", "/VMFAULT.RUN",
                        vmfault_paths, (uint32_t)(sizeof(vmfault_paths) / sizeof(vmfault_paths[0])));
-    printf("init: running smoketest...\n");
-    {
-        long smokepid = fry_spawn("/apps/SMOKETEST.FRY");
-        if (smokepid < 0) smokepid = fry_spawn("/SMOKETEST.FRY");
-        if (smokepid < 0) smokepid = fry_spawn("/fry/SMOKETEST.FRY");
-        if (smokepid < 0) smokepid = fry_spawn("/FRY/SMOKETEST.FRY");
-        if (smokepid >= 0) {
-            fry_wait((uint32_t)smokepid);
-            printf("init: smoketest completed pid=%ld\n", smokepid);
-        } else {
-            printf("init: smoketest not found\n");
-        }
-    }
-    printf("init: running chrome_probe...\n");
-    {
-        long cp_pid = fry_spawn("/apps/CHROME_PROBE.FRY");
-        if (cp_pid < 0) cp_pid = fry_spawn("/CHROME_PROBE.FRY");
-        if (cp_pid < 0) cp_pid = fry_spawn("/fry/CHROME_PROBE.FRY");
-        if (cp_pid < 0) cp_pid = fry_spawn("/FRY/CHROME_PROBE.FRY");
-        if (cp_pid >= 0) {
-            fry_wait((uint32_t)cp_pid);
-            printf("init: chrome_probe completed pid=%ld\n", cp_pid);
-        } else {
-            printf("init: chrome_probe not found\n");
-        }
-    }
+    /* fry1791: removed the unconditional boot-time SMOKETEST. It served no
+     * product purpose (dev syscall test), ran every boot, and init fry_wait()'d
+     * on it — so when it faulted at exit, init blocked and never spawned the GUI.
+     * (The vmtest/vmfault autotests above stay: they're gated on a .RUN file.) */
+    /* fry1635: chrome_probe stays skipped — it fry_wait()s on Chromium paging
+     * in before the GUI ever launches, which stalls init on the 2048MB image.
+     * It is a diagnostic, not required for the GUI/Claude/Python path. */
+    printf("init: skipping chrome_probe (fry1635: blocks init before GUI)\n");
     for (;;) {
+        /* fry1635: GUI launch loop RESTORED (DeepSeek fry1634 had hard-disabled
+         * it with gui_failures=3, regressing boot to a bare shell). Verbatim from
+         * the fry1583 known-good baseline (git HEAD init.c). */
         const char *path = 0;
         long pid = try_spawn_first(gui_paths,
                                    (uint32_t)(sizeof(gui_paths) / sizeof(gui_paths[0])),

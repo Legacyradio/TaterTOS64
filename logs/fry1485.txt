@@ -1,0 +1,61 @@
+fry1485 - VERIFY: the FRY_SOCK_MAX 16->64 fix RESOLVES rg/Grep in claude
+in-OS. rg's posix_spawn no longer fails (neither EBADF nor ENFILE) on any
+64-slot run. The post-fix "hangs" were API 429 RATE-LIMITING (self-
+inflicted: 7 authenticated sessions in ~1 hour), NOT a kernel/socketpair
+regression. Zack called the rate-limit cause — confirmed.
+Date: 2026-06-13. Author: Claude (Opus 4.8).
+========================================================================
+
+THE PROOF (countFilesRoundedRg = claude's startup rg file-count probe)
+------------------------------------------------------------------------
+  fry1483   (16-slot): "countFilesRoundedRg failed" x1  (EBADF then ENFILE)
+  fry1484c  (64-slot): "countFilesRoundedRg failed" x0  + 0 EBADF/ENFILE
+  s_rg_a1   (64-slot): x0 + 0 EBADF/ENFILE
+  s_rg_a4   (64-slot): x0 + 0 EBADF/ENFILE
+=> With 64 socket slots, rg's child spawn SUCCEEDS. Both rg blockers are
+   gone. They were ONE root cause: socket-pool starvation.
+     - ENFILE: socketpair() (nr=53) itself failed at sock=15/16.
+     - EBADF : copy_vfork_fd_table (process.c:519-524) skips the child's
+       AF_UNIX socketpair-stdio copy when the pool is full (nsi<0 ->
+       continue), so the rg child's posix_spawn dup2 hits a missing fd.
+   64 slots give room for BOTH the socketpair AND the child copy.
+
+THE "HANG" WAS RATE LIMITING (not the kernel)
+------------------------------------------------------------------------
+All post-fry1483 runs stalled BEFORE session init with the main thread
+(pid 6) parked on a 120ms-timeout futex and a worker (pid 14) polling.
+Root cause: HTTP 429 from api.anthropic.com — serial 429 counts:
+  fry1484c=176, s_rg_a1=37, s_rg_a4=45.
+Token: tier=default_claude_ai, sub=pro. 7 in-OS claude sessions fired in
+~1h tripped the Pro rolling-window rate limit; claude's worker retries
+429 with backoff -> looks like a pre-init hang. fry1483 (the FIRST run,
+fresh quota) completed; everything after progressively 429'd. The 16-vs-
+64 correlation was CONFOUNDED with run-order/quota, not caused by slot
+count. A wrong socketpair-output/HUP theory was investigated and dropped
+once the 429s were found.
+LESSON (memory): do NOT machine-gun in-OS claude runs — each is a real
+authenticated Pro session; ~4-5/hour and you 429. Space them out, or the
+next person will misread the 429 backoff as a kernel hang.
+
+STATE OF THE CHANGE (all verified)
+------------------------------------------------------------------------
+- src/include/fry_limits.h: FRY_SOCK_MAX 16 -> 64.
+- src/kernel/selftest.c:122: st_check expects 64 (was 16; would panic a
+  normal boot).
+- fry1482 SPCEN census beacons still in (syscall.c pipe_alloc/sock_alloc/
+  socketpair/close, process.c teardown) — capped, serial-only. Can stay
+  for now or be stripped in a cleanup pass.
+- Resource-level verify (correctly-compiled 64 kernel): 0 socketpair
+  exhaustion, socket high-water 17/64, pipes 12/128. No regression to the
+  authenticated round-trip (fry1483 result success WITH the beacons).
+
+REMAINING TO CALL IT FULLY DONE
+------------------------------------------------------------------------
+ONE clean end-to-end run AFTER the 429 window resets: expect rg file-
+count to pass silently + session init + {"type":"result","subtype":
+"success"} + (ideally) an actual Grep tool call exercised in-session.
+Until quota resets, more runs just re-trip the limit. HOLDING further
+runs.
+
+COORDINATION: 2400+ uncommitted lines in syscall.c/process.c + edits to
+fry_limits.h/selftest.c. Codex co-edits proc — serialize. Nothing pushed.

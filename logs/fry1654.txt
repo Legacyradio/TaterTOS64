@@ -1,0 +1,34 @@
+# fry1654 - Rewrite Hermes tree staging loops to use absolute source paths and mkdir-p each destination directory.
+Date: 2026-06-19 15:32:09 CDT
+Type: staging script loop fix
+Author: Codex, following planv3 Rules 1/5/6/12
+
+WHY
+- After fry1653, direct staging created the base roots:
+  `/usr/local/lib/python3.14`
+  `/opt/hermes-agent`
+- But both roots were empty. Direct manual tests proved individual nested
+  mkdirs and file copies worked:
+  `tools/totcopy ... --mkdir /usr/local/lib/python3.14/asyncio`
+  `tools/totcopy ... sysroot/usr/local/lib/python3.14/os.py /usr/local/lib/python3.14/os.py`
+  `tools/totcopy ... sysroot/opt/hermes-agent/tatertos_bootstrap.py /opt/hermes-agent/tatertos_bootstrap.py`
+- That isolated the failure to the `stage_tree_totfs()` loop form, not ToTFS,
+  not `totcopy`, and not missing source files.
+
+WHAT CHANGED
+- stage_hermes.sh:
+  - Rewrote `stage_tree_totfs()` to use `find "$src"` absolute source paths.
+  - Computes destination paths with `${item#$src}`.
+  - Calls `mkdir_p_totfs()` for every destination directory.
+  - Copies each source file directly from its absolute path to the matching
+    destination path.
+
+VERIFY
+- Command:
+  bash -n stage_hermes.sh
+- Result:
+  PASS. Script syntax is valid.
+
+NEXT
+- Run `stage_hermes.sh` against `out/tater_nvme.img`.
+- Verify the actual destination directories contain files and subdirectories.

@@ -1,0 +1,82 @@
+fry1830 — BOOT 2: usb-tablet did NOT fix pointer injection. Synthetic mouse
+          input does not reach the guest at all. Grab taken and released
+          — 2026-09-26
+==========================================================================
+WHAT: Second boot of the fry1828 ISO, launched with -usb -device usb-tablet per
+fry1829's proposed fix. The fix did not work and the diagnosis in fry1829 was
+INCOMPLETE. Correcting it here. Boot itself is clean. No criterion measured yet.
+No source changed. Serial: /tmp/fry1830_qemu_serial.log.
+
+=== BOOT RESULT ===
+  DHCP:OK, selftest: 106 passed / 0 failed, desktop renders with full dock.
+Third consecutive clean boot with the shebang kernel and the new shell.
+
+=== ❌ fry1829's FIX DID NOT WORK, AND ITS DIAGNOSIS WAS INCOMPLETE ===
+fry1829 said: no absolute pointer device, so add -usb -device usb-tablet.
+Added it. The guest cursor did not move at all.
+What was checked this time, in order, each ruling something out:
+  1. Is the target coordinate even on screen?
+       xrandr: eDP-1-1 1920x1080+0+0, HDMI-0 1920x1080+1920+0 — a 3840x1080
+       desktop. Window at 1280x800+2556+276 sits on HDMI-0. Target (3779,623)
+       is on-screen. NOT the problem.
+  2. Did the HOST pointer actually get there?
+       xdotool getmouselocation -> x:3779 y:623 window:81788937
+       Yes — exactly over the window, at guest-relative (1223,347), the dock
+       icon. The host side is correct. NOT the problem.
+  3. Where is the GUEST cursor?
+       Rendered at (640,406) in every screenshot, unchanged across four
+       captures spanning minutes. 1280/2=640, 800/2=400 — that is the GUI's
+       own software cursor at its INITIAL CENTRE POSITION. It has never moved
+       because the guest has never received a single mouse packet.
+  4. Tried relative motion after a click-to-grab:
+       xdotool click 1; xdotool mousemove_relative -- 583 -59
+       Guest cursor: still (640,406). No movement.
+=> CONCLUSION: synthetic (XTEST/warp) mouse input does not reach this guest at
+   all — neither absolute nor relative, tablet or no tablet.
+
+=== WHY THE TABLET WAS NEVER GOING TO HELP (the part fry1829 missed) ===
+TaterTOS has PS/2 input drivers — src/drivers/input/ps2_ctrl.c and ps2_kbd.c.
+There is no USB HID driver in the tree. A usb-tablet is therefore an emulated
+device that NOTHING IN THE GUEST IS LISTENING TO. Adding it changed the QEMU
+command line and nothing else. I proposed a host-side fix for what is a
+guest-side driver question, and did not check whether the guest could consume
+the device before recommending it. That is the same mistake pattern as reading
+an exit code without checking an mtime (fry1827).
+
+=== WHY PHYSICAL CLICKS WORK BUT SYNTHETIC ONES DO NOT ===
+Zack clicked the dock icon successfully on the fry1821 boot ("i clicked it
+smarty pant"), so mouse input from a REAL device reaches the guest fine.
+The difference is how QEMU sources motion in relative mode: it consumes events
+from the physical pointing device. A pointer warp — which is what xdotool
+mousemove and mousemove_relative both perform — does not present as physical
+device motion, so QEMU has nothing to forward.
+KEYBOARD IS UNAFFECTED: xdotool key/type via XTEST after windowactivate --sync
+is proven working on this project (fry1808 typed whole commands that way,
+fry1811 re-confirmed). Only the MOUSE path is dead.
+=> The fry1811 claim "I can now launch the Shell AND type into it unattended —
+   Zack does not need to be awake for a test run" is WRONG for the mouse half.
+   Typing: yes. Clicking: no. That claim should not be relied on again.
+
+=== ⚠ POINTER GRAB TAKEN AND RELEASED (host-side side effect, recorded) ===
+The click-to-grab attempt caused QEMU to grab the host pointer. Verified it was
+trapped — asked for (200,200), pointer landed at (2880,540), confined to the
+QEMU window. Released with `xdotool key --clearmodifiers ctrl+alt+g` and
+re-verified: pointer reached (200,200) freely, different window.
+This matters beyond this session: Zack works from this machine and manages it
+remotely over AnyDesk ([[feedback_remote_management]]). A grab left in place
+would have hijacked his mouse with no explanation. Any future attempt at mouse
+injection must verify the grab state afterwards and release it.
+
+=== CONSEQUENCE FOR TESTING ===
+Opening a window by clicking a dock icon cannot be automated on this setup.
+Everything AFTER a window is open can be: keystrokes work.
+So the division of labour for the verification run is: Zack clicks Shell once;
+I type every test command and read every result. Asked rather than worked
+around, because the alternatives are worse — patching init to auto-spawn the
+Shell would mean a kernel rebuild purely to serve the test harness, which is
+the tail wagging the dog.
+
+=== STILL UNVERIFIED (unchanged) ===
+  - PATH resolution + argv (fry1824)
+  - kernel shebang (fry1822)
+  - the five libc fixes (fry1819 criteria)

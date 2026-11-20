@@ -1,0 +1,88 @@
+# hermes019 — PHASE 2 STEP 18: socketmodule.c — IPv6 + socket stubs
+Date: 2026-06-17 ~16:10 CDT
+Type: compile fix (Phase 2 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Compile Modules/socketmodule.c — CPython's socket module. Wraps the full
+BSD sockets API surface including IPv4, IPv6, DNS, and Bluetooth.
+
+---------------------------------------------------------------------------------
+WHAT HAPPENED
+---------------------------------------------------------------------------------
+Multiple compile errors across many iterations. Categories:
+
+1. Missing Linux-specific headers — undef'd:
+   net/ethernet.h, bluetooth/bluetooth.h, netpacket/packet.h, linux/if_alg.h
+
+2. Missing IPv6 types:
+   struct in6_addr, struct sockaddr_in6, struct sockaddr_storage
+   INADDR_BROADCAST, INET_ADDRSTRLEN, INET6_ADDRSTRLEN
+   IPPROTO_IPV6, IPV6_* constants
+   IN6ADDR_ANY_INIT, IN6ADDR_LOOPBACK_INIT
+
+3. Missing socket constants:
+   SOMAXCONN (max listen backlog)
+
+4. Missing DNS/hostname functions:
+   gethostname, sethostname (unistd.h)
+   hstrerror, h_errno (netdb.h)
+   struct hostent, gethostbyname, gethostbyaddr (netdb.h)
+
+5. Missing service/protocol lookup:
+   struct servent, getservbyname, getservbyport (netdb.h)
+   struct protoent, getprotobyname, getprotobynumber (netdb.h)
+
+6. Missing network interface enumeration:
+   struct if_nameindex, if_nameindex, if_freenameindex (net/if.h)
+
+7. Missing conversion function:
+   inet_aton (arpa/inet.h)
+
+---------------------------------------------------------------------------------
+FIX
+---------------------------------------------------------------------------------
+Headers modified:
+  netinet/in.h: Added IPv6 types (in6_addr, sockaddr_in6, sockaddr_storage),
+    INET_ADDRSTRLEN, INET6_ADDRSTRLEN, INADDR_BROADCAST, IPPROTO_IPV6,
+    IPV6_* constants, IN6ADDR_*_INIT macros
+
+  netdb.h: Added h_errno, hstrerror, struct hostent + gethostbyname/
+    gethostbyaddr/get/set/endhostent, struct servent + getservbyname/
+    getservbyport/get/set/endservent, struct protoent + getprotobyname/
+    getprotobynumber/get/set/endprotoent
+
+  net/if.h: Added struct if_nameindex, if_nameindex, if_freenameindex
+
+  arpa/inet.h: Added inet_aton declaration
+
+  sys/socket.h: Added SOMAXCONN (128)
+
+  unistd.h: Added gethostname, sethostname declarations
+
+pyconfig.h changes (undef'd):
+  HAVE_NET_ETHERNET_H, HAVE_BLUETOOTH_BLUETOOTH_H, HAVE_NETPACKET_PACKET_H,
+  HAVE_SOCKADDR_ALG, HAVE_LINUX_IF_ALG_H
+
+WHY: TaterTOS has basic TCP/IPv4 sockets but was missing IPv6 types
+and the full DNS lookup API surface. IPv6 types are structural only
+(no IPv6 networking required — just type definitions for compilation).
+DNS/service/protocol lookup functions are stubs (return NULL/error)
+since TaterTOS doesn't have /etc/services or /etc/protocols files.
+The user uses getaddrinfo() for DNS resolution (already supported).
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+Re-ran socketmodule.c compile:
+  x86_64-elf-gcc ... -DPy_BUILD_CORE -c Modules/socketmodule.c
+
+Result: ZERO errors. Compiled clean.
+
+---------------------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------------------
+Fix getpath.c (generated header: Python/frozen_modules/getpath.h).
+Compile remaining Modules/*.c. Write Makefile target. Attempt link.

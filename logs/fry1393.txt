@@ -1,0 +1,81 @@
+fry1393 — Tater Bridge / Claude Code: ROOT CAUSE of the numCalleeLocals=0
+crash identified. It is NOT memory corruption (every such path ruled out with
+hard evidence). It is a GC-SAFEPOINT / stop-the-world violation: the main
+mutator thread is never suspended for GC and keeps constructing heap objects
+while the sweeper (pid 3) collects -> the main thread reads an UnlinkedCodeBlock
+that was freed/zeroed mid-construction. Proximate enabler: epoll_pwait returns
+-EINVAL instead of blocking, so the main thread spins in userspace instead of
+parking at a safepoint.
+Timestamp: 2026-06-10 06:05-06:35 CDT. Author: Claude (Fable 5), cont. fry1392.
+CLAUDE_BIN = 2.1.170, -smp 1 KVM. HEAD = 733c2f1a + this session's edits.
+
+HOW MEMORY-CORRUPTION WAS CONCLUSIVELY EXCLUDED (fry1390-1392, recap)
+  - The CodeBlock zero is a COPY (instr 0x4C84308) of an already-zero SOURCE
+    UnlinkedCodeBlock (r8). The kernel never writes the field (0 CPL0 #DB hits).
+  - Source page: ONE eager 32MB mmap (0x6FBBF8000000 len 0x2000000), NO vm op
+    ever touches it (0 dontneed/unmap/fault on the page), and a FULL user
+    page-table walk finds NO second VA mapping its PA (no aliasing anywhere).
+    => the body bytes were never overwritten/aliased: the object was simply
+    read before it was fully constructed (use-before-init).
+
+THE SAFEPOINT VIOLATION (this session's evidence)
+  - sig 30 = JSC's stop-the-world GC thread-suspend signal. The GC thread is
+    pid 3 (sender=3 on every TBSIG queue; pid 3 also owns all 442 sweep
+    MADV_DONTNEED in TBVMTOUCH).
+  - sig 30 is delivered ONLY to pid 4 and pid 8 (TBSIG: 52x target=8, 2x
+    target=4). It is NEVER queued or delivered to pid 2 (0 "deliver pid=2
+    sig=30"). pid 2 is the MAIN MUTATOR and is the thread that does BOTH the
+    good and the bad copy AND takes the fatal fault.
+  - pid 2's syscalls right up to the crash include epoll_pwait rc=0xffffffea
+    (-EINVAL) REPEATEDLY. Our epoll_pwait is effectively unimplemented and
+    returns EINVAL immediately, so pid 2 NEVER actually blocks — it spins in
+    the event loop in userspace. JSC/Bun treats a thread in the event loop as
+    parked/at-safepoint; the GC therefore does not stop it, and our kernel,
+    delivering signals ONLY at syscall/fault boundaries, could not preempt it
+    anyway.
+  - Result: pid 3 runs stop-the-world (suspends 4 & 8, sweeps with DONTNEED)
+    while pid 2 keeps allocating/initializing objects in the same heap. pid 2
+    reads an UnlinkedCodeBlock that the concurrent sweep freed or that pid 2
+    itself had only partly built when the collector recycled its cell ->
+    numCalleeLocals=0 -> JIT prologue frame size 0 -> stack walk-off -> crash.
+  - Deterministic on -smp 1 because the spin/sweep interleave is scheduler-
+    deterministic; smp-independent because it's a logical safepoint race, not
+    a hardware memory-ordering race.
+
+WHY THIS SESSION'S TWO KERNEL FIXES DID NOT CURE IT (but are still correct)
+  - fry1391 Fix A (callee-saved regs moved from per-CPU gs:24..56 scratch to
+    per-thread frame slots; signal ucontext now exposes correct rbx/rbp/
+    r12-r15) fixes GC conservative-root poisoning for threads suspended WHILE
+    BLOCKED IN A SYSCALL. But the bug here is a thread that is NEVER suspended
+    at all, so better root fidelity doesn't help. Keep the fix regardless.
+  - fry1391 Fix B (clone3 frame depth) was a self-inflicted regression from A,
+    now corrected. Keep.
+
+NEXT (fry1394 — the actual cure, in priority order)
+  1. CONFIRM the race directly (cheap): log when pid 3 enters/leaves its sweep
+     (bracket the DONTNEED burst) and assert what pid 2 is doing in that window
+     (RIP sample / "pid 2 ran N userspace ticks during pid-3 sweep"). Expect:
+     pid 2 executes userspace during pid 3's stop-the-world.
+  2. FIX, option A (preferred, also generally correct): make epoll_pwait
+     actually BLOCK (wait on the epoll set with the given timeout / signal
+     interruptible) instead of returning -EINVAL. Then pid 2 parks at a real
+     safepoint in the event loop, the GC's world is genuinely stopped, and the
+     sweep no longer races a live mutator. This is a real syscall-completeness
+     fix, not a workaround. (epoll_pwait/epoll_pwait2 = nr 281/441; both seen
+     returning -EINVAL/-ENOSYS.)
+  3. FIX, option B (defense in depth / real-Linux parity): implement PREEMPTIVE
+     signal delivery — when the timer IRQ is about to return to a CPL3 thread
+     that has a pending unblocked signal, build the signal frame from the IRQ
+     frame (same layout as the exception frame consumed by
+     lx_deliver_signal_from_exception) and divert to the handler. This lets the
+     GC actually stop a thread spinning in pure userspace, matching Linux's
+     asynchronous signal semantics. Needed eventually for any runtime that
+     async-suspends threads.
+  4. After the crash is gone: strip the fry1391-1393 instrumentation
+     (TBWATCH*/TBALIAS*/TBWINFAULT/TBVMTOUCH window, the dual DR arm, the CPL0
+     #DB branch), revert the fry1388 512MB stack cap to 64MB, then move to
+     networking (socket()=-ENOSYS) — the last gate before an API reply.
+
+BUILD/RUN unchanged (KVM -smp 1; grep -a; rebuild = delete src/kernel +
+  src/drivers *.o, CLAUDE_BIN=.../2.1.170 STAGE_CLAUDE=1 MTOOLSRC=/dev/null
+  build_iso.sh; boot recipe in fry1389).

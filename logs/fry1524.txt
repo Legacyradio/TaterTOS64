@@ -1,0 +1,86 @@
+fry1524 - FIX + VERIFIED: child fd0 blocking read (no more EOF-129 exit); Claude stays interactive
+Date: 2026-06-15 13:12:08 CDT
+
+Type: CODE CHANGE + HEADED GUI VERIFICATION.
+Implements the fix scoped in fry1523 (confirmed root cause: child fd0 read returned
+EOF on empty stdin -> node/Ink ended stdin -> trust prompt exited 129).
+
+Why (Rule 6):
+  In the GUI interactive path, lx_read_fd(fd0) returned 0 (POSIX EOF) when the
+  stdin ring (shared->inbuf) was empty. node read fd0 in blocking mode (it could
+  not epoll-register stdin: epoll_ctl ADD fd0 -> EBADF, fry1523), so read()==0 was
+  taken as end-of-stdin and Claude exited the trust prompt with code 129. A
+  blocking read on an open stdin must block until data, not return EOF.
+
+Change (src/kernel/proc/syscall.c, two sites; GUI path only, serial path untouched):
+  1) lx_read_fd(), fd==0 GUI branch (~line 4665):
+     Replaced "{ sched_yield(); return 0; }" with a cooperative blocking loop:
+       - drain inbuf if data present (return bytes);
+       - if fd0 is O_NONBLOCK (shared->fd_flags[0]): return -EAGAIN;
+       - else sched_block_poll(cur->pid, UINT64_MAX) + sched_yield(), re-fetch
+         cur/shared after wake, retry. Never returns 0 while stdin is open.
+     Mirrors the FD_PIPE_READ blocking idiom in the native read path (~line 7972).
+  2) SYS_PROC_INPUT handler (~line 8521):
+     After writing keystrokes into inbuf, "if (nw > 0) sched_wake_poll_waiters();"
+     so a thread parked in lx_read_fd(fd0) wakes when the Shell delivers input.
+  Scope: only the Linux child's fd0 path changes. The Shell is a native FRY app
+  (native read path), so its pump is unaffected. The non-GUI/serial branch
+  (ps2_kbd_read ... return 0) is left exactly as-is to protect the validated
+  serial/stream-json harness (fry1506) and Rule Zero.
+
+Build (Rule 12, clean + verbose; STAGE_CLAUDE):
+  make clean
+  STAGE_CLAUDE=1 CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.177 \
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+  Result: BUILD_EXIT=0. No errors. Only pre-existing warnings (syscall.c:3178
+  'slots' maybe-uninitialized; syscall.c:5833 unused 'region_ok'). Note: the
+  toolchain is Makefile TOOLBIN=tools/host/bin/x86_64-elf-gcc; the /opt/cross/bin
+  on PATH does not exist and is a harmless no-op.
+  Staged: SHELL.TOT 145816; RCLAUDE.LXE 250480336. out/tater_nvme.img +
+  out/tatertos64v3.iso rebuilt 12:56.
+
+Headed GUI verification run (protected INIT.FRY -> GUI.FRY path; not bypassed):
+  cp /usr/share/edk2/x64/OVMF_VARS.4m.fd /tmp/fry1524_VARS.fd
+  setsid -f env DISPLAY=:0 qemu-system-x86_64 -m 4G -machine q35,accel=kvm -cpu host
+    -smp 4
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd
+    -drive if=pflash,format=raw,file=/tmp/fry1524_VARS.fd
+    -cdrom out/tatertos64v3.iso
+    -drive file=out/tater_nvme.img,if=none,id=nvme0,format=raw
+    -device nvme,drive=nvme0,serial=tatertos-nvme
+    -netdev user,id=n0 -device e1000,netdev=n0
+    -vga std -display gtk
+    -serial file:/tmp/fry1524_serial.log -D /tmp/fry1524_qemu_debug.log -d guest_errors
+  Evidence: serial /tmp/fry1524_serial.log; screenshots /tmp/fry1524_before.png
+  (Shell shows "claude: loading /nvme/RCLAUDE.LXE..."), /tmp/fry1524_after.png.
+
+Results - FIX CONFIRMED:
+  - selftest 106/0; GUI.FRY pid=12; SHELL.TOT pid=13 (desktop up).
+  - 250MB eager-load completed: "LINUXELF: load done entry=60000001f300".
+  - node runtime started (TBFUTEX activity); trust prompt emitted
+    (pid=14 nr=1 write rc=428 at serial line 5471).
+  - TBEXIT group count = 0  <-- main process NEVER exited (old run: code=129).
+    Only worker THREADS exited normally (pids 25/17/16/18/19, code=0).
+  - fd0 reads now return DATA, never EOF:
+      line 5827:  read fd=0 len=262144 -> 1
+      line 13705: read fd=0 len=262144 -> 19
+    Zero "read fd=0 -> 0" anywhere (old run's fatal line 6421 was -> 0).
+    Lines 13705->13709 show a terminal handshake: 19-byte read then 4-byte write.
+  - Process remains alive and looping at the prompt (197 activity events in the
+    last 200 serial lines; pid 15 = benign 100ms heartbeat).
+  => The EOF-129 death is eliminated. Claude survives stdin and stays interactive.
+
+Known remaining (NEXT, separate items - NOT regressions of this fix):
+  - The Shell window renders BLANK while Claude is alive (fry1524_after.png). Claude
+    is writing a full-screen TUI (alternate screen buffer + cursor-positioning
+    escapes); the Shell terminal has no VT/ANSI parser, so it clears and never
+    repaints the repositioned content. This is the deferred step C (VT parser) plus
+    the transposition/concurrency render bug (fry1522 finding). The fb output bytes
+    are clean; rendering is the gap.
+  - Async spawn (the ~5min synchronous eager-load froze the UI during load this run,
+    even slower than fry1520c). Tracked follow-up (user's E async portion).
+  - rename(82) (-5) for atomic .claude.json write. Independent cleanup.
+
+Uncommitted; nothing committed. The working tree carries prior-session changes
+(deadlock fix etc.) intentionally kept uncommitted per project state. No hashes
+recorded (Rule 16; rebuild was not user-requested-for-hashing).

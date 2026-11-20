@@ -1,0 +1,37 @@
+fry1676 — 2026-06-20 14:55 CDT
+STEP: Deep-dive the CPython futex deadlock + instrument the syscall trace with
+      the userspace caller RIP (code change), rebuild, boot for capture.
+
+WHY: fry1675 left python parked on a single untimed SYS_FUTEX_WAIT (expected=2)
+      with 0 threads created -> deadlock before the banner. Needed to identify
+      the exact CPython call site, not keep theorizing.
+
+INVESTIGATION (ruled things OUT, evidence-based):
+  - NOT free-threaded build: pyconfig_tater.h has `#undef Py_GIL_DISABLED`.
+    Standard GIL build. (gc_free_threading.o is compiled but inactive.)
+  - NOT a struct-layout/atomic bug: pthread_mutex_t {volatile uint32_t state}
+    == fry_mutex_t {volatile uint32_t state}; PTHREAD_MUTEX_INITIALIZER={0}.
+    fry_mutex_lock/unlock are a correct 3-state futex mutex.
+  - The 2439 futex_wake(69) are BENIGN: CPython's PyThread lock (POSIX
+    thread_pthread.h) signals a cond on every lock release. Not contention.
+  - Kernel futex is CORRECT: sched_block_futex checks *word!=expected ->
+    -EAGAIN; a3=0 timeout => infinite wait (Linux NULL-timeout semantics).
+  - The wait is UNTIMED (a3=0) => it's a PyThread_acquire_lock(WAIT)/cond_wait,
+    NOT take_gil (which uses a TIMED wait on the 5ms switch interval).
+  - Futex addr 0x10000089178 is in the mmap/heap region (base 0x100000000000),
+    NOT static data (python.elf links at 0x400000), so it can't be symbol-
+    mapped with nm. => Need the userspace CALLER rip to locate it.
+
+CODE CHANGE (TEMP diagnostic, extends fry1669 trace; will be removed):
+  src/kernel/proc/syscall.c, native_syscall_dispatch() PYSC trace:
+    added user rip via lx_syscall_frame(cur)[LX_SYSFRAME_RIP]; line now prints
+    "PYSC ... rip=0x%llx". lx_syscall_frame works for native procs (frame is on
+    the per-thread kernel stack built by syscall_entry; user RIP = pushed rcx).
+
+BUILD: incremental `make` (syscall.o recompile + kernel relink) + build_iso.sh
+  restage. BUILD_EXIT=0, ISO 13:25. python3.fry unchanged (keeps fry1672/1675
+  fixes). Booted headed (serial /tmp/fry1676_qemu_serial.log) for capture.
+
+NEXT (fry1677): user runs hermes -> read last PYSC nr=68 rip ->
+  addr2line -e python.elf <rip> -> name the deadlocking CPython call -> fix.
+CLEANUP owed: remove fry1669+fry1676 PYSC trace from syscall.c before commit.

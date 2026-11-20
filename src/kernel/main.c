@@ -106,7 +106,8 @@ uint8_t kernel_stack[262144];
 #define TATER_BUILD_ID  "2026-03-04-fry531-rollback"
 #define TATER_SELFTEST 1
 #define TATER_SKIP_SMP 0
-#define TBRIDGE_CLAUDE_PROMPT_ONLY 1
+#define TBRIDGE_BOOT_AUTORUN 0
+#define TBRIDGE_CLAUDE_PROMPT_ONLY 0
 
 static void aml_extended_init_thread(void *arg) {
     (void)arg;
@@ -545,6 +546,7 @@ static void after_vmm(struct fry_handoff *handoff) {
          * Diagnostics go via kprint_serial_only() because plain kprint() is
          * filtered this early in boot; the Linux process's own write() reaches
          * serial like any other userspace stdout. */
+#if TBRIDGE_BOOT_AUTORUN
         int tbridge_claude_prompt_only = 0;
         {
             void kprint_serial_only(const char *fmt, ...);
@@ -744,7 +746,28 @@ static void after_vmm(struct fry_handoff *handoff) {
                     lxb = vfs_open("/nvme/RCLAUDE.LXE");
                     if (lxb) {
                         vfs_close(lxb);
-                        const char *a[] = { "claude", "-p", "say hello from TaterTOS in 10 words" };
+                        /* fry1429: stream-json — every lifecycle stage is one
+                         * JSON line on stdout in real time (host-verified;
+                         * --debug was a dead end: -p sends debug to files).
+                         * Guest stdout is proven (fry1427), so serial becomes
+                         * claude's own flight recorder; the last event before
+                         * the empty-exit names the broken phase. */
+                        /* fry1440: --debug added — the run is proven end-to-end
+                         * (fry1437/1439: inference request out, response in,
+                         * exit 0) but Bun's writer layer emits nothing; claude's
+                         * own debug logging names the suppression from inside.
+                         * Debug goes to files in -p mode (fry1429); the TBWRDATA
+                         * beacon mirrors file-write payloads to serial. */
+                        /* fry1508 STAGE 1: render claude's answer ON SCREEN.
+                         * claude stdout fd1 -> kprint_write -> framebuffer+serial
+                         * (the fb text console already exists). Plain-text output
+                         * (NOT stream-json) so the screen shows a readable answer,
+                         * not JSON. No --debug (that spam goes to files/serial and
+                         * just slows startup). This is the first visible on-screen
+                         * proof; interactive desktop terminal is the next stage. */
+                        const char *a[] = { "claude", "-p",
+                                            "Say hello from inside TaterTOS and introduce yourself in two short sentences.",
+                                            "--output-format", "text" };
                         /* fry1390: JSC's concurrent JIT/GC publishes a CodeBlock
                          * that gets ENTERED before its numCalleeLocals field is
                          * written (proven: a live CodeBlock with numLocals=0 ->
@@ -753,13 +776,40 @@ static void after_vmm(struct fry_handoff *handoff) {
                          * exonerated). Force SYNCHRONOUS construction so the
                          * field is always set before entry. JSC reads JSC_<opt>
                          * env vars at Options::initialize(). */
+                        /* fry1395: concurrency BISECT (useConcurrentGC/JIT/
+                         * Generational=0) did NOT change the crash -> GC/compile
+                         * concurrency EXONERATED. Real root: read()/recv() into
+                         * a freshly-mmap'd (not-yet-faulted) buffer returned
+                         * EFAULT (user_buf_accessible required PRESENT pages),
+                         * leaving module bytecode buffers ZERO -> empty
+                         * CodeBlocks. Fixed in user_buf_accessible (demand-fault
+                         * lazy pages). Back to the normal option set to verify. */
+                        /* fry1397: JSC_useJIT=0 (fry1395 bisect flag) removed —
+                         * the numLocals=0 crash was the madvise DONTNEED
+                         * image-zeroing bug, now fixed; run with full JIT. */
+                        /* fry1442: HOME and TMPDIR move to /nvme — the only
+                         * writable mount. With HOME=/ (RO ramdisk), mkdir of
+                         * /.claude/debug and /tmp/claude-0 both returned EIO
+                         * (fry1441) and the CLI's emitter/transcript layer
+                         * died silently while the agent loop ran fine.
+                         * TMPDIR=/nvme (not /nvme/tmp) so claude's own
+                         * mkdir $TMPDIR/claude-0 has an existing parent.
+                         * Auth staged at /nvme/.claude.json by build_iso. */
                         const char *ce[] = {
-                            "PATH=/apps", "LD_LIBRARY_PATH=/usr/lib:/lib64",
-                            "HOME=/", "TMPDIR=/tmp", "TATERTOS=1",
-                            "JSC_useDFGJIT=0", "JSC_useFTLJIT=0", "JSC_dumpOptions=1"
+                            "PATH=/home/legacyindieradio/mcp-servers/.venv/bin:/usr/bin:/apps",
+                            "LD_LIBRARY_PATH=/usr/lib:/lib64",
+                            "HOME=/nvme", "TMPDIR=/nvme", "TATERTOS=1",
+                            "PYTHONHOME=/usr",
+                            "PYTHONPATH=/home/legacyindieradio/mcp-servers/.venv/lib/python3.14/site-packages:/home/legacyindieradio/mcp-servers",
+                            "PYTHONUNBUFFERED=1",
+                            "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+                            /* fry1508: console is now a tty (ioctl TCGETS) — ask
+                             * for plain, uncolored output so the framebuffer shows
+                             * clean text, not ANSI color-escape garbage. */
+                            "NO_COLOR=1", "TERM=dumb"
                         };
                         kprint_serial_only("TBRIDGE: launching REAL claude -p (from /nvme)\n");
-                        int crc = process_launch_linux("/nvme/RCLAUDE.LXE", a, 3, ce, 8);
+                        int crc = process_launch_linux("/nvme/RCLAUDE.LXE", a, 5, ce, 11);
                         kprint_serial_only("TBRIDGE: claude launch rc=%d\n", crc);
                         tbridge_claude_prompt_only = (crc >= 0);
                     } else {
@@ -768,6 +818,7 @@ static void after_vmm(struct fry_handoff *handoff) {
                 }
             }
         }
+#endif
 #if TBRIDGE_CLAUDE_PROMPT_ONLY
         if (tbridge_claude_prompt_only) {
             void kprint_serial_only(const char *fmt, ...);

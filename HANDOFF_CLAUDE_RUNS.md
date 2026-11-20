@@ -1,6 +1,111 @@
 # HANDOFF — Tater Bridge: getting the REAL Claude Code binary to run in TaterTOS64
 Author: Claude (Opus 4.8)  ·  2026-06-06 17:23 CDT  ·  HEAD = eff81672 (all work uncommitted)
 
+> ## UPDATE 2026-06-14 (fry1489) — rg/RCLAUDE self-reexec loader stall fixed.
+> Codex corrected the KVM read: `/dev/kvm` is hidden inside the Codex sandbox but exists on
+> the host, so the real validation was rerun unsandboxed with `accel=kvm`.
+>
+> FIXED:
+> - `FRY_SOCK_MAX` is 32 again so rg/Grep's `posix_spawn` can proceed.
+> - `linux_elf.c` now caches clean streamed PT_LOAD bytes during the first large ELF load and
+>   uses that cache on later self-reexecs. This avoids copying mutated live `.data` while still
+>   avoiding the 250MB disk re-stream.
+> - `lx_execve_current()` passes a narrow reuse context only for vfork children re-execing the
+>   same stored process path.
+>
+> Verification: `make kernel` passed; staged `STAGE_CLAUDE=1 STAGE_PYTHON=1` ISO/NVMe passed.
+> KVM serial `/tmp/fry1489_cache_kvm_serial.log` shows the initial RCLAUDE cache allocation,
+> two `/nvme/RCLAUDE.LXE` self-reexecs reaching `LINUXELF: load done`, and Claude reaching
+> `{"type":"system","subtype":"init"}` with `claude_code_version":"2.1.177"`.
+>
+> Remaining: rg now gets past the loader but still reports
+> `countFilesRoundedRg failed: Error: EBADF: bad file descriptor, posix_spawn 'rg'`.
+> That is a child-fd/posix_spawn issue after self-reexec completion, not the old loader stall.
+> The validation command had no NIC, so later `api_retry` lines are expected (`NET:NONIC`,
+> `apiKeySource":"none"`). Full details: `logs/fry1489.txt`.
+
+> ## UPDATE 2026-06-13 (fry1476) — Python/MCP child now executes.
+> The next blocker after fry1474 was real Python availability. Claude's MCP
+> child launches `/home/legacyindieradio/mcp-servers/.venv/bin/python`; before
+> this fry that path did not exist in guest Linux space, so `execve` returned
+> `ENOENT` and the child exited 127.
+>
+> FIXED:
+> - ToTFS inode capacity raised from 1024 to 16384 and NVMe image raised to
+>   1024 MB.
+> - `build_iso.sh` now has `STAGE_PYTHON` staging for Python 3.14, stdlib zip,
+>   lib-dynload, Python shared-library deps, and the MCP venv tree.
+> - Linux path resolver aliases `/home/...` and `/usr/...` to `/nvme/home/...`
+>   and `/nvme/usr/...` when the NVMe-staged path exists.
+> - Linux ELF loader now accepts PIE/ET_DYN main executables using `LX_PIE_BASE`;
+>   host `/usr/bin/python3.14` is PIE.
+> - Claude launch env now includes Python PATH/PYTHONHOME/PYTHONPATH and
+>   SSL_CERT_FILE.
+>
+> Verification: `make src/kernel/proc/linux_elf.o src/kernel/proc/syscall.o kernel`
+> passed; `STAGE_CLAUDE=1 STAGE_PYTHON=1 ... build_iso.sh` passed and staged
+> MCP venv files through inode 2672. QEMU TCG boot `/tmp/s_fry1476c.log` ran
+> 300s to timeout with **0 `exc-deliver sig=11`**. The `agent-bus` child now
+> loads `/nvme/home/legacyindieradio/mcp-servers/.venv/bin/python`, validates
+> `entry=1020 phnum=15`, reaches `LINUXELF: load done ... brk=555555405000`,
+> and Claude polls it with `wait4(..., WNOHANG)` returning `rc=0`.
+>
+> Boundary: full MCP handshake/tool response is still not proven. The known
+> network-side symptom remains `ECONNREFUSED` fetching
+> `https://api.anthropic.com/v1/mcp_servers`; that is separate from Python
+> staging/exec. Log: `logs/fry1476.txt`.
+
+> ## UPDATE 2026-06-13 (fry1474) — read this before older crash notes.
+> Root cause of the 765-segfault loop was NOT socketpair fd inheritance itself.
+> The child inherited AF_UNIX socketpair fds correctly, dup2'd them onto stdio,
+> failed execve for `/home/legacyindieradio/mcp-servers/.venv/bin/python`, then
+> exited 127. `shared_release()` in `src/kernel/proc/process.c` treated the
+> child socketpair pipe indexes as TCP connection handles and called
+> `tcp_close(0)` / `tcp_close(1)`, killing claude's live TLS sockets. epoll then
+> reported HUP on those fds and claude hit the old `sig=11` path.
+>
+> FIXED in `process.c`: process-exit socket cleanup now honors per-process
+> `fry_socket.refs`, releases AF_UNIX socketpairs by decrementing backing pipe
+> reader/writer counts, and calls `tcp_close()` only for real non-AF_UNIX stream
+> sockets. Log: `logs/fry1474.txt`.
+>
+> Verification: clean rebuild compiled; explicit
+> `STAGE_CLAUDE=1 CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.177`
+> build produced `out/tatertos64v3.iso` + `out/tater_nvme.img`. KVM was not
+> available inside Codex sandbox, so TCG boot ran 240s to timeout with serial at
+> `/tmp/s_fry1475.log`. It crossed the old trigger (`agent-bus` start,
+> AF_UNIX fd copy, dup2, child exit 127, wait4) with **no `exc-deliver sig=11`**
+> and **no `TBTCP tx ... conn=0/1`** in the whole log.
+>
+> Build note: `build_iso.sh` is still `set -u` sensitive; pass `STAGE_CLAUDE`
+> explicitly (`1` for real Claude staging, `0` for no staging).
+
+> ## UPDATE 2026-06-10 (fry1389) — read fry1388 + fry1389 FIRST.
+> NOTE: the TL;DR below (from fry1387) says "~67MB garbage count" — that was already
+> SUPERSEDED by **fry1388**, which root-caused it correctly to a **zeroed
+> `numCalleeLocals` (CodeBlock+0x14)**. fry1389 re-verified fry1388 on Claude **2.1.170**
+> (2.1.162 was deleted in the Jun-8 GitHub backup; same Bun/JSC basis, ET_EXEC, fault RIP
+> still 0x3F4CFB6, cb address identical at 0x6FBFF50F42C0, numLocals still 0 — deterministic).
+> The existing `TBBFDUMP` (irqdesc.c:456) already prints all of this; do NOT re-add a dump.
+>
+> **fry1389 NEW result — fry1388's leading hypothesis is RULED OUT.** `g_tb_target_page`
+> (syscall.c:83) is already armed to the cb page 0x6FBFF50F4000, so the VM-op trace was
+> live. Result this boot: **0 TBVMTOUCH and 0 demand-refault for the cb page** ⇒
+> dontneed/unmap/release/demand-refault do NOT touch it. The corruptor is an **untraced
+> path** — most likely mmap/mremap **aliasing** (a PA still backing the live CodeBlock
+> handed to a new mapping, then zero-init'd through the alias), or a second VA mapping the
+> same PA.
+>
+> **NEXT (decisive):** PA-level watch. Compute cb PA = vmm_virt_to_phys_user(cr3,
+> 0x6FBFF50F42C0) at TBBFDUMP time, then (a) reverse-check in the mmap/demand commit path
+> for any new VA installing that PA (log TBALIAS), and/or (b) re-point the existing (disabled)
+> DR watchpoint infra (tb_handle_jsc_slot_watchpoint / TBWATCH) at PA(cb)+0x14 to trap the
+> zeroing write and get its RIP. See fry1389 for the full plan + exact build/run commands
+> (cross-gcc moved to /usr/bin; stage 2.1.170; no MASTER-img restore needed with STAGE_CLAUDE=1).
+> socket()=-ENOSYS / epoll_pwait=-EINVAL remain a *downstream* worker-thread gate — untouched
+> until the main thread survives. (This session added NO net code change: a redundant dump
+> was added then reverted — tree is clean at 733c2f1a + this doc + logs/fry1389.txt.)
+
 ## GOAL
 Run the real Claude Code (a threaded Bun/JavaScriptCore executable, /nvme/RCLAUDE.LXE)
 under TaterTOS's Linux-compat layer ("Tater Bridge"). Not Hermes, not a stand-in.

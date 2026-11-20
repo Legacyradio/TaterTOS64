@@ -21,7 +21,7 @@
 #define TOTFS_TYPE_DIR    2
 
 #define TOTFS_NUM_EXTENTS 10
-#define TOTFS_MAX_INODES  1024
+#define TOTFS_MAX_INODES  16384
 #define TOTFS_INODE_SIZE  256
 #define TOTFS_ROOT_INODE  1
 
@@ -30,8 +30,8 @@
 #define TOTFS_INODE_BITMAP_BLK  1
 #define TOTFS_BLOCK_BITMAP_BLK  2
 #define TOTFS_INODE_TABLE_BLK   3
-#define TOTFS_INODE_TABLE_BLKS  64   /* 1024 inodes × 256 bytes / 4096 */
-#define TOTFS_DATA_START_BLK    67   /* 3 + 64 */
+#define TOTFS_INODE_TABLE_BLKS  1024 /* 16384 inodes x 256 bytes / 4096 */
+#define TOTFS_DATA_START_BLK    1027 /* minimum; mktotfs computes actual */
 
 /* GPT partition type GUID for ToTFS */
 static const uint8_t TOTFS_PART_GUID[16] = {
@@ -58,8 +58,8 @@ struct totfs_superblock {
     uint64_t block_bitmap_start;   /* 0x40: block 2 */
     uint64_t block_bitmap_blocks;  /* 0x48: 1 */
     uint64_t inode_table_start;    /* 0x50: block 3 */
-    uint64_t inode_table_blocks;   /* 0x58: 64 */
-    uint64_t data_start;           /* 0x60: block 67 */
+    uint64_t inode_table_blocks;   /* 0x58 */
+    uint64_t data_start;           /* 0x60 */
     uint32_t root_inode;           /* 0x68: always 1 */
     uint32_t inode_size;           /* 0x6C: always 256 */
     uint8_t  volume_label[32];     /* 0x70 */
@@ -105,14 +105,27 @@ struct block_device;    /* forward from part.h */
 struct vfs_file;        /* forward from vfs.h */
 struct vfs_stat;        /* forward from vfs.h */
 
+/* The kernel block-bitmap cache is allocated dynamically at mount to the ACTUAL
+ * on-disk geometry (sb.block_bitmap_blocks * 4096), so the volume size follows the
+ * drive/partition instead of a compile-time constant. One bitmap block covers
+ * 32,768 data blocks (128 MB). TOTFS_KBMP_BLOCKS is kept only as a historical
+ * default and is NO LONGER a cap (fry1444 capped it at 8 = 1 GB; removed fry1718). */
+#define TOTFS_KBMP_BLOCKS 8
+
 /* Mount state (global static, one per mounted ToTFS volume) */
 struct totfs_fs {
     struct block_device *bd;
     uint64_t part_lba;           /* LBA of partition start on NVMe */
     uint32_t sectors_per_block;  /* 4096 / sector_size */
     struct totfs_superblock sb;
-    uint8_t  inode_bitmap[TOTFS_BLOCK_SIZE];  /* cached in RAM */
-    uint8_t  block_bitmap[TOTFS_BLOCK_SIZE];  /* cached in RAM */
+    uint8_t *inode_bitmap;       /* heap-cached at mount, sized to the on-disk
+                                  * geometry (sb.inode_bitmap_blocks*4096) so the
+                                  * INODE COUNT scales with the drive, not a constant */
+    uint64_t inode_bitmap_bytes; /* size of the inode_bitmap allocation */
+    uint8_t *block_bitmap;       /* heap-cached at mount, sized to the on-disk
+                                  * geometry (sb.block_bitmap_blocks*4096) so the
+                                  * volume size follows the drive, not a constant */
+    uint64_t block_bitmap_bytes; /* size of the block_bitmap allocation */
 };
 
 /* Per-open-file private state, fits in vfs_file.private[128] */
@@ -134,6 +147,9 @@ struct totfs_file_private {
 /* Probe / Mount */
 int totfs_probe(struct block_device *bd, uint64_t part_lba);
 int totfs_mount(struct totfs_fs *fs, struct block_device *bd, uint64_t part_lba);
+/* In-kernel ToTFS formatter (mirrors tools/mktotfs.c). Formats `total_bytes` of the
+ * block device starting at part_lba. Used for RAM-backed volumes like /tmp. */
+int totfs_format(struct block_device *bd, uint64_t part_lba, uint64_t total_bytes);
 
 /* Block I/O */
 int totfs_read_block(struct totfs_fs *fs, uint64_t block_num, void *buf);

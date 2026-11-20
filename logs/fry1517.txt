@@ -1,0 +1,18 @@
+fry1517 - fix PS/2 keyboard controller translation bit
+
+Root cause:
+- Printable letters still did not reach the GUI shell, while Enter did.
+- The PS/2 controller setup comment said it enabled set-1 keyboard translation,
+  but the code set config bit 4.
+- On a standard PS/2 controller, bit 4 disables the first keyboard port clock.
+  The set-1 translation bit is bit 6.
+
+Change:
+- src/drivers/input/ps2_ctrl.c now clears bit 4 to keep the keyboard port
+  clock enabled.
+- It now sets bit 6 to request set-1 scancode translation, matching the
+  existing ps2_kbd.c scan-set-1 ASCII tables.
+
+Why:
+- The keyboard driver expects set-1 scancodes. The controller must not disable
+  the keyboard port and must request the translation mode the driver decodes.

@@ -10,6 +10,7 @@
 
 /* Kernel APIs */
 void kprint(const char *fmt, ...);
+void kprint_serial_only(const char *fmt, ...);
 uint64_t vmm_phys_to_virt(uint64_t phys);
 void vmm_ensure_physmap_uc(uint64_t phys_end);
 uint64_t pmm_alloc_page_below(uint64_t limit);
@@ -239,8 +240,20 @@ int e1000_rx_poll(uint32_t timeout_ms) {
         uint8_t  eop = g_rx_ring[g_rx_tail].status & DESC_EOP;
 
         if (eop && !err && len > 0 && g_rx_cb) {
+            /* fry1432 layer-diff beacon: NIC delivery count (strip before release) */
+            static uint32_t tb_rx_delivered;
+            tb_rx_delivered++;
+            if ((tb_rx_delivered & 0x7) == 0)
+                kprint_serial_only("TBE1K rx total=%u len=%u\n", tb_rx_delivered, len);
             g_rx_cb(g_rx_bufs[g_rx_tail], len);
             count++;
+        } else {
+            /* fry1432: a frame the NIC handed us but we refused — this was
+             * previously INVISIBLE. err / missing-EOP / zero-len all land here. */
+            static uint32_t tb_rx_dropped;
+            tb_rx_dropped++;
+            kprint_serial_only("TBE1K DROP n=%u eop=%u err=0x%x len=%u\n",
+                               tb_rx_dropped, eop ? 1u : 0u, err, len);
         }
 
         /* Return descriptor to hardware */

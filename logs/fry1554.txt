@@ -1,0 +1,27 @@
+# fry1554 - CODE (diagnostic): unconditional fd0 readiness beacon (TBFD0) inside lx_epoll_wait_fd to split the dead-input wedge into (A) loop-not-epolling vs (B) epoll-ready-but-no-read
+Date: 2026-06-15 23:48 CDT
+Type: code change (src/kernel/proc/syscall.c, 1 hunk, diagnostic beacon — read-only, no behavior change)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+WHY (Rule 6)
+- fry1553 narrowed the dead-input wedge: delivery works, fd0 is armed in epoll (EPOLLIN, never removed), poll_check_fd(fd0) returns POLLIN when inbuf non-empty, network+procfs fine — but Claude's main thread never read()s fd0 in the main UI. Two unresolved possibilities:
+  (A) the main thread (holding epfd=5 with fd0) is NOT in epoll_pwait2 when the user types (parked in futex), so it never looks at fd0; or
+  (B) epoll_pwait2 IS reporting fd0 ready but Bun never issues the read (EPOLLONESHOT/read-arming mismatch after the 2 startup reads).
+- One beacon at the fd0 readiness check splits these definitively.
+
+CHANGE (src/kernel/proc/syscall.c, in lx_epoll_wait_fd, right after the per-item poll_check_fd())
+- If item->fd == 0: emit
+    TBFD0 epoll pid=<caller> epfd=<n> chk=<count> rawrev=<poll_check_fd result> asked=<item->events> inbuf=<0|1>
+  Throttled: first 256 unconditional, then every 64th. Read-only; no logic change to epoll. Marked REMOVE-once-fixed.
+
+HOW TO READ THE RESULT (next run)
+- Type a key, then grep TBFD0 in /tmp/serial.log:
+  * No TBFD0 lines while typing (or only on epfd != 5)  => (A): the loop/main thread is not entering epoll on the stdin epfd during typing. Next: find what futex/promise the main thread parks on; the input wake (sched_wake_poll_waiters) can't reach a futex-parked thread.
+  * TBFD0 with inbuf=1 but rawrev has NO POLLIN (0x1)   => poll_check_fd bug for fd0 in this state (e.g., gui_process_running()/process_name_is_gui mismatch). Fix poll_check_fd.
+  * TBFD0 with inbuf=1 and rawrev=POLLIN, but still no subsequent read(fd=0) => (B): epoll reports ready, Bun won't read -> implement EPOLLONESHOT properly (disable-after-fire + honor MOD re-arm) so Bun's state machine matches the kernel.
+
+NEXT (own fry log each)
+- fry1555: clean rebuild (CLAUDE_NO_MCP=1 retained).
+- fry1556: headed verify run -> type a key -> classify A vs B vs poll_check_fd-bug from TBFD0.
+
+All per planv3 Rules 1/5/6/12. Written immediately on completion of the code change, before the build.

@@ -1,0 +1,32 @@
+fry1691 — 2026-06-21 00:05 CDT
+STEP: fstat stdio fix VERIFIED — hermes runs CPython end-to-end. *** WORKS ***
+
+VERIFY (fry1691 run; screenshot /tmp/fry1691_crop.png + serial
+  /tmp/fry1691_qemu_serial.log — OBSERVED end-to-end, not assumed):
+  * serial: STDOUT-REPR: <_io.TextIOWrapper name='<stdout>' mode='w'
+    encoding='utf-8'>  ; STDOUT-FD: 1 ; STDOUT-WRITE-RET: 16. sys.stdout is a
+    REAL stream now (was None). 0 USER FAULT pid=10.
+  * screen: the bootstrap PRINTS its full report and returns cleanly to /> :
+      - module availability (29 available / 7 missing)
+      - SQLITE TEST: "SQLite: OK - (1, 'TaterTOS')"  <-- SQLite works
+      - NETWORK TEST / HERMES AGENT IMPORT sections rendered
+      - hermes_constants OK
+  CPython 3.14.5 boots, runs tatertos_bootstrap.py to completion, prints, exits
+  clean. The original "hermes froze" is RESOLVED.
+
+ROOT-CAUSE CHAIN fixed this session (all verified to advance/work):
+  fry1672 ioctl-> raw SYS_REBOOT (the "freeze"); + getsockname/getpeername/
+          sigaction stubs.        fry1675 argv rebuilt in main (REPL/segfault).
+  fry1677 pthread_self()=0 for main thread.  fry1678 pthread_getattr_np EINVAL
+          (recursion-limit assert).  fry1681 SQLite THREADSAFE=0 (recursive
+          mutex deadlock).  fry1686 main fry_exit() (ENTRY=main null-return
+          crash).  fry1691 fstat stdio fds -> char device (sys.std* were None).
+
+REMAINING (NOT the freeze — port completeness / quality):
+  - Missing C ext modules baked into python3.fry: math, _struct, _socket, _ssl
+    (-> hermes_state, networking fail). Python build-config addition.
+  - bootstrap FILESYSTEM TEST: /tmp/... Errno 2 (no/unwritable /tmp).
+  - SPEED: startup is slow (demand-paging crawl); eager-map image + batch
+    pager (#1/#2) still pending.
+  - CLEANUP owed: remove fry1685 FBT (irqdesc.c), fry1688 marker (python.c),
+    fry1690 diag (bootstrap.py). Do before any commit.

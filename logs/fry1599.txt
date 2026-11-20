@@ -1,0 +1,34 @@
+# fry1599 - VERIFY(fry1598): lock FIXED the page-table corruption/rg-join-hang. Mouse still froze, but via a DIFFERENT mechanism = multi-CPU JSC spinlock-OVERSUBSCRIPTION livelock. Strong lead: the WORKING run (fry1583) was 1 CPU; the frozen runs are -smp 4.
+Date: 2026-06-16 ~21:15 (host clock) CDT
+Type: verify (fry1598 build) + root-cause refinement (Rule 5/6)
+
+WHAT THE FIX DID (confirmed good):
+- fry1596 frozen signature: census t3=5/1/0/0 (1 thread PARKED FOREVER on rg's join-futex ...ce8, state=2)
+  -> page-table corruption made an rg worker never clear its TID. THAT IS GONE.
+- fry1598 (lock in): census t3=7/0/0/0 (ZERO waiting). No parked thread. lx_map_one self-lock + idempotent
+  re-check closed the concurrent-PT race. rg no longer hangs on a lost join. KEEP THE LOCK.
+
+WHY THE MOUSE STILL FROZE (new/separate cause):
+- TBSPIN 296/300 at 0xFFFFFFFF80066621 = context_switch (the SCHEDULER), NOT inside lx_map_one -> not my lock,
+  not lock contention.
+- TBDPF stuck at 64 (no new page faults) -> NOT a fault storm, NOT paging.
+- pid=14 (claude main) state=1 RUNNING, futex_key=0, rip PINNED at userspace 0x60000001f300 (same addr every
+  sample) -> a tight USERSPACE busy-spin = JSC/WTF adaptive spinlock waiting for another thread to release.
+- 7 claude threads (t3=7/0/0/0) ALL RUNNABLE on a 4-CPU VM = OVERSUBSCRIPTION. The lock holder is one of the
+  3 threads not on a core; the 4 on-core threads burn CPU spinning for it; the holder can't get scheduled to
+  release -> classic spinlock-under-oversubscription LIVELOCK. All 4 CPUs pinned -> compositor (pid=12) gets
+  ~0 CPU -> mouse frozen solid.
+
+THE "IT WORKED BEFORE" EXPLANATION (high confidence):
+- launch_debug.sh (the script Zack actually runs) has NO -smp flag -> QEMU default = 1 CPU.
+- Every FROZEN run (incl this) used -smp 4 (serial shows cpu=0..3), added on the command line by me/prior inst.
+- On 1 CPU the JSC adaptive spinlock is cooperative: spin ~N, then park (futex) -> the single core runs the
+  holder -> progress. fry1583 ("full conversation") was almost certainly 1 CPU.
+- Multi-CPU introduced BOTH (a) the PT race [FIXED by fry1598 lock] and (b) this oversubscription livelock.
+
+NEXT (fry1600 = relaunch, NO rebuild): boot the SAME fry1598 ISO with -smp 1 (match launch_debug.sh / fry1583).
+  Expect: cooperative scheduling -> no spinlock livelock -> mouse stays live -> claude reaches prompt -> TYPE ->
+  read(fd0) climbs. If GOOD: 1-CPU is the shippable config; multi-CPU SMP scaling becomes its own phase (needs
+  the kernel scheduler to preempt spinners for the lock holder, or claude to cap its thread pool to <= nproc).
+KEEPERS: fry1598 lock (correct regardless), panic fix, /proc/self/stat, pipe/redirect/busybox, demand-batch.
+All per planv3 Rules 1/5/6/12. Written immediately on the verify, before the relaunch.

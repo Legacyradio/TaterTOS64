@@ -1,0 +1,14 @@
+fry1512 - restore the real Phase 7 desktop compositor
+
+Root cause:
+- The visible framebuffer heartbeat was not the real TaterTOS GUI.
+- Current src/user/gui/gui.c had been reduced to a small stub with no taskbar, icons, cursor, window manager, or TaterWin compositor behavior.
+- The real Phase 7 GUI still existed in git history at c5a6bdf6.
+
+Change:
+- Restored src/user/gui/gui.c from c5a6bdf6, which contains the TaterWin desktop compositor, desktop icons, cursor, taskbar, start menu, mouse handling, focus events, clipboard, damage tracking, and app launching.
+- Added the current fry syscall ABI include needed by the restored source and adjusted old one-argument fry_kill calls to the current two-argument ABI.
+- Restored init's compositor-first behavior so the raw shell is only a fallback if GUI repeatedly exits, preventing shell console output from fighting the desktop compositor.
+
+Why:
+- The boot target must be the actual interactive TaterTOS desktop, not a serial console, not a kernel autorun harness, and not a placeholder framebuffer panel.

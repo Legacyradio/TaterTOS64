@@ -1,0 +1,21 @@
+# fry1648 - Headed QEMU launch with networking
+Timestamp: 2026-06-19 15:04:28 CDT
+Type: runtime launch
+
+Command:
+  setsid -f env DISPLAY=:0 qemu-system-x86_64 -m 4G \
+    -machine q35,accel=kvm:tcg -cpu host -smp 4 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=/tmp/fry1489_cache_kvm_OVMF_VARS.fd \
+    -cdrom out/tatertos64v3.iso \
+    -drive file=out/tater_nvme.img,if=none,id=nvm,format=raw \
+    -device nvme,serial=deadbeef,drive=nvm \
+    -netdev user,id=n0 -device e1000,netdev=n0 \
+    -vga std -display gtk -serial none -no-reboot
+
+Result:
+  - PASS. QEMU launched headed.
+  - Live PID at launch check: 2080289.
+  - Color was later confirmed visually by the user.
+  - Layout was later reported broken; see fry1649.txt.
+  - No serial/QEMU log file was requested or created by this command.

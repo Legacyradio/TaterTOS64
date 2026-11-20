@@ -185,6 +185,12 @@ static int tb_handle_jsc_slot_watchpoint(uint64_t vector, const uint64_t *frame)
     early_serial_puthex64(watch);
     early_serial_puts(" val=");
     if (have_val) early_serial_puthex64(val); else early_serial_puts("NA");
+    /* fry1391: post-write field value via the physmap alias — always readable
+     * regardless of which DR fired or whose cr3 is live. */
+    if (g_tb_jsc_slot_watch[1]) {
+        early_serial_puts(" field=");
+        early_serial_puthex64(*(volatile uint32_t *)(uintptr_t)g_tb_jsc_slot_watch[1]);
+    }
     early_serial_puts(" rax=");
     early_serial_puthex64(frame[0]);
     early_serial_puts(" rbx=");
@@ -199,7 +205,83 @@ static int tb_handle_jsc_slot_watchpoint(uint64_t vector, const uint64_t *frame)
     early_serial_puthex64(frame[6]);
     early_serial_puts(" r14=");
     early_serial_puthex64(frame[13]);
+    /* fry1391: the corrupting store copies from a source object in r8
+     * (mov 0x14(%r8),%edx -> mov %edx,0x14(%rdi)); rdx=0 at the trap proved
+     * the SOURCE was already zero. Log r8/rbp/r13/r15 and dump the source
+     * object so the watch can pivot upstream next boot. */
+    early_serial_puts(" r8=");
+    early_serial_puthex64(frame[7]);
+    early_serial_puts(" r9=");
+    early_serial_puthex64(frame[8]);
+    early_serial_puts(" rbp=");
+    early_serial_puthex64(frame[4]);
+    early_serial_puts(" r13=");
+    early_serial_puthex64(frame[12]);
+    early_serial_puts(" r15=");
+    early_serial_puthex64(frame[14]);
     early_serial_puts("\n");
+    {
+        uint64_t src = frame[7];
+        for (uint64_t i = 0; i < 8; i++) {
+            uint64_t q = 0;
+            early_serial_puts(i == 0 ? "TBWATCHSRC " : " ");
+            if (read_user_u64_for_exc(cur, src + i * 8, &q) == 0)
+                early_serial_puthex64(q);
+            else
+                early_serial_puts("FAULT");
+        }
+        early_serial_puts("\n");
+        /* fry1392: on the CORRUPTING copy (source field reads 0), scan the
+         * 32MB eager cage region for any OTHER VA mapping the same physical
+         * frame as the source page. A second VA over the same PA = the
+         * zeroing write landed through an alias = the corruptor. One-shot. */
+        uint64_t src_pa = vmm_virt_to_phys_user(cur->cr3, src & ~0xFFFULL)
+                          & 0x000FFFFFFFFFF000ULL;
+        early_serial_puts("TBALIASSCAN src=");
+        early_serial_puthex64(src & ~0xFFFULL);
+        early_serial_puts(" srcpa=");
+        early_serial_puthex64(src_pa);
+        early_serial_puts("\n");
+        if (src_pa) {
+            /* fry1393: FULL user page-table walk (all present 4K PTEs under
+             * cur->cr3) for any VA != src mapping src_pa. Walks only present
+             * tables, so user space (sparse) is cheap. A second VA = the
+             * alias the windowed scan couldn't see (likely a different cage
+             * block or a PMM double-hand-out). */
+            uint64_t srcva = src & ~0xFFFULL;
+            uint64_t *pml4 = (uint64_t *)(uintptr_t)vmm_phys_to_virt(
+                                 cur->cr3 & 0x000FFFFFFFFFF000ULL);
+            int hits = 0;
+            for (uint64_t i = 0; i < 256 && hits < 8; i++) {   /* user half */
+                if (!(pml4[i] & VMM_FLAG_PRESENT)) continue;
+                uint64_t *pdpt = (uint64_t *)(uintptr_t)vmm_phys_to_virt(
+                                     pml4[i] & 0x000FFFFFFFFFF000ULL);
+                for (uint64_t j = 0; j < 512 && hits < 8; j++) {
+                    if (!(pdpt[j] & VMM_FLAG_PRESENT) || (pdpt[j] & VMM_FLAG_LARGE)) continue;
+                    uint64_t *pd = (uint64_t *)(uintptr_t)vmm_phys_to_virt(
+                                       pdpt[j] & 0x000FFFFFFFFFF000ULL);
+                    for (uint64_t k = 0; k < 512 && hits < 8; k++) {
+                        if (!(pd[k] & VMM_FLAG_PRESENT) || (pd[k] & VMM_FLAG_LARGE)) continue;
+                        uint64_t *pt = (uint64_t *)(uintptr_t)vmm_phys_to_virt(
+                                           pd[k] & 0x000FFFFFFFFFF000ULL);
+                        for (uint64_t l = 0; l < 512 && hits < 8; l++) {
+                            if (!(pt[l] & VMM_FLAG_PRESENT)) continue;
+                            if ((pt[l] & 0x000FFFFFFFFFF000ULL) != src_pa) continue;
+                            uint64_t va = (i << 39) | (j << 30) | (k << 21) | (l << 12);
+                            if (va == srcva) continue;
+                            early_serial_puts("TBALIAS va=");
+                            early_serial_puthex64(va);
+                            early_serial_puts(" pte=");
+                            early_serial_puthex64(pt[l]);
+                            early_serial_puts("\n");
+                            hits++;
+                        }
+                    }
+                }
+            }
+            if (!hits) early_serial_puts("TBALIAS none-fulltable\n");
+        }
+    }
 
     dr6 = 0;
     __asm__ volatile("mov %0, %%dr6" : : "r"(dr6) : "memory");
@@ -416,12 +498,57 @@ void irq_dispatch(uint64_t vector, uint64_t error, void *ctx) {
         uint64_t rflags = frame[19];
         uint64_t cr2    = read_cr2_irq();
         uint64_t cr3    = read_cr3_irq();
+        /* fry1391: KERNEL-mode data-watchpoint hit (CPL0 #DB). The CPL3 path
+         * is tb_handle_jsc_slot_watchpoint below; without this branch a
+         * kernel write to the watched field falls through to the generic
+         * exception path, and every previous watch hunt was structurally
+         * blind to kernel writers. Log RIP + post-write value, clear DR6,
+         * resume (data watches are traps — the write already completed). */
+        if (vector == 1 && (cs & 3ULL) == 0) {
+            uint64_t dr6 = 0;
+            __asm__ volatile("mov %%dr6, %0" : "=r"(dr6));
+            uint64_t fieldval = 0;
+            if (g_tb_jsc_slot_watch[1])
+                fieldval = *(volatile uint32_t *)(uintptr_t)g_tb_jsc_slot_watch[1];
+            early_serial_puts("TBWATCHK kernel-write rip=");
+            early_serial_puthex64(rip);
+            early_serial_puts(" dr6=");
+            early_serial_puthex64(dr6);
+            early_serial_puts(" field=");
+            early_serial_puthex64(fieldval);
+            early_serial_puts(" cr3=");
+            early_serial_puthex64(cr3);
+            early_serial_puts("\n");
+            dr6 = 0;
+            __asm__ volatile("mov %0, %%dr6" : : "r"(dr6) : "memory");
+            return;
+        }
         /* Demand-page a not-present USER #PF inside a reserved anon mmap
          * region (e.g. JSC's MAP_NORESERVE gigacage). Commit one zero page
          * and iretq to retry. Done before any logging/kill so it is fast and
          * silent — a running runtime faults in thousands of pages this way. */
         if (vector == 14 && (cs & 3ULL) == 3ULL &&
             lx_try_demand_page(proc_current(), cr2, error)) {
+            /* fry1581 DIAG: track demand-page faults for the claude MAIN thread.
+             * The freeze caught it with user RIP frozen at 0x60000001f300 (one
+             * rep-stos-like instruction) + the page-commit path -> likely a huge
+             * userspace zero being demand-paged 4KB at a time. cr2 ADVANCING =
+             * slow-but-progressing (huge region); cr2 STUCK = demand-page never
+             * satisfies the fault (a loop bug). Throttled. REMOVE once fixed. */
+            {
+                struct fry_process *dc = proc_current();
+                if (dc && g_tb_trace_claude_tgid &&
+                    dc->tgid == g_tb_trace_claude_tgid && dc->pid == dc->tgid) {
+                    static uint64_t tb_dpf_n;
+                    tb_dpf_n++;
+                    if (tb_dpf_n <= 64 || (tb_dpf_n & 0xFFFU) == 0) {
+                        early_serial_puts("TBDPF n="); early_serial_puthex64(tb_dpf_n);
+                        early_serial_puts(" cr2="); early_serial_puthex64(cr2);
+                        early_serial_puts(" rip="); early_serial_puthex64(rip);
+                        early_serial_puts("\n");
+                    }
+                }
+            }
             return;
         }
         /* fry1389: ONE-TIME dump of the JSC JIT-prologue CodeBlock chain on the
@@ -433,7 +560,7 @@ void irq_dispatch(uint64_t vector, uint64_t error, void *ctx) {
          * or its CONTENTS are garbage (heap corruption / UAF). */
         if (vector == 14 && (cs & 3ULL) == 3ULL &&
             cr2 < (0x800000000000ULL - (8ULL << 20)) &&
-            cr2 >= (0x800000000000ULL - (512ULL << 20))) {
+            cr2 >= (0x800000000000ULL - (64ULL << 20))) {
             static int g_bf_dumped = 0;
             if (!g_bf_dumped) {
                 g_bf_dumped = 1;
@@ -472,6 +599,11 @@ void irq_dispatch(uint64_t vector, uint64_t error, void *ctx) {
                 early_serial_puts(" ret="); early_serial_puthex64(retaddr);
                 early_serial_puts(" callerfp="); early_serial_puthex64(callerfp);
                 early_serial_puts("\n");
+                /* fry1407: the fry1397 TBBFSRC/TBBFP/TBZSCAN investigation
+                 * dumps were stripped after the root cause (madvise image-
+                 * zeroing, fixed fry1401) was verified under LLInt + JIT.
+                 * This one-shot TBBFDUMP stays as the permanent first-line
+                 * triage for any future deep-stack walk-off. */
             }
         }
         /* fry1387: demand stack growth — fault just below the stack VMA. */

@@ -1,0 +1,28 @@
+# fry1646 - Add real terminal cell color support
+Timestamp: 2026-06-19 14:57:51 CDT
+Type: terminal renderer/attribute fix
+Files changed:
+  - src/user/shell/shell.c
+
+What changed:
+  - Added per-cell background colors alongside existing per-cell foreground colors.
+  - Added SGR background support: 40-47, 49, 100-107, 48;5;n, and 48;2;r;g;b.
+  - Added reverse-video SGR support (7/27).
+  - Made erase/blank/delete/insert/scroll paths preserve or initialize foreground and
+    background attributes instead of only moving characters.
+  - Saved/restored background attributes across alternate-screen enter/exit and child-exit
+    recovery paths.
+
+Why:
+  - The earlier renderer could show foreground color if SGR reached it, but it was not a
+    fully color-capable terminal. Backgrounds were untracked, and clearing/shifting text
+    could leave color attributes incoherent.
+
+Verification:
+  - Ran: make -C TaterTOS64 shell
+  - Result: PASS. Rebuilt src/user/shell/shell.o, linked shell.elf, packed shell.tot.
+  - Note: compiler printed the pre-existing src/user/libc/libc.h nested-comment warning.
+
+Not done:
+  - No full build_iso.sh rebuild in this step.
+  - No QEMU/runtime visual verification in this step.

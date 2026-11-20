@@ -1,0 +1,34 @@
+fry1728 — 2026-06-21 17:30 CDT
+STEP: PHASE 3a started. Rust toolchain + Rust->TaterTOS object pipeline PROVEN.
+      std-port requirements diagnosed precisely. (std pal impl is the next big chunk.)
+
+DONE + VERIFIED:
+  - Installed user-local rustup + nightly 1.98.0 + rust-src (non-destructive to Arch
+    system rust). build-std now available.
+  - Fixed x86_64-tatertos.json for modern rustc: linker -> this machine's
+    tools/host/bin/x86_64-elf-gcc; target-pointer-width/c-int-width string->number;
+    removed "+soft-float" (x86_64 ABI needs SSE; userspace can use HW float).
+  - PIPELINE PROVEN: `cargo +nightly build -Z build-std=core -Z json-target-spec
+    --target x86_64-tatertos.json --release` -> libtatertos_rust_probe.a with
+    exported `T tatertos_rust_probe_add`. core compiles + links for TaterTOS. Probe
+    crate at rust/probe/.
+
+DIAGNOSIS (build-std=std fails — exactly as expected for os:none):
+  std/src/sys/pal/mod.rs cfg_selects on target_os (unix/windows/hermit/wasi/.../
+  unsupported fallback). os:none -> `unsupported` pal -> missing: System GlobalAlloc,
+  error::{errno,error_string,decode_error_kind,is_interrupted}, thread_local key
+  (LazyKey/get/set), sys::fill_bytes (random). Those are the pal surface to implement.
+
+PLAN (Phase 3a continued — the std pal): TaterTOS libc is already large (runs CPython
+  + claude: malloc, pthread/futex, fs, time, etc.), so the professional path is to
+  REUSE std's mature `unix` pal over the TaterTOS libc rather than hand-roll
+  everything: add a `tatertos` target_os to the patched rust-src that maps into the
+  unix pal family, set json os:"tatertos", supply/stub the libc symbols std's unix
+  pal references (link-time: implement missing ones in src/user/libc, stub the rest).
+  Alloc -> libc malloc/free GlobalAlloc; thread_local -> pthread key (libc has
+  fry_tls keys); random -> getrandom/SYS or /dev/urandom shim; errno -> libc errno.
+  This avoids reinventing thread/fs/time and leans on the verified unix pal.
+
+STATUS: ✅native CPython ✅Phase1(hashlib) ✅Rust pipeline. NEXT(big): implement the
+  tatertos std pal (unix-pal reuse) -> build-std=std green -> then pydantic_core. This
+  is the largest remaining chunk (porting std to a new OS). -> fry1729.

@@ -1,0 +1,52 @@
+# fry1548 - CODE CHANGE: add CLAUDE_NO_MCP build toggle that strips all MCP servers from the staged Claude config (test the fry1547 wedge hypothesis), + dry-run verification of the strip logic
+Date: 2026-06-15 23:05 CDT
+Type: code change (build_iso.sh, 1 hunk) + verification (dry-run on a temp copy of the config; no rebuild yet in this step)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+---------------------------------------------------------------------------------
+WHY (Rule 6)
+---------------------------------------------------------------------------------
+fry1547 found the TUI "can't type" is NOT an OS input-delivery bug: keystrokes ARE delivered to Claude's stdin inbuf (126x nw=1), but Claude's main thread is wedged in an openat/futex storm spawning/connecting MCP servers + reading /proc/self/stat (ENOENT), so it never returns to the loop that reads fd 0.
+
+While reading build_iso.sh I found the staging hook does NOT merely copy the config: at build_iso.sh:191-212 (gated TBRIDGE_FAST_AGENT_BUS=1, default 1) a python step INJECTS an `agent-bus` MCP server into the staged dot-claude.json:
+    mcpServers.agent-bus = { type: stdio, command: /usr/bin/tbridge-agent-bus, args: [], env: {PYTHONUNBUFFERED, PYTHONDONTWRITEBYTECODE} }
+The real ~/.claude.json has exactly one top-level MCP server (agent-bus); the hook normalizes it to the TaterTOS tbridge binary. This matches the serial: "mcp-logs-agent-bus" churn + child pid=41 loading librt = Claude bringing up that agent-bus server.
+
+To TEST whether MCP spawn/connect churn is the wedge, the staged config must have NO MCP servers, so Claude goes straight to the interactive loop. Done as a GATED toggle so default builds are byte-for-byte unchanged.
+
+---------------------------------------------------------------------------------
+CHANGE (build_iso.sh, inside the existing TBRIDGE_FAST_AGENT_BUS python hook)
+---------------------------------------------------------------------------------
+- Added `import os`.
+- Wrapped the agent-bus injection in:
+      if os.environ.get("CLAUDE_NO_MCP") == "1":
+          cfg.pop("mcpServers", None)
+          # also strip any per-project mcpServers
+          projects = cfg.get("projects")
+          if isinstance(projects, dict):
+              for _proj in projects.values():
+                  if isinstance(_proj, dict):
+                      _proj.pop("mcpServers", None)
+      else:
+          <existing agent-bus injection, unchanged>
+- WHY-comment in source ties it to fry1547/1548 and marks it a diagnostic toggle.
+- Default behavior (CLAUDE_NO_MCP unset): identical to before -> injects agent-bus. Only CLAUDE_NO_MCP=1 strips MCP.
+
+No other files changed.
+
+---------------------------------------------------------------------------------
+VERIFICATION (dry-run, no image touched)
+---------------------------------------------------------------------------------
+Ran the exact strip logic against a temp copy of $HOME/.claude.json (-> /tmp/cfg_check.json, then deleted):
+  top-level mcpServers: <<absent>>
+  projects still carrying mcpServers: NONE
+=> The toggle removes all MCP servers cleanly. The real ~/.claude.json was NOT modified (only a temp copy).
+
+---------------------------------------------------------------------------------
+NEXT (each its own fry log)
+---------------------------------------------------------------------------------
+- fry1549: clean rebuild with STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 (running now -> /tmp/build_1548.log). Will verify staged /etc/clauth/dot-claude.json has no mcpServers, then record exit + artifacts.
+- then: headed verify run -> user types in the TUI. PASS = keystrokes now accepted/echoed (MCP churn was the wedge). FAIL = look deeper (the openat /proc/self/stat path, or the loop never reaching epoll_wait on fd0 for another reason).
+- separate, still open: add /proc/self/stat to procfs (Claude reads it regardless); Grok's tcp_conn accept-path refs=0 regression.
+
+All per planv3 Rules 1/5/6/12. Written immediately on completion of the build_iso.sh change + dry-run, before the rebuild result.

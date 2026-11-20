@@ -34,7 +34,8 @@ enum tbridgefs_node {
     TBRIDGEFS_NODE_PROC_VERSION,
     TBRIDGEFS_NODE_PROC_CMDLINE,
     TBRIDGEFS_NODE_PROC_STATM,
-    TBRIDGEFS_NODE_PROC_MEM
+    TBRIDGEFS_NODE_PROC_MEM,
+    TBRIDGEFS_NODE_PROC_SELF_STAT
 };
 
 static struct fs_ops procfs_ops;
@@ -79,6 +80,8 @@ static enum tbridgefs_node lookup_proc(const char *path) {
         return TBRIDGEFS_NODE_PROC_CMDLINE;
     if (streq(path, "self/statm"))
         return TBRIDGEFS_NODE_PROC_STATM;
+    if (streq(path, "self/stat"))
+        return TBRIDGEFS_NODE_PROC_SELF_STAT;
     if (streq(path, "version"))
         return TBRIDGEFS_NODE_PROC_VERSION;
     if (streq(path, "self/mem") || streq(path, "3/mem"))
@@ -133,6 +136,7 @@ static char g_cpu_online_buf[32];
 static char g_proc_stat_buf[512];
 static char g_status_buf[2048];
 static char g_statm_buf[96];
+static char g_self_stat_buf[256];
 
 static uint32_t dec_append(char *dst, uint32_t pos, uint32_t cap, uint64_t v) {
     char tmp[24];
@@ -282,6 +286,36 @@ static void statm_regenerate(void) {
     g_statm_buf[pos] = '\0';
 }
 
+static void self_stat_regenerate(void) {
+    /* Linux /proc/self/stat: 52 space-separated fields (man 5 proc).
+     * fry1551: Bun/Node + libuv read this for process state / CPU accounting.
+     * With the file missing, the runtime hot-loops on ENOENT (fry1550: 119
+     * failed opens) and the main thread never returns to the stdin read loop,
+     * so the interactive TUI never consumes keystrokes. Provide a well-formed,
+     * mostly-zero line; the fields that matter (pid, comm, state R, ppid,
+     * priority, num_threads) are real-ish, the long tail is zero. */
+    struct fry_process *cur = proc_current();
+    uint32_t pid = cur ? (uint32_t)cur->tgid : 3;
+    uint32_t pos = 0;
+    /* 1:pid  2:(comm)  3:state */
+    pos = dec_append(g_self_stat_buf, pos, sizeof(g_self_stat_buf), pid);
+    pos = str_append(g_self_stat_buf, pos, sizeof(g_self_stat_buf), " (claude) R ");
+    /* 4:ppid  5:pgrp  6:session */
+    pos = str_append(g_self_stat_buf, pos, sizeof(g_self_stat_buf), "1 ");
+    pos = dec_append(g_self_stat_buf, pos, sizeof(g_self_stat_buf), pid);
+    pos = str_append(g_self_stat_buf, pos, sizeof(g_self_stat_buf), " ");
+    pos = dec_append(g_self_stat_buf, pos, sizeof(g_self_stat_buf), pid);
+    /* 7:tty_nr 8:tpgid 9:flags | 10-13 faults | 14-17 times | 18:prio 19:nice
+     * 20:num_threads 21:itrealvalue 22:starttime */
+    pos = str_append(g_self_stat_buf, pos, sizeof(g_self_stat_buf),
+                     " 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 0 ");
+    /* 23-52 (vsize, rss, ... exit_code): 30 zero fields, newline-terminated. */
+    pos = str_append(g_self_stat_buf, pos, sizeof(g_self_stat_buf),
+                     "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n");
+    if (pos >= sizeof(g_self_stat_buf)) pos = sizeof(g_self_stat_buf) - 1;
+    g_self_stat_buf[pos] = '\0';
+}
+
 static void auxv_regenerate(void) {
     /* Build a minimal ELF auxv for /proc/self/auxv.
      * Format: pairs of uint64_t {type, value}, AT_NULL terminated.
@@ -326,7 +360,14 @@ static void maps_regenerate(void) {
     g_maps_len = 0;
 
     if (!cur || !cur->shared) {
-        const char *fallback = "7fffff800000-800000000000 rw-p 00000000 00:00 0 "
+        /* fry1395: the main-thread stack is the growable window the kernel
+         * honors in lx_try_grow_stack: [USER_VA_TOP-64MB, USER_VA_TOP). The
+         * old 8MB bound (7fffff800000) was WRONG (stack is 16MB eager, grows
+         * to 64MB) -> JSC/WTF reads this for the MAIN thread's GC conservative
+         * stack-scan bound, clamps the scan low end to it, and MISSED roots in
+         * [realSP, 7fffff800000) whenever the stack ran deeper than 8MB ->
+         * live CodeBlocks collected, cells recycled -> numLocals=0 crash. */
+        const char *fallback = "7ffffc000000-800000000000 rw-p 00000000 00:00 0 "
                                "                         [stack]\n";
         for (uint32_t i = 0; fallback[i]; i++) g_maps_buf[i] = fallback[i];
         for (g_maps_len = 0; fallback[g_maps_len]; g_maps_len++);
@@ -394,7 +435,8 @@ static void maps_regenerate(void) {
     }
 
     {
-        const char *stack = "7fffff800000-800000000000 rw-p 00000000 00:00 0 "
+        /* fry1395: full growable main-stack window (see fallback above). */
+        const char *stack = "7ffffc000000-800000000000 rw-p 00000000 00:00 0 "
                             "                         [stack]\n";
         uint32_t sl = 0;
         for (; stack[sl]; sl++);
@@ -447,6 +489,9 @@ static const char *node_text(enum tbridgefs_node node) {
     case TBRIDGEFS_NODE_PROC_STATM:
         statm_regenerate();
         return g_statm_buf;
+    case TBRIDGEFS_NODE_PROC_SELF_STAT:
+        self_stat_regenerate();
+        return g_self_stat_buf;
     case TBRIDGEFS_NODE_PROC_MEM:
         return "";  /* openable, returns 0 bytes — Bun just needs the fd */
     default:

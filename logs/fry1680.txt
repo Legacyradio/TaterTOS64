@@ -1,0 +1,21 @@
+fry1680 — 2026-06-20 16:15 CDT
+STEP: Instrument the futex_wait trace with a user-stack backtrace (code change).
+
+WHY: fry1679 pinned the deadlock to fry_mutex_lock (raw pthread_mutex self-
+  deadlock, single-threaded) but the syscall-stub rip can't name the CPython
+  caller. python3.elf has 16112 symbols, so if I capture the user-stack return
+  addresses I can addr2line the exact call chain and the mutex.
+
+CHANGE (TEMP, extends fry1669/1676 trace; remove before commit):
+  src/kernel/proc/syscall.c native_syscall_dispatch() PYSC block: when
+  num==SYS_FUTEX_WAIT, read the user stack at frame[LX_SYSFRAME_RSP] (index 11)
+  and print every qword in the python3.elf .text range (0x401000..0x900000) as
+  "PYBT[i] 0x...". Guarded by user_buf_mapped(cur,_usp,96*8). 96 qwords up-stack.
+
+BUILD: kernel-only (syscall.c). python3.fry unchanged -> no relink. make +
+  build_iso.sh restage.
+
+NEXT (fry1681): boot headed, run hermes, collect PYBT lines, then
+  `addr2line -f -e python3.elf <addr>...` (or nm -n) to get the call chain ->
+  identify which CPython mutex is re-locked -> fix.
+CLEANUP owed: remove fry1669/1676/1680 PYSC+PYBT trace from syscall.c.

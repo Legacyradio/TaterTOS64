@@ -1,0 +1,11 @@
+fry1843 - CORRECTION TO fry1842 FRAMING: Hermes (native) and TaterBridge are SEPARATE (2026-11-17 14:22:47 CST)
+WHY: Sur's architecture correction, 2026-11-17 14:22 CST, via Marshmallow, file ~/HERMES-CORRECTION-TATERBRIDGE.txt. Append-only; fry1842 is not rewritten.
+WHAT: corrects fry1842 item 5 (scope). The design is two separate things:
+ 1. HERMES = the native on-system coding agent for TaterTOS (python3.fry + /nvme/opt/hermes-agent). This is what the current one focused fix attempt is about.
+ 2. TATERBRIDGE = a whole separate Linux subsystem built specifically to run Claude Code. Reason: Anthropic's terms prevent building a "Claude Code for TaterTOS" by modifying/embedding the original Claude Code, so Claude Code runs as a Linux program through TaterBridge. Its own workstream.
+ Claude Code on TaterTOS was always meant to arrive via TaterBridge, NOT via Hermes. The two were never the same project.
+ Also noted: in my fry1834 and fry1840 I mentioned Tater Bridge only as "the separate path"; I did not conflate them, but HANDOFF_CLAUDE_RUNS.md in the repo covers the TaterBridge/Claude Code work and must not be mixed into Hermes diagnosis.
+SCOPE STANDS: do not modify Claude Code; do not patch the Hermes agent code as the fix; fixes on the TaterTOS runtime side. Keep this attempt on the native Hermes path only. TaterBridge work is pulled in ONLY if the evidence points there; if so it will be logged and flagged in the report.
+WHERE: ~/HERMES-CORRECTION-TATERBRIDGE.txt; logs/fry1842.txt (item 5 superseded by this entry).
+RESULT: recorded; no code changed.
+NEXT: fry1844 = results of the order test (4 fresh-boot runs, harness ~/tatertos-test-20261117/run.sh).

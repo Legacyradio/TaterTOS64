@@ -1,0 +1,62 @@
+# hermes009 — PHASE 2 STEP 8: clock_getres missing from TaterTOS time.h
+Date: 2026-06-17 ~15:00 CDT
+Type: compile fix (Phase 2 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Compile Python/pytime.c — CPython's time abstraction layer. Provides
+monotonic time, wall clock time, and timer resolution queries used by
+the GIL, sleep, profiling, and the time module.
+
+---------------------------------------------------------------------------------
+WHAT HAPPENED
+---------------------------------------------------------------------------------
+ERROR:
+  Python/pytime.c:962:13: error: implicit declaration of function 'clock_getres';
+  did you mean 'clock_gettime'?
+
+---------------------------------------------------------------------------------
+ROOT CAUSE
+---------------------------------------------------------------------------------
+pytime.c uses clock_getres() to query the resolution of CLOCK_REALTIME and
+CLOCK_MONOTONIC. This is used to populate PyClockInfo_t (resolution field)
+returned by time.get_clock_info().
+
+TaterTOS has clock_gettime() (wraps SYS_GETTIME) but never implemented
+clock_getres(). The pyconfig.h from the host probe had HAVE_CLOCK_GETRES
+defined because Linux has it.
+
+---------------------------------------------------------------------------------
+FIX
+---------------------------------------------------------------------------------
+1. src/include/time.h:
+   Added declaration: `int clock_getres(clockid_t clk_id, struct timespec *res);`
+
+2. src/user/libc/time_ext.c:
+   Added implementation:
+     - Returns 1 nanosecond resolution for all clock IDs
+     - (TaterTOS kernel uses HPET/high-precision timers; 1ns is the
+       theoretical resolution)
+
+WHY: Implementing clock_getres is correct and trivial — it just reports
+the timer resolution. The alternative (undef HAVE_CLOCK_GETRES) would
+cause CPython to skip the resolution reporting code paths, losing
+functionality. The kernel's timer is high-precision, so 1ns is accurate.
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+Re-ran pytime.c compile:
+  x86_64-elf-gcc ... -DPy_BUILD_CORE -c Python/pytime.c
+
+Result: ZERO errors. Compiled clean.
+
+---------------------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------------------
+Continue fixing remaining compile errors:
+  - thread.c: pthread_condattr_setclock, pause
+  - traceback.c: dladdr1, RTLD_DL_LINKMAP
+  - perf_jit_trampoline.c: syscall(), SYS_gettid

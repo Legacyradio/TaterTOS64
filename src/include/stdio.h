@@ -87,6 +87,11 @@ int getc_unlocked(FILE *stream);
 #define putc(c, s)     fputc((c), (s))
 int putc_unlocked(int c, FILE *stream);
 
+/* POSIX stdio locking (no-ops — TaterTOS FILE* ops are already thread-safe) */
+void flockfile(FILE *stream);
+void funlockfile(FILE *stream);
+int  ftrylockfile(FILE *stream);
+
 /*
  * File operations.
  */
@@ -139,3 +144,4 @@ int renameat(int olddirfd, const char *old_path, int newdirfd, const char *new_p
 #endif
 
 #endif /* _TATERTOS_STDIO_H */
+#define FILENAME_MAX 4096

@@ -1,0 +1,25 @@
+fry1692 — 2026-06-21 00:25 CDT
+STEP: Register the compiled-but-unregistered C modules (math/_struct/_socket/
+      _ssl/_json/_pickle/array) in CPython's builtin inittab.
+
+WHY: fry1691 screenshot showed "Missing: math/_struct/_socket/_ssl" etc., yet
+  the link line already includes mathmodule.o, _struct.o, socketmodule.o,
+  _ssl.o, _json.o, _pickle.o, arraymodule.o. So they were COMPILED + LINKED but
+  not in Modules/config.c _PyImport_Inittab[] -> import couldn't find them.
+  Verified each .o exports its PyInit_* (nm): all present (incl _ssl stub).
+
+CHANGE: external/Python-3.14.5/Modules/config.c — added extern decls + inittab
+  entries for math,_struct,_socket,_ssl,_json,_pickle,array (before sentinel).
+  These fix the pure-python wrappers that need them: struct/pickle/base64
+  (_struct), socket (_socket), ssl (_ssl), random (math), json (_json).
+  NOTE: _ssl.o is built from src/user/apps/python_stubs/_ssl_stub.c (stub) — it
+  will import but real TLS is limited/stub.
+
+BUILD: config.c -> Modules/config.o recompile + relink python3.fry + restage
+  (kernel/libc unchanged, no OS make needed).
+
+VERIFY (fry1693) — observe screen [[feedback-verify-before-claiming-success]]:
+  run hermes, expect the "Missing modules" list to shrink (math/_struct/_socket/
+  _ssl now import) and SQLITE still OK. Don't claim until seen.
+CLEANUP owed: remove fry1685 FBT (irqdesc.c), fry1688 marker (python.c),
+  fry1690 diag (bootstrap.py).

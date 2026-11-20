@@ -1,0 +1,46 @@
+fry1446 — FIX: file-metadata syscalls claude's CLI needs. fry1445's
+debug log showed ENOSYS on fchmod/utimensat killing the atomic config
+write path, with the startup narrative dying right after — these are
+the gaps standing between setup() and the emitter.
+Date: 2026-06-12 05:50 CDT. Author: Claude (Fable 5).
+========================================================================
+
+CHANGES (rule 6 whys)
+------------------------------------------------------------------------
+src/kernel/proc/linux_compat.h — defines added: fsync(74),
+fdatasync(75), rmdir(84), symlink(88), chmod(90), fchmod(91),
+chown(92), fchown(93), lchown(94), symlinkat(266), fchmodat(268),
+utimensat(280).
+
+src/kernel/proc/syscall.c dispatch:
+- rmdir -> unlinkat(AT_FDCWD, path, AT_REMOVEDIR) — real routing, the
+  native handler already supports AT_REMOVEDIR.
+- fsync/fdatasync -> 0: totfs_write_block writes through synchronously,
+  there is no dirty cache to flush; success is the truthful answer.
+- chmod/fchmod/fchmodat/chown/fchown/lchown/utimensat -> 0 (no-op
+  success): ToTFS v1 has no permission/owner/timestamp model — the
+  native mkdirat already documents "ignores mode". Returning ENOSYS
+  made claude's atomic-write machinery abort; no-op success matches
+  the filesystem's actual contract.
+- symlink/symlinkat -> -EPERM: ToTFS cannot represent symlinks. EPERM
+  is Linux's documented answer for "filesystem does not support" —
+  ENOSYS would advertise a kernel gap and invite retry loops.
+
+statx(332) deliberately NOT implemented: hit once by glibc, which
+falls back to fstat cleanly (proven fry1437-1445). Watch the census;
+implement only if Bun calls it directly.
+
+EXPECTED EFFECT: atomic config write completes; setup() proceeds past
+its first metadata call; either the emitter comes up (stream-json on
+serial, result printed) or the debug narrative extends further and
+names the next gap. Either outcome moves the frontier.
+
+TEST COMMANDS (rule 10): rebuild per rule 12 with STAGE_CLAUDE=1
+CLAUDE_BIN=$HOME/.local/share/claude/versions/2.1.172; boot as fry1432,
+serial to /tmp/s_fry1447.log. Verdict greps:
+  grep -a '"result"' /tmp/s_fry1447.log
+  grep -a "TBWRDATA" /tmp/s_fry1447.log | tail -20
+  grep -a "LINUXSYS: unimplemented" /tmp/s_fry1447.log
+
+STATUS: edits complete; build/boot/verdict is the fry1447 step.
+========================================================================

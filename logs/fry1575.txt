@@ -1,0 +1,36 @@
+# fry1575 - FIX (scheduler self-heal): re-enqueue a STRANDED PROC_RUNNING main thread. Restores the scheduler invariant (RUNNING => current-or-enqueued) for the orphaned claude event-loop thread (fry1574), so it gets scheduled again and the event loop resumes -> stdin is read -> typing works. Also confirms the orphan diagnosis (TBREQUEUE fires iff orphaned).
+Date: 2026-06-16 04:30 CDT
+Type: code change (src/kernel/proc/sched.c, 2 hunks) — FIX attempt + confirmation, in the scheduler tick
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+WHY (Rule 6)
+- fry1574: pid=14 (JS main thread) frozen as PROC_RUNNING but oncpu=0 (not current) with zero userspace catches and no
+  lost-wakeup/timeout -> it is RUNNING yet neither current nor on a runqueue = ORPHANED, so the scheduler never picks
+  it. Invariant violated: a PROC_RUNNING thread must be current[its cpu] or on some runqueue. remove_from_runqueue()
+  changes nothing about state, so some path drops the thread from the rq while it stays RUNNING; the exact drop site is
+  not yet pinned. This restores the invariant in sched_tick so the symptom (frozen event loop -> dead input) is fixed,
+  and proves the orphan theory (the heal only fires if the thread is genuinely orphaned).
+
+CHANGE (src/kernel/proc/sched.c)
+1. + static uint32_t g_tb_requeue_logs;
+2. In sched_tick, after the wake-sleepers loop and BEFORE the cur/rotate block: for the traced main thread (pid==tgid),
+   if state==PROC_RUNNING && !on_cpu && current[its cpu]!=it && it is not found on ANY runqueue -> rq_push it to
+   rq[its cpu] and log TBREQUEUE. Cheap in the common case (early break on state/current); the rq scan only runs in the
+   RUNNING-not-current case. Under g_sched_lock (held in sched_tick). on_cpu guard avoids racing a mid-context-save.
+
+EXPECTED
+- If orphan was the bug: TBREQUEUE fires at the freeze, the main thread runs again, the event loop resumes, read(fd=0)
+  climbs, and TYPING WORKS (echo + Enter submits + Claude responds) — fully networked. Worst-case input lag = up to one
+  tick (1 ms) since the heal runs every tick.
+- If TBREQUEUE never fires yet it is still frozen: the thread is NOT orphaned (e.g. a kernel-mode spin while current) ->
+  redirect (kernel-RIP catch).
+
+CAVEAT (honest): this restores the invariant / heals the symptom; it does NOT yet fix the ROOT drop path. After
+confirming it works, find the exact site that drops a RUNNING thread from the rq (suspects: a remove_from_runqueue
+caller that leaves state RUNNING, or a migration cpu0<->cpu2 that dequeues without re-pushing) and fix that too, then
+this heal can become a pure assert/detector. Keep Claude fully networked. Then re-verify with MCP on + remove the
+TBFD0/TBEPW/TBSPIN/TBMAIN beacons.
+
+NEXT: fry1576 build (CLAUDE_NO_MCP=1), fry1577 verify -> type -> does it stay live now?
+
+All per planv3 Rules 1/5/6/12. Written immediately on the code change, before the build.

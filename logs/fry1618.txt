@@ -1,0 +1,81 @@
+# hermes013 — PHASE 2 STEP 12: Disable PY_HAVE_PERF_TRAMPOLINE (Linux-specific)
+Date: 2026-06-17 ~15:15 CDT
+Type: compile fix (Phase 2 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Compile Python/perf_jit_trampoline.c — Linux perf profiling integration for
+CPython's JIT. Last remaining compile error in Python/*.c directory.
+
+---------------------------------------------------------------------------------
+WHAT HAPPENED
+---------------------------------------------------------------------------------
+ERRORS:
+  perf_jit_trampoline.c:1267:20: error: implicit declaration of function 'syscall'
+  perf_jit_trampoline.c:1267:28: error: 'SYS_gettid' undeclared
+
+---------------------------------------------------------------------------------
+ROOT CAUSE
+---------------------------------------------------------------------------------
+The perf JIT trampoline is a Linux-specific feature that writes JIT code
+metadata to a special file (/proc/self/perf_event_paranoid) so the Linux
+perf tool can profile Python JIT-compiled code. It uses:
+  - syscall(SYS_gettid) — raw Linux syscall to get thread ID
+  - Linux perf event structures
+  - /proc filesystem access
+
+TaterTOS has none of these. The feature is meaningless on TaterTOS:
+  - No /proc filesystem
+  - No perf tool
+  - No syscall() wrapper (TaterTOS uses direct fry_* functions)
+  - No SYS_gettid (TaterTOS has SYS_GETTID but different ABI)
+
+The pyconfig.h had PY_HAVE_PERF_TRAMPOLINE defined from the host Linux probe.
+
+---------------------------------------------------------------------------------
+FIX
+---------------------------------------------------------------------------------
+Changed pyconfig_tater.h:
+  PY_HAVE_PERF_TRAMPOLINE — #define 1 → #undef
+
+WHY: The perf trampoline is a Linux kernel profiling feature. TaterTOS
+doesn't have the perf subsystem, /proc filesystem, or raw syscall() ABI.
+Disabling it is the correct fix — CPython compiles perf_jit_trampoline.c
+as an empty file when PY_HAVE_PERF_TRAMPOLINE is not defined (the entire
+file body is inside #ifdef PY_HAVE_PERF_TRAMPOLINE).
+
+This is not a shortcut — the feature genuinely doesn't apply to TaterTOS.
+Implementing syscall() and SYS_gettid would just be adding stubs for a
+feature that can never work without the Linux perf subsystem.
+
+Copied updated pyconfig_tater.h to pyconfig.h.
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+Re-ran perf_jit_trampoline.c compile:
+  x86_64-elf-gcc ... -DPy_BUILD_CORE -c Python/perf_jit_trampoline.c
+
+Result: ZERO errors. Compiled clean (file is effectively empty with the
+macro disabled).
+
+---------------------------------------------------------------------------------
+MILESTONE: All Python/*.c files now compile
+---------------------------------------------------------------------------------
+All non-platform-specific, non-generated Python/*.c files compile clean:
+  pylifecycle.c, ceval.c, pythonrun.c, thread.c, pytime.c,
+  fileutils.c, initconfig.c, traceback.c, and 80+ others.
+
+Skipped (platform-specific, not needed):
+  dynload_hpux.c, dynload_win.c, dynload_shlib.c, emscripten_*.c
+
+Pending (generated files, need CPython build tools):
+  bytecodes.c, frozen.c, optimizer_bytecodes.c
+
+---------------------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------------------
+Compile Objects/*.c and Parser/*.c directories. Then tackle the generated
+files and Modules/*.c (posixmodule.c, socketmodule.c, etc.).

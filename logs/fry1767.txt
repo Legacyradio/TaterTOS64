@@ -1,0 +1,36 @@
+fry1767 — verify boot of the fry1764 attempt: INEFFECTIVE, wrong layer — 2026-06-26
+==========================================================================
+WHAT: Booted the fry1766 ISO to verify the eager-commit fix. Result: the churn
+PERSISTS. The fry1764 change was on the WRONG path. No functional regression.
+
+BOOT: launch_debug.sh, serial -> /tmp/fry1767_serial.log (bg task bfmmudfvv).
+Desktop up fast. Zack typed `hermes`.
+
+THE TRAP I NEARLY FELL INTO: an early serial snapshot read 141 churn-VA commits /
+856 total and Zack said it "seemed quicker" — I almost called the win there. Kept
+watching per verify-before-claiming. The counts kept CLIMBING:
+   final-ish: churn VA 0x1000003a1000 = 1201 (heading back to the old 1402),
+   total VM COMMIT OK = 2649 (heading to ~2927). The 141/856 was just mid-boot.
+=> The churn is UNCHANGED. shot1767.png / shot1767b.png show the report rendering
+identically (no regression: Missing 1=_ssl, FS/SQLite/socket/pydantic/hermes_*
+all OK), just as slow.
+
+ROOT-CAUSE CORRECTION: "VM COMMIT OK" is printed by vm_commit_private_pages, which
+the Linux-compat LNX_mmap path I edited does NOT call (it uses lx_map_one). It is
+called by vm_map_anon_private_region — the NATIVE FRY SYS_MMAP path (case at
+syscall.c:9076 -> 9107). python3.fry is built for the native tatertos ABI, so it
+issues NATIVE SYS_MMAP, never the Linux-compat mmap. I patched the compatibility
+layer (TaterBridge, for closed binaries like Claude Code) — irrelevant to native
+hermes. Confirmed by Zack: hermes MUST be 100% native, no compat layer ever.
+
+ALSO confirmed while here: lx_try_demand_page is NOT gated to any compat layer —
+it fires for every user #PF (irqdesc.c:530, vector==14 && CPL==3) and only checks
+region kind/prot. user_buf_accessible (syscall.c:1361) already demand-faults lazy
+pages on the syscall boundary. So the native path CAN be made demand-paged using
+the existing native handler.
+
+(Side note: serial showed "USER FAULT pid=7" = SMOKETEST.FRY, a separate process,
+NOT python pid=10. Unrelated to this work.)
+
+NEXT (fry1768): revert the compat-layer edits; fix the NATIVE path
+(vm_map_anon_private_region) to be zero-fill-on-demand.

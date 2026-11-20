@@ -616,7 +616,16 @@ static int ramdisk_should_load_name(const CHAR16 *name) {
            char16_suffix_ieq(name, ".so.1") ||
            char16_suffix_ieq(name, ".so.2") ||
            char16_suffix_ieq(name, ".so.6") ||
-           char16_suffix_ieq(name, ".RUN");
+           char16_suffix_ieq(name, ".RUN") ||
+           /* glibc resolver config (/etc): resolv.conf, nsswitch.conf,
+            * host.conf via .conf; hosts by exact name; TLS trust root
+            * /etc/ssl/certs/ca-certificates.crt via .crt (fry1397). */
+           char16_suffix_ieq(name, ".conf") ||
+           char16_suffix_ieq(name, ".crt") ||
+           /* claude OAuth session files (/.claude.json,
+            * /.claude/.credentials.json) — fry1409 */
+           char16_suffix_ieq(name, ".json") ||
+           char16_ieq_lit(name, "hosts");
 }
 
 static int ramdisk_path_append(CHAR16 out[260], const CHAR16 *base, const CHAR16 *name) {

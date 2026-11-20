@@ -1,0 +1,34 @@
+fry1681 — 2026-06-20 21:15 CDT
+STEP: Symbolized the deadlock backtrace -> ROOT CAUSE = SQLite recursive mutex
+      on TaterTOS's non-recursive pthread_mutex. FIX applied.
+
+EVIDENCE: fry1680 PYBT user-stack walk from the futex_wait, symbolized vs
+  python3.elf (nm -n):
+    0x40c71e pthread_mutex_lock+0xe        <- blocks (fry_mutex_lock state==2)
+    0x7d9149 sqlite3_initialize.part.0+0x99
+    0x7d9376 sqlite3_initialize.part.0+0x2c6   <- appears TWICE = re-entry
+    0x866ed4 module_exec+0x24
+    0x5f7d96 PyModule_ExecDef+0x96
+    0x4ba290 _imp_exec_builtin+0x60        <- importing the _sqlite3 builtin
+    0x431dc0 _PyEval_EvalFrameDefault
+  (lower frames 0x41b030.. are stale stack garbage, ignore.)
+
+ROOT CAUSE: Python3.mk SQLITE_CFLAGS had -DSQLITE_THREADSAFE=1, so SQLite
+  allocates SQLITE_MUTEX_RECURSIVE mutexes (pthread_mutexattr_settype
+  PTHREAD_MUTEX_RECURSIVE) and sqlite3_initialize() re-enters its static-init
+  mutex (it is documented re-entrant via recursive mutexes). TaterTOS's
+  pthread_mutex is a plain 3-state futex mutex (fry_mutex) that IGNORES the
+  recursive attribute (pthread_mutex_t is only {uint32_t state}; no owner/count)
+  -> the same thread re-locking a held mutex self-deadlocks (single-threaded).
+
+FIX: src/.../Python3.mk SQLITE_CFLAGS: SQLITE_THREADSAFE 1 -> 0. SQLite's
+  recommended config for single-threaded embedding; removes ALL mutex calls, so
+  no recursive re-lock. Correct here (CPython on TaterTOS is single-threaded).
+  (Deferred/cleaner-later option: real recursive pthread mutexes, but that needs
+  widening pthread_mutex_t which is embedded in CPython's PyThread lock -> ABI
+  churn; not worth it for a single-threaded port.)
+
+BUILD: recompile sqlite3.o (SQLITE_CFLAGS changed) + relink python3.fry + restage.
+VERIFY (fry1682): boot headed, run hermes -> expect import to pass _sqlite3 and
+  reach the PYTHON ENVIRONMENT banner / bootstrap output.
+CLEANUP owed: remove fry1669/1676/1680 PYSC+PYBT trace from syscall.c.

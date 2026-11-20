@@ -1,0 +1,14 @@
+fry1513 - add explicit no-GUI-regression rule to planv3
+
+Root cause:
+- The existing rules required TaterWin protocol compliance, but did not state loudly enough that the boot GUI itself is protected from regression.
+- Recent Claude/Tater Bridge work replaced the requested visible desktop path with a kernel/serial/prompt-only path and later left src/user/gui/gui.c as a placeholder.
+
+Change:
+- Added a large RULE ZERO banner at the top of planv3.txt:
+  DO NOT REGRESS THE GUI.
+- The rule explicitly protects the real interactive TaterWin desktop: taskbar, icons, mouse cursor, mouse input, windows, app launcher, and GUI app protocol support.
+- It also forbids replacing the GUI with serial-only, framebuffer-placeholder, kernel autorun, prompt-only, headless, or raw-shell takeover paths unless the user explicitly asks for that diagnostic mode.
+
+Why:
+- Every future TaterTOS work session needs to see this before any implementation details.

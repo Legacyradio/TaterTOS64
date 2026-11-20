@@ -1,0 +1,7 @@
+# fry1593 - BUILD: rebuild with batched demand-paging + cheap tool-path redirect (fry1592) + busybox staged
+Date: 2026-06-16 ~16:30 (host clock) CDT
+Type: build (Rule 12)
+COMMAND: make clean && STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 LINUX_SHELL_BIN=.../busybox CLAUDE_BIN=.../2.1.177 ... bash build_iso.sh (bg -> /tmp/build_1593.log)
+RESULT: EXIT 0 clean. No errors. syscall.o @ 16:29; ISO+NVMe @ 16:30. busybox staged.
+NEXT (fry1594 verify): boot -> claude -> TYPE. Expect RESPONSIVE typing (page-in ~16x faster). Compare serial: TBDPF count should be much lower for the same work; read(fd0) should climb as input is consumed; the prompt should react. If responsive, the freeze is solved at the root; then finish the shell tool (stdout flow).
+All per planv3 Rules 1/5/6/12.

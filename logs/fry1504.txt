@@ -1,0 +1,76 @@
+fry1504 — 2026-06-14 13:10 CDT (18:10 UTC). Author: Claude (Opus 4.8).
+STEP TYPE: LOW-PERTURBATION TRACER + REPRODUCE + CAPTURE. Built an in-memory futex-event ring,
+reproduced the sock=64 deadlock, and captured the futex stream at the wedge. Continues fry1503.
+Per Zack's pick: "catch the lost wake" (root-cause first, not the band-aid).
+
+=== CODE CHANGE (why) ===
+Reverted the 3 fry1503 SERIAL beacons in syscall.c (back to baseline; verified identical to
+/tmp/syscall.c.pre-fry1503.123132) — serial latency perturbs timing and could mask the race.
+Added to src/kernel/proc/sched.c (snapshot /tmp/sched.c.pre-fry1504.*) a MEMORY-ONLY ring:
+  - struct fxr_evt ring (1024) recording claude futex BLOCK-enqueues (woke=-1) and WAKE calls
+    (woke=count; woke=0 = a wake that found NO waiter = lost-wake smoking gun). Recorded under
+    the g_sched_lock both sites already hold (no serial in the hot path).
+  - Scoped to the RUNTIME claude tgid g_tb_trace_claude_tgid (the file's hardcoded
+    TB_TRACE_CLAUDE_TGID==3 macro is STALE — real claude tgid is 5; this also means the existing
+    TBCLK t3 census counts the wrong process). Heartbeat keys (low16 e8c8/e880) excluded.
+  - Wedge detector in the 5s TBCLK census (BSP only): own scan on the runtime tgid; if claude
+    worker threads parked (cwait>=3, crun<=1) AND g_fxr_wake_seq frozen across 2 censuses, dump
+    the ring to serial ONCE (FXRDUMP). This fires near the cascade ONSET.
+Build: incremental make (sched.c + syscall.c→baseline, no header) compiled CLEAN (fixed one real
+issue: my now_ms fwd-decl had to be `static` to match the file's static def). Staged ISO/NVMe.
+
+=== REPRODUCED ===
+Run: KVM q35 -smp 4, e1000 NIC, FRY_SOCK_MAX=64. Serial logs/fry1504_fxring.serial.log (32929 ln).
+Deadlocked (NO init/success) — confirms fry1503's success was a lucky/timing-masked pass; the
+memory-only ring did NOT prevent the wedge. FXRDUMP fired once: claude_tgid=5 idx=1703 wake_seq=524
+cwait=11 crun=1 now=172786.
+
+=== CAPTURED EVIDENCE — it is a LOST-WAKE CASCADE on glibc condvar futexes ===
+- 291 woke=0 wake-misses in the ring: FUTEX_WAKEs firing with NO waiter present, clustered on
+  tightly-spaced glibc-internal keys (e4960988 / e4974b50 / e49609d0 / e4984fd0 / ee690408 ...,
+  4-byte-adjacent = fields of pthread_cond_t/mutex structs).
+- Last-event-per-claude-thread at the wedge: nearly every worker/JS thread ends on a BLOCK never
+  followed by a wake — pid10(ee690454), pid12&15(62661cc threadpool), pid31(e49609d4),
+  pid32(e4974b50), pid33(e4984fd0). The main thread pid5 was last WOKEN at ms166119 then quiet.
+  e.g. pid32: block e4974b50 @166094 → (woken, ran) → block @166563 → NEVER woken again.
+- Threadpool key 62661cc: workers cycle woken→work→block normally until pid12's block @167714,
+  after which 62661cc gets ZERO further events. One earlier 62661cc woke=0 miss @159145 (recovered).
+
+=== WHAT IS PINNED vs NOT ===
+PINNED: the deadlock is a missed-wakeup CASCADE — claude worker/JS threads end blocked on glibc
+cond/mutex futexes whose wakes and final blocks miss each other; the main thread then has nothing
+to drive and the process freezes (heartbeat pid6 + subprocess pid25 continue briefly).
+NOT a one-line kernel bug (ruled out this step):
+  - block path sched_block_futex: correct (enqueue under g_sched_lock + word-RECHECK at the commit,
+    sched.c:628) — closes the classic wake-before-enqueue race for single-word futexes.
+  - wake path sched_wake_futex: correct (same g_sched_lock, key+bitset match).
+  - futex ops are IMPLEMENTED, not stubbed: WAIT/WAIT_BITSET/WAKE/WAKE_OP(all cmp+set/add/or/andn/
+    xor)/CMP_REQUEUE(sched_requeue_futex). bitset on the stuck waits = ffffffff (no bitset mismatch);
+    keys match exactly (80056fbbe4974b50 wait == wake).
+LIKELY ROOT: a subtle SMP race in glibc's MULTI-WORD condvar protocol (two groups g1/g2,
+__g_signals[2], __wseq) that uses FUTEX_CMP_REQUEUE / FUTEX_WAKE_OP — where a group switch or a
+requeue races such that a waiter is left on a word that the kernel requeue/wake path strands.
+The single-word RECHECK can't catch a wake that corresponds to a DIFFERENT word/group than the
+waiter rechecks. NOTE: many cond waits are TIMED (timeout_ms=10000) and self-heal; the PERMANENT
+deadlock requires a thread settling into an INFINITE wait (timeout=0 → UINT64_MAX, e.g. the
+62661cc workers and a pid32 expected=12 timeout=0 wait) whose wake is lost.
+
+=== TWO FIX PATHS (Zack's call — see chat) ===
+A. DEEPER PIN (true fix): instrument sched_requeue_futex + FUTEX_WAKE_OP + the cond group words
+   (record requeue from/to keys and which waiters move) and reproduce again to catch the exact
+   stranded requeue/group-switch. Then fix that path. Highest correctness; more iterations.
+B. BOUNDED SAFETY RE-POLL (deterministic ship): cap the no-timeout (UINT64_MAX) futex/wait blocks
+   at e.g. 200ms so ANY lost wake self-heals on the next recheck within 200ms. Now JUSTIFIED (not
+   a band-aid): the kernel paths are provably correct, many cond waits are already timed, and a
+   bounded retry is the standard robustness mechanism against inherent futex wake/wait races.
+   Negligible latency (lost wakes are rare — one fatal lost wake per deadlock), and it converts the
+   Heisenbug into deterministic green. Recommend B to ship reliability now, A as follow-up.
+
+=== STATE / RULES ===
+- Modified: src/kernel/proc/sched.c (ring + wedge dump). syscall.c reverted to baseline.
+  process.c untouched. Snapshots in /tmp/{syscall,process,sched}.c.pre-*.
+- FRY_SOCK_MAX=64. Codex co-edits syscall.c/process.c (NOT sched.c today) — serialize.
+- Ring scoping caveat: g_tb_trace_claude_tgid is mutable and briefly got set to a subprocess tgid
+  (24 → keys 0x8018...) so a few non-claude events leaked into the ring; the 0x8005...62661cc and
+  cond-key data is clean. If kept, pin scoping to the first-set claude tgid.
+- QEMU killed; serial preserved. Build/run template: HANDOFF_rg_fix_2026-06-13.md.

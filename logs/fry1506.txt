@@ -1,0 +1,64 @@
+fry1506 — 2026-06-14 18:30 CDT (23:30 UTC). Author: Claude (Opus 4.8).
+STEP TYPE: FIX + VERIFY. Closed the wait4/proc_free missed-wakeup race that caused the sock=64
+claude-in-TaterTOS deadlock. 3/3 uninstrumented green runs. Continues fry1500-1505. Path A (true
+fix, per Zack — not the bounded-repoll band-aid).
+
+=== ROOT CAUSE (from fry1500-1505) ===
+The sock=64 / -smp4 deadlock (9/9 runs fry1491-1499) was a missed-wakeup RACE in the pid-wait
+(wait4) path. claude's main thread (pid5), after a kill->ESRCH on an already-gone rg/sh subprocess,
+calls wait4 to reap it. process_wait4 (process.c) checked the child's ZOMBIE/DEAD state with NO
+lock, then blocked on an INFINITE wait (wake_time=UINT64_MAX). The waker, proc_free, marked the
+child DEAD + woke PROC_WAITING pid-waiters also with NO lock — and g_sched_lock is private to
+sched.c, so process.c could not synchronize. On -smp4 the child's exit could land between the
+waiter's check and its block => the wake found no PROC_WAITING waiter and was lost => pid5 hung
+forever => its threadpool/JS workers all parked (62661cc etc.) => whole-process freeze (only pid6
+heartbeat + a subprocess continued). Confirmed Heisenbug: ANY added serialization (serial beacons
+fry1503, or fxr_rec_sys taking g_sched_lock fry1505) shifted timing and the run SUCCEEDED instead
+(2/2 instrumented green vs ~10/10 uninstrumented deadlock) — the signature of a tight wake/wait race.
+
+=== THE FIX (close the race; both sides under g_sched_lock) ===
+sched.c (new helpers, declared in sched.h):
+  - sched_pidwait_arm(caller, target): under g_sched_lock, re-check target reapable; if ZOMBIE/DEAD/
+    gone return 1 (caller re-loops to reap, does NOT block); else atomically arm caller PROC_WAITING
+    (wait_pid=target, UINT64_MAX) and return 0 (caller yields). Mirrors sched_block's
+    remove_from_runqueue + by-pid fallback for the running-task case.
+  - sched_pidwait_exit(target): under g_sched_lock, mark target DEAD + wake its PROC_WAITING
+    pid-waiters via wake_runnable_locked.
+process.c:
+  - process_wait4: replaced the unlocked check + sched_block with: if (sched_pidwait_arm(cur,pid))
+    continue; else sched_yield(). The loop's top re-scan reaps when woken.
+  - proc_free: replaced the inline unlocked "set DEAD + scan/wake pid-waiters" with
+    sched_pidwait_exit(pid). (wake_joiners + the rest of teardown unchanged.)
+Both sides now serialize on g_sched_lock => the exit is either SEEN by the arm (reap, no block) or
+lands AFTER the arm (wake hits the PROC_WAITING waiter). PROVABLY race-closing — so post-fix greens
+reflect the fix, not perturbation luck. Scoped to the pid-wait/wait4 path only; SYS_THREAD_JOIN
+left as-is (claude uses futex-based pthread_join, not the native join).
+
+=== VERIFICATION (uninstrumented — all diagnostic scaffolding removed first) ===
+Restored syscall.c + sched.c to clean baselines (removed the fry1504/1505 fxr ring, wedge-dump,
+fxr_rec_sys) and process.h (removed the decl), so ONLY the fix remains. Build clean (header edit ->
+forced full kernel recompile). Fresh-staged ISO/NVMe each run.
+  run1 (logs/fry1506_fix_run1.serial.log): GREEN — init+success, "Hello from TaterTOS — where
+        potatoes power your operating system today!", TBEXIT pid5 code=0, sock/pipe drained to 0.
+  run2 (fry1506_fix_run2): GREEN — "...power your computing dreams today!", clean exit.
+  run3 (fry1506_fix_run3): GREEN — init+success, clean exit, EVEN THROUGH a ToTFS
+        "Config file corrupted, resetting to defaults" hiccup (known atomic-rename EIO; non-fatal).
+3/3 green at sock=64 / -smp4 — the exact regime that was 9/9 DEADLOCK pre-fix. ~0.1% by luck; with
+the structural proof, high-confidence fixed. Stopped at 3 to conserve Anthropic quota (a five_hour
+rate_limit_event appeared, status still "allowed").
+
+=== TREE STATE (uncommitted) ===
+Fix files: src/kernel/proc/sched.c (sched_pidwait_arm/exit), src/kernel/proc/sched.h (2 decls),
+src/kernel/proc/process.c (process_wait4 + proc_free). syscall.c, process.h at baseline (clean).
+Pre-edit snapshots: /tmp/{syscall,process,sched}.c.pre-*. FRY_SOCK_MAX=64.
+Codex co-owns syscall.c/process.c — this session modified process.c (proc_free + process_wait4) &
+sched.c/sched.h; serialize/coordinate before Codex re-edits those.
+
+=== WHAT THIS UNLOCKS / NEXT ===
+sock=64 was the rg-enabled regime (FRY_SOCK_MAX 16->64 fixed rg's socketpair starvation, fry1482-
+85) that previously deadlocked. With the race fixed, claude now runs to a full green result at
+sock=64 reliably => rg/Grep tooling is unblocked AND claude completes. Suggested next: a run with a
+baked prompt that forces a Grep tool call over an in-OS dir to prove rg end-to-end (fry1485 step 4).
+Optional cleanup: the fry1504/1505 instrumentation is already reverted; nothing to strip. The
+glibc-cond multi-word futex wake-misses (fry1504, 291x) were NORMAL pthread behavior, not the bug —
+do not chase them.

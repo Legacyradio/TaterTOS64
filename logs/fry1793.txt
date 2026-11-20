@@ -1,0 +1,75 @@
+fry1793 — ROOT CAUSE of the fry1792 fault: STALE OBJECTS (Makefile has no header deps) — 2026-08-07
+==========================================================================
+WHAT: Root-caused the fry1792 `fry_tls_get` fault. It is NOT a code defect and
+NOT the fry1790 per-thread TLS logic. It is a BUILD defect: the Makefile tracks
+no header dependencies, so the fry1790 change to `struct fry_process_shared`
+(in process.h) relinked a kernel built from objects compiled against TWO
+DIFFERENT struct layouts. No source changed this step.
+
+CONTROL EXPERIMENT (Zack ran it in the live VM, serial /tmp/fry1792_serial.log):
+  `python3 -c "print(1)"`  ->  pid=10, argc=3, `-c`
+  !EXC RIP=0x0040350E CR2=0x20 rax=0x8 rbx=0x2 rdi=0x2   (serial :495-500)
+  BYTE-IDENTICAL to the `hermes` fault at pid=9 (:70-75). Different process,
+  different CR3, SAME rax=8.
+  => the failure is NOT agent-specific and NOT argv-specific: ANY launch of
+     python3.fry dies at the first fry_tls_get. And rax=8 is DETERMINISTIC
+     across processes, so it is a code path, not random corruption.
+
+ROOT CAUSE (mtime evidence, conclusive):
+  src/kernel/proc/process.h   modified 2026-06-26 20:09:24   <- fry1790
+  src/kernel/proc/process.o   built    2026-06-26 20:12:21   NEW layout
+  src/kernel/proc/elf.o       built    2026-06-26 20:12:22   NEW layout
+  src/kernel/proc/syscall.o   built    2026-06-26 14:55:36   OLD layout (-5h)
+  src/kernel/proc/sched.o     built    2026-06-20 12:45:41   OLD layout (-6d)
+  651 of 654 total .o files are OLDER than process.h.
+
+  Makefile rule is a bare `%.o: %.c` (Makefile:269) with NO -MMD/-MP and no
+  header prerequisites anywhere. Editing a HEADER therefore rebuilds NOTHING.
+  Only process.c and elf.c were edited in fry1790, so only their objects were
+  recompiled; everything else was relinked stale.
+
+  fry1790 added to `struct fry_process_shared`:
+      struct fry_tls_template tls_tmpl;   /* process.h:140 */
+      uint64_t tls_thread_next;           /* process.h:141 */
+  `struct fry_process_shared owned_shared;` is embedded BY VALUE inside
+  `struct fry_process` (process.h:207), and `user_fs_base` sits AFTER it
+  (process.h:214). Growing the shared struct shifts user_fs_base and every
+  field below it.
+
+  => process.c WRITES p->user_fs_base at the NEW offset (process.c:992).
+     syscall.c READS cur->user_fs_base at the OLD offset (SYS_GET_TLS_BASE,
+     syscall.c:8546) and sched.c LOADS it at the OLD offset on every context
+     switch (sched.c:1135). The read lands on a neighbouring field = 8.
+     Deterministic. Exactly matches rax=8 -> 8 + 8 + key(2)*8 = 0x20 = CR2.
+
+  This also explains why fry1788 worked with this SAME python3.fry binary
+  (17:32:22, unchanged since): before the header edit, every object agreed on
+  the layout.
+
+THEORIES ELIMINATED THIS STEP (with evidence, so they are not revisited):
+  - BSS overflow from the grown struct: .bss ends phys 0x5B73870, .stack starts
+    0x5C00000 = 575KB headroom. Not close. Kernel selftest 106/0 passes.
+  - A launch path that forgets user_fs_base: SYS_SPAWN_ARGS (syscall.c:9464)
+    -> process_launch_args -> sets it correctly (process.c:992). That handler
+    simply prints no SPAWN_OK, which is why pid 9/10 had no SPAWN_OK line.
+  - Agent/argv specificity: disproven by the python3 -c control.
+  - fry1790 per-thread TLS logic being wrong: the process dies before it ever
+    spawns a second thread, so that code never runs. STILL UNVERIFIED, but not
+    implicated in this fault.
+
+SCOPE WARNING: the kernel.elf currently in the ISO (20:22:46) is linked from
+mixed-layout objects. EVERY code path touching struct fry_process or
+struct fry_process_shared in a stale TU is suspect, not just TLS. Any result
+read off this kernel is unreliable.
+
+NEXT (fry1794, PROPOSED — awaiting Zack's go-ahead):
+  1. `make clean` + full kernel rebuild (no source edits) -> every object
+     compiled against one layout. Verify BUILD_EXIT=0 + fresh kernel.elf mtime.
+  2. build_iso, boot, run `python3 -c "print(1)"` first (fast control), then
+     `hermes`. Expect the 0x40350e fault to be GONE.
+  3. Only then is the fry1790 per-thread TLS fix actually testable against the
+     original `_PyThreadState_Attach` abort.
+  SEPARATE FOLLOW-UP (real defect, own step): the Makefile needs header
+  dependency tracking (-MMD -MP + `-include $(DEPS)`), or this silently
+  recurs on every future header edit. This is very likely the cause of past
+  "impossible" regressions on this project.

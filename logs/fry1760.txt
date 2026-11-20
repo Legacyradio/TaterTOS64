@@ -1,0 +1,24 @@
+fry1760 — native hermes: stage select-fixed python3.fry + rebuild ISO — 2026-06-26
+==================================================================================
+WHAT: Stage the fry1759 python3.fry (14717672 bytes, with select/_heapq/_bisect/
+_queue) into the disk image and rebuild the boot ISO.
+
+STEPS:
+  1. Killed running QEMU (pid 288113) to free out/tater_nvme.img.
+  2. MISTAKE/LESSON: ran `bash build_iso.sh` ~1s after kill, while the gtk QEMU
+     had NOT yet released the NVMe image -> totcopy/xorriso contention -> the
+     command HUNG and hit my 10-min timeout (exit 143). The ISO was left partial.
+  3. Confirmed QEMU fully exited (pgrep qemu-system-x86_64 = none), THEN re-ran
+     `bash build_iso.sh` clean -> EXIT=0.
+
+RESULT (verified by file state, not yet on screen):
+  - totcopy: python3.fry -> /apps/python3.fry (inode 33, 14717672 bytes).
+  - stdlib + hermes (incl. _pytest/site-packages) re-staged into tater_nvme.img.
+  - out/tatertos64v3.iso rebuilt 06-26 09:18, 164825088 bytes.
+
+LESSON (added to handoff): QEMU MUST be confirmed dead (pgrep) BEFORE build_iso.sh,
+because the kill is slow under -display gtk. Never chain `kill <pid>; build_iso.sh`.
+
+NEXT (fry1761+): boot launch_debug.sh, Zack types `hermes`, screenshot the Shell,
+read the hermes_cli.main import line (select fix result — still UNVERIFIED).
+Full state: logs/fry1761_HANDOFF.txt.

@@ -1,0 +1,35 @@
+fry1756 — 2026-06-22 14:50 CDT
+STEP 7: ROOT CAUSE of the persistent "Hermes core FAIL" — it was a BUG IN OUR OWN
+       bootstrap diagnostic, not the agent. Fixed to test the real entry point.
+
+ROOT CAUSE:
+  - tatertos_bootstrap.py tested `import hermes`. There is NO top-level `hermes`
+    module. On disk `hermes` is a 262-byte LAUNCHER script (`from hermes_cli.main
+    import main; main()`), NOT a package. So `import hermes` ALWAYS failed
+    "No module named 'hermes'" — every boot, the whole time.
+  - The REAL entry point (pyproject [project.scripts]): `hermes = "hermes_cli.main:main"`.
+  - shell.c cmd_hermes: `hermes` (no args) -> runs the BOOTSTRAP diagnostic;
+    `hermes <arg>` -> runs the real launcher -> hermes_cli.main:main. Zack kept typing
+    bare `hermes` -> always the diagnostic with the bogus test.
+  - hermes_cli/main.py top-level imports are ONLY stdlib + hermes_cli submodules
+    (config, env_loader, __version__); heavy 3rd-party deps load lazily per-subcommand.
+    So the agent's CORE import has a real shot at succeeding.
+
+FIX (sysroot/opt/hermes-agent/tatertos_bootstrap.py):
+  - Test `import hermes_cli.main` (the real entry) instead of `import hermes`.
+  - `except Exception` (not just ImportError) + print type(e).__name__ so the FIRST
+    real blocker in the agent import chain is visible.
+  - Summary "Hermes core" now keyed on _hermes_ok (the real import), not
+    `'hermes' in sys.modules`.
+  - The "requires additional dependencies / copy from PyPI" block is now GATED behind
+    failure (only prints if core import failed) — it was printing unconditionally.
+
+ALSO verified this step: FS operations [OK] (the RAM-backed /tmp from fry1754/1755
+  works); SQLite OK; pydantic_core OK; socket OK.
+
+DEPLOY: bootstrap is one staged .py — patch it straight into the NVMe image via
+  totcopy (no full build_iso reformat needed): kill VM, totcopy updated bootstrap to
+  /opt/hermes-agent/tatertos_bootstrap.py, reboot.
+STATE: bootstrap fixed locally; pushing to image + rebooting.
+NEXT: boot, run `hermes` -> read the REAL hermes_cli.main result. Either [OK]
+  (core imports!) or the genuine first missing dep/_ssl — then chase THAT. -> fry1757.

@@ -1,0 +1,37 @@
+fry1721 — 2026-06-21 13:55 CDT
+STEP: ✅ TLS PROBLEM SOLVED — VERIFIED. Native CPython (hermes) now fully
+      initializes and RUNS PYTHON CODE. No crash, no fault, no _PyThreadState_Attach
+      fatal. The remaining failure is a normal Python/stdlib PORT gap, not memory.
+
+PROOF (serial /tmp/fry1721_qemu_serial.log): HERMESMAIN -> CPython init -> runs
+  Python. Produces real Python tracebacks (interpreter alive):
+    - line 802: ValueError: unsupported hash type shake_256 (hashlib missing algo;
+      NON-fatal, execution continued).
+    - line 1063 (FATAL, exits to prompt): AttributeError: module 'sys' has no
+      attribute 'abiflags'. Chain: tatertos_bootstrap.py:132 __import__(mod) ->
+      hermes_time.py:25 `from zoneinfo import ZoneInfo` -> zoneinfo/_tzpath ->
+      sysconfig.get_config_var("TZPATH") -> _get_sysconfigdata_name() reads
+      sys.abiflags -> missing -> AttributeError (not caught by hermes_time's
+      `except ImportError`).
+
+WHAT FIXED TLS (the full chain, all now in + verified working together):
+  - kernel elf.c: PT_TLS layout + .tdata copy + fs_base=tp + SELF-PTR at fs:0
+    (fry1709) + HONOR p_align (drop the <16 clamp) (fry1720).
+  - libc.c: struct fry_tls_block tls_base at offset 0 so key slots don't clobber
+    fs:0 (fry1709).
+  - user_linker.ld: declare PT_TLS phdr + collect .tdata/.tbss (fry1720) — THE
+    missing piece; without it the binary had no PT_TLS and the kernel code was inert.
+  Net: __builtin_thread_pointer()=*(fs:0)=tp; _Py_tss_tstate resolves into the TLS
+  region; allocator + thread-state work.
+
+ROOT CAUSE of sys.abiflags gap: sysmodule.c sets it only `#ifdef ABIFLAGS`
+  (-DABIFLAGS='"..."'). Upstream Makefile passes -DABIFLAGS='""' when building
+  sysmodule.c; Python3.mk's CPYTHON_CFLAGS does NOT -> attribute never set. Proper
+  fix: add -DABIFLAGS='""' to the CPython build flags (matches upstream, empty for a
+  release build). Likely a short chain of similar stdlib-config gaps behind it
+  (sysconfig _sysconfigdata, etc.) = the CPython stdlib bring-up phase, distinct from
+  the (now-finished) TLS work.
+
+NEXT: this is a phase boundary (TLS done -> stdlib/config bring-up). Awaiting Zack:
+  push through the stdlib gaps now (start: -DABIFLAGS in Python3.mk), or bank the TLS
+  milestone here. -> fry1722.

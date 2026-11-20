@@ -1,0 +1,97 @@
+# hermes018 — PHASE 2 STEP 17: Apply full Phase 1 gap matrix to posixmodule.c
+Date: 2026-06-17 ~15:35–16:05 CDT
+Type: compile fix (Phase 2 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Compile Modules/posixmodule.c — CPython's POSIX OS interface module.
+This is the largest and most platform-dependent CPython source file
+(17,000+ lines). It wraps the entire POSIX API surface into Python's
+os module. Every missing POSIX function in TaterTOS surfaces here.
+
+---------------------------------------------------------------------------------
+WHAT HAPPENED
+---------------------------------------------------------------------------------
+After fixing headers (steps 1-16), posixmodule.c had 50+ missing function
+declarations across multiple compile attempts:
+
+Missing headers:
+  sys/pidfd.h, sys/sysmacros.h, sysexits.h, sys/times.h, pty.h, utmp.h
+
+Missing functions (from Phase 1 gap matrix):
+  WRAPPERS (wrap existing TaterTOS syscalls):
+    _exit, fchdir, fchown, link, linkat, sync, chroot, chown, lchown,
+    fchownat, fchmodat, nice, utimensat, futimens, futimes, lutimes,
+    symlinkat, fdopendir, pwrite, preadv, pwritev, mkfifoat, mknodat
+
+  STUBS (single-user OS — return 0/ENOSYS):
+    getpgrp, getpgid, setpgrp, killpg, getlogin_r, getgroups, initgroups,
+    getgrouplist, setuid, setgid, seteuid, setegid, setreuid, setregid,
+    setgroups, setns, unshare, getsid, setsid, setpgid, tcgetpgrp,
+    tcsetpgrp, lockf, posix_fallocate, posix_fadvise, fpathconf,
+    pathconf, confstr, getloadavg, setresuid, setresgid, getresuid,
+    getresgid
+
+  UNDEF'd (Linux-specific, no TaterTOS equivalent):
+    HAVE_SYS_PIDFD_H, HAVE_FEXECVE, HAVE_PREADV2, HAVE_PWRITEV2,
+    HAVE_COPY_FILE_RANGE, HAVE_MEMFD_CREATE, HAVE_SYS_RANDOM_H,
+    HAVE_GETRANDOM, HAVE_GETRANDOM_SYSCALL, HAVE_DEV_PTMX,
+    HAVE_GRANTPT, HAVE_LOGIN_TTY, HAVE_OPENPTY, HAVE_POSIX_OPENPT,
+    HAVE_PTSNAME, HAVE_PTSNAME_R, HAVE_PTY_H, HAVE_UNLOCKPT,
+    HAVE_UTMP_H, HAVE_DECL_UT_NAMESIZE, HAVE_UT_NAMESIZE
+
+  ADDED (re-enabled):
+    HAVE_EXECV (was undef'd but TaterTOS has execv in unistd.h)
+
+  ADDED declarations:
+    sched.h:  sched_getparam, sched_setparam, sched_getscheduler,
+              sched_setscheduler, sched_rr_get_interval, SCHED_* macros
+    spawn.h:  posix_spawnattr_setflags/getflags, setpgroup/getpgroup,
+              setschedparam/getschedparam, setschedpolicy/getschedpolicy,
+              setsigdefault/getsigdefault, setsigmask/getsigmask,
+              POSIX_SPAWN_* macros
+    dlfcn.h:  RTLD_NODELETE, RTLD_DEEPBIND, struct link_map, dladdr1
+    unistd.h: 40+ new function declarations + _SC_TTY_NAME_MAX,
+              L_ctermid constant
+
+  New headers created:
+    sys/sysmacros.h — major/minor/makedev macros
+    sysexits.h      — BSD exit code constants (EX_OK etc.)
+    sys/times.h     — struct tms, times() declaration
+    pty.h           — PTY function declarations (stubs)
+
+  struct iovec include fix:
+    Added #include <sys/uio.h> to unistd.h so preadv/pwritev can
+    reference struct iovec without declaring it inline.
+
+WHY: This is the entire Phase 1 gap matrix being applied. posixmodule.c
+exercises the complete POSIX surface — every function TaterTOS doesn't
+have gets exposed here. The stubs return 0 (success) for single-user
+operations (setuid, setgid, etc.) since TaterTOS has one user. The
+undef'd features are Linux-specific (pidfd, getrandom syscall, memfd,
+copy_file_range, PTYs) that require kernel infrastructure TaterTOS
+doesn't have.
+
+HAVE_EXECV was re-enabled because TaterTOS has execv/execve in unistd.h
+(implemented via fry_exec). The gap matrix said "disable fork" — fork
+is disabled, but execv (which replaces the current process) is still
+valid for spawn-style process replacement.
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+Re-ran posixmodule.c compile:
+  x86_64-elf-gcc ... -DPy_BUILD_CORE -c Modules/posixmodule.c
+
+Result: ZERO errors. Compiled clean (3.4s).
+
+This is the hardest file in the entire CPython port — 17,000+ lines
+of POSIX API wrappers. Every gap matrix item surfaces here.
+
+---------------------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------------------
+Fix socketmodule.c (net/ethernet.h). Fix getpath.c (generated header).
+Compile remaining Modules/*.c. Write the Makefile target and attempt link.

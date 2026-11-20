@@ -1,0 +1,19 @@
+# fry1558 - CODE (diagnostic): TBEPW beacon at lx_epoll_wait_fd entry — log which epoll set (epfd) + timeout the caller waits on, to see if the main thread ever re-enters the stdin set (epfd=5) after init
+Date: 2026-06-16 00:40 CDT
+Type: code change (src/kernel/proc/syscall.c, 1 hunk, diagnostic beacon — read-only)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+WHY (Rule 6)
+- fry1556/1557: OS input path is correct (keys delivered, kernel epoll/poll_check_fd accurate, app at REPL). The single remaining fact: the main thread stops polling epfd=5 (the set with fd0) after ~12 startup passes (TBFD0 silent) and busy-loops elsewhere. Need to know WHICH epoll sets the main thread polls after init: does it ever re-enter epfd=5, or only a stdin-less set (e.g. epfd=14)? That decides the fix.
+- Note: disabling Claude traffic is OFF the table (fry1557, Zack). This is a read-only trace; the fix will keep Claude fully networked.
+
+CHANGE (src/kernel/proc/syscall.c, top of lx_epoll_wait_fd, after out[]/n init)
+- Emit: TBEPW pid=<caller> epfd=<n> tmo=<timeout_ms> cnt=<count>
+  Throttled (first 400, then every 128th). Read-only; no epoll logic change. Marked REMOVE-once-fixed.
+
+HOW TO READ (next run, after typing a key)
+- grep TBEPW. If epfd=5 appears repeatedly after init -> the main loop DOES poll stdin's set but isn't reading fd0 (revisit why read isn't issued, despite TBFD0 showing POLLIN). If epfd=5 NEVER appears after init and only another epfd does -> the main loop moved to a stdin-less set; fix = ensure fd0's set stays in the poll rotation / consolidate, or understand why Bun drops epfd=5.
+
+NEXT: fry1559 build (CLAUDE_NO_MCP=1 kept as a diagnostic control — MCP servers are local tools, NOT Claude's model connectivity; input bug already reproduces with MCP off per fry1550, so this only removes subprocess noise; final fix must be verified with MCP on). fry1560 verify run -> read TBEPW.
+
+All per planv3 Rules 1/5/6/12. Written immediately on completion of the code change, before the build.

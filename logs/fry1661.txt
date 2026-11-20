@@ -1,0 +1,35 @@
+fry1661 - CPython POSIX directory adapter for Hermes startup
+Timestamp: 2026-06-19 23:43:21 CDT
+
+Context:
+- Headed QEMU serial log /tmp/fry1662_qemu_serial.log showed native Python
+  failing during importlib startup:
+    Fatal Python error: Failed to import encodings module
+    OSError: [Errno 38] F: '/nvme/usr/local/lib/python3.14'
+- The traceback stopped in importlib._bootstrap_external._fill_cache, which
+  requires opendir/readdir over the stdlib path.
+
+Change:
+- Implemented POSIX opendir/readdir/readdir_r/closedir/rewinddir/telldir/
+  seekdir/dirfd in src/user/libc/posix.c using the existing TaterTOS
+  fry_readdir_ex syscall.
+- Removed the ENOSYS opendir/readdir/closedir/rewinddir stubs from
+  src/user/libc/gap_stubs.c so CPython links against the real directory
+  adapter.
+
+Why:
+- CPython could find the stdlib directory path, but directory enumeration
+  returned ENOSYS. That prevented importlib from seeing encodings/__init__.py
+  and stopped Hermes before its own code ran.
+
+Validation:
+- make src/user/libc/posix.o
+  Result: PASS. Rebuilt posix.o with the main Makefile userland flags.
+- make -f Python3.mk python3
+  Result: PASS. Rebuilt gap_stubs.o, linked python3.elf, and packed
+  python3.fry.
+
+Next:
+- Rebuild the boot image so the refreshed python3.fry and libc changes are
+  staged, then run headed QEMU and check the serial log for the next Hermes
+  startup blocker.

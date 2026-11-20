@@ -1,0 +1,94 @@
+# hermes025 — PHASE 5: Hermes staging + bootstrap
+Date: 2026-06-17 ~17:00 CDT
+Type: staging phase (Phase 5 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Stage Hermes Agent and Python stdlib for TaterTOS64v3 boot testing.
+Phase 5 is NOT a compilation phase — it's the deployment preparation
+that bridges "C code compiles" to "Python runs on TaterTOS."
+
+---------------------------------------------------------------------------------
+STAGING LAYOUT
+---------------------------------------------------------------------------------
+sysroot/
+├── usr/local/lib/python3.14/          CPython 3.14 stdlib
+│   ├── *.py                           2,410 files (52 MB)
+│   └── site-packages/                 22 pure Python packages
+│       ├── openai/ httpx/ rich/ ...
+│       └── pydantic/ requests/ jinja2/ ...
+└── opt/
+    ├── hermes-agent/                  Hermes Agent source
+    │   ├── run_agent.py               Core AI agent loop
+    │   ├── model_tools.py             Tool orchestration
+    │   ├── hermes_state.py            SessionDB (SQLite)
+    │   ├── tools/                     Tool implementations
+    │   ├── skills/                    Skill system
+    │   ├── tatertos_bootstrap.py      Boot validation script
+    │   └── ...                        669 .py files (139 MB)
+    └── README_TATERTOS.md             Quick start guide
+
+---------------------------------------------------------------------------------
+STAGED DEPENDENCIES (22 pure Python packages)
+---------------------------------------------------------------------------------
+openai, httpx, httpcore, rich, tenacity, pyyaml, requests, urllib3,
+jinja2, pydantic, typing_extensions, prompt_toolkit, croniter, markdown,
+certifi, idna, sniffio, anyio, tzdata, pathspec, annotated_types,
+typing_inspection
+
+These were copied from Hermes's venv and are all pure Python — no
+cross-compilation needed.
+
+NOT STAGED (need C extension cross-compilation):
+  pydantic-core (Rust, pydantic dep)
+  Pillow (C, image processing)
+  psutil (C, process info)
+  cryptography (C, PyJWT dep)
+  aiohttp + yarl + multidict + frozenlist (C, async HTTP)
+  cffi, brotli, lxml, numpy
+
+Workaround: Hermes CLI mode uses synchronous HTTP (requests/httpx)
+which are pure Python. Async gateway needs aiohttp (not yet available).
+
+---------------------------------------------------------------------------------
+BOOTSTRAP SCRIPT
+---------------------------------------------------------------------------------
+sysroot/opt/hermes-agent/tatertos_bootstrap.py
+
+Validates:
+  ✓ Python 3.14 environment (version, path, platform)
+  ✓ Stdlib modules (38 built-in modules)
+  ✓ Filesystem operations (write/read/delete)
+  ✓ SQLite3 (in-memory database)
+  ✓ Socket module (hostname check)
+  ✓ Hermes core imports (hermes_constants, hermes_state, etc.)
+
+---------------------------------------------------------------------------------
+TATEROS BOOT PROCEDURE
+---------------------------------------------------------------------------------
+1. Build TaterTOS64v3 kernel + ToTFS image
+2. Copy python3.fry to TaterTOS apps directory
+3. Mount ToTFS on /mnt/totfs
+4. Copy sysroot/usr/ → /usr/, sysroot/opt/ → /opt/
+5. Launch TaterTOS shell
+6. python3 /opt/hermes-agent/tatertos_bootstrap.py
+7. Set OPENAI_API_KEY in environment
+8. python3 /opt/hermes-agent/run_agent.py --provider openai "Hello!"
+
+---------------------------------------------------------------------------------
+BINARY SIZE
+---------------------------------------------------------------------------------
+python3.elf:  7,328,248 bytes (7.33 MB)
+python3.fry:  7,328,264 bytes (7.33 MB)
+Stdlib:          52 MB (2,410 files)
+Hermes source:  139 MB (669 files)
+Staged deps:   ~15 MB (22 packages)
+─────────────────────────
+Total staged: ~214 MB
+
+---------------------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------------------
+Phase 6: Self-hosting dev loop (native compiler on TaterTOS)

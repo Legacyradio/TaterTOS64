@@ -1,0 +1,30 @@
+fry1509 - 2026-06-14 20:26 CDT. Author: Codex.
+
+STEP: Restore visible TaterTOS desktop rendering after the Claude staging work left
+headed QEMU showing only the firmware/TianoCore screen.
+
+ROOT CAUSE FOUND:
+- The QEMU headed command was not the primary problem. The documented headed command
+  used -vga std -display gtk; a RAM bump from 4G to 6G would not make GOP drawing stop.
+- src/kernel/kprint.c deliberately disables framebuffer console output by setting
+  kcon.fb_base = 0, expecting the GUI process to own the screen.
+- src/user/gui/gui.c was still a stub: it queried framebuffer info but never mapped
+  the framebuffer and never painted pixels. So when the Claude boot scaffold was
+  skipped and INIT.FRY spawned GUI.FRY, there was still no real desktop drawing.
+
+CHANGE:
+- Updated src/user/gui/gui.c to call fry_fb_map(), keep the mapped framebuffer, convert
+  RGB for GOP pixel format 0, and paint a visible desktop/background/window surface.
+
+WHY:
+- Restores the actual GUI-side framebuffer owner instead of blaming QEMU arguments or
+  re-enabling noisy kernel debug console output.
+
+VERIFY:
+- make gui
+- Result: gui.elf/gui.fry rebuilt successfully. Only pre-existing libc.h nested-comment
+  warning appeared.
+
+NEXT:
+- Rebuild the ISO without STAGE_CLAUDE and run headed QEMU to confirm pixels appear
+  after INIT.FRY launches GUI.FRY.

@@ -1,0 +1,14 @@
+fry1769 — build kernel with the native lazy-anon-mmap fix — 2026-06-26
+==========================================================================
+WHAT: Built the kernel after the fry1768 source changes (compat reverts + native
+vm_map_anon_private_region demand-paging).
+
+CMD: make kernel
+RESULT: BUILD_EXIT=0. kernel.elf (2618760 bytes) + syscall.o (268648 bytes), both
+mtime 13:00:55 (verified fresh). No errors, no NEW warnings (only the pre-existing
+region_ok / slots / comment ones). vm_commit_private_pages and
+vm_release_private_pages remain referenced by the file-backed map path and mremap,
+so dropping their anon-private call site produced no dead-code warning.
+
+NEXT (fry1770): confirm QEMU dead (bracket-trick check), bash build_iso.sh, verify
+EXIT=0 + fresh ISO mtime.

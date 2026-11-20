@@ -1,0 +1,27 @@
+fry1679 — 2026-06-20 16:05 CDT
+STEP: Verify pthread_getattr_np fix (fry1678) + locate the real deadlock.
+
+RESULT (serial /tmp/fry1679_qemu_serial.log + screenshot /tmp/fry1679_crop.png):
+  * Recursion-limit assert (fry1678) is GONE — pthread_getattr_np EINVAL ->
+    CPython SP fallback worked; python now gets DEEP into startup again.
+  * BUT the import-stage futex deadlock RETURNED, identical to fry1676:
+    24424 PYSC, last = nr=68 futex_wait a1=0x10000089178 expected=2 rip=0x40168e.
+    Screenshot: "/> hermes" then dead cursor, no output, prompt held.
+  * So fry1677 (pthread_self) did NOT fix this deadlock — it only let the
+    fry1678 recursion assert mask it earlier. My pthread_self reentrancy theory
+    was WRONG; keep the fix (still correct/needed) but it's not the cause here.
+  * nr=64 (thread_create)=0, only pid=10 -> genuinely single-threaded waiting
+    on a lock nothing can release.
+
+KEY TOOLING FIX: I had been running nm on python.elf (stale/empty). The real
+  linked binary is python3.elf -> 16112 symbols. rip 0x40168e resolves IN
+  fry_mutex_lock (0x401650-0x4016b0), NOT fry_cond_wait. So the hang is a raw
+  pthread_mutex_lock slow path (state==2) = CPython locking a NON-recursive
+  pthread mutex it already holds (single-threaded self-deadlock on a heap mutex
+  at 0x10000089178).
+
+NEXT (fry1680): add a kernel user-stack walk to the nr=68 PYSC trace (scan
+  user RSP for return addresses in python3.elf .text range), boot, run hermes,
+  symbolize the chain with nm/addr2line python3.elf -> identify the exact
+  CPython call site / which mutex -> fix.
+CLEANUP owed: remove fry1669/1676/1680 PYSC trace from syscall.c before commit.

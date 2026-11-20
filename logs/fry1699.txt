@@ -1,0 +1,27 @@
+fry1699 — 2026-06-21 00:25 CDT
+STEP: Diagnose the pymalloc crash — disasm done; extend crash backtrace to
+      capture the call stack (code change, logged before build).
+
+DISASM of _PyObject_Malloc @ crash (objdump python3.elf 0x6b5bf0..):
+  6b5c02 mov %fs:0x0,%rdx          ; TLS base
+  6b5c0b mov (%rdx-8),%rax         ; rax = __thread current PyThreadState*
+  6b5c0f mov 0x10(%rax),%rax       ; FAULT: rax==0 -> deref (NULL+0x10), cr2=0x10
+  6b5c13 mov 0x29d8(%rax),%rdx     ; -> interp's obmalloc state
+DIAGNOSIS: _PyObject_Malloc reads the current thread state from TLS (fs:-8) and
+  it is NULL — i.e. memory was allocated while NO PyThreadState is attached to
+  this thread. It worked through most of startup (tstate was set), so this is a
+  specific context where tstate is NULL (GIL-released/detached window, or a
+  TLS-setup edge — ties to the no-crt0 theme). Need the call stack to see what.
+
+CHANGE: src/kernel/irq/irqdesc.c exc_kill_current_user() — extend the fry1685
+  FBT user-stack walk to also fire on near-null DATA faults (cr2 < 0x1000), not
+  just near-null rip. Scan 64 qwords, .text range 0x401000..0xa00000. TEMP.
+
+BUILD: kernel-only (irqdesc.c). VERIFY BUILD_EXIT=0 + fresh artifacts BEFORE
+  launch [[feedback-verify-build-before-launch]].
+
+NEXT (fry1700): boot, run hermes, collect FBT chain at the _PyObject_Malloc
+  fault, symbolize vs python3.elf -> identify the caller that allocates with no
+  tstate -> fix. [[feedback-verify-before-claiming-success]]
+CLEANUP owed: fry1685/1699 FBT (irqdesc.c), fry1688 marker (python.c), fry1697
+  diag (bootstrap.py), fake _ssl registration (config.c).

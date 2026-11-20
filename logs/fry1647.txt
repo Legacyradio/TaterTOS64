@@ -1,0 +1,34 @@
+# fry1647 - Rebuild current ISO/NVMe image with color shell
+Timestamp: 2026-06-19 15:02:17 CDT
+Type: clean rebuild + image staging
+
+Commands run:
+  - make -C TaterTOS64 clean
+  - PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" \
+    STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 STAGE_HERMES=1 \
+    LINUX_SHELL_BIN=/home/legacyindieradio/tatertos-shell/busybox \
+    CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.177 \
+    /bin/bash build_iso.sh
+
+Result:
+  - PASS. Full rebuild completed and packaged:
+      out/tatertos64v3.iso
+      out/tater_nvme.img
+  - build_iso.sh copied the rebuilt shell.tot into the NVMe ToTFS image at:
+      /SHELL.TOT
+      /apps/SHELL.TOT
+  - build_iso.sh also staged RCLAUDE.LXE, .claude credentials, /bin/sh, /bin/bash,
+    Python 3.14, and Hermes per staging flags.
+
+Current artifact timestamps:
+  - out/tatertos64v3.iso  2026-06-19 15:01:57 CDT  163876864 bytes
+  - out/tater_nvme.img    2026-06-19 15:01:47 CDT  419430400 bytes
+  - shell.tot             2026-06-19 15:01:14 CDT  159904 bytes
+
+SHA-256 (recorded because this was a user-requested rebuild):
+  - out/tatertos64v3.iso  057f33197bcc9bedffa4d40390d7ca27fc30dc1154659d32897909a9d04be55b
+  - out/tater_nvme.img    899c71b63c5b96a5f5230e21fc36f26f872fd7c62c0b09a27c2948ca0b571132
+  - shell.tot             765f1a5a71624fc815986913001d59c6cb0b28273167ad3fe79813c30f26eba0
+
+Not done:
+  - No runtime boot/GUI/color visual verification in this step.

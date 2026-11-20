@@ -1,0 +1,28 @@
+fry1674 — 2026-06-20 13:45 CDT
+STEP: Verify run #2 (fixed libc relinked into python3.fry) — REBOOT BUG FIXED.
+
+RESULT (serial /tmp/fry1674_qemu_serial.log, 1.13MB, 24389 PYSC):
+  *** CPython 3.14.5 now FULLY BOOTS on TaterTOS. *** Raw serial shows:
+      "Python 3.14.5 (main, Jun 17 2026, ...) [GCC 16.1.0] on unknown"
+      "Type help, copyright, credits or license ..."
+      ">>> "
+  libc selftest also printed "Results: 15 passed, 0 failed".
+  No nr=11, no reboot, machine stayed alive (heartbeat kept ticking). The
+  fry1672 ioctl fix + relink (fry1673) resolved the reported freeze at the root.
+
+NEW ISSUE #1 (why user said "didn't launch"): python dropped into the
+  INTERACTIVE REPL instead of running tatertos_bootstrap.py. Trace shows ZERO
+  nr=61/62 (GET_ARGC/GET_ARGV) -> python never read its args -> argc seen as 0.
+  ROOT CAUSE: user_linker.ld ENTRY(main), no crt0. Kernel stores argv for
+  retrieval via SYS_GET_ARGC/ARGV (setup_process_args -> shared->args_buf); it
+  does NOT pass argc/argv in registers. CPython Programs/python.c main() is
+  upstream-stock (Py_BytesMain(argc,argv)) and never calls fry_get_argc, so
+  argc==0 -> REPL.
+
+NEW ISSUE #2: after the REPL prompt, python took a USER FAULT (pid=10 vec=14
+  cr2=0xc8ff rip=0x6b3593) in the interactive/readline path. Expected to be
+  moot once #1 is fixed (script runs, REPL never entered).
+
+FIX (fry1675): patched Programs/python.c main() to rebuild argc/argv from
+  fry_get_argc/fry_get_argv before Py_BytesMain (32 args max, 512 each). make
+  pattern rule (Python3.mk:197) will recompile python.o; relink + restage.

@@ -1,0 +1,43 @@
+fry1781 — native _ssl module over BearSSL: written, compiles, links — 2026-06-26
+==========================================================================
+WHAT: Replaced the 18-line _ssl stub with a COMPLETE native TLS module backed by
+in-tree BearSSL (no OpenSSL-compat shim). It compiles clean and LINKS into
+python3.fry. Runtime (import ssl + live handshake) is the next gate — NOT yet
+verified; this log covers build only.
+
+NEW FILE: src/user/apps/_ssl/_ssl_bearssl.c (~700 lines). Implements the CPython
+_ssl <-> ssl.py contract over BearSSL's client engine:
+  - Trust-anchor loader: certifi PEM bundle -> br_x509_trust_anchor[] via
+    br_pem_decoder + br_x509_decoder (deep-copied DN + RSA/EC keys; contiguous
+    packed array for BearSSL's stride).
+  - _SSLContext: load_verify_locations(cafile/cadata), _wrap_socket, _wrap_bio,
+    verify_mode/check_hostname/options/verify_flags/min-max getsets, the noop
+    surface (set_ciphers/load_cert_chain/alpn) ssl.py touches.
+  - _SSLSocket: do_handshake/read/write/shutdown/version/cipher/getpeercert/
+    pending + the rest of the 20-method surface. ONE engine-drive loop
+    (ssl_drive) over br_ssl_engine_* serves BOTH the blocking socket fd path AND
+    the non-blocking memory-BIO path (returns SSLWantRead/WantWriteError when the
+    BIO can't proceed) — so sync SSLSocket and async SSLObject share it.
+  - MemoryBIO (read/write/write_eof/pending/eof), SSLSession (opaque).
+  - 7 exception classes + the full constant surface (PROTO_*, HAS_*, VERIFY_*,
+    CERT_*, PROTOCOL_*, HOSTFLAG_*, ENCODING_*, OPENSSL_VERSION*), RAND_bytes via
+    br_hmac_drbg, txt2obj/nid2obj/get_default_verify_paths.
+
+BUILD WIRING (Python3.mk):
+  - CPYTHON_CFLAGS += -Isrc/user/apps/bearssl/inc.
+  - _ssl.o rule now compiles src/user/apps/_ssl/_ssl_bearssl.c (was the stub).
+  - Added BEARSSL_OBJS (the already-built TaterSurf BearSSL objects) to the
+    python3.elf link.
+
+BUILD FIXES this pass: br_x509_pkey member is `.key` (union) not `.key_data`;
+cipher suite via br_ssl_engine_get_session_parameters (no
+br_ssl_engine_get_cipher_suite). Result: make -f Python3.mk python3 EXIT=0,
+python3.fry 14873328 bytes @ 15:35:36 (was ~14.7 MB; grew with BearSSL + _ssl).
+
+KNOWN-INCOMPLETE (honest, to finish before "done"): getpeercert returns {}/None
+(chain validated by the engine, EE DER not retained); get_verified_chain/ALPN/
+shared_ciphers return None; SSLSession not persisted. None block a cert-verified
+request; all get finished/verified against the real agent.
+
+NEXT (fry1782): stage + ISO; boot; verify `import ssl` (bootstrap 36/36) then a
+real cert-verified HTTPS handshake from inside TaterTOS.

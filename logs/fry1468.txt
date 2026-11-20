@@ -1,0 +1,27 @@
+fry1468 - Diagnostic: arg beacons on rt_sigaction + dup2 to pin the
+posix_spawn EINVAL. Finding: rt_sigaction EINVAL is NON-fatal; dup2
+targets stdio with two distinct sources (/dev/null=5 and socket=19).
+Date: 2026-06-13. Author: Claude (Opus 4.8).
+========================================================================
+
+WHY: fry1467 advanced spawn to EINVAL but serial showed "nr=33 unknown"
+with no args; needed exact values, not guesses (no speculative loosening).
+
+CHANGE (instrumentation only): src/kernel/proc/syscall.c
+- TBSIGACT beacon at lx_rt_sigaction_sys entry: sig, sigsetsize, act, old,
+  and which check would reject (BADSIG / KILL/STOP / BADSIZE). Cap 80.
+- TBDUP2 beacon at LNX_dup2 entry: oldfd, newfd, oldfd's kind, is-open.
+  Cap 80.
+
+FINDINGS (serial /tmp/s_fry1468.log):
+- rt_sigaction: captured beacons were all pid=5 "-> ok" (cap eaten by
+  claude startup). Children proceed PAST rt_sigaction to dup2 -> the
+  rt_sigaction EINVALs (SIGKILL/SIGSTOP resets) are NON-FATAL. Not the
+  blocker. Do NOT touch rt_sigaction.
+- dup2 is the blocker, TWO distinct spawn shapes, both target newfd=0/1:
+    rg:        TBDUP2 oldfd=5  newfd=0 kind=1(FD_FILE) open=1
+    agent-bus: TBDUP2 oldfd=19 newfd=0 kind=0(FD_NONE) open=0
+  => rg's /dev/null source exists; agent-bus's fd 19 is NOT in the child.
+
+NEXT: fry1469 (rg dup2(5,0) still returned EINVAL -> fd_path_set fd<3
+guard) and fry1470 (identify fd 19/20). Beacons kept (cheap, gated/capped).

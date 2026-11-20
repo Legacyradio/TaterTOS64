@@ -1,0 +1,25 @@
+fry1686 — 2026-06-20 22:25 CDT
+STEP: FBT run -> diagnosed the NULL-jump as "main returns to null" -> fixed.
+
+FBT RUN (fry1686 serial): the fault-handler stack walk printed the USER FAULT
+  for pid=10 but NO FBT[] lines (no .text return addresses in 48 qwords above
+  user RSP). Combined with the !REG dump (rip=0, rbp=0, rbx=r12=r13=r14=r15=0):
+  this is NOT a deep-call crash. It's `main` RETURNING. ENTRY(main) + no crt0
+  means when Py_BytesMain returns there is nothing to call exit(); `ret` pops a
+  NULL return address off the (zeroed) initial stack -> jump to 0. The earlier
+  munmap-arena burst = Py_FinalizeEx running normally just before main returns.
+  (Empty FBT = stack near rsp is the near-top initial stack = zeros, consistent.)
+
+FIX: external/Python-3.14.5/Programs/python.c main(): capture rc =
+  Py_BytesMain(...) then call fry_exit(rc) (libc.c:997, SYS_EXIT) instead of
+  returning. A native .fry whose ENTRY is main must never let main return.
+
+BUILD: python.c -> python.o recompile + relink python3.fry + restage.
+
+VERIFY (fry1687) — DO NOT ASSUME [[feedback-verify-before-claiming-success]]:
+  boot headed, run hermes, then SCREENSHOT the GUI + read serial to the END.
+  Confirm: (a) no USER FAULT rip=0, (b) clean exit, (c) whether the
+  "PYTHON ENVIRONMENT" banner / bootstrap output actually appears. If it exits
+  clean but prints nothing, the script-not-running question is the next thing to
+  chase (argv delivery was never visually confirmed end-to-end).
+CLEANUP owed: remove fry1685 FBT trace (irqdesc.c) before commit.

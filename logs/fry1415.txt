@@ -1,0 +1,98 @@
+fry1415 — Tater Bridge / Claude Code: DNS frontier reframed — resolver
+worker RETURNS after connect without sending. SESSION WIND-DOWN HANDOFF.
+Date: 2026-06-11 ~2:05 PM CDT. Author: Claude (Fable 5 / Opus 4.8 swaps).
+Follows fry1414. Zack retiring the session here — full state captured.
+========================================================================
+
+THE REFRAME (fry1414 boot trace — decisive)
+====
+- LXEPCTL beacon: ZERO lines. The DNS socket is NEVER registered with
+  epoll. So the send is NOT gated on epoll/poll readiness. (epoll
+  close-purge from fry1413 kept — correct Linux semantics — but it was
+  not the blocker.)
+- pid=5 sequence around the DNS connect (serial /tmp/s.log this boot):
+    LXSOCK socket pid=5 domain=2 type=0x80802 -> fd=17
+    LXCONN  pid=5 fd=17 fam=2 dst=10.0.2.3:53 alen=16 rc=0
+    TBFUTEX wait-begin pid=5 uaddr=0x62661cc expected=1 timeout_ms=10000
+    TBFUTEX wait-return pid=5 uaddr=0x62661cc rc=0 elapsed=4819 (woken)
+    ... then repeats the 10s idle wait.
+- 0x62661cc is in the exe RW PT_LOAD (data/GOT) = a libuv THREAD-POOL
+  work-queue semaphore. pid=5 is a libuv worker; after connect it goes
+  back to IDLE (waiting for the next work item), woken periodically.
+- => getaddrinfo() on the worker RETURNED (or aborted) immediately after
+  connect(), WITHOUT ever sending a DNS query. No send syscall of any
+  kind (sendto/send/sendmsg/sendmmsg/write) fires from ANY pid the whole
+  boot (LXUDP count = 0). connect() to 10.0.2.3:53 returns 0 cleanly.
+
+WHAT THIS RULES IN/OUT
+====
+- NOT epoll, NOT poll readiness, NOT our send path (never reached).
+- The bail is between connect() and the first send INSIDE the resolver.
+- SYS_CONNECT DGRAM is fine: assigns ephemeral local_port, sets
+  remote_ip/remote_port, state=CONNECTED, rc=0 (verified syscall.c ~885).
+  So getsockname()-returns-port-0 is NOT the cause (local_port is set).
+
+RANKED LEADS FOR NEXT SESSION (fry1416+)
+====
+1. WHICH RESOLVER. Determine if claude's DNS is glibc getaddrinfo (libuv
+   uv_getaddrinfo on the worker pool — fits pid=5), Bun's native Zig
+   resolver, or bundled c-ares. Trace the worker's syscalls between
+   connect and the idle futex: add a per-syscall serial beacon gated to
+   pid==DNS-worker for ~30 syscalls after LXCONN (nr + a1..a3). The thing
+   it does right after connect (and why it returns) is THE answer.
+2. getaddrinfo early-abort. Likely glibc decides "no usable nameserver"
+   or "AF mismatch" BEFORE sending. The AF_NETLINK SOCK_RAW probe
+   (__check_pf, domain=16) returns EAFNOSUPPORT every boot — glibc may be
+   mis-concluding the host has NO configured address family and returning
+   EAI_NONAME/EAI_AGAIN without querying. STRONG SUSPECT. Consider giving
+   AF_NETLINK NETLINK_ROUTE a minimal real implementation (RTM_GETADDR
+   reply listing the e1000's IPv4 addr) so __check_pf sees IPv4 up. This
+   is the most likely single fix.
+3. resolv.conf parse. Confirm glibc actually parsed nameserver 10.0.2.3
+   (it opened /etc/resolv.conf -> fd). If the file format/permissions
+   make it read 0 nameservers, getaddrinfo returns without sending. Dump
+   what it read (the open succeeded; check the read length/content).
+4. errno surface. connect() rc=0 but verify the socket's SO_ERROR and
+   that a subsequent getsockopt(SO_ERROR) returns 0 (Bun/glibc may probe
+   it; our getsockopt SO_ERROR returns 0 hardcoded — fine).
+
+INSTRUMENTATION IN TREE (STRIP before any release — all serial-only)
+====
+- syscall.c: LXSOCK (incl. EAFNOSUPPORT fails), LXCONN, LXUDP tx
+  (SYS_SEND/SENDTO/SENDMSG), LXUDP rx (sock_udp_rx), LXEPCTL + LXEPRDY
+  (epoll socket ops). TBIMGOP (KEEP — permanent image-vm-op guard).
+- Unimplemented-syscall logger switched kprint -> kprint_serial_only
+  (fry1410) — KEEP, this is a real fix (serial is the record).
+- epoll_purge_fd_everywhere on close (fry1413) — KEEP, correct semantics.
+
+STATE THAT IS SOLID (do NOT re-litigate)
+====
+- numCalleeLocals=0 crash: FIXED (madvise image-zeroing, fry1401),
+  verified 8+ clean boots incl. full JIT. Closed.
+- Linux socket ABI (41-55,288), poll/ppoll, mkdir/unlink/epoll_pwait2,
+  sendmmsg/recvmmsg: shipped.
+- /etc resolver + CA bundle staged; ramdisk name[64]/512 files.
+- claude AUTHENTICATES in-OS with Zack's OAuth (.claude.json +
+  .credentials.json staged to image HOME=/). Token was valid to
+  2026-06-11 19:49 CDT; REFRESH/RE-STAGE if expired next session
+  (build_iso prepare_linux_etc copies them; Zack: strip before push).
+- DHCP:OK, connect() to DNS server works. The ONLY gap is the resolver
+  not sending its query (lead #2 above is the bet).
+
+BUILD + RUN (rule-12 clean; KVM -smp 1; one QEMU at a time)
+====
+  cd ~/TaterTOS64 && make clean
+  . tools/host/env.sh
+  MTOOLSRC=/dev/null PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" \
+    STAGE_CLAUDE=1 CLAUDE_BIN="$HOME/.local/share/claude/versions/2.1.172" \
+    /bin/bash build_iso.sh </dev/null
+  cp /usr/share/edk2/x64/OVMF_VARS.4m.fd /tmp/v.fd
+  timeout 420 qemu-system-x86_64 -m 6G -machine q35,accel=kvm -cpu host -smp 1 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=/tmp/v.fd -cdrom out/tatertos64v3.iso \
+    -drive file=out/tater_nvme.img,if=none,id=nvm,format=raw \
+    -device nvme,serial=deadbeef,drive=nvm \
+    -device e1000,netdev=n0 -netdev user,id=n0 \
+    -serial file:/tmp/s.log -display none -no-reboot
+  # serial has NUL bytes: grep -a / tr -d '\0'. Logs are ONE fryN.txt PER
+  # STEP (planv3 rule 5 — enforced hard this session).

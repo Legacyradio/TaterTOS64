@@ -1,0 +1,13 @@
+fry1841 - HERMES DIAGNOSIS STEP F: startup failure on both routes; why the routes diverge; debug-app link (2026-11-17 14:12:10 CST)
+WHY: Sur 14:11 via Marshmallow: startup failure is the headline; state both routes and whether the debug-app mix-up could explain the divergence. No code changed.
+WHAT / HOW: compared fry1838/1839 serial output with process.c shebang path (src/kernel/proc/process.c:1080-1095) and shell.c; listed image root with totcopy.
+WHERE: ~/tatertos-test-20261117/serial.log; src/kernel/proc/process.c; src/user/shell/shell.c.
+EVIDENCE
+ - Both runs print HERMESMAIN argc=4, so both reached python3.fry's entry with 4 args.
+ - Route 1 crashed in getpath.py:358 (pyvenv.cfg read: open of a missing file gives OSError errno 0 instead of FileNotFoundError). Route 2 got past getpath and hung later.
+ - process.c emits "PROC: shebang <script> -> <interp>" when the kernel '#!' path is taken. That line is ABSENT from serial for route 1. So I cannot say route 1 used the kernel shebang path; how the shell launched the file is UNVERIFIED.
+ - Route 1 ran FIRST after boot, route 2 second. An order/first-run effect is not excluded (1 run each).
+ - getpath derives its probe paths from argv[0]/sys.executable. The two routes may hand python3.fry different argv[0] (bare "python3" from cmd_hermes vs an interpreter path via other launch route) -> different files probed -> different errors. HYPOTHESIS, not tested. 
+DEBUG-APP QUESTION: could the debug-app mix-up explain the divergence? On the evidence, NO direct link found. The routes diverge because they are two launch mechanisms: cmd_hermes (the 2026-06 builtin, Claude/Codex era) vs the 2026-09-26 '#!'/PATH route (fry1822-1828, Claude), unverified until now. The dev diagnostic (tatertos_bootstrap.py) is no longer launched by either. I found no Codex change creating a second entry point. Not ruled out: an earlier mix-up that left something stale on the image; I did not diff staged files vs source.
+RESULT: startup failure reproduced on both routes with different failures (crash vs silent hang). Cause not yet identified.
+NEXT: (after Sur's go) run each route twice on fresh boots (order test), capture argv[0]/sys.executable and the failing open() errno, get the Python stack of the route-2 hang with faulthandler. 

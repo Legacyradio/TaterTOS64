@@ -1,0 +1,64 @@
+fry1827 — ❌ CORRECTION: fry1825's "compiles clean" was WRONG. The shell did not
+          build at all. Missing include found and fixed; real build EXIT=0
+          — 2026-09-26
+==========================================================================
+WHAT: A false verification is recorded and corrected, then the actual defect is
+fixed and the actual build result given. fry1825 is left in place unedited, per
+log discipline; THIS file supersedes its verdict.
+
+=== WHAT I GOT WRONG ===
+fry1825 stated "SHELL_EXIT=0 ... compiled with no diagnostics". That was false.
+The command was:
+    make shell.tot
+`shell.tot` is NOT a make target. The Makefile's target is `shell`
+(.PHONY line 229; the rule produces shell.tot as a by-product). So make matched
+nothing, did no work, and exited 0. I read that 0 as "compiled clean".
+THE TELL I HAD AND DID NOT USE: shell.tot's mtime stayed at 21:12 — the
+PREVIOUS build. I checked mtimes religiously for the libc work in fry1819 and
+then did not check here. An artifact that did not change mtime did not get
+rebuilt, and an EXIT=0 from a build that did nothing is not a pass.
+This is [[feedback_verify_before_claiming_success]] and it is the same failure
+class as the stubs this whole session has been about: something returned
+success without doing the work, and I believed it.
+
+=== THE REAL BUILD, AND THE REAL ERROR ===
+  make          (default target, which actually builds the shell)
+    src/user/shell/shell.c:885:18: error: 'FRY_PATH_MAX' undeclared
+    src/user/shell/shell.c:1148:19: error: 'FRY_PATH_MAX' undeclared
+    make: *** [Makefile:304: src/user/shell/shell.o] Error 1
+    MAKE_EXIT=2
+CAUSE: shell.c includes libc.h, fry.h, gfx.h, taterwin.h, unistd.h, fcntl.h,
+sys/stat.h, sys/socket.h, netinet/in.h, arpa/inet.h, signal.h, stdio.h — and
+reaches fry_limits.h through NONE of them, directly or transitively. The
+fry1824 resolve_program() and the rewritten fallback both declare
+char buf[FRY_PATH_MAX].
+It compiled in process.c (fry1822/1823) because process.h pulls fry_limits.h
+in; I carried that assumption across to a different file without checking.
+
+=== FIX ===
+src/user/shell/shell.c — added #include <fry_limits.h> with a comment saying
+why. One line, no logic change.
+
+=== REAL BUILD RESULT ===
+  make
+  MAKE_EXIT=0, no errors, no undefined references.
+  kernel.elf  2,619,072  2026-09-26 22:41
+  shell.tot     170,128  2026-09-26 22:41   (was 170,104 at 21:12 — CHANGED)
+  gui.fry       169,176  2026-09-26 22:41
+Mtimes checked this time. shell.tot grew by 24 bytes and its timestamp moved,
+so it genuinely rebuilt.
+
+=== WHAT fry1823 (KERNEL) STILL SAYS CORRECTLY ===
+That one used `make src/kernel/proc/process.o` — a real file target, with an
+explicit rm first, and the object's mtime was checked and had moved. It stands.
+The error was specific to fry1825.
+
+=== PROCESS NOTE ===
+"Prefer a real file target, or check the artifact's mtime" is now the rule I
+should have been applying to every build command, not just the ones where I
+happened to remember. A phony-looking name that make silently ignores returns
+the same 0 as a successful build.
+
+=== WHAT IS NOT CLAIMED ===
+Builds is not works. No ISO built yet with these changes, nothing booted, PATH
+resolution and shebang handling both still UNVERIFIED.

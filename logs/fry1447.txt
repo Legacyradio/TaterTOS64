@@ -1,0 +1,65 @@
+fry1447 — ███ CLAUDE CODE RUNS ON TATERTOS ███
+{"type":"result","subtype":"success","is_error":false,
+ "result":"Hello from TaterTOS — where potatoes power your operating
+           system today!"}
+The real claude binary (2.1.172, Bun, 248 MB), launched from the NVMe
+ToTFS by the TaterTOS linuxulator, authenticated with the real OAuth
+session, resolved DNS through slirp, completed TLS to api.anthropic.com,
+dispatched to claude-sonnet-4-6 (/v1/messages, duration_ms=17483,
+first byte after 3645 ms), and printed its full stream-json output —
+init through result — to stdout -> kprint_write -> serial. Exit 0.
+Date: 2026-06-12 05:5x CDT. Author: Claude (Fable 5).
+========================================================================
+
+WHAT FIXED IT — THE FULL CHAIN (fry1432..1447, tonight)
+------------------------------------------------------------------------
+1. fry1432/1433  Layer-diff beacons EXONERATED the network stack — the
+                 "TCP receive bug" chased since fry1419 never existed.
+2. fry1434/1435  Widened epoll beacons named the spin: Bun's wakeup
+                 eventfd registered EPOLLIN|EPOLLET, never drained (by
+                 design); our level-triggered epoll re-reported it
+                 12,032+ times; the loop span instead of parking.
+3. fry1436/1437  EPOLLET implemented (per-item edge tokens: eventfd
+                 counter / timerfd expirations). Spin dead. claude ran
+                 17s end-to-end and exited 0 — but silently.
+4. fry1438/1439  Write census: zero stdout writes, zero file writes.
+                 Host strace diff: setup identical, emission absent.
+5. fry1440/1441  --debug + mkdir forensics: NO WRITABLE FS — root/tmp
+                 are the RO ramdisk; mkdir = EIO; CLI emitter died.
+6. fry1442/1443  HOME/TMPDIR -> /nvme (ToTFS), auth staged onto the
+                 NVMe image (totcopy --mkdir added). File WRITES
+                 worked, allocations still EIO.
+7. fry1444/1445  Kernel ToTFS allocator was capped to ONE bitmap block
+                 (128 MB) — fully consumed by the claude binary itself.
+                 Multi-block bitmap cache + full-range alloc + targeted
+                 write-back. Claude's debug log came alive on serial.
+8. fry1446/1447  File-metadata syscalls (fsync/rmdir/chmod/fchmod/
+                 chown/utimensat no-ops, symlink=EPERM): atomic config
+                 writes unblocked, setup() completed, EMITTER CAME UP,
+                 RESULT PRINTED.
+
+REMAINING ROUGH EDGES (non-fatal this run; next session's list)
+------------------------------------------------------------------------
+- Transcript: mkdir '/nvme/.claude/projects/-' EIO (likely needs
+  parent-chain mkdir behavior or errno fidelity — our FS layer returns
+  blanket -1 -> EIO where ENOENT/EEXIST would let mkdir -p recurse).
+- Settings watcher: watch() ENOSYS (inotify gaps; WARN, non-fatal).
+- Unimplemented hit this boot: 40 sendfile, 58 vfork (claude tried to
+  spawn helpers 5x — fine for -p, needed for tools later), 77
+  ftruncate, 82 rename (!— atomic-write final step falls back), 294
+  inotify_init1, 326 copy_file_range, 332 statx (glibc falls back).
+- ESP /.claude.json staging now redundant (HOME=/nvme) — remove later.
+
+DONE-BAR STATUS (from the standing handoff)
+------------------------------------------------------------------------
+[x] claude authenticates in-OS (OAuth, token check logged)
+[x] prompt round-trip with real model output INSIDE TaterTOS
+[ ] -smp 4 stability pass (this run: -smp 2)
+[ ] strip OAuth staging from images before any push (NOW ALSO ON NVMe
+    image — fry1442 staging; strip BOTH)
+[ ] strip serial beacons (TB*/LX*) before release
+
+TEST COMMANDS (rule 10): boot as fry1432, serial /tmp/s_fry1447.log.
+  grep -a '"result"' /tmp/s_fry1447.log
+The result line above is verbatim from that grep.
+========================================================================

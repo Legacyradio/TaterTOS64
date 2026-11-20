@@ -1,0 +1,97 @@
+fry1810 — auth + .dist-info staging made durable; hermes hangs BEFORE any network I/O — 2026-08-11
+==========================================================================
+WHAT: Staged hermes user config/credentials onto the image (Zack's explicit
+go-ahead) and made the fry1809 .dist-info fix durable in the staging script. Then
+ran the decisive experiment: hermes transmits ZERO packets. The hang is NOT a
+provider/API/TLS/DNS problem — it happens BEFORE any network I/O is attempted.
+No C source changed this step; staging script only.
+
+=== CHANGES (stage_hermes.sh) ===
+1. USER CONFIG / CREDENTIALS -> /.hermes on ToTFS (= /nvme/.hermes in guest,
+   because HOME=/nvme per shell.c native_python_env):
+     auth.json   (2295 B)  provider credentials
+     config.yaml (432 B)   model.default: deepseek-v4-pro
+     .env        (18780 B) API keys
+   ONLY these three. ~/.hermes is 656MB of caches/history/audio_cache/image_cache
+   that has no business on the image — deliberately NOT staged.
+   Staged with Zack's explicit authorization (2026-08-11: "add whatever auth you
+   must"). Verified in the build log by inode/size for all three.
+2. .dist-info SYNC made durable: fry1809 fixed the missing package metadata BY
+   HAND, which meant the next sysroot rebuild would silently drop it again. The
+   script now syncs any missing *.dist-info from
+   $HOME/hermes-agent/venv/lib/python3.11/site-packages into the sysroot
+   site-packages before staging. (Override with HERMES_VENV_SP.)
+   ISO_EXIT=0, no WARNING / NOT staged lines.
+
+=== THE DECISIVE EXPERIMENT — hermes NEVER TOUCHES THE NETWORK ===
+Method: count e1000 TX frames before and after running the agent. DHCP at boot
+produces a known baseline, so anything the agent sends shows up as growth.
+  Baseline immediately after boot (DHCP only) ....... E1000_TX = 2
+  After `hermes -z hello` ran for >10 minutes ....... E1000_TX = 2   (UNCHANGED)
+  NET_POLL = 1, no LXUDP/DNS lines, 3247 serial lines.
+=> hermes transmitted NOTHING. Not one frame.
+
+WHAT THIS RULES OUT (do not spend time here):
+  - Provider API unreachable / slow ....... RULED OUT, never contacted
+  - DNS resolution ....................... RULED OUT, no lookup attempted
+  - TLS / BearSSL handshake .............. RULED OUT, no connection attempted
+  - Missing/!invalid credentials being retried over the wire ... RULED OUT
+  - The network stack itself ............. HEALTHY, DHCP:OK on this very boot
+Staging the credentials did NOT change the observed behaviour (still silent,
+still no output, still no prompt returned). So the credentials were very likely
+never the blocker — fry1809's hypothesis is NOT supported by this experiment.
+Recording that plainly: I proposed auth as the likely cause, and the evidence
+now says otherwise.
+
+=== WHERE IT ACTUALLY IS ===
+The agent completes its ENTIRE import chain (fry1808/1809 proved: prompt_toolkit,
+asyncio, httpx, urllib3, requests all import, zero tracebacks), reaches runtime,
+and then blocks in startup BEFORE issuing any network I/O. No Python exception,
+no fault, no output — a silent block, not a crash.
+The process is interruptible (fry1809: Ctrl+C returned the prompt), which means
+it is WAITING on something, not spinning in a tight uninterruptible loop.
+
+CANDIDATE DIRECTIONS FOR fry1811 (hypotheses — NONE tested, do not act as fact):
+ 1. A LOCK. ~/.hermes contains auth.lock, and hermes uses file locking around
+    auth. If the port's fcntl/flock (F_SETLKW) is a stub that never returns —
+    or returns "would block" in a retry loop — startup would hang exactly like
+    this, before any network use. NOTE: auth.lock was deliberately NOT staged
+    this step, so its ABSENCE could equally be the trigger (a lock file the code
+    expects to create/acquire). Check libc fcntl/flock behaviour first — it is
+    cheap and would explain the symptom precisely.
+ 2. A thread/futex wait. fry1808/1809 both show only "TLSDBG get MAIN"; no
+    spawned-thread lines this run, so if the agent expects a worker thread that
+    never starts, the main thread would wait forever. The TLSDBG probes are still
+    compiled in and would show a spawn if it happened — they show none.
+ 3. A blocking read on stdin despite -z. isatty() returns TRUE for fd 0-2
+    (posix.c:574), so any code path that probes "am I interactive?" gets yes and
+    may wait for input even in one-shot mode. Making isatty() honest per-fd is a
+    real option but changes behaviour OS-wide — do not do it casually.
+BEST NEXT MOVE: get a stack. Run the agent under faulthandler
+(`PYTHONFAULTHANDLER=1` in shell.c native_python_env, or
+`python3 -X faulthandler`), then send SIGABRT/Ctrl-\ and read the Python
+traceback off the serial (stderr reaches serial; stdout does not). That converts
+this from guesswork into an exact line number, which is how every other blocker
+this session got solved.
+
+=== BOOT DETAILS ===
+  ISO rebuilt with auth; QEMU -smp 4. selftest 106/0, DHCP:OK.
+  SHELL up ~226s (the slow-shell behaviour again — seen at 17s, 30s, 48s, 198s,
+  226s across boots. Highly variable, still unexplained, still not blocking.
+  Worth a look eventually.)
+  `hermes -z hello` -> HERMESMAIN, ran >10 min, no output, no error, no TX.
+
+=== SESSION SCOREBOARD ===
+  TLS / _PyThreadState_Attach ......... CLOSED (fry1801, verified 1 + 4 vCPU)
+  Network / missing -netdev ........... CLOSED (fry1797/1798)
+  Stale objects, main Makefile ........ CLOSED (fry1796)
+  asyncio ValueError + NameError ...... CLOSED (fry1806/1807)
+  Python3.mk header deps .............. CLOSED (fry1805/1806)
+  Python3.mk sqlite prereq bug ........ CLOSED (fry1806)
+  pyexpat ............................. CLOSED (fry1808)
+  package metadata (.dist-info) ....... CLOSED (fry1809), durable (this step)
+  auth/config staging ................. DONE (this step) — but NOT the blocker
+  ALL IMPORT BLOCKERS ................. CLOSED
+  hermes runtime hang (pre-network) ... OPEN  <-- the one thing left
+  TUI rendering for bare `hermes` ..... OPEN, known; use `hermes -z <word>`
+  🔴 603 uncommitted files, 2026-06-08 . OPEN

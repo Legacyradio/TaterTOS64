@@ -58,6 +58,13 @@ wchar_t *wcsstr(const wchar_t *haystack, const wchar_t *needle);
 wchar_t *wcstok(wchar_t *str, const wchar_t *delim, wchar_t **saveptr);
 size_t wcsxfrm(wchar_t *d, const wchar_t *s, size_t n);
 
+/* Wide character memory functions (C99) */
+wchar_t *wmemcpy(wchar_t *d, const wchar_t *s, size_t n);
+wchar_t *wmemmove(wchar_t *d, const wchar_t *s, size_t n);
+wchar_t *wmemset(wchar_t *d, wchar_t c, size_t n);
+int     wmemcmp(const wchar_t *s1, const wchar_t *s2, size_t n);
+wchar_t *wmemchr(const wchar_t *s, wchar_t c, size_t n);
+
 /* Wide character I/O */
 int fwprintf(FILE *stream, const wchar_t *format, ...);
 int swprintf(wchar_t *s, size_t n, const wchar_t *format, ...);
@@ -76,6 +83,18 @@ int wctob(wint_t c);
 /* stdlib-style wide/narrow conversions */
 size_t mbstowcs(wchar_t *dest, const char *src, size_t n);
 size_t wcstombs(char *dest, const wchar_t *src, size_t n);
+
+/* Wide-character numeric conversion (C99) */
+long wcstol(const wchar_t *nptr, wchar_t **endptr, int base);
+unsigned long wcstoul(const wchar_t *nptr, wchar_t **endptr, int base);
+long long wcstoll(const wchar_t *nptr, wchar_t **endptr, int base);
+unsigned long long wcstoull(const wchar_t *nptr, wchar_t **endptr, int base);
+
+/* Wide-character strftime */
+size_t wcsftime(wchar_t *s, size_t max, const wchar_t *fmt, const struct tm *tm);
+
+/* Wide-character locale-aware comparison */
+int wcscoll(const wchar_t *s1, const wchar_t *s2);
 
 #ifdef __cplusplus
 }

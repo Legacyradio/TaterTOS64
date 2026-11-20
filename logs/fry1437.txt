@@ -1,0 +1,73 @@
+fry1437 — EPOLLET FIX BOOT. THE SPIN IS DEAD AND THE STALL FAMILY IS
+OVER: claude now runs ~17s end-to-end — DNS, three TLS connections, a
+10,356-byte POST with a 5,085-byte response (the inference exchange) —
+and EXITS CLEANLY (exit_group code=0). The remaining gap is OUTPUT:
+zero stream-json bytes reached stdout. Bun dup'd stdout to fd 12
+(TBDUP) and never wrote a single byte to it in 17 seconds, while its
+stderr dup (fd 13) wrote the stdin warning fine. Host-side experiments
+CANNOT reproduce the silent stdout (devnull stdout, read-only HOME,
+bare 5-var guest env, silent-pipe stdin: all still write thousands of
+fd-1 writes). The gate is guest-side and Bun-internal; fry1438
+instruments the full write path to find it.
+Date: 2026-06-12 03:5x CDT. Author: Claude (Fable 5).
+========================================================================
+
+EPOLLET VERIFICATION (the fry1436 fix, proven working)
+------------------------------------------------------------------------
+- LXEPRDY stops at n=32 — the rate-limit's "first 32" window. No
+  n=256/512/... lines AT ALL: the eternal re-report is gone.
+- Every reported wakeup is a genuine edge: evctr advances 4->5->6->7
+  (fd 16), fd 7 likewise; one report per write, then silence.
+- grep "LXEPET WARN" = 0: nothing registers ET on a tokenless kind.
+- The fry1433 signature (1,037 consecutive rc=1 returns) is absent.
+
+RUN SHAPE (vs fry1433's eternal stall)
+------------------------------------------------------------------------
+- Same boot pipeline; QEMU PID file now stores the real qemu-system PID
+  (fry1435 gotcha).
+- claude: stdin warning at 3s (stderr, working) -> DNS -> 3x TLS to
+  160.79.104.10:443 -> per-conn totals:
+    conn0 sent 1,556 B  recv 15,572 B   (gating/feature-flags blob)
+    conn1 sent   774 B  recv  4,059 B   (telemetry)
+    conn2 sent 10,356 B recv  5,085 B   (THE INFERENCE: prompt up,
+                                         response down)
+- exit_group(0) IMMEDIATELY after conn2's final segment (zero TBCLK
+  lines between) — claude got its answer and exited on success.
+- Wall clock first->last futex timestamp: 17,007 ms.
+- TBEXIT group pid=3 tgid=3 code=0; remaining conns FIN'd by cleanup.
+
+THE OUTPUT GAP — WHAT WAS RULED OUT
+------------------------------------------------------------------------
+Guest facts: TBDUP fd1->12, fd2->13 (Bun routes ALL output through
+dups, fry1426). fd 13: one write (157B warning) -> serial. fd 12: ZERO
+writes (TBSTDOUT beacon, unconditional for STDIO-kind fds). No write/
+writev/fcntl/dup errors in TBTRACE (full errno histogram pulled). Only
+unimplemented syscall hit: statx(332), once, pid 7 (glibc falls back).
+fstat(1) reports S_IFCHR|0666 (fry1426 shim); ioctl TCGETS = ENOTTY
+(correct for -p).
+Host experiments with the same binary (2.1.172):
+  stdout=/dev/null                    -> 77 fd-1 writes, exit 0
+  guest env+config+cwd+silent stdin   -> 5,588 fd-1 writes, exit 0
+  + read-only HOME                    -> 7,097 fd-1 writes, exit 0
+So: not devnull detection, not env, not config, not stdin, not
+transcript-write failures. Bun's stdout sink in the guest never
+attempted a single flush across 17s of events that, on the host,
+produce a write per stream-json line.
+
+NEXT (fry1438, already speced)
+------------------------------------------------------------------------
+1. TBWR: unconditional write-attempt beacon at lx_write_fd entry —
+   pid/fd/kind/len before ANY validation (cap 400).
+2. TBF12: log every claude syscall with a1==12 (the stdout dup) + rc
+   (cap 200) — what Bun does with its stdout INSTEAD of writing it.
+Suspects the next log discriminates: a pre-write probe we answer
+wrongly (making the sink queue forever), a positional-write path
+(pwrite64 on FD_STDIO returns EBADF), or a flush gated on writability
+polling that never fires.
+
+TEST COMMANDS (rule 10): as fry1432; serial was /tmp/s_fry1437.log.
+Verdict greps used are inline above; key ones:
+  grep -a "TBDUP\|TBSTDOUT" /tmp/s_fry1437.log
+  grep -a "TBTCP tx" /tmp/s_fry1437.log | grep -av dlen=0
+  grep -a "TBEXIT" /tmp/s_fry1437.log
+========================================================================

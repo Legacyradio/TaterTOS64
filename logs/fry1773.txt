@@ -1,0 +1,48 @@
+fry1773 — design: native PMM hot-page cache to kill the mmap churn cost — 2026-06-26
+==========================================================================
+WHAT: Designed the CORRECT native fix for the eager-mmap churn (fry1762). No code
+changed this step — this is the design, read-verified against the real allocator
+(src/kernel/mm/pmm.c). Keeps memory EAGERLY backed (the lazy approach hung
+threading/futex — fry1771), so threading is unaffected.
+
+COST RE-DIAGNOSIS (read pmm.c): the PMM is a BUDDY allocator.
+  - pmm_free_page -> pmm_free_pages -> free_block(): COALESCES with the buddy.
+    Coalescing calls remove_free_block() which is an O(n) LINEAR WALK of the
+    order-0 free list. Then pmm_alloc_page -> alloc_pages_range_locked SPLITS a
+    block back down.
+  - CPython's 1402x (munmap 33pg + mmap 33pg) thrashes coalesce+split with O(n)
+    list walks per page = the real crawl cost. The zeroing (vm_zero_page) is
+    secondary.
+
+DESIGN — a bounded hot-page LIFO cache in front of the buddy (classic per-CPU
+pageset / hot-free-list pattern), all under the existing g_pmm_lock (SMP-safe):
+  - static uint64_t pmm_pcache[PMM_PCACHE_MAX]; static uint32_t pmm_pcache_count;
+    (PMM_PCACHE_MAX = 512 -> caps parked memory at 2 MB.)
+  - pmm_free_pages(): after the existing meta_is_used() check, if the block is
+    ORDER-0 (meta_order==0) and the cache has room, PUSH phys to the cache and
+    return WITHOUT free_block(). The page's meta stays used(0) and pmm_used_pages
+    is unchanged (it is held by the cache, not free to the buddy) — accurate.
+    Bypasses coalescing entirely for the churn.
+  - pmm_alloc_page() (the UNCONSTRAINED single-page allocator that
+    vm_commit_private_pages uses): if cache non-empty, POP and return (meta is
+    already used(0)); else fall back to the buddy. O(1) for the churn.
+  - Robustness: pmm_pcache_flush_locked() frees all cached pages back through the
+    real free_block() (coalescing). Called on FAILURE in the multi-page /
+    constrained allocators (pmm_alloc_pages, _range, _below, _page_below,
+    _alloc_early_low) then retry once -> the cache can NEVER cause a false OOM or
+    starve a large contiguous alloc.
+
+WHY SAFE / NATIVE:
+  - Pages remain physically backed at all times (no demand-paging, no lx_ handler,
+    no compat surface) -> threading/futex unaffected (the fry1771 hang cannot
+    recur).
+  - Constrained allocators (below/range) do NOT pop from the cache (a cached page
+    may be any phys addr); they only benefit via flush-on-failure. Correct.
+  - vm_zero_page stays in vm_commit_private_pages -> anon zero-fill contract held.
+  - Double-free guarded by the existing meta_is_used() check before caching.
+
+EXPECTED: per-page free/alloc in the churn becomes O(1) push/pop, bypassing the
+O(n) buddy coalesce/split -> boot/import crawl drops sharply, with ZERO change to
+the memory model (still eager). Import report unchanged (all OK), no hang.
+
+NEXT (fry1774): implement in src/kernel/mm/pmm.c.

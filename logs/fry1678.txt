@@ -1,0 +1,38 @@
+fry1678 — 2026-06-20 15:50 CDT
+STEP: Verify run of the pthread_self fix (fry1677) + fix the next failure.
+
+RESULT (serial /tmp/fry1678_qemu_serial.log + screenshot /tmp/fry1678_crop.png):
+  * IMPORT DEADLOCK GONE. fry1677 worked: 0 futex_wait, python no longer hangs.
+  * python pid=10 now reaches early interpreter init, writes 138 bytes to
+    stdout (fd1 -> GUI), then thread_exit(127). Screenshot of the TaterTOS GUI
+    shows the exact message:
+      "/> hermes
+       ASSERTION FAILED: top != 0 at .../Python/ceval.c:541
+       (_Py_InitializeRecursionLimits)
+       />"
+  (Capture method: DISPLAY=:0 import -window root; QEMU content window id via
+   xdotool search --name QEMU = 182452233 @ 570,59 1250x963; cropped with
+   convert. Logged here since QEMU/serial logs are sanctioned now.)
+
+ROOT CAUSE: ceval.c hardware_stack_limits() uses pthread_getattr_np(pthread_self)
+  + pthread_attr_getstack to get the C-stack top (HAVE_PTHREAD_GETATTR_NP=1 in
+  pyconfig_tater.h; the Emscripten workaround is __EMSCRIPTEN__-gated, inactive).
+  TaterTOS pthread_getattr_np (pthread.c) returns SUCCESS with
+  attr->_stackaddr/_stacksize = pi->thr.stack_base/stack_len. For the main
+  thread (lazily registered in fry1677 with a zeroed fry_thread) both are 0 ->
+  CPython top = stack_addr+stack_size = 0 -> assert(top!=0) aborts. This is a
+  direct consequence of fry1677 (before it, pthread_self()=0 -> find_pth fails
+  -> ESRCH -> CPython already used its fallback; now the main thread resolves to
+  a real-but-stackless slot).
+
+FIX: src/user/libc/pthread.c pthread_getattr_np() — if the resolved thread has
+  no recorded stack (stack_base==0 || stack_len==0), return EINVAL instead of
+  success. CPython's hardware_stack_limits() then falls through to its
+  stack-pointer-based estimate (top=round_up(sp+..), base=top-Py_C_STACK_SIZE),
+  which is valid (non-zero) for the main thread. Real pthread_create threads are
+  unaffected (they have stack_base/len set).
+
+BUILD: pthread.c in LIBC_OBJ -> static in python3.fry. make ; make -f
+  Python3.mk python3 ; build_iso.sh. PYSC rip trace still in syscall.c.
+VERIFY (fry1679): boot headed, run hermes -> expect PYTHON ENVIRONMENT banner.
+CLEANUP owed: remove fry1669+fry1676 PYSC trace from syscall.c before commit.

@@ -18,6 +18,9 @@ extern "C" {
 
 #define RTLD_DEFAULT ((void *) 0)
 #define RTLD_NEXT    ((void *) -1L)
+#define RTLD_NODELETE  0x01000
+#define RTLD_NOLOAD    0x00004
+#define RTLD_DEEPBIND  0x08000
 
 void *dlopen(const char *filename, int flags);
 int   dlclose(void *handle);
@@ -33,6 +36,22 @@ typedef struct {
 } Dl_info;
 
 int dladdr(const void *addr, Dl_info *info);
+
+/* GNU extension: dladdr1 with extra info */
+#define RTLD_DL_SYMENT  1
+#define RTLD_DL_LINKMAP 2
+
+#include <elf.h>
+#define ElfW(type) Elf64_ ## type
+
+struct link_map {
+    Elf64_Addr  l_addr;
+    char        *l_name;
+    void        *l_ld;   /* Elf64_Dyn* — not in TaterTOS elf.h, use void* */
+    struct link_map *l_next, *l_prev;
+};
+
+int dladdr1(const void *addr, Dl_info *info, void **extra_info, int flags);
 
 #ifdef __cplusplus
 }

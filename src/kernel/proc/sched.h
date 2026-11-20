@@ -16,6 +16,13 @@ int sched_block_futex(uint32_t pid, volatile const uint32_t *word,
                       uint32_t expected, uint64_t key,
                       uint64_t wake_time_ms, uint32_t bitset);
 void sched_wake(uint32_t pid);
+/* fry1506: race-free pid-wait (wait4) primitives. arm: under g_sched_lock,
+ * re-check target reapable (return 1 -> caller re-loops/reaps) else atomically
+ * arm caller PROC_WAITING(wait_pid=target) (return 0 -> caller yields). exit:
+ * under the SAME lock, mark target DEAD + wake its PROC_WAITING waiters. Both
+ * sides under one lock closes the lost-wakeup race that hung wait4 (fry1506). */
+int  sched_pidwait_arm(uint32_t caller_pid, uint32_t target_pid);
+void sched_pidwait_exit(uint32_t target_pid);
 uint32_t sched_wake_signal(uint32_t pid);
 uint32_t sched_wake_futex(uint64_t key, uint32_t max_wake,
                           uint32_t bitset, int32_t result);

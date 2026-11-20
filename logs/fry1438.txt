@@ -1,0 +1,54 @@
+fry1438 — Write-path TOTAL VISIBILITY instrumentation. fry1437 left one
+mystery: Bun holds a valid stdout dup (fd 12, FD_STDIO->realfd 1,
+writes to it would print) and never issued a single write to it across
+a 17-second successful run, while the identical stderr dup (fd 13)
+wrote fine. Host cannot reproduce under any simulated guest condition.
+Two beacons make the next boot decisive. Diagnostic prints only.
+Date: 2026-06-12 03:55 CDT. Author: Claude (Fable 5).
+========================================================================
+
+WHY (rule 6)
+------------------------------------------------------------------------
+Every prior beacon was conditional (TBSTDOUT: STDIO-kind fds only;
+TBTRACE: errno returns only; TBFULL: 3000-syscall budget). A write
+attempt that bails before kind-resolution, a positional write
+(pwrite64 -> -EBADF on FD_STDIO), or a non-write interaction with the
+stdout dup (probe/poll/seek) were all invisible. fry1437's host
+experiments eliminated environment/config/stdin/devnull theories, so
+the divergence must be visible at the guest syscall boundary — these
+two beacons cover the entire surface where it can hide.
+
+CHANGES — src/kernel/proc/syscall.c
+------------------------------------------------------------------------
+1. lx_write_fd entry: "TBWR pid= fd= kind= len=" — unconditional for
+   claude's tgid, BEFORE any validation, cap 400. Covers write(2) and
+   every writev(2) iovec (both route through lx_write_fd). Ground truth
+   for "did Bun ever try to write anything, anywhere".
+2. Dispatch tail (rc known): "TBF12 pid= nr= name a2= a3= rc=" — every
+   claude syscall whose a1 == 12, cap 200. fd 12 is Bun's stdout dup
+   (TBDUP, deterministic across boots: first F_DUPFD_CLOEXEC of fd 1
+   lands on 12, then fd 2 -> 13). Shows what Bun DOES with its stdout
+   instead of writing: fstat probes, fcntl, lseek (positional-writer
+   setup), epoll registration, pwrite64, or — if truly nothing — that
+   silence is itself the answer (sink never initialized).
+
+WHAT THE NEXT BOOT DISCRIMINATES
+------------------------------------------------------------------------
+- TBWR shows pwrite64/odd-fd writes the old beacons missed -> fix the
+  corresponding fd-kind path (e.g. pwrite on FD_STDIO).
+- TBF12 shows a probe whose answer differs from Linux (fstat mode,
+  fcntl flags, lseek result — ESPIPE vs offset matters for sink mode
+  selection) -> correct that answer to match a Linux char-dev console.
+- TBF12 silent + TBWR silent on fd 12 -> Bun's sink for stdout was
+  constructed but never flushed; next step is comparing Bun's sink
+  selection (host strace of fd-12-equivalent ops) against what the
+  guest offered at the SAME probe points during startup.
+
+TEST COMMANDS (rule 10): rebuild per rule 12 with STAGE_CLAUDE=1
+CLAUDE_BIN=$HOME/.local/share/claude/versions/2.1.172; boot as
+fry1432, serial to /tmp/s_fry1439.log. Verdict greps:
+  grep -a "TBWR"  /tmp/s_fry1439.log | head -40
+  grep -a "TBF12" /tmp/s_fry1439.log | head -40
+
+STATUS: edits complete; build/boot/verdict is the fry1439 step.
+========================================================================

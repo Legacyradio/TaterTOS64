@@ -1,0 +1,7 @@
+# fry1591 - BUILD: rebuild with Linux pipe(22)/pipe2(293) implemented (fry1590) + busybox staged
+Date: 2026-06-16 ~16:05 (host clock) CDT
+Type: build (Rule 12)
+COMMAND: make clean && STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 LINUX_SHELL_BIN=.../busybox CLAUDE_BIN=.../2.1.177 ... bash build_iso.sh (bg -> /tmp/build_1591.log)
+RESULT: EXIT 0 clean. No errors (syscall.c + linux_compat.h compiled; clangd noise only). syscall.o @ 16:04; ISO+NVMe @ 16:05. busybox staged.
+NEXT (fry1592 verify): boot -> claude -> run `uname -a`. Expect busybox to get PAST pipe(); then it runs the command -> watch whether stdout flows back via the dup2 socketpair stdio to Claude, OR the next unimplemented syscall (peel it). "typing drop" = demand-paging grind, separate.
+All per planv3 Rules 1/5/6/12.

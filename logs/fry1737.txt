@@ -1,0 +1,50 @@
+fry1737 — 2026-06-21 21:10 CDT
+STEP 2c (native std phase): create the native unix/tatertos libc module + new/tatertos
+       routing; drive build-std to ENUMERATE the exact ABI type surface std requires.
+       All native, sourced from src/include — zero Linux.
+
+CHANGES (all in rust/forks/libc, canonical in-repo fork; mirrored to registry src
+that build-std compiles via rsync):
+  - src/unix/tatertos/mod.rs (NEW): TaterTOS native ABI bindings sourced from real
+    headers:
+      * scalar typedefs (off_t=i64, mode_t=u32, dev_t/ino_t=u64, nlink_t=u32,
+        blkcnt_t/blksize_t=i64, time_t/clock_t=i64, socklen_t=u32 ...) <- fry_types.h,
+        sys/types.h
+      * struct stat — EXACT TaterTOS layout (no glibc pad) <- sys/stat.h
+      * struct timespec/timeval <- time.h
+      * errno consts <- errno.h ; O_* <- fry_fcntl.h ; SEEK_* <- fry_seek.h ;
+        PROT_/MAP_ <- sys/mman.h ; S_IF* <- sys/stat.h
+      * SYS_* numbers <- tatertos/syscall.h (the ABI; distinct from Linux)
+      * extern "C" block (open/read/write/close/lseek/fstat/mmap/.../malloc/...)
+        -> resolve to TaterTOS libc.a at link time.
+    NOTE: removed my erroneous `pub type c_char/wchar_t` (crate prelude already
+    provides them — caused E0659 ambiguity; fixed, now 0).
+  - src/unix/mod.rs: first-class `if cfg(target_os="tatertos") { mod tatertos; ... }`
+    branch BEFORE linux_like (done fry1736).
+  - src/new/mod.rs: added env-dispatch arm `else if cfg(target_os="tatertos") { mod
+    tatertos; pub(crate) use tatertos::*; }` ; src/new/tatertos/mod.rs (NEW) routes
+    to crate::new::common::posix::* (shared POSIX layer — TaterTOS libc is POSIX-
+    source-compatible). This resolved the `unresolved import unistd` blocker.
+
+ERROR-SURFACE TRAJECTORY (build-std on probe_std — proof of forward motion):
+  - start: PAL = `unsupported` stub (no std at all)  [fry1733/1734]
+  - after target spec + linux_like(WRONG): many ambiguity + import errors
+  - after de-linux + tatertos module: c_char ambiguity x many -> 0; then exactly 1
+    error (unistd) -> now 105 errors, ALL E0425/E0573 "cannot find type X".
+  - The 105 are the ENUMERATED ABI surface std's unix PAL + common posix need:
+    pthread_{mutex,cond,rwlock,attr,*}_t, sigset_t, sockaddr/addrinfo, termios/speed_t,
+    dirent, tm, passwd/group(gid_t/uid_t/pid_t in-scope re-export), fd_set, sem_t,
+    rlim_t, lconv, Dl_info, etc. Each maps to a specific src/include header.
+
+ASSESSMENT (honest): direction + mechanism are PROVEN correct and 100% native. The
+  remaining work is defining ~105 ABI structs/types from the TaterTOS headers (exact
+  layouts — pthread_mutex_t etc. MUST match pthread.h byte-for-byte or runtime
+  corruption), then adding tatertos arms to std's unix PAL, then rebuilding
+  pydantic_core. This is the weeks-scale effort Zack selected (Option B). NOT
+  completable in one session; will grind methodically, a fry per batch.
+
+STATE: libc fork compiles tatertos through the dispatch; 105 type defs remain in
+  unix/tatertos/mod.rs. NO shortcuts; nothing Linux.
+NEXT: define the ABI type batch — start with the pthread_*_t types from
+  src/include/pthread.h (layout-critical), then sigset_t/sockaddr/termios/dirent/tm.
+  -> fry1738.

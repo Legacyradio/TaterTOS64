@@ -1,0 +1,71 @@
+# hermes017 — PHASE 2 STEP 16: mimalloc.h include path for obmalloc.c
+Date: 2026-06-17 ~15:32 CDT
+Type: build flag fix (Phase 2 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Compile Objects/obmalloc.c — CPython's memory allocator. Uses mimalloc
+(Microsoft's malloc implementation) as the default allocator in Python 3.14.
+
+---------------------------------------------------------------------------------
+WHAT HAPPENED
+---------------------------------------------------------------------------------
+ERROR:
+  Objects/mimalloc/static.c:16:10: fatal error: mimalloc.h: No such file or directory
+
+---------------------------------------------------------------------------------
+ROOT CAUSE
+---------------------------------------------------------------------------------
+obmalloc.c includes "mimalloc/static.c" (the mimalloc amalgamation). That
+file includes "mimalloc.h" with quotes, which searches the current file's
+directory first (Objects/mimalloc/), then the -I include paths.
+
+mimalloc.h lives at Include/internal/mimalloc/mimalloc.h. The include path
+had -I<cpython>/Include/internal but not -I<cpython>/Include/internal/mimalloc.
+So the compiler couldn't find "mimalloc.h" (it would find "mimalloc/mimalloc.h"
+but the include is just "mimalloc.h").
+
+This is a build flag issue, not a code issue. CPython's own Makefile.pre.in
+includes the correct paths, but we're compiling with our own flags.
+
+---------------------------------------------------------------------------------
+FIX
+---------------------------------------------------------------------------------
+Added two include paths to the CPython compile flags:
+  -I<cpython>/Include/internal/mimalloc
+  -I<cpython>/Objects/mimalloc
+
+WHY: mimalloc.h is in Include/internal/mimalloc/ and static.c is in
+Objects/mimalloc/. Both directories need to be in the include path for
+the mimalloc amalgamation to compile. This is not a code change — it's
+adding the correct include paths that CPython's own build system would add.
+
+No code changes. This is a build configuration fix.
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+Re-ran obmalloc.c compile with added include paths:
+  x86_64-elf-gcc ... -I<cpython>/Include/internal/mimalloc \
+    -I<cpython>/Objects/mimalloc -c Objects/obmalloc.c
+
+Result: ZERO errors. Compiled clean (3.6s).
+
+---------------------------------------------------------------------------------
+MILESTONE: All Objects/*.c and Parser/*.c files compile
+---------------------------------------------------------------------------------
+All Objects/*.c files: 45 files compiled clean
+All Parser/*.c files: 15 files compiled clean
+
+Remaining before link attempt:
+  - Modules/*.c (posixmodule.c, socketmodule.c, _io/*.c, etc.)
+  - Generated files (frozen.c, bytecodes.c, optimizer_bytecodes.c)
+  - Makefile target for CPython build
+
+---------------------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------------------
+Compile Modules/*.c — the C extension modules. This is where posixmodule.c
+and socketmodule.c live (the files audited in Phase 1).

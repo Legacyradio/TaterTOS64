@@ -1,0 +1,36 @@
+# fry1577 - DIAGNOSIS PIVOT + CODE: orphan theory DISPROVEN (TBREQUEUE=0). The main thread is NOT orphaned — it gets CPU (oncpu=1) but stays in the KERNEL every time it runs (TBSPIN userspace-only = 0), flipping RUNNING<->WAITING = a kernel wait/spin loop whose wakeup never satisfies it. Changed TBSPIN to log the main thread's PC in ANY mode (kernel cs=0x08 rip symbolizes directly) to name the loop.
+Date: 2026-06-16 05:00 CDT
+Type: diagnosis result (fry1576 run) + code change (lapic_timer.c TBSPIN: log any-mode PC)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+---------------------------------------------------------------------------------
+fry1576 RUN RESULT (the orphan self-heal)
+---------------------------------------------------------------------------------
+- TBREQUEUE fired ZERO times => the main thread was NEVER found orphaned (RUNNING + not current + not on any rq).
+  ORPHAN THEORY (fry1574/1575) DISPROVEN. The self-heal is a no-op here (harmless).
+- TBMAIN: state=1 (RUNNING) dominant, but oncpu=1 in 225 samples (33 cpu0 + 192 cpu2) => the main thread IS scheduled
+  and runs (migrates cpu0<->cpu2). state=2 (WAITING) 16 samples. So it flips RUNNING<->WAITING.
+- TBSPIN (userspace-only) = 0 even though it runs (oncpu=1) => whenever the timer catches the main thread current, it
+  is in KERNEL mode, never userspace. => the thread runs but stays IN THE KERNEL.
+- read(fd=0)=1, keys=27 (delivered, not echoed). TBCLK t3=5/6/8/0 (8 zombies). VM ALIVE.
+
+=> CONCLUSION: not orphaned, not a userspace spin. The main thread is stuck in a KERNEL wait/spin loop: run -> check a
+   condition -> not satisfied -> block (WAITING) -> woken -> check -> ... forever, never returning to userspace. The
+   RUNNING<->WAITING flip + kernel-only PC is the signature of a kernel loop like rt_sigsuspend's
+   `while(!pending){sched_block;sched_yield}` (syscall.c:1673) or a similar re-block-on-spurious-wake wait.
+
+---------------------------------------------------------------------------------
+CODE CHANGE (src/drivers/timer/lapic_timer.c)
+---------------------------------------------------------------------------------
+TBSPIN: removed the userspace-only filter; now logs `TBSPIN cs=<frame[18]> rip=<frame[17]>` whenever the timer
+interrupts the main thread (any mode), throttled 1/256. A kernel rip (cs=0x08) resolves directly:
+   nm -n kernel.elf | awk '...<=rip...'  -> the exact kernel function it spins in.
+
+NEXT (own fry log each): fry1578 build; fry1579 verify -> type -> grep TBSPIN -> resolve the kernel rip -> that names
+the loop (suspect rt_sigsuspend / a futex-or-signal wait re-block). Then fix the wake condition so the loop exits and
+the thread returns to userspace + the event loop. Keep Claude fully networked.
+
+HONEST NOTE: 4 freeze theories disproven tonight (futex lost-wakeup, GC-suspend handshake, userspace spin, rq-orphan),
+each by the next measurement. The kernel-PC catch should END the guessing — a kernel address is unambiguous.
+
+All per planv3 Rules 1/5/6/12. Written immediately on the result + change.

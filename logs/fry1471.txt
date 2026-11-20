@@ -1,0 +1,32 @@
+fry1471 - Attempt: copy FD_SOCKET to vfork child with a socket refcount.
+The child DID inherit the stdio sockets (dup2 19/22/24 -> 0/1/2 valid),
+but it REGRESSED claude: 496x SIGSEGV loop in a claude thread, no result.
+Root not yet isolated here -> fry1472 narrows it. REVERTED in fry1473.
+Date: 2026-06-13. Author: Claude (Opus 4.8).
+========================================================================
+
+GOAL: fry1470 proved fd 19/20 (rg/agent-bus child stdio) are FD_SOCKET
+(socketpairs) that copy_vfork_fd_table skipped -> child dup2(socket,stdio)
+= EBADF. Make socket fds inheritable by the vfork child.
+
+CHANGE (all reverted in fry1473):
+- process.h: add uint8_t refs to struct fry_socket (reuse a _pad byte).
+- copy_vfork_fd_table: FD_SOCKET branch shares the parent g_sockets[]
+  pointer and bumps sk->refs.
+- lx_close_fd FD_SOCKET: if refs>0 just refs--, else tear down (avoid the
+  child closing its dup killing the parent's end).
+- lx_dup_fd_at + LNX_dup2: FD_SOCKET dup bumps sk->refs (consistency).
+
+RESULT (serial /tmp/s_fry1471.log):
+- POSITIVE: child fd table now has the sockets — TBDUP2 oldfd=19/22/24
+  newfd=0/1/2 kind=4(FD_SOCKET) open=1 (was kind=0 EBADF). The copy works.
+- REGRESSION: 496x "TBSIG exc-deliver pid=14 tgid=5 sig=11 vec=14" (SIGSEGV
+  loop at the same userspace rip 0x293cb7c, claude's MCP/async thread).
+  Main inference produced NO result. fry1470 (pre-change) had 0 SIGSEGV.
+  So the socket sharing destabilized claude's userspace.
+- (The "401 x32" I first saw were FALSE POSITIVES — "401" substrings in
+  hex addrs/timestamps. Refined grep: no real auth errors. Auth is fine.)
+
+HYPOTHESIS (tested in fry1472): blanket-copying ALL sockets shared
+claude's live AF_INET API/DNS sockets with the child -> corruption.
+=> fry1472 restricts the copy to AF_UNIX (domain==1) only.

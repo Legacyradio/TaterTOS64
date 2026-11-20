@@ -1,0 +1,106 @@
+# fry1544 - ROOT CAUSE (corrected) + FIX: network-teardown KERNEL PANIC is a kernel-stack overflow from a 1 MB struct tcp_conn on the stack in the RX path (tcp_process), NOT a TX-side tcp_close UAF/refcount problem
+Date: 2026-06-15 22:33 CDT
+Type: research/diagnosis (evidence-backed, overturns fry1542 conclusion) + code fix (1 file) + clean rebuild (launched)
+Author: following planv3 Rules 1/5/6/12 + HANDOFF_claude_interactive_2026-06-15.md logging bar + CLAUDE.md protocol
+Session: post-rate-limit pickup. Reviewed Grok's fry1540-1543 work (TCP refcount + shell input pass-through) at user's request ("i have a feeling grok didnt do too well").
+
+---------------------------------------------------------------------------------
+WHY / METHOD (Rule 6)
+---------------------------------------------------------------------------------
+User asked for an assessment of the fry1540-1543 (Grok) work, then chose "diagnose first, no edits" to pin the real root cause before any code change. The fry1542 diagnosis claimed the teardown panic was a UAF / double-close inside tcp_send_segment on the TX/FIN path, and Grok "fixed" it by adding refcounts to struct tcp_conn (netcore.c) + routing close sites through tcp_close. That diagnosis is NOT supported by the serial evidence, and the fix is aimed at the wrong function. This step re-derives the root cause from the captured fault registers + the kernel binary + source, then applies the correct, minimal fix.
+
+No assumptions: every conclusion below is tied to a serial line, a resolved symbol in kernel.elf, or an exact source location.
+
+---------------------------------------------------------------------------------
+EVIDENCE (from fry1541/fry1542 captured serial + kernel.elf symbol/disasm)
+---------------------------------------------------------------------------------
+Terminal kernel panic (the machine-resetting fault), fry1542 lines 37-39:
+  !EXC vec=0x0E err=0x02 RIP=0xFFFFFFFF80030040 CS=0x08 RF=0x10046 CR2=0xFFFFFFFF8393FC88 CR3=0x2412000
+  KERNEL PANIC: unhandled kernel page fault
+  RSP=0xffffffff83a43e40 CR2=0xffffffff8393fc88 CR3=0x2412000
+
+Decode:
+- CS=0x08 -> ring 0 (kernel). err=0x02 -> bit1=W (write), bit0=P=0 (page not present): a KERNEL WRITE to a non-present page.
+- RIP=0xFFFFFFFF80030040 resolves in kernel.elf (nm -n) to:
+      ffffffff8002ff00 t tcp_process   <-- RIP is tcp_process+0x140
+      ffffffff80030590 t net_rx
+  => the fault is in tcp_process(), the INBOUND/RX TCP handler (reached via net_rx <- e1000 RX callback, netcore.c:1436). RX/interrupt context.
+- CR2=0xFFFFFFFF8393FC88 lies in the dead gap between:
+      ffffffff83879000 D __kernel_end
+      ffffffff83a00000 D kernel_stack / __kernel_stack_base
+  i.e. an UNMAPPED region just below the kernel stack base.
+- RSP=0xffffffff83a43e40 is on the IST2 exception stack:
+      ffffffff83a40000 d runtime_ist2_stack   (16 KB stacks)
+      ffffffff83a44000 d runtime_ist1_stack
+  => by panic time we are on the #PF IST stack.
+
+Disasm of tcp_process (objdump -d kernel.elf) around the no-match path shows:
+  - a scan loop over tcp_conns[] with stride `add $0x100040,%rax` (= 0x100040 = 1,048,640 bytes per element)
+  - then `lea -0x100070(%rbp),%rdi` (a ~1 MB object at rbp-0x100070) followed by a `movq $0,(%rax)` zeroing loop.
+  => tcp_process allocates a ~1 MB object ON THE STACK and memsets it.
+
+Source confirms it exactly:
+  netcore.h:75  #define TCP_MAX_CONNECTIONS 16
+  netcore.h:76  #define TCP_RX_BUF_SIZE     1048576   /* 1 MB */
+  netcore.c:662 struct tcp_conn { ... uint8_t rx_buf[TCP_RX_BUF_SIZE]; ... }   -> sizeof ~= 1 MB
+  netcore.c:1020 (RST-for-unexpected-segment path inside tcp_process):
+        struct tcp_conn dummy;            <-- ~1 MB ON THE STACK
+        n_zero(&dummy, sizeof(dummy));    <-- zeroes ~1 MB down the stack
+
+Kernel stack sizes (nm -n kernel.elf):
+  __kernel_stack_base ffffffff83a00000 .. __kernel_stack_top ffffffff83a40000  => 256 KB main kernel stack
+  IST stacks ffffffff83a40000 .. ffffffff83a48000 => 16 KB each.
+
+---------------------------------------------------------------------------------
+ROOT CAUSE (corrected)
+---------------------------------------------------------------------------------
+tcp_process() (RX path, runs in interrupt/RX context on the 256 KB kernel stack, or worse a 16 KB IST stack) declares `struct tcp_conn dummy` (~1 MB) on the stack and n_zero()s it, in the branch that replies with a RST to a segment that matches NO active connection. A 1 MB stack object instantly overflows the kernel stack; n_zero() writes off the bottom of the stack into the unmapped gap below __kernel_end -> CR2=0xffffffff8393fc88, kernel write to non-present -> unhandled #PF -> PANIC/reset. The math closes: stack top 0x83a40000 minus ~1 MB lands in the 0x839x_xxxx region where CR2 sits.
+
+TRIGGER (why it fires during Claude network teardown):
+1. Claude (real AF_INET TCP to API) closes/FINs its sockets and/or kills its network helper -> conn slots go inactive.
+2. A late / retransmitted inbound segment (ACK/data/RST from the API server) arrives for a now-closed conn.
+3. tcp_process scans tcp_conns[], finds NO active match -> takes the "send RST" path -> 1 MB on-stack dummy -> overflow -> panic.
+This is exactly why the panic lands right after the SPCEN socket-cleanup lines.
+
+This is a STACK OVERFLOW, not a UAF, and not a double-close. tcp_conns[] is a STATIC array (netcore.c:693) -> it cannot be use-after-freed. Grok's refcount model on struct tcp_conn addresses a fault that does not exist on this object, in the wrong direction (TX/FIN via tcp_close/tcp_send_segment), while the actual faulting code is tcp_process on the RX side. fry1542 line 138 even flagged "no obvious lock... RX vs process exit" -- the correct instinct, then discarded in favour of refcounting.
+
+NOTE on Grok's change (for the record, NOT touched in this step):
+- The tcp_conn refcount adds exactly one useful line (the !active guard in tcp_conn_release, netcore.c:871) and one regression: the incoming-SYN/accept path (netcore.c:1000-1008) creates conns with active=1 but refs=0 (n_zero then no refs set), and the new accessors (tcp_is_connected/tcp_get_state/tcp_rx_available) treat refs==0 as closed -> any server/listen-accepted connection reports dead. Does NOT affect the Claude client path (tcp_connect sets refs=1), so it does not interfere with this verify. To be decided separately (patch nc->refs=1 vs revert the refcount).
+
+---------------------------------------------------------------------------------
+FIX (this step) - 1 file, netcore.c
+---------------------------------------------------------------------------------
+File: src/drivers/net/netcore.c, tcp_process() RST-for-unexpected-segment path (was line 1020).
+Change: `struct tcp_conn dummy;`  ->  `static struct tcp_conn dummy;`
+  - Moves the ~1 MB scratch conn off the kernel stack into BSS. Eliminates the overflow.
+  - Safe as a single shared scratch: tcp_send_segment() copies every field it needs (local_port/remote_port/seq_num/ack_num/remote_ip + rx_head/rx_tail for the window calc) into its local pkt[1480] BEFORE any TX (netcore.c:712-771, ip_send at 771), and the RX path here is not reentrant. tcp_send_segment never reads rx_buf, so the dummy never needs the 1 MB payload to be valid; zeroing keeps the window calc identical (used=0 -> free window capped at 65535, same as before) and ci=-1 (outside tcp_conns) as before.
+  - Added a full WHY block in-comment at the change site (root cause + why static is correct + why single shared scratch is safe).
+  - Corrected a now-stale comment in tcp_send_segment ("RST replies use a stack dummy" -> "... a static scratch dummy", netcore.c ~732).
+No other files changed. The 1MB struct stays 1MB (rx_buf is needed for real conns); only the SCRATCH instance moves to BSS.
+
+WHY this and not a bigger refactor: the fault is purely "1 MB object on a 256 KB/16 KB stack." Moving the single scratch instance to BSS removes the overflow with zero behavior change and zero new shared mutable state of consequence. A dedicated tcp_send_rst() that builds the segment without a tcp_conn was considered; rejected for this step because it duplicates the checksum/pseudo-header logic in tcp_send_segment (DRY) for no additional correctness over the static scratch.
+
+---------------------------------------------------------------------------------
+BUILD (Rule 12) - launched, result recorded in fry1545
+---------------------------------------------------------------------------------
+Command (exact verify template):
+  cd /home/legacyindieradio/TaterTOS64
+  make clean
+  STAGE_CLAUDE=1 CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.177 \
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+Status at time of this log: running (kernel objects compiling clean; only the usual benign -Wunused warnings). Build exit status + ISO/NVMe staging result will be recorded in fry1545. The headed verify run (drive prompt -> network + helper kill -> observe teardown with NO kernel #PF) will be recorded in its own fry log when complete.
+
+---------------------------------------------------------------------------------
+CONCLUSION
+---------------------------------------------------------------------------------
+The network-teardown "triple fault / reset" is a kernel-stack overflow caused by a ~1 MB `struct tcp_conn dummy` allocated on the stack in tcp_process()'s RST path, fired by an unmatched inbound segment during socket teardown. Fixed by moving that scratch instance to BSS (static). Grok's TX-side tcp_conn refcount does not address this and introduces an accept-path regression; that change is left in place for now (does not affect the Claude client teardown verify) and will be decided separately.
+
+---------------------------------------------------------------------------------
+OPEN / NEXT (each its own fry log when it completes)
+---------------------------------------------------------------------------------
+- fry1545: record clean-build exit 0 + staged artifacts.
+- next: headed verify run -> confirm teardown survives (SPCEN exits + tcp_process activity, NO kernel #PF / no reset).
+- separate: decide Grok's refcount (patch accept-path nc->refs=1 vs revert; keep the !active guard).
+- separate: userspace fault storm in RCLAUDE worker thread tid=23 (sig=11 @ RIP 0x293cb7c, near-null CR2 0xFFFFFFFFFFFF4AB8). Clone first-run FS-base IS installed (process.c:184-193) + restored on switch (sched.c:1078), so not the obvious fs.base=0 kernel bug; needs a targeted beacon on the exact syscall tid=23 makes immediately before its first fault. Secondary to OS survival.
+
+All per planv3 Rules 1/5/6/12 + handoff logging discipline. Written immediately on completion of the diagnose+fix step, before the build result.

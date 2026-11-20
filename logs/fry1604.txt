@@ -1,0 +1,26 @@
+# fry1604 - CODE: re-add SHELL=/nvme/bin/sh + /nvme/bin on PATH to cmd_claude (shell.c) so the Bash tool resolves. ON TOP of the verified fry1601 baseline (one change).
+Date: 2026-06-16 ~22:10 (host clock) CDT
+Type: code change (shell.c env) (Rule 5/6)
+
+WHY (Rule 6): On the working baseline (fry1603) Claude is interactive + networked + generates full responses, but
+its Bash TOOL is "broke": serial shows it probing macOS/Homebrew paths baked into claude's config that don't exist
+here -> LINUXELF open /usr/local/bin/bash ; TBEXECVE path=/opt/homebrew/bin/bash. Claude probes those because SHELL
+was unset (removed in the fry1595 A/B). The A/B PROVED SHELL was NOT the freeze cause (the fry1592 demand-batch was,
+reverted fry1600) -> safe to re-add.
+
+CHANGE (src/user/shell/shell.c cmd_claude envp):
+  - PATH now leads with /nvme/bin (so the staged shell + tools resolve).
+  - Added SHELL=/nvme/bin/sh. Busybox is staged to ToTFS /bin/sh + /bin/bash (build_iso 433-434) => mounts at
+    /nvme/bin/sh + /nvme/bin/bash. Chose 'sh' (busybox 'sh' applet is guaranteed; a 'bash' applet may not be).
+    Claude's Bash tool runs commands via $SHELL -c "...", which busybox sh handles. The /nvme path redirect +
+    pipe()/pipe2() (already in tree, dormant) now become live for the tool path.
+
+UNCHANGED (still the known-good base): single-page paging (no batch), no lx_map_one lock, panic fix, /proc/self/stat.
+NOTE: this does NOT address the "missing chars" (display renderer dropping glyphs under slow single-page paging);
+that is the SEPARATE page-in speedup phase (must be done CORRECTLY this time: IRQ-disabled locked batch or 2MB
+hugepages, not the naive batch that hard-hung the loader).
+
+NEXT (fry1605 build, fry1606 verify): rebuild (busybox already staged), relaunch -smp 1 + e1000 NIC. Test: launch
+claude -> ask it to run a shell command (e.g. `ls` / `pwd`) -> Bash tool should exec /nvme/bin/sh and return output
+instead of "bash missing/broken". Confirm chat + network still work and no freeze.
+All per planv3 Rules 1/5/6/12. Written immediately on the change, before the build.

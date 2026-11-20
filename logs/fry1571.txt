@@ -1,0 +1,38 @@
+# fry1571 - CONFIRMED (correct tgid): the freeze = the main thread (pid=14) SPINNING in userspace. TBMAIN shows state=PROC_RUNNING in ~98% of samples, futex_key=0/poll=0 (not blocked on anything). Plus 11 ZOMBIE claude threads (unreaped exited workers). user_rip is frozen (no new syscalls).
+Date: 2026-06-16 03:25 CDT
+Type: verify + diagnosis (TBMAIN/TBCLK with the corrected tgid, fry1569 build)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+---------------------------------------------------------------------------------
+RESULT
+---------------------------------------------------------------------------------
+proc_state enum (process.h:7): PROC_UNUSED=0, PROC_RUNNING=1, PROC_WAITING=2, PROC_ZOMBIE=3, PROC_DEAD=4.
+TBMAIN (pid=14, the JS main/event-loop thread) over the run:
+  state=1 (RUNNING): 1390 samples (oncpu split 0/1 due to heartbeat-vs-target CPU race + migration cpu0<->cpu2)
+  state=2 (WAITING):   26 samples
+  => ~98% PROC_RUNNING. futex_key=0, poll=0, wake=0 on every sample -> NOT blocked on a futex/poll, NOT a timed sleep.
+  => The main thread is BUSY-SPINNING in userspace. (Confirms fry1567's spin call, which had been on the wrong tgid;
+     now verified on claude's real tgid=14.)
+TBCLK census (now correct tgid): t3=4/4/11/0 = 4 RUNNING, 4 WAITING, 11 ZOMBIE, 0 DEAD. ELEVEN zombie claude threads
+  — exited worker threads the stuck main thread never reaped (it is spinning instead of running the loop that waitpid's
+  them). Could be symptom (stuck->no reap) or clue (spinning while waiting on a worker that already exited).
+Input this run: keystrokes delivered (TBPROCIN b0=67 'g', Enter), read(fd=0)=1 (startup only) -> not echoed (timing
+  shifted again with the new beacons; expected). Delivery still fine.
+user_rip=0x60000001f300 constant on every TBMAIN -> this is the userspace return address right AFTER pid=14's last
+  syscall (the futex wake at the freeze edge); it is frozen because the thread makes no further syscalls while spinning.
+  So it is NOT the live spin PC — it is where the spin loop was entered from.
+
+---------------------------------------------------------------------------------
+WHAT WE NEED NEXT
+---------------------------------------------------------------------------------
+The live spin PC. user_rip is stale (only updates on kernel entry; a pure userspace spin makes none). Get the actual
+spinning instruction from the TIMER IRQ frame (ctx[17]=RIP, ctx[18]=CS, confirmed in irqdesc.c:496) WHEN the timer
+interrupts pid=14 running in userspace. That names the loop -> resolve vs RCLAUDE.LXE / the mmap'd JIT region to
+identify the lock/condition (likely a WTF spin or a GC/worker barrier), then fix the underlying primitive/worker
+progress. Also worth: the 11 zombies — check if the main thread is spinning waiting on a thread that became a zombie
+(a join/result-wait on an exited worker).
+
+NEXT (own fry log each): fry1572 add the IRQ-frame RIP sampler (TBSPIN cpu/pid/live-rip when current[cpu]==main thread
+in userspace, throttled) -> build -> run -> read TBSPIN -> locate the spin -> fix. Keep Claude fully networked.
+
+All per planv3 Rules 1/5/6/12. Written immediately on this confirmation.

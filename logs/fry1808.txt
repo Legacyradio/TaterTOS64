@@ -1,0 +1,122 @@
+fry1808 — ✅ pyexpat added; hermes RUNS past every prior blocker into urllib3/requests — 2026-08-11
+==========================================================================
+WHAT: Added pyexpat + bundled libexpat (the fry1807 blocker). Built, staged,
+booted, ran `hermes`. The agent now imports prompt_toolkit, asyncio, httpx,
+urllib3 and requests with NO traceback and NO fault. This is the furthest hermes
+has ever run. It is STILL RUNNING at log time — see "WHAT IS NOT CLAIMED".
+
+=== CHANGES ===
+1. Python3.mk — libexpat + pyexpat, defined ABOVE CPYTHON_ALL_OBJS:
+     CPYTHON_EXPAT_SRCS = Modules/expat/{xmlparse,xmlrole,xmltok}.c
+     CPYTHON_EXPAT_OBJS, CPYTHON_PYEXPAT_OBJ
+     appended to CPYTHON_ALL_OBJS
+   Placement is deliberate: the fry1806 sqlite bug proved that a variable used in
+   CPYTHON_ALL_OBJS but defined later expands to EMPTY at rule-read time and the
+   objects are never built. Do not move these definitions down.
+
+   ⚠ ONLY THREE expat TUs compile. xmltok_impl.c and xmltok_ns.c are #include'd
+   BY xmltok.c (xmltok.c:307 and :1646). Compiling them separately would produce
+   duplicate symbols. Do not "complete the list".
+
+2. Python3.mk — dedicated compile rules for expat and pyexpat (they need
+   -DHAVE_EXPAT_CONFIG_H / -DXML_STATIC / -DUSE_PYEXPAT_CAPI and
+   -I.../Modules/expat, so they cannot use the generic Modules/%.o rule).
+
+3. Modules/config.c — extern PyObject* PyInit_pyexpat(void); + inittab entry
+   {"pyexpat", PyInit_pyexpat}, alongside unicodedata.
+
+=== TWO BUILD FAILURES HIT AND FIXED (recorded so they are not re-hit) ===
+FAILURE 1: compiling expat with CPYTHON_CFLAGS gave
+    <command-line>: error: expected identifier or '(' before string constant
+    xmlparse.c:3775: 'ELEMENT_TYPE' has no member named 'nDefaultAtts'
+  CAUSE: CPython's build defines -DVERSION='"3.14"' and -DPREFIX='"/usr/local"'
+  (plus EXEC_PREFIX/ABIFLAGS/VPATH/PLATLIBDIR). Those names collide with ordinary
+  identifiers inside libexpat, so the preprocessor substituted string literals
+  into expat's own code. libexpat is THIRD-PARTY and must not inherit CPython's
+  build defines.
+FAILURE 2: compiling expat with bare UFLAGS gave
+    expat_config.h:8: fatal error: pyconfig.h: No such file or directory
+  CAUSE: this CPython-bundled expat_config.h #includes pyconfig.h, so expat DOES
+  need CPython's include PATHS.
+RESOLUTION — EXPAT_CFLAGS keeps the paths, drops the string defines:
+    EXPAT_CFLAGS = $(UFLAGS) -ffunction-sections -fdata-sections -DPy_BUILD_CORE
+                   $(EXPAT_DEFS) $(EXPAT_INC)
+                   -I$(CPYTHON_DIR) -I$(CPYTHON_DIR)/Include
+                   -I$(CPYTHON_DIR)/Include/internal -I$(CPYTHON_DIR)/Modules
+                   -Wno-unused-parameter -Wno-unused-function
+                   -Wno-missing-field-initializers
+  pyexpat.c is different — it is CPython glue and DOES get CPYTHON_CFLAGS.
+NOTE: expat_config.h already sets XML_POOR_ENTROPY=1 and #undefs HAVE_GETRANDOM /
+HAVE_ARC4RANDOM, i.e. it is pre-configured for a system with no /dev/urandom and
+no getrandom — exactly TaterTOS. No entropy work was needed.
+
+=== BUILD — VERIFIED ===
+  make -f Python3.mk python3   PY_EXIT=0, no errors, no undefined references
+  LINKED SYMBOLS CONFIRMED IN THE BINARY (not assumed):
+    nm python3.elf | grep PyInit_pyexpat  ->  000000000091d820 T PyInit_pyexpat
+    XML_ParserCreate also present.
+  python3.elf 16,036,672 bytes (was 15,820,112; +216 KB, consistent with libexpat)
+  python3.fry 16,036,688 bytes  2026-08-11 10:18:13
+  expat objects each emitted a .d sidecar — the fry1805 tracking covers the new
+  rules too (xmlparse.d, xmlrole.d, xmltok.d).
+  bash build_iso.sh  ISO_EXIT=0, no WARNING / NOT staged lines, ISO newest.
+
+=== BOOT + RUN (serial logs/fry1808_serial.log, -smp 4) ===
+  selftest 106 passed / 0 failed, DHCP:OK, SHELL up ~48s.
+  `hermes` typed via xdotool -> HERMESMAIN, pid=12.
+
+RESULT — NO CRASH, NO TRACEBACK, agent deep into the HTTP stack (serial ~:8100):
+  urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL
+    1.1.1+, currently the 'ssl' module is compiled with
+    'BearSSL 0.6 (TaterTOS native _ssl)'
+  requests/__init__.py:86: RequestsDependencyWarning: Unable to find acceptable
+    character detection dependency (chardet or charset_normalizer)
+  BOTH ARE WARNINGS, NOT ERRORS. urllib3 and requests both imported.
+  8189 serial lines, no "Fatal Python", no "USER FAULT", no "!EXC", no
+  ModuleNotFoundError, no Traceback anywhere.
+  Ran >10 minutes without failing; every previous attempt died in ~136s (SMP).
+
+TLS FIX STILL HOLDING: "TLSDBG get MAIN tid=12 tgid=12 fs=7fff80000138" and
+ZERO "TLSDBG set" lines. No spawned-thread lines yet this run, so the agent has
+not reached thread creation on this path.
+
+=== WHAT IS NOT CLAIMED ===
+hermes has NOT been observed completing, printing a prompt, or answering
+anything. The process is alive with no output beyond the two warnings — it may
+be still initialising, or blocked waiting on interactive input (fry1785 noted
+hermes_cli/main.py:286 requires sys.stdin.isatty()). "It runs further than ever"
+is what the evidence supports; "hermes works" is NOT yet supported. Next step
+must observe what it actually does.
+
+=== TWO COSMETIC/FUNCTIONAL ITEMS SURFACED (not blocking, not addressed) ===
+  - chardet / charset_normalizer are absent -> requests degrades its encoding
+    detection. Pure-Python packages; installable into the sysroot if wanted.
+  - urllib3 warns about BearSSL vs OpenSSL 1.1.1+. Cosmetic today; may matter if
+    urllib3 later gates behaviour on the ssl backend.
+
+=== xdotool TYPING (refining fry1804's notes) ===
+The FIRST character is duplicated ("hhermes", "upython3", "ppython3") when typing
+immediately after windowactivate — a race, not a delay problem. Reliable recipe:
+    xdotool windowactivate --sync <win>; sleep 3
+    xdotool key space; sleep 0.5; xdotool key BackSpace; sleep 0.5
+    xdotool type --delay 200 '<cmd>'; sleep 1; xdotool key Return
+The throwaway space+BackSpace absorbs the duplicated keystroke. ALWAYS verify
+with a screenshot (`import -window <win> out.png`) before trusting a null result.
+Window id CHANGES per VM launch — re-discover it with
+`xdotool search --name QEMU` and pick the 1280x800 one (there is a 10x10 decoy).
+
+=== SESSION SCOREBOARD ===
+  TLS / _PyThreadState_Attach ......... CLOSED (fry1801, 1 + 4 vCPU)
+  Network / missing -netdev ........... CLOSED (fry1797/1798)
+  Stale objects, main Makefile ........ CLOSED (fry1796)
+  asyncio ValueError + NameError ...... CLOSED (fry1806/1807)
+  Python3.mk header deps .............. CLOSED (fry1805/1806)
+  Python3.mk sqlite prereq bug ........ CLOSED (fry1806)
+  pyexpat ............................. CLOSED (this step)
+  hermes end-to-end behaviour ......... UNVERIFIED — running, nothing observed
+  🔴 603 uncommitted files, 2026-06-08 . OPEN
+
+NEXT (fry1809): observe what the running agent actually does — screenshot the
+GUI (stdout goes to the GUI window, NOT the serial; only stderr reaches serial,
+which is why the warnings appeared but no banner did). If it is waiting on
+stdin.isatty(), that is the next thing to make real.

@@ -12,13 +12,14 @@
  * in syscall.c (linux_syscall_dispatch).
  *
  * Static ET_EXEC binaries enter at their own entry point. Dynamically linked
- * ET_EXEC binaries with PT_INTERP map the requested interpreter as ET_DYN,
+ * ET_EXEC/PIE ET_DYN binaries with PT_INTERP map the requested interpreter,
  * set AT_BASE, and enter the interpreter just like the Linux kernel does.
  */
 
 #include <stdint.h>
 #include <errno.h>
 #include "linux_compat.h"
+#include "process.h"
 #include "../mm/pmm.h"
 #include "../mm/vmm.h"
 
@@ -106,11 +107,15 @@ struct lx_phdr {
 #define LX_STACK_PAGES 2048ULL          /* 8 MiB stack, Linux-conventional */
 #define LX_STACK_TOP   USER_VA_TOP       /* 0x0000800000000000 */
 #define LX_FRAME_MASK  0x000FFFFFFFFFF000ULL
+#define LX_PIE_BASE    0x0000555555400000ULL
 #define LX_INTERP_BASE 0x0000600000000000ULL
 
 #define LX_ARGV_CAP   64
 #define LX_ENVP_CAP   64
 #define LX_INTERP_PATH_CAP 128
+#define LX_STREAM_CHUNK_PAGES 256
+#define LX_SEG_CACHE_MAX 8
+#define LX_SEG_CACHE_PAGE_MAX 70000
 
 struct lx_file_image {
     uint64_t phys;            /* backing pages for buf (buffered) or meta (streamed) */
@@ -123,6 +128,31 @@ struct lx_file_image {
     const struct lx_ehdr *eh;
     const struct lx_phdr *ph;
 };
+
+struct lx_reuse_ctx {
+    uint64_t src_cr3;
+    const struct lx_img_seg *src_segs;
+    uint8_t src_nsegs;
+};
+
+struct lx_seg_cache_ent {
+    uint64_t off;
+    uint64_t filesz;
+    uint32_t page_start;
+    uint32_t pages;
+    uint8_t ready;
+};
+
+struct lx_seg_cache {
+    uint8_t active;
+    uint32_t file_size;
+    uint8_t nsegs;
+    uint32_t page_count;
+    struct lx_seg_cache_ent segs[LX_SEG_CACHE_MAX];
+    uint64_t phys_pages[LX_SEG_CACHE_PAGE_MAX];
+};
+
+static struct lx_seg_cache g_lx_seg_cache;
 
 static uint64_t lx_strlen(const char *s) {
     uint64_t n = 0;
@@ -137,6 +167,124 @@ static void lx_memzero(uint8_t *p, uint64_t n) {
 
 static void lx_memcopy(uint8_t *d, const uint8_t *s, uint64_t n) {
     for (uint64_t i = 0; i < n; i++) d[i] = s[i];
+}
+
+static int lx_cache_find(uint32_t file_size, uint64_t off, uint64_t filesz) {
+    if (!g_lx_seg_cache.active || g_lx_seg_cache.file_size != file_size)
+        return -1;
+    for (uint8_t i = 0; i < g_lx_seg_cache.nsegs; i++) {
+        struct lx_seg_cache_ent *e = &g_lx_seg_cache.segs[i];
+        if (e->off == off && e->filesz == filesz)
+            return (int)i;
+    }
+    return -1;
+}
+
+static int lx_cache_alloc_segment(uint32_t file_size, uint64_t off,
+                                  uint64_t filesz) {
+    if (file_size < LX_STREAM_THRESHOLD || filesz == 0)
+        return -1;
+    if (filesz > (uint64_t)LX_SEG_CACHE_PAGE_MAX * LX_PAGE)
+        return -1;
+    if (g_lx_seg_cache.active && g_lx_seg_cache.file_size != file_size)
+        return -1;
+    if (!g_lx_seg_cache.active) {
+        lx_memzero((uint8_t *)&g_lx_seg_cache, sizeof(g_lx_seg_cache));
+        g_lx_seg_cache.active = 1;
+        g_lx_seg_cache.file_size = file_size;
+    }
+
+    int found = lx_cache_find(file_size, off, filesz);
+    if (found >= 0) return found;
+    if (g_lx_seg_cache.nsegs >= LX_SEG_CACHE_MAX) return -1;
+
+    uint32_t pages = (uint32_t)((filesz + LX_PAGE - 1) / LX_PAGE);
+    if (pages == 0 ||
+        pages > LX_SEG_CACHE_PAGE_MAX - g_lx_seg_cache.page_count)
+        return -1;
+
+    uint8_t idx = g_lx_seg_cache.nsegs;
+    struct lx_seg_cache_ent *e = &g_lx_seg_cache.segs[idx];
+    e->off = off;
+    e->filesz = filesz;
+    e->page_start = g_lx_seg_cache.page_count;
+    e->pages = pages;
+    e->ready = 0;
+
+    for (uint32_t p = 0; p < pages; p++) {
+        uint64_t phys = pmm_alloc_page();
+        if (!phys) {
+            for (uint32_t q = 0; q < p; q++) {
+                uint64_t old = g_lx_seg_cache.phys_pages[e->page_start + q];
+                if (old) pmm_free_page(old);
+                g_lx_seg_cache.phys_pages[e->page_start + q] = 0;
+            }
+            return -1;
+        }
+        g_lx_seg_cache.phys_pages[e->page_start + p] = phys;
+    }
+    g_lx_seg_cache.page_count += pages;
+    g_lx_seg_cache.nsegs++;
+    kprint_serial_only("LINUXELF: cache alloc off=%lx file=%lx pages=%u\n",
+                       (unsigned long)off, (unsigned long)filesz,
+                       (unsigned)pages);
+    return (int)idx;
+}
+
+static void lx_cache_write(int idx, uint64_t pos, const uint8_t *src,
+                           uint64_t len) {
+    if (idx < 0 || idx >= g_lx_seg_cache.nsegs) return;
+    struct lx_seg_cache_ent *e = &g_lx_seg_cache.segs[idx];
+    while (len) {
+        uint64_t page = pos / LX_PAGE;
+        uint64_t off = pos & 0xFFFULL;
+        if (page >= e->pages) return;
+        uint64_t n = LX_PAGE - off;
+        if (n > len) n = len;
+        uint64_t phys = g_lx_seg_cache.phys_pages[e->page_start + page];
+        if (!phys) return;
+        uint8_t *dst = (uint8_t *)(uintptr_t)(vmm_phys_to_virt(phys) + off);
+        lx_memcopy(dst, src, n);
+        src += n;
+        pos += n;
+        len -= n;
+    }
+}
+
+static int lx_cache_copy_to_user(uint64_t dst_cr3, uint64_t dst_va,
+                                 uint32_t file_size, uint64_t off,
+                                 uint64_t filesz) {
+    int idx = lx_cache_find(file_size, off, filesz);
+    if (idx < 0) return 0;
+    struct lx_seg_cache_ent *e = &g_lx_seg_cache.segs[idx];
+    if (!e->ready) return 0;
+
+    uint64_t pos = 0;
+    uint64_t rem = filesz;
+    while (rem) {
+        uint64_t dst_mapped = vmm_virt_to_phys_user(dst_cr3, dst_va);
+        uint64_t dst_frame = dst_mapped & LX_FRAME_MASK;
+        if (!dst_frame) return 0;
+        uint64_t cache_page = pos / LX_PAGE;
+        uint64_t cache_off = pos & 0xFFFULL;
+        if (cache_page >= e->pages) return 0;
+        uint64_t cache_phys =
+            g_lx_seg_cache.phys_pages[e->page_start + cache_page];
+        if (!cache_phys) return 0;
+
+        uint64_t dst_off = dst_va & 0xFFFULL;
+        uint64_t n = LX_PAGE - cache_off;
+        if (n > LX_PAGE - dst_off) n = LX_PAGE - dst_off;
+        if (n > rem) n = rem;
+
+        uint8_t *src = (uint8_t *)(uintptr_t)(vmm_phys_to_virt(cache_phys) + cache_off);
+        uint8_t *dst = (uint8_t *)(uintptr_t)(vmm_phys_to_virt(dst_frame) + dst_off);
+        lx_memcopy(dst, src, n);
+        dst_va += n;
+        pos += n;
+        rem -= n;
+    }
+    return 1;
 }
 
 /* Write `len` bytes from kernel `src` into user VA `va` of address space
@@ -161,6 +309,54 @@ static int lx_poke(uint64_t cr3, uint64_t va, const void *src, uint64_t len) {
 
 static int lx_poke64(uint64_t cr3, uint64_t va, uint64_t val) {
     return lx_poke(cr3, va, &val, 8);
+}
+
+static int lx_stream_to_user(uint64_t cr3, struct vfs_file *stream,
+                             uint64_t dst_va, uint64_t filesz,
+                             int cache_idx) {
+    uint64_t chunk_pages = LX_STREAM_CHUNK_PAGES;
+    uint64_t chunk_phys = pmm_alloc_pages(chunk_pages);
+    while (!chunk_phys && chunk_pages > 1) {
+        chunk_pages >>= 1;
+        chunk_phys = pmm_alloc_pages(chunk_pages);
+    }
+    if (!chunk_phys) return -ENOMEM;
+
+    uint8_t *chunk = (uint8_t *)(uintptr_t)vmm_phys_to_virt(chunk_phys);
+    uint64_t chunk_bytes = chunk_pages * LX_PAGE;
+    uint64_t rem = filesz;
+    uint64_t copied = 0;
+    uint64_t next_progress = 16ULL * 1024ULL * 1024ULL;
+
+    while (rem > 0) {
+        uint64_t want = chunk_bytes;
+        if (want > rem) want = rem;
+        int rd = vfs_read(stream, chunk, (uint32_t)want);
+        if (rd <= 0) {
+            pmm_free_pages(chunk_phys, chunk_pages);
+            return -EIO;
+        }
+        if (lx_poke(cr3, dst_va, chunk, (uint64_t)rd) != 0) {
+            pmm_free_pages(chunk_phys, chunk_pages);
+            return -EFAULT;
+        }
+        if (cache_idx >= 0)
+            lx_cache_write(cache_idx, copied, chunk, (uint64_t)rd);
+
+        dst_va += (uint64_t)rd;
+        copied += (uint64_t)rd;
+        rem -= (uint64_t)rd;
+
+        if (filesz >= 16ULL * 1024ULL * 1024ULL && copied >= next_progress) {
+            kprint_serial_only("LINUXELF: stream progress %lu/%lu\n",
+                               (unsigned long)copied,
+                               (unsigned long)filesz);
+            next_progress += 16ULL * 1024ULL * 1024ULL;
+        }
+    }
+
+    pmm_free_pages(chunk_phys, chunk_pages);
+    return 0;
 }
 
 /* Map one PT_LOAD segment into the target address space. */
@@ -296,17 +492,55 @@ static int lx_copy_interp_path(const struct lx_file_image *img,
 
 static int lx_map_segment_at(uint64_t cr3, const struct lx_phdr *ph,
                              const uint8_t *payload, uint64_t payload_size,
-                             uint64_t load_bias, struct vfs_file *stream);
+                             uint64_t load_bias, struct vfs_file *stream,
+                             struct lx_img_seg *segs, uint8_t *nsegs,
+                             const struct lx_reuse_ctx *reuse);
 
-static int lx_map_segment(uint64_t cr3, const struct lx_phdr *ph,
-                          const uint8_t *payload, uint64_t payload_size,
-                          struct vfs_file *stream) {
-    return lx_map_segment_at(cr3, ph, payload, payload_size, 0, stream);
+static int lx_reuse_range_available(const struct lx_reuse_ctx *reuse,
+                                    uint64_t lo, uint64_t hi) {
+    if (!reuse || !reuse->src_cr3 || !reuse->src_segs ||
+        reuse->src_nsegs == 0)
+        return 0;
+    for (uint8_t i = 0; i < reuse->src_nsegs && i < LX_IMG_SEGS_MAX; i++) {
+        const struct lx_img_seg *s = &reuse->src_segs[i];
+        if (s->lo <= lo && hi <= s->hi)
+            return 1;
+    }
+    return 0;
+}
+
+static int lx_copy_from_reuse(uint64_t dst_cr3, uint64_t dst_va,
+                              const struct lx_reuse_ctx *reuse,
+                              uint64_t src_va, uint64_t len) {
+    while (len) {
+        uint64_t src_mapped = vmm_virt_to_phys_user(reuse->src_cr3, src_va);
+        uint64_t dst_mapped = vmm_virt_to_phys_user(dst_cr3, dst_va);
+        uint64_t src_frame = src_mapped & LX_FRAME_MASK;
+        uint64_t dst_frame = dst_mapped & LX_FRAME_MASK;
+        if (!src_frame || !dst_frame) return 0;
+
+        uint64_t src_off = src_va & 0xFFFULL;
+        uint64_t dst_off = dst_va & 0xFFFULL;
+        uint64_t n = LX_PAGE - src_off;
+        if (n > LX_PAGE - dst_off) n = LX_PAGE - dst_off;
+        if (n > len) n = len;
+
+        uint8_t *src_kv = (uint8_t *)(uintptr_t)(vmm_phys_to_virt(src_frame) + src_off);
+        uint8_t *dst_kv = (uint8_t *)(uintptr_t)(vmm_phys_to_virt(dst_frame) + dst_off);
+        lx_memcopy(dst_kv, src_kv, n);
+
+        src_va += n;
+        dst_va += n;
+        len -= n;
+    }
+    return 1;
 }
 
 static int lx_map_segment_at(uint64_t cr3, const struct lx_phdr *ph,
                              const uint8_t *payload, uint64_t payload_size,
-                             uint64_t load_bias, struct vfs_file *stream) {
+                             uint64_t load_bias, struct vfs_file *stream,
+                             struct lx_img_seg *segs, uint8_t *nsegs,
+                             const struct lx_reuse_ctx *reuse) {
     uint64_t vaddr = ph->p_vaddr;
     uint64_t memsz = ph->p_memsz;
     uint64_t filesz = ph->p_filesz;
@@ -340,25 +574,40 @@ static int lx_map_segment_at(uint64_t cr3, const struct lx_phdr *ph,
         lx_memzero((uint8_t *)(uintptr_t)vmm_phys_to_virt(phys), LX_PAGE);
     }
 
+    /* fry1397: record the file-backed extent so the madvise path can
+     * preserve these pages (MADV_DONTNEED on private file-backed mappings
+     * restores file content on Linux — never zeros). */
+    if (filesz > 0 && segs && nsegs && *nsegs < LX_IMG_SEGS_MAX) {
+        segs[*nsegs].lo = vaddr & ~0xFFFULL;
+        segs[*nsegs].hi = (vaddr + filesz + 0xFFFULL) & ~0xFFFULL;
+        (*nsegs)++;
+    }
+
     if (filesz > 0) {
-        if (stream) {
-            /* Streamed: read p_filesz bytes from the file at p_offset directly
-             * into the freshly-mapped pages (no whole-file buffer). */
+        uint64_t file_lo = vaddr & ~0xFFFULL;
+        uint64_t file_hi = (vaddr + filesz + 0xFFFULL) & ~0xFFFULL;
+        if (stream && !(ph->p_flags & LX_PF_W) &&
+            lx_reuse_range_available(reuse, file_lo, file_hi) &&
+            lx_copy_from_reuse(cr3, vaddr, reuse, vaddr, filesz)) {
+            kprint_serial_only("LINUXELF: reused RO seg va=%lx file=%lx\n",
+                               (unsigned long)vaddr, (unsigned long)filesz);
+        } else if (stream &&
+                   lx_cache_copy_to_user(cr3, vaddr, (uint32_t)payload_size,
+                                         off, filesz)) {
+            kprint_serial_only("LINUXELF: cached seg va=%lx file=%lx\n",
+                               (unsigned long)vaddr, (unsigned long)filesz);
+        } else if (stream) {
+            /* Streamed: read p_filesz bytes through a bounded kernel bounce
+             * buffer, then copy into freshly-mapped user pages. This preserves
+             * the no-whole-file-buffer path while avoiding one VFS read per
+             * 4 KiB user page for large Linux binaries. */
             if (vfs_seek(stream, (int64_t)off, LX_SEEK_SET) < 0) return -EIO;
-            uint64_t rem = filesz;
-            uint64_t v2 = vaddr;
-            while (rem > 0) {
-                uint64_t frame = vmm_virt_to_phys_user(cr3, v2) & LX_FRAME_MASK;
-                if (!frame) return -EFAULT;
-                uint64_t poff = v2 & 0xFFFULL;
-                uint64_t n = LX_PAGE - poff;
-                if (n > rem) n = rem;
-                uint8_t *kv = (uint8_t *)(uintptr_t)(vmm_phys_to_virt(frame) + poff);
-                int rd = vfs_read(stream, kv, (uint32_t)n);
-                if (rd <= 0) return -EIO;
-                v2 += (uint64_t)rd;
-                rem -= (uint64_t)rd;
-            }
+            int cache_idx = lx_cache_alloc_segment((uint32_t)payload_size,
+                                                   off, filesz);
+            int stream_rc = lx_stream_to_user(cr3, stream, vaddr, filesz, cache_idx);
+            if (stream_rc != 0) return stream_rc;
+            if (cache_idx >= 0)
+                g_lx_seg_cache.segs[cache_idx].ready = 1;
             kprint_serial_only("LINUXELF: streamed seg done va=%lx file=%lx\n",
                                (unsigned long)vaddr, (unsigned long)filesz);
         } else {
@@ -485,9 +734,14 @@ int elf_load_linux(const char *path,
                    const char *const *argv, int argc,
                    const char *const *envp, int envc,
                    uint64_t *cr3_out, uint64_t *entry_out,
-                   uint64_t *rsp_out, uint64_t *brk_out) {
+                   uint64_t *rsp_out, uint64_t *brk_out,
+                   struct lx_img_seg *img_segs_out, uint8_t *img_nsegs_out,
+                   uint64_t reuse_src_cr3,
+                   const struct lx_img_seg *reuse_src_segs,
+                   uint8_t reuse_src_nsegs) {
     if (!path || !cr3_out || !entry_out || !rsp_out || !brk_out)
         return -EINVAL;
+    if (img_nsegs_out) *img_nsegs_out = 0;
     kprint_serial_only("LINUXELF: load start %s\n", path);
 
     struct lx_file_image main_img;
@@ -498,7 +752,13 @@ int elf_load_linux(const char *path,
     int rc = lx_read_image(path, &main_img);
     if (rc != 0) return rc;
     kprint_serial_only("LINUXELF: read main rc=0 %s\n", path);
-    rc = lx_validate_image(&main_img, LX_ET_EXEC, "main");
+    if (main_img.eh->e_type != LX_ET_EXEC &&
+        main_img.eh->e_type != LX_ET_DYN) {
+        kprint("LINUXELF: main unsupported type %u\n", main_img.eh->e_type);
+        lx_free_image(&main_img);
+        return -ENOEXEC;
+    }
+    rc = lx_validate_image(&main_img, main_img.eh->e_type, "main");
     if (rc != 0) {
         lx_free_image(&main_img);
         return rc;
@@ -543,34 +803,42 @@ int elf_load_linux(const char *path,
     uint64_t phdr_va = 0;
     const struct lx_ehdr *eh = main_img.eh;
     const struct lx_phdr *ph = main_img.ph;
+    uint64_t main_bias = (eh->e_type == LX_ET_DYN) ? LX_PIE_BASE : 0;
+    struct lx_reuse_ctx reuse;
+    reuse.src_cr3 = reuse_src_cr3;
+    reuse.src_segs = reuse_src_segs;
+    reuse.src_nsegs = reuse_src_nsegs;
     for (uint16_t i = 0; i < eh->e_phnum; i++) {
         if (ph[i].p_type != LX_PT_LOAD) continue;
         kprint_serial_only("LINUXELF: main PT_LOAD %u\n", (unsigned)i);
-        rc = lx_map_segment(cr3, &ph[i], main_img.buf, main_img.size, main_img.file);
+        rc = lx_map_segment_at(cr3, &ph[i], main_img.buf, main_img.size,
+                               main_bias, main_img.file,
+                               img_segs_out, img_nsegs_out, &reuse);
         if (rc != 0) {
             vmm_destroy_address_space(cr3);
             lx_free_image(&interp_img);
             lx_free_image(&main_img);
             return rc;
         }
-        uint64_t seg_end = ph[i].p_vaddr + ph[i].p_memsz;
+        uint64_t seg_end = main_bias + ph[i].p_vaddr + ph[i].p_memsz;
         if (seg_end > brk_end) brk_end = seg_end;
         if (eh->e_phoff >= ph[i].p_offset &&
             eh->e_phoff <  ph[i].p_offset + ph[i].p_filesz) {
-            phdr_va = ph[i].p_vaddr + (eh->e_phoff - ph[i].p_offset);
+            phdr_va = main_bias + ph[i].p_vaddr + (eh->e_phoff - ph[i].p_offset);
         }
     }
 
-    if (eh->e_entry >= USER_VA_TOP) {
+    if (eh->e_entry >= USER_VA_TOP ||
+        main_bias > USER_VA_TOP - eh->e_entry) {
         vmm_destroy_address_space(cr3);
         lx_free_image(&interp_img);
         lx_free_image(&main_img);
         return -ENOEXEC;
     }
 
-    uint64_t entry = eh->e_entry;
+    uint64_t entry = main_bias + eh->e_entry;
     uint64_t at_base = 0;
-    uint64_t at_entry = eh->e_entry;
+    uint64_t at_entry = main_bias + eh->e_entry;
     if (has_interp) {
         at_base = LX_INTERP_BASE;
         const struct lx_ehdr *ieh = interp_img.eh;
@@ -580,7 +848,8 @@ int elf_load_linux(const char *path,
             kprint_serial_only("LINUXELF: interp PT_LOAD %u\n", (unsigned)i);
             rc = lx_map_segment_at(cr3, &iph[i], interp_img.buf,
                                    interp_img.size, LX_INTERP_BASE,
-                                   interp_img.file);
+                                   interp_img.file,
+                                   img_segs_out, img_nsegs_out, &reuse);
             if (rc != 0) {
                 vmm_destroy_address_space(cr3);
                 lx_free_image(&interp_img);

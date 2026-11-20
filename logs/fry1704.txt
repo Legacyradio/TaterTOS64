@@ -1,0 +1,22 @@
+fry1704 — 2026-06-21 08:20 CDT
+STEP: Kernel BUILD with ELF-TLS change — SUCCESS (verified, per verify-build rule).
+
+RESULT:
+  - make kernel EXIT=0 (bash-captured; the env claims fish but the harness evals
+    via /bin/bash — earlier empty $status was that mismatch, not a build problem).
+  - 0 error:/undefined-reference/cannot-find lines in build log.
+  - elf.c + process.c recompiled clean (no warnings on either).
+  - kernel.elf relinked: 2026-06-21 00:30 -> 08:18, size 2610072 -> 2614216 (+4144B,
+    consistent with the new TLS setup code).
+  - file kernel.elf => ELF 64-bit LSB executable x86-64, statically linked. Valid.
+  - objdump -d elf.o shows 4 refs to 0x7fff80... (FRY_TLS_REGION_BASE) => TLS code
+    is actually present in the object, not dead-stripped.
+
+ONLY warning in whole build: irqdesc.c:139 'write_user_u64_for_exc defined but not
+  used' — that's the dormant fry1391-1393 diagnostic block (pre-existing), NOT mine.
+
+NOTE: did NOT relink python3.fry — no libc change this pass, so the existing
+  python3.fry is still valid (TLS layout is done kernel-side at load time).
+NEXT: fry1705 = build_iso.sh to restage kernel + python3.fry, then boot QEMU and
+  run the hermes self-test; read serial to the END (verify-before-claiming-success:
+  look for the actual end state, not just "no crash yet").

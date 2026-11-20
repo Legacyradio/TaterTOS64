@@ -1,0 +1,25 @@
+fry1724 — 2026-06-21 14:25 CDT
+STEP: Directive locked: FULL native hermes agent, no shortcuts (Zack: TaterLabs,
+      production OS, we build the roads). Killed the 3.13/lighter-path shortcut idea
+      (violated no-shortcut rules — owned it). Wrote HERMES_FULL_AGENT_PLAN.txt.
+
+WALL (confirmed, why it's a real program not a quick finish):
+  - Freestanding CPython has NO dynamic loading (Modules/dynload_stub.c) -> every C/
+    Rust extension MUST be a static BUILTIN linked into python3.fry.
+  - hermes deps incl. Rust pydantic_core (via pydantic->openai) + cryptography (via
+    PyJWT[crypto]) + C psutil/Pillow. The empty sysroot hermes/ dir is a red herring;
+    real entry = agent/ pkg + run_agent.py/serve_mcp.py.
+
+MECHANISM (in-tree precedent): Modules/config.c `extern PyInit_<m>` + _PyImport_
+  Inittab[] entry + link the .o (sqlite3/_ssl already done this way). Host has rustc
+  1.96 + cargo. Rust std PAL groundwork may be in chromium-port-wip-2026-05-07.patch.
+
+ROADMAP (see HERMES_FULL_AGENT_PLAN.txt):
+  P1 builtin-ext PIPELINE foundation (CPython C: _sha3/_blake2/... -> hashlib whole).
+  P2 external C (psutil, Pillow). P3 RUST (pydantic_core, cryptography) — the wall,
+  own phase, audit the PAL patch. P4 stage agent/ + pure-Py deps + entrypoint + /tmp.
+  P5 harden + rewrite smoke test to the real entrypoint.
+
+NEXT: PHASE 1 — inspect config.c _PyImport_Inittab + Python3.mk module list; add the
+  missing CPython hash C-modules as builtins; relink; verify hashlib complete in-OS.
+  -> fry1725.

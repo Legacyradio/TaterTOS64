@@ -50,6 +50,49 @@ void        freeaddrinfo(struct addrinfo *res);
 const char *gai_strerror(int errcode);
 int         getnameinfo(const struct sockaddr *sa, socklen_t salen, char *host, socklen_t hostlen, char *serv, socklen_t servlen, int flags);
 
+/* Hostname error (stub) */
+extern int  h_errno;
+const char *hstrerror(int err);
+
+/* Legacy host lookup (stubs — use getaddrinfo instead) */
+struct hostent {
+    char  *h_name;
+    char **h_aliases;
+    int    h_addrtype;
+    int    h_length;
+    char **h_addr_list;
+};
+struct hostent *gethostbyname(const char *name);
+struct hostent *gethostbyaddr(const void *addr, socklen_t len, int type);
+struct hostent *gethostent(void);
+void            sethostent(int stayopen);
+void            endhostent(void);
+
+/* Service lookup (stubs — TaterTOS has no /etc/services) */
+struct servent {
+    char  *s_name;
+    char **s_aliases;
+    int    s_port;
+    char  *s_proto;
+};
+struct servent *getservbyname(const char *name, const char *proto);
+struct servent *getservbyport(int port, const char *proto);
+struct servent *getservent(void);
+void            setservent(int stayopen);
+void            endservent(void);
+
+/* Protocol lookup (stubs — TaterTOS has no /etc/protocols) */
+struct protoent {
+    char  *p_name;
+    char **p_aliases;
+    int    p_proto;
+};
+struct protoent *getprotobyname(const char *name);
+struct protoent *getprotobynumber(int proto);
+struct protoent *getprotoent(void);
+void             setprotoent(int stayopen);
+void             endprotoent(void);
+
 #ifdef __cplusplus
 }
 #endif

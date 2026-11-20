@@ -61,6 +61,27 @@ int posix_spawnp(pid_t *pid, const char *file,
 
 int posix_spawnattr_init(posix_spawnattr_t *attr);
 int posix_spawnattr_destroy(posix_spawnattr_t *attr);
+
+/* Stubs — TaterTOS spawn doesn't support these attributes */
+int posix_spawnattr_setflags(posix_spawnattr_t *attr, short flags);
+int posix_spawnattr_getflags(const posix_spawnattr_t *attr, short *flags);
+int posix_spawnattr_setpgroup(posix_spawnattr_t *attr, pid_t pgroup);
+int posix_spawnattr_getpgroup(const posix_spawnattr_t *attr, pid_t *pgroup);
+int posix_spawnattr_setschedparam(posix_spawnattr_t *attr, const struct sched_param *schedparam);
+int posix_spawnattr_getschedparam(const posix_spawnattr_t *attr, struct sched_param *schedparam);
+int posix_spawnattr_setschedpolicy(posix_spawnattr_t *attr, int schedpolicy);
+int posix_spawnattr_getschedpolicy(const posix_spawnattr_t *attr, int *schedpolicy);
+int posix_spawnattr_setsigdefault(posix_spawnattr_t *attr, const sigset_t *sigdefault);
+int posix_spawnattr_getsigdefault(const posix_spawnattr_t *attr, sigset_t *sigdefault);
+int posix_spawnattr_setsigmask(posix_spawnattr_t *attr, const sigset_t *sigmask);
+int posix_spawnattr_getsigmask(const posix_spawnattr_t *attr, sigset_t *sigmask);
+
+#define POSIX_SPAWN_RESETIDS       0x01
+#define POSIX_SPAWN_SETPGROUP      0x02
+#define POSIX_SPAWN_SETSIGDEF      0x04
+#define POSIX_SPAWN_SETSIGMASK     0x08
+#define POSIX_SPAWN_SETSCHEDULER   0x10
+#define POSIX_SPAWN_SETSCHEDPARAM  0x20
 int posix_spawn_file_actions_init(posix_spawn_file_actions_t *fa);
 int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t *fa);
 int posix_spawn_file_actions_addopen(posix_spawn_file_actions_t *fa, int fd,

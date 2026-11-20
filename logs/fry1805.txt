@@ -1,0 +1,71 @@
+fry1805 — Python3.mk header dependency tracking added (parse verified) — 2026-08-10
+==========================================================================
+WHAT: Added -MMD/-MP header dependency tracking to Python3.mk, the last makefile
+in the tree without it. Build-system change only; NO C source touched. Parse
+verified. The .d sidecars cannot exist until objects recompile — that happens in
+fry1806, which also carries the acceptance test.
+
+WHY NOW (it is actively blocking, not housekeeping): the fry1804 fix edits
+src/include/unistd.h to add _SC_IOV_MAX. Python3.mk had NO header dependencies
+at all, so CPython's posixmodule.o would NOT have rebuilt from that header edit —
+the fix would have silently not taken and would have looked like "the fix didn't
+work". That is exactly the fry1793 failure mode (mixed/stale objects from an
+unrebuilt header) which cost a full day on the main Makefile and was fixed there
+in fry1796. Python3.mk was the remaining hole.
+
+CHANGES (Python3.mk):
+ 1. DEPFLAGS = -MMD -MP, appended to UFLAGS (line ~18).
+    Placed on UFLAGS deliberately: CPYTHON_CFLAGS derives from UFLAGS, so ALL
+    compile rules in this file inherit it in one edit — the CPython Python/,
+    Objects/, Parser/, Modules/, Programs/ pattern rules plus the explicit
+    src/user/libc/gap_stubs.o and src/user/apps/openssl/openssl_stubs.o rules.
+ 2. PY_DEPFILES + `-include $(PY_DEPFILES)`, placed just above the first
+    pattern rule.
+
+SCOPING — DELIBERATE AND NARROW (this is the part that can go wrong):
+    PY_DEPFILES := $(shell find $(CPYTHON_OBJDIR) src/user -name '*.d' \
+                     -exec sh -c '[ -f "$${1%.d}.o" ]' _ {} \; -print 2>/dev/null)
+  - Searches ONLY the two directories this makefile writes objects into:
+    $(CPYTHON_OBJDIR) = external/Python-3.14.5/build-tatertos, and src/user.
+  - It is NOT scoped to $(CPYTHON_DIR) as a whole ON PURPOSE. `.d` is also
+    DTrace's provider-source suffix and external/Python-3.14.5/Include/pydtrace.d
+    is exactly such a file. Feeding that to make produces
+    "missing separator. Stop." — the main Makefile hit this same trap in fry1796
+    and documented it; this scoping avoids it by construction.
+  - The sibling-.o guard means an orphaned .d (source deleted / object cleaned)
+    is skipped rather than wedging the build. Same guard as Makefile:292.
+
+VERIFIED THIS STEP:
+  make -f Python3.mk -n python3   PARSE_EXIT=0, stderr EMPTY.
+  (A malformed or mis-scoped -include shows up here as a parse error, so this is
+   the meaningful check at this stage.)
+  CPython objdir state: 232 .o files, 0 .d files.
+
+WHY 0 .d IS EXPECTED, NOT A FAILURE: make does not track CFLAGS changes. Every
+object is currently up to date, so nothing recompiles and no sidecar is emitted.
+.d files only appear for objects that actually compile. This is the identical
+situation fry1796 documented on the main Makefile, where a plain `make kernel`
+would have been an inert no-op. Dependency tracking therefore does not take
+effect for a given object until that object is rebuilt once.
+
+CONSEQUENCE FOR fry1806: the CPython objects must be rebuilt for coverage to
+exist. That rebuild is required anyway to pick up the unistd.h change, so ONE
+full rebuild serves both purposes. Partial coverage would be worse than none —
+an object without a .d has no header deps and is exactly the silent-stale case
+this fix exists to eliminate.
+
+NOT DONE THIS STEP (belongs to fry1806, do not claim it here):
+  - No .d files generated yet.
+  - No acceptance test run (the "touch a header -> correct objects rebuild"
+    proof, mirroring fry1796's test which caught 13 TUs vs the pre-fix 2).
+  - No C source changed, no relink, no ISO, nothing booted.
+
+RELATED KNOWN CONSTRAINT (fry1801, unchanged): `make -f Python3.mk python3`
+cannot build libc objects — Python3.mk has no rule for them, so make falls back
+to its BUILT-IN %.o:%.c rule without -Isrc/include -Isrc/user/libc and fails with
+"fatal error: stdint.h: No such file". The MAIN Makefile owns that rule. Correct
+order remains: main Makefile for libc objects, THEN Python3.mk for the relink.
+
+NEXT (fry1806): the actual fix — _SC_IOV_MAX in src/include/unistd.h + sysconf()
+in src/user/libc/posix.c — then wipe CPython objects, full rebuild (populating
+.d), run the dependency acceptance test, relink python3.fry, restage ISO.

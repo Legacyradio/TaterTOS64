@@ -1,0 +1,116 @@
+fry1801 — FIX APPLIED: libc thread trampoline no longer clobbers the kernel's ELF TLS — 2026-08-10
+==========================================================================
+WHAT: Applied the minimal fix for the fry1800 root cause. Userspace libc only.
+Built, relinked python3.fry, restaged ISO. NOT YET BOOTED — no claim of success.
+
+=== THE CHANGE (src/user/libc/libc.c, fry_thread_trampoline) ===
+BEFORE (libc.c:421) — every native spawned thread unconditionally replaced %fs:
+    if (fry_tls_set_base(ctx.tls_base) < 0) { fry_thread_exit(1); }
+AFTER:
+    if (!fry_tls_get_base()) {
+        if (fry_tls_set_base(ctx.tls_base) < 0) { fry_thread_exit(1); }
+    } else {
+        block = (struct fry_tls_block *)fry_tls_get_base();
+    }
+
+WHY (fry1800 evidence): the kernel (fry1790) builds a correct per-thread
+variant-II PT_TLS block and sets %fs BEFORE the thread's first instruction
+(process_start -> write_user_fs_base, process.c:162). The trampoline then threw
+it away and pointed %fs at a calloc'd `struct fry_tls_block`, which has NO ELF
+TLS image beneath it. x86-64 variant II resolves __thread vars at NEGATIVE
+offsets from tp, so CPython's _Py_tss_tstate (TLS offset 0x88 -> tp-0xB0) and
+mimalloc's _mi_heap_default (offset 0x00 -> tp-0x138) landed on unrelated heap
+bytes. Non-zero garbage in _Py_tss_tstate is exactly
+"_PyThreadState_Attach: non-NULL old thread state".
+Serial proof from fry1800:
+    build tid=10 OK fs=7fff80100138      (kernel builds it correctly)
+    spawn path=NATIVE tid=10 parent=9    (native path, not linux clone)
+    set   tid=10 old_fs=7fff80100138 new_fs=10005592c30   <- the defect
+    get   THREAD tid=10 fs=10005592c30   (x20, then abort)
+
+WHY THIS SHAPE (scope was deliberately cut down): an earlier draft also removed
+the calloc and relocated stack_base/stack_len into the TCB. Zack pushed back that
+that was unnecessary — correct. The calloc stays; for a PT_TLS binary the heap
+block is simply unused. The `else` branch repoints `block` at the kernel's block
+so the following code still populates tls_base/thread_tid in the RIGHT place
+(the TCB reserve at tp), which pthread_self() depends on.
+
+WHY IT IS SAFE FOR EVERYTHING ELSE:
+ - Binaries with NO PT_TLS get fry_tls_get_base()==0 and take the legacy heap
+   path completely unchanged. No behavior change for non-ELF-TLS apps.
+ - The key-slot TLS API (fry_tls_get/set) keeps working with no edits:
+   fry_tls_block_ensure() reads %fs, now gets the kernel's tp, and lands slots[]
+   in the TCB reserve — which is precisely what that reserve is FOR:
+     elf.c:66  #define FRY_TLS_TCB_RESERVE 0x1000ULL /* room for libc struct
+                                                        fry_tls_block */
+   The kernel already writes the struct's first member for us (process.c:425
+   *(uint64_t*)tp = tp), and libc.c:377-381 documents that tls_base must be
+   first because it IS %fs:0. The main thread has always worked this way; only
+   spawned threads did not.
+ - SIZE CHECKED: sizeof(struct fry_tls_block) = 8 (tls_base) + 8*64 (slots)
+   + 4 (+4 pad) (thread_tid) + 8 (stack_base) + 8 (stack_len) = 544 bytes,
+   against a 4096-byte reserve. Fits with ~3.5KB headroom. Verified, not assumed.
+
+KNOWN, ACCEPTED CONSEQUENCE: stack_base/stack_len at tp are zero for spawned
+threads, so pthread_getattr_np (pthread.c:184) returns EINVAL and CPython falls
+back to its stack-pointer-based estimate. That is the SAME deliberate fallback
+the main thread already takes — see the fry1678 comment at pthread.c:176-185.
+Known-good path, not new risk. If a spawned thread ever needs real stack attrs,
+that is a separate step.
+
+=== BUILD — VERIFIED ===
+FIRST ATTEMPT FAILED (recorded so it is not repeated):
+  `make -f Python3.mk python3` -> PY_EXIT=2
+  "[<builtin>]: src/user/libc/libc.o ... fatal error: stdint.h: No such file"
+  CAUSE: Python3.mk has NO rule for libc.o, so make used its BUILT-IN %.o:%.c
+  rule without -Isrc/include -Isrc/user/libc. The MAIN Makefile owns that rule.
+  No artifacts were damaged (python3.elf/.fry untouched at 06-26 timestamps).
+CORRECT ORDER:
+  make src/user/libc/libc.o        LIBC_EXIT=0
+    libc.o 2026-08-10 22:23:50  57,712 bytes (was 06-21, 57,648)
+  make -f Python3.mk python3       PY_EXIT=0, no errors, no undefined refs
+    python3.elf 2026-08-10 22:23:56  15,820,048
+    python3.fry 2026-08-10 22:23:56  15,820,064
+  PT_TLS UNCHANGED after relink (as expected — this fix does not alter layout):
+    TLS 0xd44f00 0x1143f00 FileSiz 0x79 MemSiz 0x138 Align 0x8
+  bash build_iso.sh                ISO_EXIT=0
+    python3.fry -> /apps/python3.fry (inode 33, 15,820,064 bytes) — the NEW one
+    Hermes Agent 669 .py files staged; no WARNING / NOT staged lines
+  ORDERING VERIFIED:
+    python3.fry 22:23:56 -> kernel.elf 22:24:11 -> ISO 22:26:06 (NEWEST)
+
+NOTE ON Python3.mk: it has no -MMD/-MP header tracking (unlike the main Makefile
+after fry1796). Only a .c changed here so the built-in .c->.o mtime dep was
+sufficient, but editing a HEADER used by CPython objects would silently rebuild
+nothing. Same class as fry1793. Not fixed this step — flagged as owed.
+
+=== INSTRUMENTATION DELIBERATELY LEFT IN ===
+The TLSDBG probes stay in the kernel; they are now the verification instrument.
+A SUCCESSFUL fix must show, for tid=10:
+  - "TLSDBG build tid=10 OK fs=7fff801xxxxx"      (kernel still builds it)
+  - "TLSDBG spawn path=NATIVE tid=10"
+  - NO "TLSDBG set tid=10" LINE AT ALL            <- the defect is gone
+  - "TLSDBG get THREAD tid=10 fs=7fff801xxxxx"    <- NOT a 0x100......  heap addr
+and no Fatal Python error. Anything else means the fix did not take.
+
+=== AUDIT DONE THIS STEP (Zack asked: was anything changed chasing the Linux path?) ===
+ANSWER: NO. mtime audit of every src/*.c|*.h — the ONLY files modified after the
+hermes TLS work began (2026-06-26) are:
+  process.h  2026-08-09 21:56  MTIME ONLY (my `touch` in the fry1796 dep test)
+  process.c  2026-08-10 21:53  my TLSDBG probes
+  syscall.c  2026-08-10 21:54  my TLSDBG probes
+  libc.c     2026-08-10 22:22  this fix
+linux_elf.c last changed 2026-06-15 and sched.c 2026-06-16 — both from the Claude
+Code / Linux-compat era, their legitimate purpose; NEITHER was touched during the
+hermes work. fry1790's TLS work is entirely native-path (elf.c/elf.h/process.*).
+The fry1797 clone-path hypothesis never became code — a log note and a kprint
+label only. => the wrong theory cost diagnostic time, NOT code integrity.
+
+🔴 REAL EXPOSURE FOUND DURING THAT AUDIT: 603 uncommitted files; last commit is
+733c2f1a 2026-06-08. Two months of work (Linux-compat era, native Python port,
+TLS work, build fix) is unversioned — no diff to audit, no revert path. Worth a
+commit once hermes works. Per reference_github_backup: `gh auth setup-git` first,
+the stored ~/.git-credentials PATs are expired.
+
+NEXT: kill the fry1800 VM (verify dead), relaunch on this ISO, Zack types
+`hermes`, read serial to the END against the checklist above.

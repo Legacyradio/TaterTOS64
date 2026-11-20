@@ -1,0 +1,51 @@
+fry1519 - Shell protocol parser and Claude child I/O pump
+Date: 2026-06-15
+
+Why:
+  After fry1518, printable Shell keyboard input started working again, but
+  moving the mouse injected random characters into the Shell. That meant the
+  Shell was still treating non-key TaterWin protocol frames as plain text.
+
+  Typing "claude" and pressing Enter also appeared to do nothing because the
+  Shell launched the child process and waited without actively pumping child
+  stdout/stderr back into the TaterWin terminal or forwarding Shell keyboard
+  input to the child.
+
+What changed:
+  src/user/shell/shell.c
+    - Added a persistent input stream parser.
+    - Added tw_msg_size() so Shell can recognize full TaterWin frames.
+    - Discards non-key frames instead of rendering their bytes as text:
+      mouse move, mouse button, wheel, focus, enter/leave, resize, close,
+      clipboard, update, and window-management frames.
+    - Keeps process_input_stream(0) for local Shell editing and command entry.
+    - Adds process_input_stream(pid) for forwarding typed bytes to a child
+      process through fry_proc_input().
+    - Adds pump_child_io(pid), which:
+        - reads Shell input and forwards key bytes to the child,
+        - reads child stdout/stderr through fry_proc_output(),
+        - renders child output in the Shell TaterWin terminal,
+        - exits when the child is dead and output is drained.
+    - Changed cmd_claude() from blind fry_wait(pid) to pump_child_io(pid).
+
+Verification:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make shell
+    - PASS; only existing libc.h nested-comment warning.
+
+  STAGE_CLAUDE=1 CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.177 \
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+    - PASS.
+    - NVMe image updated: out/tater_nvme.img
+    - ISO output: out/tatertos64v3.iso
+    - Live-app fallback verification complete.
+    - NVMe listing shows SHELL.TOT size 141720 and RCLAUDE.LXE staged.
+
+Expected:
+  Mouse movement should no longer insert random characters into the Shell.
+  Running "claude" should now have a visible output path in the Shell and a
+  keyboard input path from Shell to the child process.
+
+If still blank:
+  The next layer to inspect is the Linux child/bridge stdio or tty behavior,
+  not the GUI Shell keyboard path. The Shell now pumps both input and output
+  through the kernel child-process APIs.

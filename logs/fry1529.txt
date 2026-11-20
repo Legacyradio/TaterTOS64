@@ -1,0 +1,39 @@
+fry1529 - VERIFIED: keyboard input reaches Claude end-to-end; clean exit (code 0)
+Date: 2026-06-15 14:53:31 CDT
+
+Type: VERIFICATION / OBSERVATION. No code changed.
+Completes the "end-to-end INPUT test" left pending in fry1528. Same running VM
+(fry1528 build): Claude's config-error menu was on screen; user pressed keys.
+
+Evidence (/tmp/fry1528_serial.log; screenshot /tmp/fry1528_input.png):
+  - fd0 reads AFTER the prompt rendered: read fd=0 -> 1 at lines 19138, 19510,
+    19583 (plus earlier 6066/6969). Keystrokes from the GUI compositor reached the
+    child's stdin. => keyboard -> TW_MSG_KEY_EVENT -> SYS_PROC_INPUT -> inbuf ->
+    blocking fd0 read -> Claude path is PROVEN end-to-end (input half of the pump).
+  - TBEXIT group pid=14 tgid=14 code=0 (line 19667): Claude exited CLEANLY (not the
+    old EOF-129, not a crash). The menu default was "1. Exit and fix manually", so
+    confirming on it exits gracefully - consistent with code 0.
+  - After Claude exited, the Shell reclaimed the prompt; the user's subsequent "2"
+    + Enter went to the SHELL (Claude already gone) -> "shell: 2: command not
+    found". Harmless; not a malfunction.
+
+Cosmetic note (not a regression, C2/polish):
+  During the exit repaint the "1. Exit and fix manually" line showed "4mu4mu..."
+  - an SGR sequence ([4m underline) leaking as literal text at the
+  interrupt/transition. Steady-state render (fry1528_render.png) was clean; this
+  only appeared as Claude tore down mid-frame while the Shell prompt repainted over
+  it. Candidate for the C2 SGR work.
+
+Status of the in-OS Claude chain (all VERIFIED now):
+  fast load (totfs batching) + stays-alive stdin (fd0 block) + fd-12 output routing
+  + C1 VT parser render + keyboard input = interactive Claude Code TUI in the
+  TaterTOS GUI Shell.
+
+Remaining (separate items, not blockers to the above):
+  1. /nvme/.claude.json is corrupt (truncated JSON). Root: atomic config write's
+     rename (nr=82) returns -5 (fry1522). Fix rename so writes succeed, and/or delete
+     the corrupt file so Claude regenerates a default. User chose Exit this run, so
+     it was not reset.
+  2. C2: SGR color + the underline-leak artifact above.
+
+No commit. No hashes (Rule 16). VM left running.

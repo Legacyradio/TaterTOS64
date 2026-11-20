@@ -1,0 +1,26 @@
+fry1656 - native Hermes launcher path fix
+Timestamp: 2026-06-19 15:38:04 CDT
+
+What changed:
+- Updated the shell's native Python/Hermes launcher to execute
+  /nvme/apps/python3.fry instead of /apps/python3.fry.
+- Updated the Hermes bootstrap and CLI script paths to use
+  /nvme/opt/hermes-agent.
+- Updated the Python runtime environment to use the staged NVMe sysroot:
+  PYTHONHOME=/nvme/usr/local
+  PYTHONPATH=/nvme/opt/hermes-agent:/nvme/usr/local/lib/python3.14:/nvme/usr/local/lib/python3.14/site-packages
+  SSL_CERT_FILE=/nvme/usr/local/lib/python3.14/site-packages/certifi/cacert.pem
+
+Why:
+- The headed QEMU test reached the new `hermes` shell command but failed with
+  launch error 101. In src/kernel/proc/elf.h, 101 maps to
+  ELF_LOAD_ERR_OPEN, meaning the loader could not open the requested .fry.
+- In live ramdisk boots, src/kernel/main.c mounts the NVMe image at /nvme.
+  The staged native Python and Hermes tree is on that NVMe image, so root
+  paths like /apps and /opt are not valid for this boot mode.
+
+Verification:
+- Ran:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make shell
+- Result: passed. The only emitted warning was the existing libc.h comment
+  warning.

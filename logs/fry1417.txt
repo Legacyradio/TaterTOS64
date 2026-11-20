@@ -1,0 +1,71 @@
+fry1417 — Tater Bridge / Claude Code: post-connect DNS-worker syscall
+trace SHIPPED + RAN. ***ROOT CAUSE OF THE NO-SEND FOUND***: kernel
+FRY_POLLOUT=0x0002 vs Linux POLLOUT=0x0004 — glibc send_dg polls
+POLLOUT before sending, never sees it, times out, closes the socket.
+Date: 2026-06-11 ~5:25 PM CDT. Author: Claude (Fable 5).
+Follows fry1416 (netlink shipped+verified; send still missing).
+========================================================================
+
+INSTRUMENTATION (in tree, serial-only — strip with LX* beacons)
+====
+- g_lxdns_trace_pid/left globals (syscall.c ~163). LNX_connect arms on
+  fam==AF_INET && dport==53 && rc==0: traces the worker's next 40
+  syscalls UNFILTERED in linux_syscall_dispatch(): "LXDNS pid nr name
+  a1..a3 rc [left]". Re-arms per connect (covers both A/AAAA workers).
+
+THE TRACE (pid=6, DNS fd=0x11, boot /tmp/s.log this run)
+====
+  LXCONN pid=6 fd=17 fam=2 dst=10.0.2.3:53 alen=16 rc=0
+  nr=42 connect  a1=11 a3=10        rc=0      (the connect itself)
+  nr=228 clock_gettime              rc=0      (send_dg deadline calc)
+  nr=7  poll a1=pfd a2=1 a3=0       rc=0   <- POLLOUT probe, 0 events!
+  nr=7  poll a1=pfd a2=1 a3=bb8     rc=0   <- 3000ms block, 0 events!
+  nr=228 clock_gettime              rc=0      (recompute, retry)
+  nr=7  poll a3=0                   rc=0
+  nr=7  poll a3=bb8                 rc=0
+  nr=3  close(17)                   rc=0   <- gives up, EAI_AGAIN
+  ... then eventfd writes + back to the idle futex (the fry1414/15
+  signature). Same sequence for pid=5 and for a later pid=6 retry
+  (fd=0x12). This IS glibc res_send send_dg: poll(POLLOUT) gates the
+  send; rc=0 twice -> __res_context_send fails without sending.
+
+ROOT CAUSE (one bad constant)
+====
+- syscall.c:322  #define FRY_POLLOUT 0x0002u
+- Linux poll ABI: POLLIN=0x1, POLLPRI=0x2, POLLOUT=0x4.
+  -> kernel 0x2 is Linux POLLPRI, NOT POLLOUT.
+- poll_check_fd() DGRAM branch DOES set "always writable" — but as 0x2.
+  lx_poll_fds masks revents &= events|ERR|HUP|NVAL = 0x4|0x8|0x10|0x20:
+  0x2 & 0x3C = 0 -> n=0 -> poll returns 0 -> glibc never sends.
+- ALL other kernel poll bits match Linux (IN=1 ERR=8 HUP=10 NVAL=20).
+  fry1397's "fry/Linux poll bits identical" was wrong for exactly one
+  bit, and that bit is the one send_dg lives on.
+- Corroboration: the OS's OWN user libc (src/user/libc/fry.h:429)
+  defines FRY_POLLOUT 0x0004 — kernel/userspace were already internally
+  inconsistent; native poll(POLLOUT) callers had the same latent bug.
+- Why nothing caught it earlier: Bun's uSockets uses EPOLL, and the
+  epoll path has explicit translators (syscall.c:3965/3974 LX_EPOLLOUT
+  0x4 <-> FRY_POLLOUT) so TCP readiness worked; only the plain
+  poll/ppoll path exposes raw FRY_* bits to a Linux caller. The DNS
+  resolver is the first plain-poll POLLOUT consumer.
+- This also retroactively explains fry1414's "DNS fd never registered
+  with epoll" (correct — glibc uses poll) and why the worker "returns
+  to idle without sending" (send_dg exits on poll timeout).
+
+FIX (fry1418, one line)
+====
+  FRY_POLLOUT 0x0002u -> 0x0004u (syscall.c:322).
+  Audited all 17 use sites: all inside syscall.c; epoll translators
+  become identity (still correct); no FRY_POLLPRI exists to collide;
+  native-libc expectation (0x4) now matched. No site stores the bit
+  persistently, so no migration concern.
+
+ALSO RESOLVED IN PASSING
+====
+- fry1416's mystery "nr=83 unknown rc=-5": with the unfiltered window
+  visible, the worker-adjacent housekeeping syscalls are ordinary; 83
+  (mkdir) -EIO did not recur in the traced window — deprioritized.
+
+NEXT (fry1418): apply the one-line fix, rule-12 rebuild, boot, expect
+poll rc=1 then LXUDP tx — the DNS query finally leaving — then watch
+for UDP rx + TCP connect to the API + TLS.

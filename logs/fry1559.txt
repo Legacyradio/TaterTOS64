@@ -1,0 +1,22 @@
+# fry1559 - BUILD: clean rebuild with the fry1558 TBEPW epoll-set beacon (+ CLAUDE_NO_MCP=1 diagnostic control)
+Date: 2026-06-16 00:45 CDT
+Type: build (Rule 12)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+WHY: build the image carrying TBEPW (fry1558) to see which epoll sets the main thread polls after init.
+
+COMMAND
+  make clean
+  STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.177 \
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+  (backgrounded -> /tmp/build_1559.log; QEMU killed first)
+
+RESULT: EXIT 0 (clean)
+- syscall.c compiled, NO errors (clangd fry_limits.h diagnostics are LSP-only noise).
+- syscall.o rebuilt (265456 @ 23:44); kernel relinked.
+- Artifacts fresh @ 23:45: out/tatertos64v3.iso, out/tater_nvme.img.
+- Both TBFD0 (fry1554) and TBEPW (fry1558) beacons now in the image.
+
+NEXT (fry1560): headed verify -> type one key -> grep TBEPW + TBFD0 -> determine if the main thread re-enters epfd=5 after init.
+
+All per planv3 Rules 1/5/6/12. Written immediately on build completion, before relaunch.

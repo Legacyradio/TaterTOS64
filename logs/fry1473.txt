@@ -1,0 +1,41 @@
+fry1473 - REVERT of fry1471/1472 socket-copy changes + verification.
+Tree restored to known-good fry1470 state: main inference clean, ZERO
+SIGSEGV, rg stably blocked on socketpair inheritance (no crash).
+Date: 2026-06-13. Author: Claude (Opus 4.8).
+========================================================================
+
+WHY: fry1471 (copy FD_SOCKET + socket refcount) and fry1472 (restrict to
+AF_UNIX) both REGRESSED claude into a SIGSEGV loop (496 then 717) with no
+result. AF_UNIX socketpairs are pipe-backed and need pipe-refcount
+handling, not a socket-level refcount (see fry1472 for the proper next
+approach). Not safe to land at the end of a long session -> revert to
+stable.
+
+REVERTED (back to fry1470 logic):
+- process.h: removed struct fry_socket.refs (restored _pad[3]).
+- process.c copy_vfork_fd_table: removed the FD_SOCKET copy branch.
+- syscall.c lx_close_fd: removed the FD_SOCKET refs-decrement; restored
+  the original unconditional socket teardown.
+- syscall.c lx_dup_fd_at + LNX_dup2: removed the FD_SOCKET refs++.
+KEPT (harmless, capped/gated diagnostics): TBSIGACT, TBDUP2, TBCOPYFD
+(+dom) beacons. Remove in a later cleanup pass.
+
+BUILD: make kernel EXIT 0. Full rebuild EXIT 0 (/tmp/fry1473_build.log).
+
+BOOT (-smp 4, serial /tmp/s_fry1473.log; killed by real pid after result):
+- SIGSEGV count = 0  (regression GONE).
+- MAIN INFERENCE CLEAN: {"type":"result","subtype":"success",
+  "is_error":false,"api_error_status":null,...}.
+- rg back to the stable known state: "countFilesRoundedRg failed: EBADF
+  ... posix_spawn 'rg'" (child's AF_UNIX socketpair stdio fds not copied
+  to the vfork child) — blocked, NOT crashing.
+
+NET STATE after this session (fry1462-1473):
+SHIPPED + verified, no regression: auth restage (1462), wait4/waitpid
+(1463), real vfork parent-suspend (1464), chdir/fchdir (1465), vfork
+FD_FILE copy (1466), stdio redirect override 0-2 (1467), fd_path_set fd<3
+(1469). Spawn error walked ENOSYS->EBADF->EINVAL->(rg stdin redirect
+works)->EBADF on socketpair stdout.
+LAST BLOCKER (open, design documented in fry1472): inherit AF_UNIX
+socketpair stdio fds into the vfork child by pipe-refcounting their
+backing g_pipes — then rg (Grep tool) runs in-OS.

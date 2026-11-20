@@ -1,0 +1,79 @@
+fry1424 — Tater Bridge / Claude Code: TBCLK clock tracer EXONERATES THE
+KERNEL CLOCK — HPET + LAPIC + sched_tick ran perfectly for the full
+3600s window. The real event: ALL claude (tgid=3) syscall activity
+stops at guest ~73.7s — the SAME ~74s mark as 1422/1423 — and the
+timing lines up with claude's 60-second API request timeout. The
+"kernel freeze" framing from fry1422/1423 is fully overturned: the OS
+was almost certainly fine in those runs too; claude's process goes
+silent (exits, aborts, or loses its threads) ~60s after its API
+request fires, and an idle OS with capped beacons LOOKS like a freeze.
+Date: 2026-06-11 ~9:45 PM-12:0x AM CDT. Author: Claude (Fable 5).
+========================================================================
+
+CONFIG
+====
+fry1423 image + TBCLK heartbeat (sched_tick, per CPU, every 5000 ticks
+≈5s: tick count, raw HPET counter, HPET GEN_CONF, now_ms). New
+hpet_read_config() accessor (drivers/timer/hpet.c/.h). on_cpu gate in.
+KVM, -smp 2, 3600s window, same QEMU line as 1422/1423.
+
+RESULTS
+====
+1. CLOCK CLEAN ALL HOUR. TBCLK from boot to now=3,594,894 ms (3594s):
+   both CPUs ticking (cpu0 3.52M ticks, cpu1 3.58M — APs tick fine),
+   HPET monotonic to 359,483,798,840 (100 MHz), cfg=1 throughout, 'now'
+   tracked HPET exactly. No frozen counter, no per-CPU divergence, no
+   halted enable bit. Candidates (a) stray-write halt, (b) lost-UC
+   cached reads, (c) QEMU quirk — ALL DEAD for this run, and with them
+   the fry1423 clock-freeze theory.
+2. claude launched, DNS ok, 3x TCP to api.anthropic.com:443 — same
+   shape as every run. TLS presumed stalled again (no completed-
+   handshake signature).
+3. LAST tgid=3 beacon at guest now≈73,689 ms. After that: 3520 seconds
+   of a perfectly healthy, perfectly idle kernel. No panic, no fault,
+   no exit trace (but see 4), no stdout writes traced.
+4. The syscall tracer logs RETURNS — exit/exit_group never return, so
+   a clean exit is INVISIBLE. Cannot distinguish "claude exited at its
+   request timeout" from "scheduler lost every thread" with this
+   instrumentation. pid=4's final act was a 100 ms timed futex wait
+   (wake_time=73689) that never visibly returned — either the thread
+   was never woken (lost wakeup) or it woke into teardown/exit that
+   emits no beacons.
+
+THE TIMING PATTERN (now spanning 4 runs)
+====
+claude launches ~10s, API connects fire ~13s. Death of all tgid=3
+activity: fry1422 ~75.5s, fry1423 ~76.5-77.3s, fry1424 ~73.7s — i.e.
+~60s after the request fires. 60s is the standard API request timeout.
+fry1421 — the ONE run where TLS completed and 12KB of API response
+arrived — sailed past 75s and ran its full window. Hypothesis: TLS
+handshake stalls (cause TBD, possibly itself a lost-wakeup hitting the
+crypto/verify worker); 60s later the request layer times out; claude
+tears down / exits / wedges. The ~75s "freezes" are this, not kernel
+death.
+
+NEXT (fry1425) — DECISIVE CENSUS BOOT
+====
+Instrumentation added (in tree):
+- TBEXIT beacons on LNX_exit / LNX_exit_group entry for tgid 3
+  (syscall.c) — exits become visible. TBSIG default-exit already
+  covers fatal signals.
+- TBCLK extended with a tgid-3 census: t3=run/wait/zombie/dead counts
+  every 5s — threads-exited vs threads-stuck resolves immediately.
+- TBLOST detector in the heartbeat: any WAITING task with a timed wake
+  >5s overdue while 'now' advances = the sleeper-wake path LOST it
+  (cap 32). Direct lost-wakeup smoking gun, kernel-side.
+Outcome matrix: TBEXIT/TBSIG + census→0 => app-side death at timeout
+(pivot to TLS stall as the real bug). TBLOST firing => kernel lost-
+wakeup bug (pivot to wake/runqueue audit; could ALSO be the TLS stall
+cause). Census shows RUNNING threads that never beacon => runqueue
+corruption (orphaned runnable tasks).
+
+WATCHLIST (carried)
+====
+- oncpu-defer: never fired in 1423/1424.
+- Strip list: TBCLK/TBEXIT/TBLOST join the beacon strip set.
+- Raw serials: /tmp/s_fry1422_smp2_hang.log, /tmp/s_fry1423_smp2_hang.log,
+  /tmp/s_fry1424.log.
+- fry1419/1420 (-smp 1) "TLS starvation" may be the same underlying
+  stall — re-read those logs after fry1425 names the mechanism.

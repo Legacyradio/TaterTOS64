@@ -1,3 +1,27 @@
+################################################################################
+################################################################################
+###############################  RULE ZERO  ####################################
+################################################################################
+################################################################################
+
+DO NOT REGRESS THE GUI.
+
+The TaterTOS desktop GUI is a protected boot-critical user surface.
+The system must continue to boot to the real interactive TaterWin desktop:
+taskbar, icons, mouse cursor, mouse input, windows, app launcher, and GUI app
+protocol support.
+
+Never replace it with a serial-only path, framebuffer placeholder, kernel
+autorun harness, prompt-only mode, headless boot, or raw shell takeover.
+Claude/Tater Bridge work must enter through the visible ring-3 desktop/session
+path unless the user explicitly asks for a diagnostic serial/headless run.
+
+Before reporting any TaterTOS boot/integration work as done, verify that the
+GUI still appears and that the change did not bypass INIT.FRY -> GUI.FRY.
+
+################################################################################
+################################################################################
+
 Good. I have everything I need. Now writing the full plan.
 
 ● Write(planv3.txt)

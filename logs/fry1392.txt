@@ -1,0 +1,82 @@
+fry1392 — Tater Bridge / Claude Code: traced the numCalleeLocals corruption
+ONE level upstream. The CodeBlock zero is a faithful COPY (instr 0x4C84308,
+mov 0x14(%r8),%edx -> mov %edx,0x14(%rdi)) from a SOURCE UnlinkedCodeBlock
+(r8) whose body is already zero. Located the source's backing: a single eager
+32MB mmap; the source page is touched by NO vm op and is NOT aliased within
+that region. Aliasing still unproven outside the window -> next: full-VA scan.
+Timestamp: 2026-06-10 05:05-06:05 CDT. Author: Claude (Fable 5), cont. fry1391.
+CLAUDE_BIN = 2.1.170, -smp 1 KVM. HEAD = 733c2f1a + this session's edits.
+
+WHAT WAS PROVEN (boot-by-boot, all -smp 1, deterministic)
+  1. The corrupt write is a COPY, not an origination. DR watch on the
+     CodeBlock field (fry1391) fired twice at the SAME RIP 0x4C84308:
+       HIT 1 (good): r8=0x6FBBF84D82C0 (STABLE across boots), copies =6.
+       HIT 2 (bad):  r8=0x6FBBF9C79520 / 0x6FBBF9D85.. (DRIFTS per boot),
+                     source +0x14 already 0 (rdx=0) -> copies 0 -> crash.
+     The kernel never writes the field: 0 TBWATCHK (CPL0) hits ever.
+  2. Source object dump (TBWATCHSRC, 8 qwords at r8):
+       good: 0100130001001280 FFFFFFFB00000005 0000000600000005 00202812...
+       bad:  0100130001001280 0 0 0020000000000000 0 0 061038D0.. 00000610..
+     Cell header (qword0) BYTE-IDENTICAL; body zero except 2 fragments. =
+     a half-constructed / partly-lost object, same JSCell type.
+  3. Backing of the source region (this boot): exactly ONE eager mmap,
+       TBTRACE mmap detail base=0x6FBBF8000000 len=0x2000000 sparse=0
+     covers BOTH the stable good source and the drifting bad source. Eager =
+     real zero pages mapped at mmap time -> explains 0 TBWINFAULT in the whole
+     16MB window (the demand-pager never runs here; faults can't be the path).
+  4. NO vm op touches the bad source page: 442 MADV_DONTNEED in the window
+     (all from pid=3, the GC sweeper, while pid=2 constructs), but the nearest
+     to bad page 0x6FBBF9D85000 was 0x6FBBF9C82000+ — none cover it. No
+     unmap/release in the window at all.
+  5. Reverse-alias scan over [0x6FBBF8000000,0x6FBBFA000000): bad srcpa
+     0x145F34000 has NO second VA in that region (TBALIAS none). Good srcpa
+     0x14567B000 also unique. -> aliasing WITHIN the eager region is ruled out;
+     aliasing to a PA OUTSIDE the window is NOT yet tested.
+
+REAL KERNEL BUGS FIXED THIS SESSION (correct regardless of the crash; KEEP)
+  A. Per-CPU callee-saved scratch (fry1391, in tree). syscall_entry stashed
+     user rbx/r12-r15 in PER-CPU gs:24..56, clobbered by any other thread's
+     syscall on the same CPU; lx_deliver_signal_on_sysret then read those at
+     SYSRET -> a futex-blocked thread got ANOTHER thread's callee-saved regs
+     in its signal ucontext (poisoned JSC GC conservative roots). Moved to the
+     PER-THREAD kernel frame (12->17 slots, LX_SYSFRAME_R15..RBX); exit path
+     restores them; signal-deliver/sigreturn/clone3 all read frame slots;
+     lx_read/write_gs_slot + the gs:24..56 stores deleted.
+  B. clone3 frame-depth regression (introduced + fixed in-session). The clone3
+     case still computed kernel_stack_top - 12*8 by hand after (A) made the
+     frame 17 deep -> child inherited regs 5 slots off, rflags had TF set ->
+     first clone3 child died vec=1 SIGTRAP at 0x287a9b1. Now uses
+     lx_syscall_frame() + LX_SYSFRAME_RIP/RSP. Tree swept: no other hardcoded
+     depth.
+  NB: (A) did NOT change the numCalleeLocals crash (re-tested: identical HIT
+  1/HIT 2). So it was a latent correctness bug, not THIS corruptor.
+
+INSTRUMENTATION ADDED (diagnostic, strip later)
+  - process.h: TB_CLAUDE_WATCH_TGID -> dynamic g_tb_trace_claude_tgid (was
+    hardcoded 3; claude is tgid 2 on -smp 1). 4-byte write-watch DR encoding.
+  - syscall.c: dual watch arm (source field + CodeBlock field, user VA +
+    physmap alias); g_tb_win_lo/hi = [0x6FBBF9000000,0x6FBBFA000000) window
+    trace; TBWINFAULT logs demand-fault PAs in window; TBVMTOUCH logs PA.
+  - irqdesc.c: CPL0 #DB branch (TBWATCHK); CPL3 handler dumps r8/source object
+    (TBWATCHSRC) + reverse-alias scan (TBALIASSCAN/TBALIAS).
+
+NEXT (fry1393 — drives next session)
+  1. WIDEN the alias test to the FULL user page table: enumerate every present
+     user PTE under cur->cr3 and report any VA != src mapping src_pa. The
+     32MB-window scan was too narrow; if the bad PA is double-mapped it is
+     almost certainly OUTSIDE the eager region (a different cage block or a
+     sparse-cage demand page handed the same PA = PMM double-allocation). This
+     definitively rules aliasing in/out.
+  2. If NO alias anywhere: the source body writes were LOST or never issued.
+     Arm a watch on the SOURCE field FROM CONSTRUCTION (not just at copy time)
+     to catch whether it is ever written non-zero; if never -> JSC reads an
+     object it never finished initializing (upstream control-flow divergence
+     from a wrong syscall return); if written-then-zeroed with no vm op ->
+     a genuinely lost store (re-examine eager-map TLB: vmm_map_user does NO
+     invlpg, and vmm_unmap_user only invlpg's when CR3 matches — benign on
+     -smp 1 same-CPU, but verify no path maps-over-present without flush).
+  3. THEN strip instrumentation, revert the 512MB stack cap (fry1388), and
+     move to networking (socket()=-ENOSYS) — the last gate before a reply.
+
+BUILD/RUN: unchanged (KVM -smp 1; grep -a; rebuild = delete src/kernel +
+  src/drivers *.o, CLAUDE_BIN=.../2.1.170 STAGE_CLAUDE=1 build_iso.sh).

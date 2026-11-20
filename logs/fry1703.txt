@@ -1,0 +1,36 @@
+fry1703 — 2026-06-21 08:14 CDT
+STEP: ELF TLS implementation written (3 files). No build yet (fry1704 next).
+
+WHAT (per fry1702 design):
+  src/kernel/proc/elf.h
+    - elf_load_fry() gains 5th out-param `uint64_t *tls_base_out` (NULL allowed).
+    - new error code ELF_LOAD_ERR_TLS_ALLOC = -114.
+  src/kernel/proc/elf.c
+    - #define PT_TLS 7; FRY_TLS_REGION_BASE 0x7FFF80000000; FRY_TLS_TCB_RESERVE
+      0x1000; FRY_TLS_MEMSZ_MAX 0x400000.
+    - init *tls_base_out = 0 at entry.
+    - after PT_LOAD segs + stack mapped, before temp buffer freed: scan phdrs for
+      PT_TLS (first one). If memsz>0:
+        * validate align(<=2MB, floor 16), filesz<=memsz, memsz<=4MB, payload bounds.
+        * tls_alloc = align_up(memsz, align); tp = REGION_BASE + tls_alloc.
+        * map [REGION_BASE, tp+TCB_RESERVE) WRITE|USER|NX, zero-filled; bounds-check
+          map_end < user stack base.
+        * copy filesz of .tdata from FILE payload (payload+p_offset) into
+          [REGION_BASE, REGION_BASE+filesz); page-chunked, page-aligned base so
+          page_off=0. .tbss + TCB stay zero. No fs:0 self-ptr (local-exec; libc adopts).
+        * *tls_base_out = tp.
+  src/kernel/proc/process.c
+    - process_launch + process_launch_args: declare tls_base=0, pass &tls_base to
+      elf_load_fry, set p->user_fs_base = tls_base after process_create_user.
+      (replace_all hit exactly the 2 .fry paths; linux path uses rsp/brk names, untouched.)
+
+VERIFY: grep confirms only 2 call sites (process.c:844, :909) + proto in .h/.c; both
+  updated. fry_process.user_fs_base exists (process.h:208), consumed by process_start
+  -> write_user_fs_base(p->user_fs_base) at process.c:162 BEFORE entry. Backward-compat:
+  no PT_TLS => tls_base=0 => user_fs_base=0 => libc lazily allocates its own block as before.
+
+NOTE: clang language-server flagged fry_limits.h "file not found" + FRY_PROC_MAX etc.
+  undeclared in process.c — that's the IDE missing the kernel -I paths, PRE-EXISTING,
+  not from this edit. Real build is via Makefile with proper includes; verifying next.
+NEXT: fry1704 = clean kernel build (expect BUILD_EXIT=0 + fresh artifact mtime per
+  the "verify build before launch" rule), then fry1705 = boot + hermes self-test.

@@ -1,0 +1,52 @@
+fry1534 - RESEARCH: trust-prompt input read but NOT processed - libuv main-loop wakeup stall
+Date: 2026-06-15 15:39:19 CDT
+
+Type: INVESTIGATION / DIAGNOSIS. No code changed.
+Context: after fry1533 (config read fixed), Claude reaches the normal first-run TRUST
+prompt ("1. Yes, I trust this folder / 2. No, exit"). User pressed keys (1, Enter,
+arrows) with the QEMU window focused -> NO response, no echo, no menu movement.
+User: "way deeper than that" (focus was correct). Investigated.
+
+Evidence (/tmp/fry1533_serial.log):
+  - Input IS delivered to Claude: fd0 read count rose 22 -> 31 across the user's
+    attempts; single-byte reads at lines 32942..33093 ("read fd=0 ... -> 1").
+    => keyboard -> compositor -> Shell SYS_PROC_INPUT -> inbuf -> Claude's fd0 read
+       works. The keys reach Claude's stdin.
+  - Claude does NOT act on them: last UI write was line 15971 (fd=12, 4 bytes); the
+    input reads are ~17,000 lines later with ZERO output in between. The trust
+    prompt never re-renders or confirms.
+  - Last 500 serial lines: ONLY pid=15 (495/495) - the benign 100ms heartbeat
+    (uaddr e8c8). Main thread (pid 14) + workers (16-19) are PARKED. Zero
+    epoll/eventfd/async/LXEVFD events in the last 800 lines.
+
+Diagnosis: Claude's stdin bytes are read (likely by a libuv threadpool reader, since
+  epoll_ctl ADD fd0 -> EBADF, fry1523, forces a blocking-read fallback), but the
+  libuv MAIN event loop is parked and is never woken to process the data. The
+  inter-thread wakeup that should fire when stdin input arrives (uv_async_send ->
+  write to the loop's async pipe/eventfd -> main-loop epoll wake) is not firing - no
+  async/eventfd/epoll activity accompanies the reads. So the byte is consumed but
+  the keypress is never dispatched to the Ink prompt -> UI frozen at the prompt.
+  This is the event-loop/missed-wakeup family seen before (futex wake-miss, timerfd
+  spin). NOT a focus problem, NOT the menu key mapping, NOT the fry1531/1533 totfs
+  changes (filesystem-only). The faster totfs timing likely just shifted a
+  pre-existing race: fry1528/1529 saw a keypress get processed (Claude acted/exited)
+  at the CONFIG-ERROR menu; the TRUST prompt (a different Ink component / raw-mode
+  keypress path) here does not - consistent with a racy/unreliable async wakeup.
+
+Scope / next (its own focused effort - likely a session):
+  - Determine how libuv signals the main loop on threadpool stdin completion in this
+    build (async handle backing fd: pipe vs eventfd), and why the main loop's
+    epoll/poll does not wake on it.
+  - Cross-check the async-pipe/eventfd readiness + the epoll wake path; compare with
+    the wake-miss fixes (sched_pidwait race, EPOLLET token) from the handoff notes.
+  - Verify whether fd0 should instead be epoll-registerable (epoll_ctl fd0 currently
+    EBADF) so libuv polls stdin in the main loop directly rather than via a
+    threadpool blocking read that needs an async wake.
+
+Session wins still standing (all verified + logged 1521-1533): in-OS Claude renders
+  its TUI in the GUI Shell (output routing + C1 VT parser), stays alive on stdin
+  (no EOF-129), loads in seconds (totfs read batching), reads its config intact
+  (bounce-buffer fix), and reaches the real first-run trust prompt. The remaining
+  blocker is this main-loop wakeup stall preventing interactive confirmation.
+
+No code changed. No build. No hashes (Rule 16). VM left running.

@@ -1,0 +1,53 @@
+fry1539 - RESEARCH: real-prompt triple-fault is in subprocess socket/TCP teardown (proc_free)
+Date: 2026-06-15 16:22:45 CDT
+
+Type: INVESTIGATION / DIAGNOSIS. No code changed. Continues fry1538's crash.
+User authorized reading the QEMU debug log (planv3 Rule 11 satisfied).
+
+Finding 1 - QEMU guest_errors log is EMPTY (/tmp/fry1538_qemu_debug.log, 0 lines).
+  A triple fault resets the CPU and is NOT logged under -d guest_errors. So that
+  channel gives nothing; capturing the faulting RIP/CR2/exception chain needs a
+  fresh reproduction with -d int,cpu_reset.
+
+Finding 2 - Serial sequence (fry1538_serial.log) localizes it to subprocess teardown:
+  Sending "hi" -> Claude (pid 14) ran its network request via helper subprocess
+  pid=28 (~14 open sockets) -> Claude killed it (TBSIG default-exit sender=14
+  target=28 sig=15) -> during pid 28 teardown the SPCEN census counts down
+  (sock=14/64 ... 9/64) then the box triple-faults straight into UEFI reboot
+  (no panic; CPU reset).
+
+Finding 3 - Code path (src/kernel/proc/process.c proc_free fd loop, lines 649-722):
+  For each fd of the dying process:
+    - FD_SOCKET: if refs hit 0, for AF_UNIX (domain==1) it decrements g_pipes[]
+      refcounts at sk->tcp_handle / sk->listen_handle and may clear them; for
+      SOCK_STREAM (type==1) it calls tcp_close(sk->tcp_handle) and
+      tcp_close(sk->listen_handle).
+  The fault is in here, first exercised now that Claude opens REAL TCP sockets to
+  the API. Prime suspects (need the int-log RIP to confirm):
+    (a) tcp_close() on a TCP handle during teardown - use-after-free / bad handle
+        in the TCP stack when many sockets close at once on a killed process.
+    (b) socket refs accounting -> a double-free (second free tcp_close's an already
+        -freed handle).
+    (c) AF_UNIX g_pipes refcount handling on a shared socketpair (fry1474 area).
+
+Relation to this session's changes: NONE of fry1521-1538 touched proc_free, the
+  socket/pipe/TCP teardown, or signals. Those changes are totfs reads/rename, fd0
+  read/write routing, epoll-fd0, and the Shell terminal/resize. The epoll-fd0 item
+  with fd==0 is NOT implicated: epoll teardown just kfrees the item list, and
+  epoll_wait/epoll_et_token both guard on fd_ptrs[fd] being non-null. So this is
+  almost certainly a PRE-EXISTING socket/TCP teardown bug, newly reached because
+  this is the first interactive real network request Claude has made in-OS.
+
+Next step (own focused effort): reproduce headed with
+  qemu ... -d int,cpu_reset -D <log>  (instead of guest_errors), drive to Claude's
+  main UI, send a prompt, capture the exception chain at the reset; the RIP pins
+  which of (a)/(b)/(c) it is, then fix that teardown path. (-d int is verbose; the
+  fault chain at the tail is what matters.)
+
+Session milestone intact (1521-1538, verified): interactive Claude Code in TaterTOS
+  - loads in seconds, renders its TUI, takes keyboard input, reaches and operates in
+  its main UI at a de-crowded 120x36. This crash blocks COMPLETING a real request
+  (network round-trip), and is the top item to fix next, alongside the still-pending
+  C2 color and the resize-distortion re-verify.
+
+No code changed. No build. QEMU debug log was read with user authorization (Rule 11).

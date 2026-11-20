@@ -254,6 +254,18 @@ static void process_scancode(uint8_t sc) {
     }
 }
 
+static void ps2_kbd_poll_fallback(void) {
+    /* Fallback poll if IRQs are not delivering key events.
+     * Check AUXB bit 5 to avoid stealing mouse bytes. */
+    for (int i = 0; i < 8; i++) {
+        uint8_t st = inb(0x64);
+        if (!(st & 0x01)) continue;
+        if (st & 0x20) continue;      /* AUXB=1: mouse byte */
+        process_scancode(inb(0x60));
+        if (evt_tail != evt_head || key_tail != key_head) break;
+    }
+}
+
 /* -----------------------------------------------------------------------
  * Public API — legacy ASCII read (backward compatible)
  * ----------------------------------------------------------------------- */
@@ -264,19 +276,10 @@ int ps2_kbd_read(char *buf, uint32_t len) {
         key_tail = (key_tail + 1) & 0xFF;
     }
     if (n == 0 && len > 0) {
-        /* Fallback poll if IRQs are not delivering key events.
-         * Check AUXB bit 5 to avoid stealing mouse bytes. */
-        for (int i = 0; i < 8 && n == 0; i++) {
-            uint8_t st = inb(0x64);
-            if (!(st & 0x01)) continue;
-            if (st & 0x20) continue;      /* AUXB=1: mouse byte */
-            uint8_t sc = inb(0x60);
-            process_scancode(sc);
-            /* Now try reading from the buffer */
-            if (key_tail != key_head) {
-                buf[n++] = keybuf[key_tail];
-                key_tail = (key_tail + 1) & 0xFF;
-            }
+        ps2_kbd_poll_fallback();
+        if (key_tail != key_head) {
+            buf[n++] = keybuf[key_tail];
+            key_tail = (key_tail + 1) & 0xFF;
         }
     }
     return (int)n;
@@ -287,6 +290,7 @@ int ps2_kbd_read(char *buf, uint32_t len) {
  * Returns: 1 if event was copied, 0 if ring empty
  * ----------------------------------------------------------------------- */
 int ps2_kbd_read_event(struct fry_key_event *out) {
+    if (evt_tail == evt_head) ps2_kbd_poll_fallback();
     if (evt_tail == evt_head) return 0;
     *out = evt_ring[evt_tail];
     evt_tail = (evt_tail + 1) % KBD_EVT_RING_SIZE;

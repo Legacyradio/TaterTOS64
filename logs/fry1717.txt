@@ -1,0 +1,45 @@
+fry1717 — 2026-06-21 09:50 CDT
+STEP: claude failed to start = ToTFS nvme FULL (not a claude bug). Root-caused the
+      disk-size architecture: it is hardcoded in 3 places, not hardware-agnostic.
+      Zack: make it DYNAMIC. Plan below.
+
+WHY CLAUDE "could not start":
+  - Serial: PROC linux launch ok pid=10 RCLAUDE.LXE -> then TBFAIL mkdir
+    "/nvme/claude-0" rc=-5 (EIO) -> claude exits to shell prompt.
+  - nvme is 400MB but content = RCLAUDE.LXE 223M + python stdlib 78M + hermes-agent
+    139M + python3.fry 7.4M = ~447M > 400M -> ToTFS full -> mkdir EIO. Collateral
+    from today's native-hermes staging, not a claude regression.
+
+THE 3 HARDCODED LIMITS (why it's not hardware-agnostic):
+  1. build_iso.sh:378  NVME_SIZE = 400MB fixed; dd zeros (non-sparse); only creates
+     if image absent (l.381) so it never resizes.
+  2. Kernel ToTFS cap = 1GB: totfs.h:114 TOTFS_KBMP_BLOCKS 8; struct totfs_fs has
+     INLINE block_bitmap[4096*8] (totfs.h:123); mount CLAMPS block_bitmap_blocks to
+     8 (totfs.c:98); allocator bound = 4096*8*KBMP (totfs.c:412,434). 8*128MB=1GB.
+  3. Kernel heap ~1MB: heap_init tries <=256 pages (heap.c:46). kmalloc = bump
+     allocator, kfree is a no-op (Phase 1).
+  - On-disk format is ALREADY dynamic: superblock has total_blocks,
+    block_bitmap_blocks, total_inodes (mktotfs computes from partition size; sgdisk
+    --new=1:2048:0 already fills the disk). Only the KERNEL caps it.
+  - Inodes fixed at TOTFS_MAX_INODES 16384 (mktotfs.c:70) — separate dimension;
+    enough for now (claude+python+hermes+test), can scale later.
+
+DYNAMIC PLAN (make ToTFS size = whatever drive it's on):
+  A. totfs.h: block_bitmap inline array -> `uint8_t *block_bitmap;` (pointer).
+  B. totfs.c mount: kmalloc(sb.block_bitmap_blocks * 4096), read ALL bitmap blocks
+     (drop the >KBMP clamp); allocator/free bounds use
+     sb.block_bitmap_blocks*4096*8 (actual capacity), not the constant. Fail mount
+     cleanly if kmalloc returns 0.
+  C. heap.c: raise heap_init max from 256 pages (1MB) to e.g. 4096 pages (16MB) so
+     big drives' bitmaps fit (16MB bitmap covers 512GB). 1MB heap is too small for a
+     consumer OS regardless.
+  D. build_iso.sh: NVME_SIZE_MB env, default 8192 (8GB), SPARSE via truncate (only
+     real data uses host space); recreate when size differs. Partition already fills
+     the disk; mktotfs auto-sizes -> ToTFS adapts to ANY image/drive size.
+  Result: hardware-agnostic up to ~512GB (heap-bound); on-demand bitmap paging is
+  the end-state for unbounded, noted as future.
+
+NOTE: still owe the hermes PT_TLS linker fix (user_linker.ld) — paused for this.
+
+NEXT: awaiting Zack go-ahead on the dynamic plan, then edit totfs.h/totfs.c/heap.c/
+  build_iso.sh -> rebuild kernel+ISO (rm nvme to recreate at new size) -> fry1718.

@@ -1,0 +1,49 @@
+fry1713 — 2026-06-21 09:15 CDT
+STEP: Found the REAL root cause of the TLS failure. It is UPSTREAM of the kernel:
+      python3.elf has NO PT_TLS segment because user_linker.ld has no TLS handling.
+      My kernel PT_TLS code never ran for this binary. Owning the earlier misread.
+
+EVIDENCE (read-only, conclusive):
+  - readelf -l python3.elf: exactly 3 LOAD segments, ZERO TLS segments
+    (readelf -lW | grep -c TLS = 0).
+  - user_linker.ld (full): PHDRS = text/rodata/data only (no PT_TLS); SECTIONS has
+    .text/.rodata/.data/.bss only — no .tdata/.tbss collection. With an EXPLICIT
+    PHDRS command, ld does NOT auto-create PT_TLS; it must be declared + assigned.
+  - The compiler DID emit __thread sections (.tbss._Py_tss_tstate,
+    .tdata._mi_heap_default, .tbss.pkgcontext, .tbss.recurse) and local-exec tpoffs
+    (-8), but ld orphan-placed them into the RW LOAD seg (~0xab03b0) with no PT_TLS.
+
+WHY THIS EXPLAINS EVERYTHING:
+  - Kernel elf.c loops phdrs for p_type==PT_TLS -> none -> has_tls=0 -> NO region,
+    fs_base=0, no .tdata copy, no self-ptr. ALL my kernel TLS work is INERT for this
+    binary (code is correct; there was just no PT_TLS to act on).
+  - Fallback: libc fry_tls_block_ensure calloc's a block (~0xA70550), sets
+    fs_base=block. __builtin_thread_pointer()=*(fs:0)=0xA70550. _Py_tss_tstate at
+    tp-8 = 0xA70550-8 = heap garbage (0x4D414C4C). mimalloc _mi_heap_default init
+    image was never copied either.
+  - The "progress" in fry1712 (fault moved _PyObject_Malloc -> fatal_error) came
+    ONLY from the libc struct REORDER changing fs:0 from slots[0] to tls_base(self),
+    not from any kernel TLS layout. My fry1707 "TLS region mapped / fix works" was
+    WRONG: fs:0 succeeded because the libc HEAP block was mapped, never my region.
+
+CORRECTION TO fry1701: it found the __thread SECTIONS but assumed a PT_TLS SEGMENT
+  existed for the loader. The true gap was the linker script. (fry1701's "loader
+  doesn't process PT_TLS" was right that TLS wasn't laid out — but the deeper reason
+  is there is no PT_TLS to process.)
+
+THE REAL FIX (linker script) — plan presented to Zack:
+  - user_linker.ld: add `tls PT_TLS FLAGS(4);` to PHDRS; add
+      .tdata ALIGN(0x40) : { *(.tdata .tdata.* .gnu.linkonce.td.*) } :data :tls
+      .tbss  ALIGN(0x40) (NOLOAD) : { *(.tbss .tbss.* .gnu.linkonce.tb.*) *(.tcommon) } :tls
+    (ALIGN 0x40 so PT_TLS p_align>=16 -> kernel's clamp never fires -> kernel
+     tls_alloc == linker tls block size -> tpoffs resolve exactly.)
+  - Keep BOTH prior changes (still required & correct): kernel self-ptr write
+    (binary uses __builtin_thread_pointer()=fs:0) + libc tls_base@offset0 (so libc
+    slots don't clobber fs:0 when it adopts the kernel block).
+  - Backward-compat: shared by init/shell/gui/... ; no __thread -> empty PT_TLS
+    (memsz 0) -> kernel skips (has_tls && memsz>0). Safe.
+  - Rebuild: edit script -> rm -f python3.elf python3.fry (force relink; .ld not a
+    tracked dep) -> make -f Python3.mk python3 -> build_iso -> reboot -> verify.
+    (Kernel already has the self-ptr fix; no kernel rebuild needed.)
+
+NEXT: awaiting Zack go-ahead, then edit user_linker.ld -> fry1714.

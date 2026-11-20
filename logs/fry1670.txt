@@ -1,0 +1,26 @@
+fry1670 — 2026-06-20 12:35 CDT
+STEP: First trace boot (headless) — outcome + course correction.
+
+WHAT: Clean+verbose rebuild (planv3 rule 12) with fry1669 trace+autorun, then
+      booted headless (-display none, -serial chardev:file). Polled serial 270s.
+
+RESULT: NO PYSC lines, only ~13KB of TBCLK heartbeat. Boot reached:
+        init pid=2 -> smoketest PASS -> SPAWN_OK /system/GUI.FRY pid=8 ->
+        one VM COMMIT (pid=8, 1001 pages) -> then idle heartbeat forever.
+        hermes NEVER ran.
+
+WHY IT FAILED: SHELL.TOT is not auto-started. It is launched on-demand when a
+        terminal window is opened inside the GUI compositor. Headless with no
+        display, no terminal is opened -> shell main() never runs -> the
+        fry1669 shell autorun never fires -> python never spawns. My headless
+        autorun assumption was wrong about how the shell starts.
+
+DECISION (per user): drop the headless-autorun approach. Run HEADED so the user
+        triggers `hermes` manually (known exact timing/place). Reverted the
+        fry1669 shell.c autorun block; KEPT the fry1669 syscall.c PYSC trace
+        (that is what captures the culprit). Build name reference: out/ artifacts
+        rebuilt 12:16; nvme.img 419MB, iso 164MB.
+
+NEXT (fry1671): rebuild (shell.c reverted, trace intact), launch headed
+        (-display gtk on DISPLAY=:0), user opens terminal + runs `hermes`,
+        capture serial, read last PYSC line = the wedging syscall.

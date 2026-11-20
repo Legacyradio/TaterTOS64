@@ -1,0 +1,74 @@
+fry1458 - Full 1200s QEMU window after vfork bridge.
+
+Date: 2026-06-13
+
+Command:
+- timeout 1200s qemu-system-x86_64 \
+  -m 4G -machine q35,accel=kvm -cpu host -smp 4 \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+  -drive if=pflash,format=raw,file=/tmp/OVMF_VARS_fry1457_full.fd \
+  -cdrom out/tatertos64v3.iso \
+  -drive file=out/tater_nvme.img,if=none,id=nvme0,format=raw \
+  -device nvme,drive=nvme0,serial=tatertos-nvme \
+  -netdev user,id=n0 -device e1000,netdev=n0 \
+  -display none \
+  -serial file:/tmp/s_fry1457_full.log
+
+Serial:
+- /tmp/s_fry1457_full.log
+- final size: 3126630 bytes
+
+Lifecycle:
+- The run was allowed to finish its full timeout window.
+- QEMU terminated only when timeout sent SIGTERM.
+- No qemu-system-x86_64 process remained afterward.
+
+Runtime result:
+- q35/e1000 booted.
+- DHCP succeeded.
+- Real /nvme/RCLAUDE.LXE loaded:
+  - LINUXELF: load done entry=60000001f300 rsp=7ffffffffd60 brk=ef2d000
+- vfork(58) advanced:
+  - TBVFORK parent=5 child=20
+  - TBVFORK parent=5 child=22
+  - TBVFORK parent=5 child=23
+  - TBVFORK parent=5 child=24
+  - TBVFORK parent=5 child=25
+- No unimplemented nr=58 appeared.
+
+Network result:
+- The old "one segment then nothing" receive symptom did NOT reproduce here.
+- TCP receive kept flowing well past one segment:
+  - conn=0 reached at least segs=170 bytes=228865
+  - conn=2 reached at least segs=60 bytes=76208
+  - conn=3 reached at least segs=28 bytes=30737
+  - e1000 RX total reached at least 560
+- This run proves the current q35/e1000 path can continue receiving TCP data.
+
+Subprocess result:
+- vfork is no longer the subprocess ENOSYS.
+- wait4(61) is now the visible subprocess syscall gap:
+  - LINUXSYS: unimplemented nr=61 ...
+- rg still reported ENOSYS from that child-wait path:
+  - rg error (signal=undefined, code=ENOSYS, stderr: ), 0 results
+
+Claude/API result:
+- Claude reached stream-json result.
+- API calls reached the network and server.
+- Final result was auth failure:
+  - Failed to authenticate. API Error: 401 Invalid authentication credentials
+  - api_error_status=401
+  - terminal_reason=completed
+- This is not a TCP receive stall. It is current staged-auth validity/refresh
+  state, plus the separate wait4 subprocess gap.
+
+Next:
+- Implement Linux wait4(61) using the existing process_wait_status() machinery
+  so posix_spawn/rg stops surfacing ENOSYS.
+- After wait4, rerun the same full-window q35/e1000 test.
+- Treat the 401 as auth-staging/refresh state, not a kernel TCP receive bug.
+- Keep using host JSON as the bridge for now unless/until OAuth refresh
+  semantics are intentionally tackled.
+
+Secrets:
+- No token contents logged.

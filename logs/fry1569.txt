@@ -1,0 +1,30 @@
+# fry1569 - CODE (instrumentation fix): point the sched.c-side tracing at claude's REAL tgid + add a per-heartbeat TBMAIN line for the main thread's exact state, to finally pin spin-vs-blocked-vs-starved for pid=14.
+Date: 2026-06-16 03:00 CDT
+Type: code change (src/kernel/proc/sched.c, 2 hunks; instrumentation, no functional change to scheduling)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+WHY (Rule 6)
+- fry1568: sched.c hardcoded TB_TRACE_CLAUDE_TGID=3, so the TBCLK census + TBSCHED wakes tracked the wrong process;
+  fry1567's spin conclusion was invalid. g_tb_trace_claude_tgid (extern in process.h, set to claude's tgid when
+  RCLAUDE launches, syscall.c:3624) is the correct dynamic value. Fix sched.c to use it, and add a per-thread state
+  line for the group leader (the JS main/event-loop thread, pid==tgid) so we read ITS state directly.
+
+CHANGE (src/kernel/proc/sched.c)
+1. line ~38: #define TB_TRACE_CLAUDE_TGID 3u  ->  #define TB_TRACE_CLAUDE_TGID g_tb_trace_claude_tgid
+   (process.h already included at sched.c:6; fixes TBCLK census + TBSCHED signal-wake/futex-wake to track claude=14.)
+2. In the TBCLK heartbeat census loop, for the group leader (procs[i].pid == procs[i].tgid), emit:
+     TBMAIN pid tgid state cpu oncpu futex_key poll wake rip
+   state=PROC_RUNNING(+oncpu=1) persistently => userspace SPIN; state=PROC_WAITING => blocked (futex_key/poll/wake show
+   where); reveals if pid=14 is runnable-but-not-current (starved). Uses existing fry_process fields; read-only.
+
+EXPECTED READ (next run, after typing into the frozen UI)
+- grep TBMAIN after the freeze:
+   * state=RUNNING oncpu=1 every heartbeat -> the main thread is busy-spinning in userspace -> add a proper RIP sampler
+     (IRQ frame ctx[17]) to locate the spin, then fix the underlying primitive/condition.
+   * state=WAITING futex_key=K -> it IS blocked on futex K (a wait the syscall.c beacon missed?) -> chase K's waker.
+   * state=RUNNING oncpu=0 (runnable, not running) -> scheduler starvation -> fairness fix.
+Clangd FRY_PROC_MAX/fry_limits.h diagnostics are LSP-only noise; cross-gcc build is the check.
+
+NEXT: fry1570 build (CLAUDE_NO_MCP=1), fry1571 verify+read TBMAIN.
+
+All per planv3 Rules 1/5/6/12. Written immediately on the code change, before the build.

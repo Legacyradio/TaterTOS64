@@ -1,0 +1,89 @@
+fry1425 — Tater Bridge / Claude Code: CENSUS VERDICT + THE OUTPUT BUG
+FOUND. claude ran a full session and called exit_group(0) CLEANLY at
+guest ~77-80s; TBLOST never fired (no lost wakeups — kernel fully
+exonerated); and the reason NO RUN has ever printed a reply is a dead
+-EBADF in lx_dup_fd_at: Bun relocates stdout via
+fcntl(1, F_DUPFD_CLOEXEC) and writes ALL output through the dup — the
+dup has failed in every boot, so every byte claude ever printed
+(replies AND error messages) was silently swallowed. Fix landed.
+Date: 2026-06-12 ~12:3x-11:0x AM/PM CDT. Author: Claude (Fable 5).
+Follows fry1424 (clock exonerated; tgid-3 silence at ~74s unexplained).
+========================================================================
+
+CONFIG
+====
+fry1424 image + TBEXIT beacons (LNX_exit/LNX_exit_group entry,
+syscall.c), TBCLK census (t3=run/wait/zombie/dead every ~5s), TBLOST
+overdue-sleeper detector (WAITING + timed wake >5s past due, cap 32).
+KVM, -smp 2, 3600s window.
+
+CENSUS TIMELINE (-smp 2)
+====
+now=61463  t3=0/0/0/0   (claude not yet exec'd into Linux personality)
+now=71736  t3=2/3/0/0   threads up
+now=74349  t3=3/4/0/0   working PAST the old ~74s death zone
+now=76876  t3=5/3/0/0   8 threads alive, active
+TBEXIT group pid=3 tgid=3 code=0          <- CLEAN DELIBERATE EXIT
+now=80121  t3=0/0/0/8   all 8 threads DEAD (clean reap)
+... t3=0/0/0/8 stable for the rest of the window. TBLOST: ZERO fires.
+KERNEL VERDICT: no lost wakeups, no stuck threads, no rq corruption.
+The fry1422/1423 "freezes" were claude exiting + beacon budgets
+exhausting — the OS was healthy underneath all along.
+
+THIS RUN'S NETWORK: API RESPONSES RECEIVED (like fry1421)
+====
+3x TCP to api.anthropic.com:443; recvfrom rc=0x30f0 (12,528B),
+0x483, 0x3b6 — same successful response shape as fry1421. TLS worked
+this run. Then claude processed, did shutdown housekeeping (mkdir
+EEXIST/EIO, unlink ENOENT, one write rc=-1 — likely state-file save on
+the read-only FS, tolerated), exit_group(0).
+
+THE OUTPUT BUG (root cause, host-verified)
+====
+Host strace of the SAME binary (2.1.172, claude -p):
+    fcntl(1, F_DUPFD_CLOEXEC, 0) = 12
+    write(12, "Hello from TaterTOS ...", 208) = 208   <- THE REPLY
+Bun dups stdout to a high fd and its async writer emits ALL output
+through the dup (fd 15 = writer eventfd). It NEVER writes fd 1 raw.
+TaterTOS: process_launch_linux installs NO fds; lx_dup_fd_at's
+validity check `!fd_is_open(shared, oldfd)` rejected oldfd=1 with
+-EBADF BEFORE reaching its own `oldfd <= 2` stdio-dup branch (dead
+code — the design intended stdio dups to work). Result: Bun's writer
+holds a dead fd; replies, errors, EVERYTHING silently dropped, every
+run. Important: TBTRACE ret only logs FAILING syscalls (all observed
+rc's negative) — successful writes were never visible, which hid this.
+
+FIXES LANDED (in tree, syscall.c, tag fry1426)
+====
+1. lx_dup_fd_at: fds 0-2 always pass validity (kernel console backs
+   them) -> the existing FD_STDIO dup branch is live again.
+2. LNX_dup2: same validity fix (its oldfd<=2 branch was equally dead).
+3. fcntl F_GETFL on uninstalled stdio fds returns O_RDWR (0x2) to
+   match Linux console fds (host-verified) — a zeroed table entry
+   reads as O_RDONLY and can mislead runtime writability checks.
+   fd 0 (stdin) deliberately left uninstalled otherwise — current
+   stdin probing behavior is what claude already works against; not
+   risking a blocking-read regression.
+
+REMAINING KNOWN ISSUES (next after fry1426 verifies output)
+====
+- TLS intermittency: cert store incomplete in image — hash-dir
+  lookups fail: /etc/ssl/cert.pem, /etc/ssl/certs/919ba934.0,
+  /etc/ssl/certs/7cd4d591.0 ENOENT; /usr/share/ca-certificates etc.
+  missing. fry1419/1420/1422 stalls + the ~60s-later exits line up
+  with verification trouble; runs that succeed likely ride Bun's
+  builtin bundle path. FIX CANDIDATE: stage a proper CA bundle at
+  /etc/ssl/cert.pem (+ hashed certs dir) in build_iso.sh.
+- exit code 0 despite no successful completion in 1422/1423 runs —
+  re-evaluate once output is visible; claude's stderr will finally
+  tell us what it was doing.
+- epoll_ctl rc=-17 EEXIST spam from Bun's writer loop — tolerated,
+  revisit if the writer misbehaves with the dup fixed.
+
+NEXT (fry1426)
+====
+Rebuild + boot -smp 2: expect claude's reply text ON SERIAL via
+kprint_write (mirrors every stdout byte). If reply prints -> e2e
+DONE pending -smp 4 pass (fry1421 policy) + beacon strip + cert
+store staging. Raw serials kept: /tmp/s_fry1425.log (+ s1422/s1423/
+s1424 hang/full logs).

@@ -1,0 +1,91 @@
+fry1489 — 2026-06-14. Author: Codex (GPT-5).
+STEP TYPE: implement + verify the rg/RCLAUDE self-reexec fix; correct the KVM/sandbox confusion.
+
+=== CORRECTION ===
+The first KVM failure was a Codex sandbox artifact, not a host KVM failure.
+Inside the sandbox, /dev/kvm is hidden and QEMU reported:
+  qemu-system-x86_64: Could not access KVM kernel module: No such file or directory
+Outside the sandbox, /dev/kvm exists:
+  crw-rw-rw- 1 root kvm 10, 232 /dev/kvm
+The validation run below was rerun unsandboxed with accel=kvm.
+
+=== WHAT WAS WRONG WITH THE PASTED ONE-LINE FIX ===
+Copying only read-only segments from the already-resident parent image is real but incomplete.
+It avoids re-streaming the first two RCLAUDE.LXE PT_LOAD segments, but the big writable/data
+segment at va=0x60ed9a0, file=0x8fe7660 still streams from disk and the vfork parent remains
+suspended. Copying the writable segment directly from the live parent would be semantically
+wrong because .data may already be mutated.
+
+=== FIX IMPLEMENTED ===
+src/kernel/proc/linux_elf.c:
+- Added a streamed-segment cache for large Linux ELF PT_LOAD bytes.
+- During the first streamed load of RCLAUDE.LXE, the loader still reads from disk into the
+  process image, but also copies those exact clean file bytes into kernel-owned cache pages.
+- Later self-reexecs copy clean cached bytes into newly allocated destination pages. This
+  includes the writable/data segment without copying mutated live .data from the parent.
+- Existing read-only parent-image reuse remains as a fast path for RO segments.
+
+src/kernel/proc/linux_compat.h, src/kernel/proc/process.c, src/kernel/proc/syscall.c:
+- Extended elf_load_linux with optional self-reexec reuse context.
+- Normal launches pass no reuse context.
+- execve passes reuse context only for vfork children re-execing the same stored process path.
+
+src/include/fry_limits.h and src/kernel/selftest.c:
+- FRY_SOCK_MAX is now 32 so rg/Grep's posix_spawn can proceed instead of failing early at 16.
+- Selftest assertion updated to 32.
+- Stale comment about the old "worker deadlock" theory was replaced with the loader-cache
+  explanation.
+
+=== BUILD VERIFICATION ===
+make kernel:
+  passed
+
+Staged ISO/NVMe:
+  env STAGE_CLAUDE=1 STAGE_PYTHON=1 CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.177 MTOOLSRC=/dev/null PATH=/home/legacyindieradio/TaterTOS64/tools/host/bin:/usr/bin:/bin:/usr/sbin:/sbin /bin/bash build_iso.sh
+  passed
+
+Artifacts:
+  out/tatertos64v3.iso
+  out/tater_nvme.img
+  /RCLAUDE.LXE size 250480336
+
+=== KVM VALIDATION ===
+Command class:
+  timeout 420s qemu-system-x86_64 -m 4G -machine q35,accel=kvm -cpu host -smp 4 ...
+
+Serial:
+  /tmp/fry1489_cache_kvm_serial.log
+
+Important evidence:
+  39:    LINUXELF: cache alloc off=0 file=22a92ec pages=8874
+  46:    LINUXELF: cache alloc off=22a9400 file=3c425a0 pages=15427
+  59:    LINUXELF: cache alloc off=5eed9a0 file=8fe7660 pages=36840
+  13714: TBEXECVE enter pid=23 path=/nvme/RCLAUDE.LXE argc=2 envc=9
+  14048: LINUXELF: reused RO seg va=200000 file=22a92ec
+  14058: LINUXELF: reused RO seg va=24aa400 file=3c425a0
+  14082: LINUXELF: cached seg va=60ed9a0 file=8fe7660
+  14094: LINUXELF: load done entry=60000001f300 rsp=7ffffffffcc0 brk=f0d5000
+  14174: TBEXECVE enter pid=24 path=/nvme/RCLAUDE.LXE argc=10 envc=14
+  14832: LINUXELF: cached seg va=60ed9a0 file=8fe7660
+  14843: LINUXELF: load done entry=60000001f300 rsp=7ffffffffb40 brk=f0d5000
+  20407: {"type":"system","subtype":"init", ... "claude_code_version":"2.1.177", ...}
+
+Result:
+- The rg/RCLAUDE self-reexec loader stall is fixed. Both observed RCLAUDE.LXE self-reexecs
+  reached LINUXELF load done.
+- Claude reached subtype:init with FRY_SOCK_MAX=32.
+
+Remaining issues shown by this run:
+- rg still emitted:
+    countFilesRoundedRg failed: Error: EBADF: bad file descriptor, posix_spawn 'rg'
+  This is now a child-fd/posix_spawn issue after the self-reexec completes, not the old loader
+  stall.
+- This validation command did not attach a NIC, so later api_retry lines are expected and do
+  not prove an HTTPS/API regression:
+    NET:NONIC
+    apiKeySource:"none"
+
+Next logical step:
+1. Run the same cached-loader kernel with the normal NIC-enabled KVM command and API material.
+2. If rg still reports EBADF there, inspect the vfork child fd table around the argc=10 rg
+   exec path; the loader is no longer the blocker.

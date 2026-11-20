@@ -1,0 +1,43 @@
+# fry1567 - SPIN vs STARVE resolved = USERSPACE SPIN. After the freeze, TBCLK census reads t3=1/0/0/0 (1 RUNNING, 0 WAITING/ZOMBIE/DEAD) for ALL 60,651 post-freeze heartbeats, and ZERO TBLOST. A thread permanently in PROC_RUNNING (never returning to a wait) with no lost-wakeup = a userspace spinner, not scheduler starvation. The main thread is burning a CPU spinning in userspace.
+Date: 2026-06-16 02:35 CDT
+Type: diagnosis (existing TBCLK census in the fry1560 serial; no rebuild)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+---------------------------------------------------------------------------------
+EVIDENCE (no rebuild — read the existing kernel TBCLK heartbeat census)
+---------------------------------------------------------------------------------
+- sched_tick (sched.c:895) emits TBCLK every 5000 ticks with a tgid-census t3=RUNNING/WAITING/ZOMBIE/DEAD for the
+  traced claude tgid (TB_TRACE_CLAUDE_TGID; beacons fire for tgid=14 this run).
+- After the freeze (serial line 20864+): t3=1/0/0/0 on EVERY heartbeat — 60,651 consecutive heartbeats, all
+  "1 RUNNING, 0 WAITING". So exactly one traced thread is permanently RUNNING and none are blocked.
+- TBLOST (kernel's overdue-sleeper / lost-wakeup detector, fires when a WAITING thread's timed wake is >5s overdue):
+  ZERO after the freeze. So this is NOT a lost wakeup and NOT a stuck sleeper.
+- Corroborates fry1566: pid=14 makes no syscalls after 20864 yet is not in any logged wait. A thread that is
+  PROC_RUNNING forever, making no syscalls, no lost-wakeup = busy-spinning in USERSPACE.
+
+Caveat: the census counts by a traced-tgid constant; the "1 RUNNING" is the persistently-runnable traced thread
+(consistent with pid=14, the silent-but-not-blocked main thread). Confirmed direction: SPIN (A), not starvation (B).
+
+---------------------------------------------------------------------------------
+WHAT THIS MEANS / WHAT TO FIX
+---------------------------------------------------------------------------------
+The main thread is stuck in a userspace busy-loop after coordinating its workers (the burst of futex wake-calls at
+the edge). Almost certainly a WTF::Lock/ParkingLot adaptive spin or a hand-rolled busy-wait on a condition that a
+worker is supposed to satisfy, where the worker never satisfies it -> infinite spin -> event loop never resumes ->
+stdin never polled. We need to see WHERE it spins (the userspace RIP) to identify the exact lock/condition, then fix
+the OS primitive or the worker-progress issue behind it. This stays fully networked.
+
+---------------------------------------------------------------------------------
+NEXT (own fry log) - RIP SAMPLER
+---------------------------------------------------------------------------------
+Add a sampler: capture the interrupted USERSPACE RIP at the timer tick for the spinning main thread, log it
+(throttled). Mechanics: the LAPIC timer IRQ (lapic_timer.c -> sched_tick) must make the interrupted frame's RIP
+available (stash the user RIP into a per-CPU var on IRQ entry, or pass the frame). Then in sched_tick's heartbeat, if
+current[cpu] is the traced main thread and it has spent many ticks RUNNING without a syscall, emit TBSPIN
+cpu/pid/rip. Resolve the RIP against RCLAUDE.LXE (objdump/symbol or at least the segment) to name the spin loop. Then
+fix the underlying condition (e.g. a futex/lock the spin polls that the kernel never satisfies, or worker progress).
+
+STATUS: panic fixed; input proven; suspend handshake works; freeze = main-thread USERSPACE SPIN (confirmed, not
+starvation, not lost-wakeup). Next = RIP sampler to locate the spin.
+
+All per planv3 Rules 1/5/6/12. Written immediately on this determination.

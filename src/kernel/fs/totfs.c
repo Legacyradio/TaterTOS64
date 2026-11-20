@@ -10,15 +10,29 @@
 
 void kprint(const char *fmt, ...);
 
+/* Allocator / phys-map, for the DMA bounce buffer in the read fast path. */
+extern uint64_t pmm_alloc_pages(uint64_t count);
+extern void pmm_free_pages(uint64_t phys, uint64_t count);
+extern uint64_t vmm_phys_to_virt(uint64_t phys);
+extern void *kmalloc(uint64_t size);   /* dynamic block-bitmap cache at mount */
+extern void *memset(void *dst, int c, unsigned long n);
+extern void *memcpy(void *dst, const void *src, unsigned long n);
+
+/* Max contiguous blocks read per NVMe command in the fast path (256 KiB). The
+ * run is read into a kernel bounce buffer and CPU-copied to the caller, so the
+ * caller's buffer may be a user VA (the NVMe PRP builder can only target kernel
+ * physical pages). */
+#define TOTFS_READ_BOUNCE_BLOCKS 64
+
 /* ── Block I/O ──────────────────────────────────────────────────────────── */
 
 int totfs_read_block(struct totfs_fs *fs, uint64_t block_num, void *buf) {
     uint64_t lba = fs->part_lba + block_num * fs->sectors_per_block;
-    uint8_t *p = (uint8_t *)buf;
-    for (uint32_t i = 0; i < fs->sectors_per_block; i++) {
-        if (fs->bd->read(fs->bd->ctx, lba + i, p + i * fs->bd->sector_size, 1) != 0)
-            return -1;
-    }
+    /* Read the whole block in ONE multi-sector command. The NVMe layer
+     * (nvme_io_rw) splits/pipelines by mdts and builds a PRP list for the
+     * buffer, so a per-sector loop is pure latency overhead. */
+    if (fs->bd->read(fs->bd->ctx, lba, buf, fs->sectors_per_block) != 0)
+        return -1;
     return 0;
 }
 
@@ -74,14 +88,50 @@ int totfs_mount(struct totfs_fs *fs, struct block_device *bd, uint64_t part_lba)
         return -1;
     }
 
-    /* Read bitmaps into RAM */
-    if (totfs_read_block(fs, fs->sb.inode_bitmap_start, fs->inode_bitmap) != 0) {
-        kprint("ToTFS: failed to read inode bitmap\n");
-        return -1;
+    /* Inode bitmap: spans sb.inode_bitmap_blocks blocks. Heap-cache to the ACTUAL
+     * on-disk geometry so the inode count scales with the drive — no compile-time
+     * cap (was a single fixed block = 32768 inodes max). Mirrors block_bitmap. */
+    {
+        uint64_t ibn   = fs->sb.inode_bitmap_blocks ? fs->sb.inode_bitmap_blocks : 1;
+        uint64_t bytes = ibn * (uint64_t)TOTFS_BLOCK_SIZE;
+        fs->inode_bitmap = (uint8_t *)kmalloc(bytes);
+        if (!fs->inode_bitmap) {
+            kprint("ToTFS: OOM for inode bitmap: %llu bytes (%llu blocks)\n",
+                   (unsigned long long)bytes, (unsigned long long)ibn);
+            return -1;
+        }
+        fs->inode_bitmap_bytes = bytes;
+        for (uint64_t i = 0; i < ibn; i++) {
+            if (totfs_read_block(fs, fs->sb.inode_bitmap_start + i,
+                                 fs->inode_bitmap + i * TOTFS_BLOCK_SIZE) != 0) {
+                kprint("ToTFS: failed to read inode bitmap blk %llu\n",
+                       (unsigned long long)i);
+                return -1;
+            }
+        }
     }
-    if (totfs_read_block(fs, fs->sb.block_bitmap_start, fs->block_bitmap) != 0) {
-        kprint("ToTFS: failed to read block bitmap\n");
-        return -1;
+    /* Block bitmap: spans sb.block_bitmap_blocks blocks (one per 128 MB of data).
+     * Allocate the RAM cache to the ACTUAL on-disk geometry so the volume size is
+     * whatever the drive/partition is — no compile-time cap (was clamped to
+     * TOTFS_KBMP_BLOCKS=8=1GB; fry1718). */
+    {
+        uint64_t bbn   = fs->sb.block_bitmap_blocks ? fs->sb.block_bitmap_blocks : 1;
+        uint64_t bytes = bbn * (uint64_t)TOTFS_BLOCK_SIZE;
+        fs->block_bitmap = (uint8_t *)kmalloc(bytes);
+        if (!fs->block_bitmap) {
+            kprint("ToTFS: OOM for block bitmap: %llu bytes (%llu blocks)\n",
+                   (unsigned long long)bytes, (unsigned long long)bbn);
+            return -1;
+        }
+        fs->block_bitmap_bytes = bytes;
+        for (uint64_t i = 0; i < bbn; i++) {
+            if (totfs_read_block(fs, fs->sb.block_bitmap_start + i,
+                                 fs->block_bitmap + i * TOTFS_BLOCK_SIZE) != 0) {
+                kprint("ToTFS: failed to read block bitmap blk %llu\n",
+                       (unsigned long long)i);
+                return -1;
+            }
+        }
     }
 
     kprint("ToTFS: mounted at LBA %llu, %llu blocks, %llu free\n",
@@ -224,16 +274,55 @@ int totfs_read_file_data(struct totfs_fs *fs, struct totfs_inode *inode,
         uint64_t cur_off = offset + total_read;
         uint32_t logical_blk = (uint32_t)(cur_off / TOTFS_BLOCK_SIZE);
         uint32_t blk_off = (uint32_t)(cur_off % TOTFS_BLOCK_SIZE);
+        uint64_t remaining = len - total_read;
 
         uint64_t phys;
         if (totfs_find_phys_block(inode, logical_blk, &phys) != 0)
             break;
 
+        /* Fast path: block-aligned with at least one whole block left — read
+         * the longest physically-contiguous run directly into the caller's
+         * buffer in a single multi-block I/O. For a single-extent file this
+         * collapses the whole request into one transfer (nvme_io_rw pipelines
+         * it), turning ~64k single-block reads into a handful. */
+        if (blk_off == 0 && remaining >= TOTFS_BLOCK_SIZE) {
+            uint32_t run = 1;
+            uint64_t pnext;
+            while (run < TOTFS_READ_BOUNCE_BLOCKS &&
+                   (uint64_t)(run + 1) * TOTFS_BLOCK_SIZE <= remaining &&
+                   totfs_find_phys_block(inode, logical_blk + run, &pnext) == 0 &&
+                   pnext == phys + run) {
+                run++;
+            }
+            /* DMA the contiguous run into a KERNEL bounce buffer, then CPU-copy to
+             * 'out'. 'out' may be a user VA (lx_read_fd FD_FILE passes the user
+             * destination straight through); the NVMe PRP builder resolves buffers
+             * via the kernel map and cannot target a user VA, so DMAing directly
+             * into 'out' silently corrupts user reads. Adapt the run down to the
+             * available contiguous pages. */
+            uint64_t bphys = pmm_alloc_pages(run);
+            while (!bphys && run > 1) { run >>= 1; bphys = pmm_alloc_pages(run); }
+            if (bphys) {
+                uint8_t *bounce = (uint8_t *)(uintptr_t)vmm_phys_to_virt(bphys);
+                uint64_t lba = fs->part_lba + phys * fs->sectors_per_block;
+                int rc = fs->bd->read(fs->bd->ctx, lba, bounce,
+                                      run * fs->sectors_per_block);
+                if (rc != 0) { pmm_free_pages(bphys, run); break; }
+                uint64_t n = (uint64_t)run * TOTFS_BLOCK_SIZE;
+                for (uint64_t i = 0; i < n; i++) out[total_read + i] = bounce[i];
+                pmm_free_pages(bphys, run);
+                total_read += n;
+                continue;
+            }
+            /* allocation failed: fall through to the per-block slow path */
+        }
+
+        /* Slow path: partial head/tail block via the temp buffer. */
         if (totfs_read_block(fs, phys, blk) != 0)
             break;
 
         uint32_t chunk = TOTFS_BLOCK_SIZE - blk_off;
-        if ((uint64_t)chunk > len - total_read) chunk = (uint32_t)(len - total_read);
+        if ((uint64_t)chunk > remaining) chunk = (uint32_t)remaining;
 
         uint8_t *src = blk + blk_off;
         for (uint32_t i = 0; i < chunk; i++) out[total_read + i] = src[i];
@@ -335,16 +424,29 @@ static void bitmap_clear(uint8_t *bmp, uint32_t bit) {
     bmp[bit / 8] &= (uint8_t)~(1u << (bit % 8));
 }
 
+/* fry1444: write back only the bitmap block containing the changed bit.
+ * bit / 32768 selects the bitmap block; the cache is contiguous in RAM. */
+static void totfs_flush_bmp_block(struct totfs_fs *fs, uint64_t bit) {
+    uint64_t blk_idx = bit / (TOTFS_BLOCK_SIZE * 8);
+    totfs_write_block(fs, fs->sb.block_bitmap_start + blk_idx,
+                      fs->block_bitmap + blk_idx * TOTFS_BLOCK_SIZE);
+}
+
 int totfs_alloc_block(struct totfs_fs *fs, uint64_t *out_block) {
+    /* fry1444: scan the FULL cached bitmap. The old single-block cap
+     * (32,768 blocks = 128 MB) made allocation impossible once the
+     * staged claude binary filled that region — every in-OS mkdir and
+     * file create returned EIO (fry1441/1443 root cause). */
     uint64_t max = fs->sb.total_blocks;
-    if (max > TOTFS_BLOCK_SIZE * 8) max = TOTFS_BLOCK_SIZE * 8;
+    uint64_t cache_max = fs->block_bitmap_bytes * 8ULL; /* bits in the dynamic cache */
+    if (max > cache_max) max = cache_max;
     for (uint64_t i = fs->sb.data_start; i < max; i++) {
         if (!bitmap_test(fs->block_bitmap, (uint32_t)i)) {
             bitmap_set(fs->block_bitmap, (uint32_t)i);
             fs->sb.free_blocks--;
             *out_block = i;
-            /* Write bitmap + superblock */
-            totfs_write_block(fs, fs->sb.block_bitmap_start, fs->block_bitmap);
+            /* Write the dirty bitmap block + superblock */
+            totfs_flush_bmp_block(fs, i);
             uint8_t sb_blk[TOTFS_BLOCK_SIZE];
             for (uint32_t j = 0; j < TOTFS_BLOCK_SIZE; j++) sb_blk[j] = 0;
             uint8_t *src = (uint8_t *)&fs->sb;
@@ -357,22 +459,26 @@ int totfs_alloc_block(struct totfs_fs *fs, uint64_t *out_block) {
 }
 
 int totfs_free_block(struct totfs_fs *fs, uint64_t block) {
-    if (block >= fs->sb.total_blocks || block >= TOTFS_BLOCK_SIZE * 8) return -1;
+    if (block >= fs->sb.total_blocks ||
+        block >= fs->block_bitmap_bytes * 8ULL) return -1;
     bitmap_clear(fs->block_bitmap, (uint32_t)block);
     fs->sb.free_blocks++;
-    totfs_write_block(fs, fs->sb.block_bitmap_start, fs->block_bitmap);
+    totfs_flush_bmp_block(fs, block);
     return 0;
 }
 
 int totfs_alloc_inode(struct totfs_fs *fs, uint32_t *out_inum) {
+    /* Scan the whole inode space (multi-block bitmap, heap-cached). No fixed cap. */
     uint32_t max = (uint32_t)fs->sb.total_inodes;
-    if (max > TOTFS_BLOCK_SIZE * 8) max = TOTFS_BLOCK_SIZE * 8;
     for (uint32_t i = 2; i < max; i++) {
         if (!bitmap_test(fs->inode_bitmap, i)) {
             bitmap_set(fs->inode_bitmap, i);
             fs->sb.free_inodes--;
             *out_inum = i;
-            totfs_write_block(fs, fs->sb.inode_bitmap_start, fs->inode_bitmap);
+            /* Write back only the bitmap block that changed. */
+            uint64_t bblk = (uint64_t)i / ((uint64_t)TOTFS_BLOCK_SIZE * 8);
+            totfs_write_block(fs, fs->sb.inode_bitmap_start + bblk,
+                              fs->inode_bitmap + bblk * TOTFS_BLOCK_SIZE);
             uint8_t sb_blk[TOTFS_BLOCK_SIZE];
             for (uint32_t j = 0; j < TOTFS_BLOCK_SIZE; j++) sb_blk[j] = 0;
             uint8_t *src = (uint8_t *)&fs->sb;
@@ -385,10 +491,135 @@ int totfs_alloc_inode(struct totfs_fs *fs, uint32_t *out_inum) {
 }
 
 int totfs_free_inode(struct totfs_fs *fs, uint32_t inum) {
-    if (inum >= fs->sb.total_inodes || inum >= TOTFS_BLOCK_SIZE * 8) return -1;
+    if (inum >= fs->sb.total_inodes) return -1;
     bitmap_clear(fs->inode_bitmap, inum);
     fs->sb.free_inodes++;
-    totfs_write_block(fs, fs->sb.inode_bitmap_start, fs->inode_bitmap);
+    /* Write back only the bitmap block that changed. */
+    uint64_t bblk = (uint64_t)inum / ((uint64_t)TOTFS_BLOCK_SIZE * 8);
+    totfs_write_block(fs, fs->sb.inode_bitmap_start + bblk,
+                      fs->inode_bitmap + bblk * TOTFS_BLOCK_SIZE);
+    return 0;
+}
+
+/* ── In-kernel formatter ────────────────────────────────────────────────── */
+/* Format a block device as ToTFS. Mirrors tools/mktotfs.c exactly (scaled inodes,
+ * multi-block inode+block bitmaps). Lets the OS create ToTFS volumes itself — used
+ * to format the RAM-backed /tmp at boot (no host tool, no separate tmpfs). */
+int totfs_format(struct block_device *bd, uint64_t part_lba, uint64_t total_bytes) {
+    if (!bd || bd->sector_size == 0) return -1;
+    uint32_t spb = (uint32_t)(TOTFS_BLOCK_SIZE / bd->sector_size);
+    if (spb == 0) spb = 1;
+    uint64_t total_blocks = total_bytes / TOTFS_BLOCK_SIZE;
+    if (total_blocks < 32) return -1;
+
+    uint64_t bits_per_bmp = (uint64_t)TOTFS_BLOCK_SIZE * 8ULL;
+    uint32_t blk_bmp_blocks = (uint32_t)((total_blocks + bits_per_bmp - 1) / bits_per_bmp);
+    if (blk_bmp_blocks < 1) blk_bmp_blocks = 1;
+
+    /* Inode count scales with the volume (~1 inode / 32KB), floored — no fixed cap. */
+    uint64_t total_inodes = total_blocks / 8ULL;
+    if (total_inodes < TOTFS_MAX_INODES) total_inodes = TOTFS_MAX_INODES;
+    uint32_t ino_bmp_blocks = (uint32_t)((total_inodes + bits_per_bmp - 1) / bits_per_bmp);
+    if (ino_bmp_blocks < 1) ino_bmp_blocks = 1;
+    uint64_t inodes_per_tbl = TOTFS_BLOCK_SIZE / TOTFS_INODE_SIZE;
+    uint32_t ino_tbl_blocks = (uint32_t)((total_inodes + inodes_per_tbl - 1) / inodes_per_tbl);
+
+    uint32_t ino_bmp_blk = TOTFS_INODE_BITMAP_BLK;   /* block 1 */
+    uint32_t blk_bmp_blk = ino_bmp_blk + ino_bmp_blocks;
+    uint32_t ino_tbl_blk = blk_bmp_blk + blk_bmp_blocks;
+    uint32_t data_start  = ino_tbl_blk + ino_tbl_blocks;
+
+    uint8_t blk[TOTFS_BLOCK_SIZE];
+#define TF_WB(n) block_device_write(bd, part_lba + (uint64_t)(n) * spb, blk, spb)
+
+    /* Superblock */
+    struct totfs_superblock sb;
+    memset(&sb, 0, sizeof(sb));
+    sb.magic = TOTFS_MAGIC;
+    sb.version = TOTFS_VERSION;
+    sb.block_size = TOTFS_BLOCK_SIZE;
+    sb.log2_block_size = TOTFS_LOG2_BLOCK;
+    sb.total_blocks = total_blocks;
+    sb.total_inodes = total_inodes;
+    sb.free_blocks = total_blocks - (data_start + 1);
+    sb.free_inodes = total_inodes - 2;
+    sb.inode_bitmap_start = ino_bmp_blk;
+    sb.inode_bitmap_blocks = ino_bmp_blocks;
+    sb.block_bitmap_start = blk_bmp_blk;
+    sb.block_bitmap_blocks = blk_bmp_blocks;
+    sb.inode_table_start = ino_tbl_blk;
+    sb.inode_table_blocks = ino_tbl_blocks;
+    sb.data_start = data_start;
+    sb.root_inode = TOTFS_ROOT_INODE;
+    sb.inode_size = TOTFS_INODE_SIZE;
+    memcpy(sb.volume_label, "TaterTOS-tmp", 12);
+    memset(blk, 0, sizeof(blk));
+    memcpy(blk, &sb, sizeof(sb));
+    if (TF_WB(0) != 0) return -1;
+
+    /* Inode bitmap: inodes 0,1 used in first block; remaining blocks all-free. */
+    memset(blk, 0, sizeof(blk));
+    bitmap_set(blk, 0);
+    bitmap_set(blk, 1);
+    if (TF_WB(ino_bmp_blk) != 0) return -1;
+    memset(blk, 0, sizeof(blk));
+    for (uint32_t i = 1; i < ino_bmp_blocks; i++)
+        if (TF_WB(ino_bmp_blk + i) != 0) return -1;
+
+    /* Block bitmap: mark metadata blocks 0..data_start used across ALL bitmap blocks. */
+    for (uint32_t bb = 0; bb < blk_bmp_blocks; bb++) {
+        memset(blk, 0, sizeof(blk));
+        uint64_t base = (uint64_t)bb * bits_per_bmp;
+        if (base <= (uint64_t)data_start) {
+            uint64_t end = (uint64_t)data_start;
+            uint64_t last = base + bits_per_bmp - 1;
+            if (end > last) end = last;
+            for (uint64_t b = base; b <= end; b++)
+                bitmap_set(blk, (uint32_t)(b - base));
+        }
+        if (TF_WB(blk_bmp_blk + bb) != 0) return -1;
+    }
+
+    /* Inode table zeroed. */
+    memset(blk, 0, sizeof(blk));
+    for (uint32_t i = 0; i < ino_tbl_blocks; i++)
+        if (TF_WB(ino_tbl_blk + i) != 0) return -1;
+
+    /* Root inode (inode 1) at offset 256 in inode-table block 0. */
+    struct totfs_inode root;
+    memset(&root, 0, sizeof(root));
+    root.type = TOTFS_TYPE_DIR;
+    root.permissions = 0755;
+    root.link_count = 2;
+    root.size = TOTFS_BLOCK_SIZE;
+    root.blocks_used = 1;
+    root.extent_count = 1;
+    root.extents[0].start_block = data_start;
+    root.extents[0].block_count = 1;
+    root.extents[0].file_block = 0;
+    memset(blk, 0, sizeof(blk));
+    memcpy(blk + TOTFS_INODE_SIZE, &root, sizeof(root));
+    if (TF_WB(ino_tbl_blk) != 0) return -1;
+
+    /* Root directory data block: "." and ".." */
+    memset(blk, 0, sizeof(blk));
+    struct totfs_dirent *dot = (struct totfs_dirent *)blk;
+    dot->inode = TOTFS_ROOT_INODE;
+    dot->name_len = 1;
+    dot->file_type = TOTFS_TYPE_DIR;
+    uint16_t dot_rec = (uint16_t)((8 + 1 + 3) & ~3u);  /* 12, 4-aligned */
+    dot->rec_len = dot_rec;
+    blk[8] = '.';
+    struct totfs_dirent *dd = (struct totfs_dirent *)(blk + dot_rec);
+    dd->inode = TOTFS_ROOT_INODE;
+    dd->name_len = 2;
+    dd->file_type = TOTFS_TYPE_DIR;
+    dd->rec_len = (uint16_t)(TOTFS_BLOCK_SIZE - dot_rec);
+    blk[dot_rec + 8] = '.';
+    blk[dot_rec + 9] = '.';
+    if (TF_WB(data_start) != 0) return -1;
+
+#undef TF_WB
     return 0;
 }
 
@@ -867,33 +1098,89 @@ int totfs_truncate_vfs(struct vfs_file *f, uint64_t length) {
     return totfs_write_inode(priv->fs, priv->inode_num, &inode);
 }
 
+/* Remove ONLY the directory entry (parent_inum, name) -> target_inum, leaving the
+ * target inode and its data blocks intact. Used by rename to move an inode without
+ * freeing what it points to. */
+static int totfs_remove_dirent(struct totfs_fs *fs, uint32_t parent_inum,
+                               const char *name, uint32_t namelen,
+                               uint32_t target_inum) {
+    struct totfs_inode parent_dir;
+    if (totfs_read_inode(fs, parent_inum, &parent_dir) != 0) return -1;
+    if (parent_dir.type != TOTFS_TYPE_DIR) return -1;
+
+    uint8_t blk[TOTFS_BLOCK_SIZE];
+    for (uint32_t e = 0; e < parent_dir.extent_count && e < TOTFS_NUM_EXTENTS; e++) {
+        for (uint32_t b = 0; b < parent_dir.extents[e].block_count; b++) {
+            uint64_t bnum = parent_dir.extents[e].start_block + b;
+            if (totfs_read_block(fs, bnum, blk) != 0) continue;
+            uint32_t off = 0;
+            while (off + 8 <= TOTFS_BLOCK_SIZE) {
+                struct totfs_dirent *de = (struct totfs_dirent *)(blk + off);
+                if (de->rec_len == 0) break;
+                if (de->inode == target_inum &&
+                    totfs_name_eq(de->name, de->name_len, name, namelen)) {
+                    de->inode = 0;  /* free the slot; do NOT touch the inode/blocks */
+                    return totfs_write_block(fs, bnum, blk);
+                }
+                off += de->rec_len;
+            }
+        }
+    }
+    return -1;
+}
+
+/* POSIX-style rename: move the directory entry to point at the SAME inode (no
+ * extent copy, no premature block free) and overwrite an existing destination.
+ * The previous implementation created a new inode, copied extents, then unlinked
+ * the source - which freed the very blocks the new name pointed at, and failed
+ * outright (-> -EIO/-5) when the destination already existed (Claude's atomic
+ * config write renames tmp -> .claude.json, which already exists). */
 int totfs_rename_vfs(void *fs_data, const char *old_path, const char *new_path) {
     struct totfs_fs *fs = (struct totfs_fs *)fs_data;
+
     uint32_t old_inum;
     if (totfs_resolve_path(fs, old_path, &old_inum) != 0) return -1;
-
     struct totfs_inode old_inode;
     if (totfs_read_inode(fs, old_inum, &old_inode) != 0) return -1;
 
-    if (totfs_create_vfs(fs_data, new_path, old_inode.type) != 0) return -1;
+    /* Source parent + basename. */
+    char old_parent[128];
+    const char *old_base;
+    uint32_t old_blen;
+    if (totfs_split_path(old_path, old_parent, sizeof(old_parent), &old_base, &old_blen) != 0)
+        return -1;
+    if (old_blen == 0) return -1;
+    uint32_t old_parent_inum;
+    if (totfs_resolve_path(fs, old_parent, &old_parent_inum) != 0) return -1;
 
-    uint32_t new_inum;
-    if (totfs_resolve_path(fs, new_path, &new_inum) != 0) return -1;
+    /* Destination parent + basename. */
+    char new_parent[128];
+    const char *new_base;
+    uint32_t new_blen;
+    if (totfs_split_path(new_path, new_parent, sizeof(new_parent), &new_base, &new_blen) != 0)
+        return -1;
+    if (new_blen == 0) return -1;
+    uint32_t new_parent_inum;
+    if (totfs_resolve_path(fs, new_parent, &new_parent_inum) != 0) return -1;
 
-    struct totfs_inode new_inode;
-    if (totfs_read_inode(fs, new_inum, &new_inode) != 0) return -1;
-
-    new_inode.size = old_inode.size;
-    new_inode.blocks_used = old_inode.blocks_used;
-    new_inode.extent_count = old_inode.extent_count;
-    for (uint32_t i = 0; i < old_inode.extent_count && i < TOTFS_NUM_EXTENTS; i++) {
-        new_inode.extents[i] = old_inode.extents[i];
+    /* POSIX overwrite: if the destination exists, remove it first (frees its old
+     * blocks + dirent). This is the fix for the -5 the old create()-based path hit. */
+    uint32_t existing;
+    if (totfs_resolve_path(fs, new_path, &existing) == 0) {
+        if (existing == old_inum) return 0;            /* same file: nothing to do */
+        if (totfs_unlink_vfs(fs_data, new_path) != 0) return -1;
     }
 
-    if (totfs_unlink_vfs(fs_data, old_path) != 0) {
-        totfs_unlink_vfs(fs_data, new_path);
+    /* Point the new name at the EXISTING inode. */
+    if (totfs_add_dirent(fs, new_parent_inum, old_inum, new_base, new_blen,
+                         (uint8_t)old_inode.type) != 0)
+        return -1;
+
+    /* Drop the old name WITHOUT freeing the inode/blocks (now owned by new_path). */
+    if (totfs_remove_dirent(fs, old_parent_inum, old_base, old_blen, old_inum) != 0) {
+        totfs_remove_dirent(fs, new_parent_inum, new_base, new_blen, old_inum);
         return -1;
     }
 
-    return totfs_write_inode(fs, new_inum, &new_inode);
+    return 0;
 }

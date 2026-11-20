@@ -1,0 +1,807 @@
+[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;042;160t[2J[001;001H[2J[001;001H[8;056;240t[2J[001;001HBdsDxe: loading Boot0002 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+BdsDxe: starting Boot0002 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+
+TATER EFI: start
+TATER EFI: build 2026-03-04-dell-nvme-scan
+TATER EFI: LI ok
+TATER EFI: SFS ok
+TATER EFI: volume ok
+TATER EFI: kernel ok
+TATER EFI: kbuf=0x000000007DB3B000 ksz=0x000000000027B168
+TATER EFI: elf loaded
+TATER EFI: entry resolved
+TATER EFI: GOP ok
+TATER EFI: ramdisk built
+TATER EFI: handoff mmap size
+TATER EFI: handoff mmap alloc
+TATER EFI: handoff mapbuf=0x000000007D620000 entry=0x00000000020000AB
+TATER EFI: handoff ExitBS
+RrrcCxSsEeLlB:NET
+I219: not found on PCI bus
+E1000: mmio=0xffff800081040000 rx_ring_phys=0x7db3a000 tx_ring_phys=0x88000
+DHCP:E1000
+E1000_TX: len=342 tail=1
+E1000_TX: len=342 tail=2
+NET_POLL: rx=2 total_polls=17
+DHCP:OK
+TBRIDGE: /nvme/RCLAUDE.LXE not present (skip)
+selftest: running
+selftest: 106 passed, 0 failed
+K_init: pid=5
+init: running smoketest...
+ACPI: ECDT not found (len=0)
+ACPI: P2SB unhide failed via CF8, using SBREG_BAR_DEFAULT 0xfd000000
+ACPI: espi_clear_errors[0]: LPC mode (not eSPI), skip
+ACPI: EC all candidates failed, EC not available
+ACPI: eSPI PID cand=0x72 CFG_VAL=00000000 invalid
+ACPI: eSPI PID cand=0xc7 CFG_VAL=00000000 invalid
+ACPI: eSPI PID cand=0x6e CFG_VAL=00000000 invalid
+SPAWN_OK path=/apps/SMOKETEST.FRY pid=10 parent=5
+
+===================================
+  TaterTOS64v3 syscall smoke test
+===================================
+
+  pipe2(O_NONBLOCK)                ... SPCEN pipehw used=1/128
+PASS
+  pipe2(O_CLOEXEC)                 ... PASS
+  pipe2(invalid flags)             ... PASS
+  dup3(O_CLOEXEC)                  ... PASS
+  dup3(oldfd==newfd)               ... PASS
+  socketpair(AF_UNIX, SOCK_STREAM) ... SPCEN pipehw used=2/128
+SPCEN new pid=10 sock=2/64 pipe=2/128
+PASS
+  getcwd()                         ... PASS
+  chdir('/') + getcwd()            ... PASS
+  accept4(EBADF behavior)          ... PASS
+  timerfd_create + settime + gettime ... PASS
+  signalfd()                       ... PASS
+  inotify_init + add_watch + rm_watch ... PASS
+  memfd_create() + write + read    ... PASS
+  memfd_create() + ftruncate + lseek ... PASS
+  sendfile(memfd->memfd)           ... PASS
+
+Results: 15 passed, 0 failed
+===================================
+!EXC vec=000000000000000E err=0000000000000014 RIP=0000000000000000 CS=000000000000002B RF=0000000000010206 CR2=0000000000000000 CR3=0000000002411000
+!REG rax=0000000000000000 rbx=0000000000000000 rcx=00000000004030A9 rdx=0000000000000000 rbp=0000000000000000
+!REG rsi=00000000004104E6 rdi=0000000000000001 r8=0000000000000000 r9=0000000000000020 r10=00007FFFFFFFF9FD
+!REG r11=0000000000000246 r12=0000000000000000 r13=0000000000000000 r14=0000000000000000 r15=0000000000000000
+USER FAULT: pid=10 tid=10 vec=14 err=0x14 rip=0x0 cr2=0x0
+  PTE CHAIN va=0x0 cr3=0x7c10f000 pml4[0]=0x7c131027
+init: smoketest completed pid=10
+init: running chrome_probe...
+SPAWN_OK path=/apps/CHROME_PROBE.FRY pid=11 parent=5
+Chrome/GN compatibility probe for TaterTOS64v3
+
+  uname()                              ... sysname=TaterTOS nodename=taterbox release=1.0.0 version=TaterTOS64v3 #1 SMP machine=x86_64 PASS
+  sysinfo()                            ... uptime=1 procs=0 PASS
+  getrusage(SELF)                      ... utime=0.000000 PASS
+  getpriority(PRIO_PROCESS)            ... prio=0 PASS
+  fsync() on pipe                      ... PASS
+  fdatasync() on pipe                  ... PASS
+  sched_getaffinity()                  ... cpus=4 PASS
+  pthread_barrier_init/wait/destroy    ... PASS
+  pthread_spin_init/lock/unlock/destroy ... PASS
+  splice() link check                  ... PASS
+  tee() link check                     ... PASS
+  mlock/munlock()                      ... VM COMMIT OK: pid=11 va=0x100000000000 pa=0x7a392000 cr3=0x7c10f000 pte=0x8000000000000006 pages=1
+PASS
+
+--- chrome_probe: 12 passed, 0 failed ---
+!EXC vec=000000000000000E err=0000000000000014 RIP=0000000000000000 CS=000000000000002B RF=0000000000010202 CR2=0000000000000000 CR3=0000000002411000
+!REG rax=0000000000000000 rbx=0000000000000000 rcx=0000000000402FAE rdx=0000000000000000 rbp=0000000000000000
+!REG rsi=00007FFFFFFFFA70 rdi=0000000000000001 r8=0000000000000000 r9=0000000000000020 r10=00007FFFFFFFFA9B
+!REG r11=0000000000000246 r12=0000000000000000 r13=0000000000000000 r14=0000000000000000 r15=0000000000000000
+USER FAULT: pid=11 tid=11 vec=14 err=0x14 rip=0x0 cr2=0x0
+  PTE CHAIN va=0x0 cr3=0x7c10f000 pml4[0]=0x6d91027
+init: chrome_probe completed pid=11
+SPAWN_OK path=/system/GUI.FRY pid=12 parent=5
+TBCLK cpu=0 ticks=5000 hpet=603246566 cfg=1 now=6032 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=5000 hpet=605172639 cfg=1 now=6051 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=5000 hpet=628922555 cfg=1 now=6289 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=5000 hpet=629115377 cfg=1 now=6291 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=10000 hpet=1074861627 cfg=1 now=10748 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=10000 hpet=1083734473 cfg=1 now=10837 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=10000 hpet=1131719304 cfg=1 now=11317 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=10000 hpet=1132326428 cfg=1 now=11323 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=15000 hpet=1547794760 cfg=1 now=15477 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=15000 hpet=1562008568 cfg=1 now=15620 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=15000 hpet=1633718674 cfg=1 now=16337 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=15000 hpet=1634475515 cfg=1 now=16344 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=20000 hpet=2019900867 cfg=1 now=20198 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=20000 hpet=2039864568 cfg=1 now=20398 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=20000 hpet=2135519436 cfg=1 now=21355 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=20000 hpet=2136525296 cfg=1 now=21365 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=25000 hpet=2491973420 cfg=1 now=24919 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=25000 hpet=2517600151 cfg=1 now=25175 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=25000 hpet=2639985539 cfg=1 now=26399 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=25000 hpet=2642425384 cfg=1 now=26424 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=30000 hpet=2964980456 cfg=1 now=29649 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=30000 hpet=2995648492 cfg=1 now=29956 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=30000 hpet=3141998173 cfg=1 now=31419 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=30000 hpet=3144123459 cfg=1 now=31441 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=35000 hpet=3436515838 cfg=1 now=34365 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=35000 hpet=3473498844 cfg=1 now=34734 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=35000 hpet=3644750428 cfg=1 now=36447 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=35000 hpet=3647222160 cfg=1 now=36472 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=40000 hpet=3912854738 cfg=1 now=39128 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=40000 hpet=3955744332 cfg=1 now=39557 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=40000 hpet=4150007672 cfg=1 now=41500 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=40000 hpet=4152895657 cfg=1 now=41528 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=45000 hpet=4388003701 cfg=1 now=43880 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=45000 hpet=4436800737 cfg=1 now=44367 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=45000 hpet=4656556324 cfg=1 now=46565 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=45000 hpet=4659614510 cfg=1 now=46596 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=50000 hpet=4866849532 cfg=1 now=48668 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=50000 hpet=4920931910 cfg=1 now=49209 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=50000 hpet=5162448834 cfg=1 now=51624 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=50000 hpet=5165379928 cfg=1 now=51653 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=55000 hpet=5339837387 cfg=1 now=53398 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=55000 hpet=5401291042 cfg=1 now=54012 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=55000 hpet=5665631879 cfg=1 now=56656 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=55000 hpet=5668202962 cfg=1 now=56681 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=60000 hpet=5813961084 cfg=1 now=58139 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=60000 hpet=5879924495 cfg=1 now=58799 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=60000 hpet=6167674026 cfg=1 now=61676 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=60000 hpet=6169893087 cfg=1 now=61698 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=65000 hpet=6285779329 cfg=1 now=62857 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=65000 hpet=6357577475 cfg=1 now=63575 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=65000 hpet=6669330549 cfg=1 now=66693 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=65000 hpet=6671598898 cfg=1 now=66715 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=70000 hpet=6758085593 cfg=1 now=67580 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=70000 hpet=6835620835 cfg=1 now=68356 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=70000 hpet=7171787256 cfg=1 now=71717 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=70000 hpet=7173696969 cfg=1 now=71736 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=75000 hpet=7230232688 cfg=1 now=72302 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=75000 hpet=7314064615 cfg=1 now=73140 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=75000 hpet=7674141329 cfg=1 now=76741 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=75000 hpet=7676315007 cfg=1 now=76763 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=80000 hpet=7704832331 cfg=1 now=77048 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=80000 hpet=7796054139 cfg=1 now=77960 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=85000 hpet=8179341351 cfg=1 now=81793 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=80000 hpet=8181247747 cfg=1 now=81812 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=80000 hpet=8183160079 cfg=1 now=81831 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=85000 hpet=8275911951 cfg=1 now=82759 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=90000 hpet=8652468858 cfg=1 now=86524 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=85000 hpet=8684307533 cfg=1 now=86843 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=85000 hpet=8686655970 cfg=1 now=86866 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=90000 hpet=8755658780 cfg=1 now=87556 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=95000 hpet=9125777888 cfg=1 now=91257 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=90000 hpet=9187254916 cfg=1 now=91872 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=90000 hpet=9189693233 cfg=1 now=91896 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=95000 hpet=9233988442 cfg=1 now=92339 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=100000 hpet=9597587855 cfg=1 now=95975 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=95000 hpet=9688901428 cfg=1 now=96888 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=95000 hpet=9691278228 cfg=1 now=96912 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=100000 hpet=9711938878 cfg=1 now=97119 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=105000 hpet=10069494422 cfg=1 now=100694 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=105000 hpet=10189889349 cfg=1 now=101898 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=100000 hpet=10191160496 cfg=1 now=101911 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=100000 hpet=10193481186 cfg=1 now=101934 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=110000 hpet=10541885149 cfg=1 now=105418 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=110000 hpet=10667731369 cfg=1 now=106677 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=105000 hpet=10692800432 cfg=1 now=106927 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=105000 hpet=10694776424 cfg=1 now=106947 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=115000 hpet=11013763037 cfg=1 now=110137 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=115000 hpet=11145293639 cfg=1 now=111452 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=110000 hpet=11194862155 cfg=1 now=111948 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=110000 hpet=11197025600 cfg=1 now=111970 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=120000 hpet=11486170800 cfg=1 now=114861 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=120000 hpet=11624022188 cfg=1 now=116240 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=115000 hpet=11697102233 cfg=1 now=116970 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=115000 hpet=11699014591 cfg=1 now=116990 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=125000 hpet=11958454520 cfg=1 now=119584 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=125000 hpet=12102479360 cfg=1 now=121024 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=120000 hpet=12199794907 cfg=1 now=121997 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=120000 hpet=12201111570 cfg=1 now=122011 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=130000 hpet=12430846981 cfg=1 now=124308 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=130000 hpet=12580218532 cfg=1 now=125802 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=125000 hpet=12702346384 cfg=1 now=127023 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=125000 hpet=12703331525 cfg=1 now=127033 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=135000 hpet=12903459490 cfg=1 now=129034 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=135000 hpet=13058460467 cfg=1 now=130584 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=130000 hpet=13204903512 cfg=1 now=132048 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=130000 hpet=13205206912 cfg=1 now=132052 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=140000 hpet=13375358924 cfg=1 now=133753 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=140000 hpet=13536707601 cfg=1 now=135367 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=135000 hpet=13707253989 cfg=1 now=137072 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=135000 hpet=13708043615 cfg=1 now=137080 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=145000 hpet=13848366136 cfg=1 now=138483 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=145000 hpet=14015861192 cfg=1 now=140158 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=140000 hpet=14210130730 cfg=1 now=142101 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=140000 hpet=14210333650 cfg=1 now=142103 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=150000 hpet=14320364292 cfg=1 now=143203 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=150000 hpet=14493804053 cfg=1 now=144938 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=145000 hpet=14711333466 cfg=1 now=147113 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=145000 hpet=14712350482 cfg=1 now=147123 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=155000 hpet=14792596912 cfg=1 now=147925 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=155000 hpet=14972457561 cfg=1 now=149724 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=150000 hpet=15213829325 cfg=1 now=152138 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=150000 hpet=15215298343 cfg=1 now=152152 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=160000 hpet=15265369861 cfg=1 now=152653 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=160000 hpet=15450708017 cfg=1 now=154507 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=155000 hpet=15715628079 cfg=1 now=157156 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=155000 hpet=15718249048 cfg=1 now=157182 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=165000 hpet=15737822739 cfg=1 now=157378 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=165000 hpet=15928643135 cfg=1 now=159286 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=170000 hpet=16209827250 cfg=1 now=162098 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=160000 hpet=16217234173 cfg=1 now=162172 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=160000 hpet=16220202628 cfg=1 now=162202 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=170000 hpet=16406540405 cfg=1 now=164065 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=175000 hpet=16681533187 cfg=1 now=166815 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=165000 hpet=16718934692 cfg=1 now=167189 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=165000 hpet=16722153811 cfg=1 now=167221 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=175000 hpet=16884530005 cfg=1 now=168845 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=180000 hpet=17153946289 cfg=1 now=171539 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=170000 hpet=17221037989 cfg=1 now=172210 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=170000 hpet=17225015964 cfg=1 now=172250 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=180000 hpet=17362832878 cfg=1 now=173628 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=185000 hpet=17626249098 cfg=1 now=176262 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=175000 hpet=17723337852 cfg=1 now=177233 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=175000 hpet=17728061432 cfg=1 now=177280 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=185000 hpet=17840990469 cfg=1 now=178409 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=190000 hpet=18098355665 cfg=1 now=180983 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=180000 hpet=18225545376 cfg=1 now=182255 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=180000 hpet=18230121313 cfg=1 now=182301 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=190000 hpet=18319979165 cfg=1 now=183199 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=195000 hpet=18571161230 cfg=1 now=185711 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=185000 hpet=18728634301 cfg=1 now=187286 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=185000 hpet=18733576561 cfg=1 now=187335 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=195000 hpet=18798536107 cfg=1 now=187985 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=200000 hpet=19043560609 cfg=1 now=190435 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=190000 hpet=19231238361 cfg=1 now=192312 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=190000 hpet=19236514695 cfg=1 now=192365 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=200000 hpet=19277279984 cfg=1 now=192772 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=205000 hpet=19516764926 cfg=1 now=195167 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=195000 hpet=19733682439 cfg=1 now=197336 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=195000 hpet=19739875586 cfg=1 now=197398 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=205000 hpet=19756428990 cfg=1 now=197564 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=210000 hpet=19989976629 cfg=1 now=199899 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=210000 hpet=20234988374 cfg=1 now=202349 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=200000 hpet=20236973627 cfg=1 now=202369 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=200000 hpet=20243308623 cfg=1 now=202433 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=215000 hpet=20462278577 cfg=1 now=204622 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=215000 hpet=20713618367 cfg=1 now=207136 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=205000 hpet=20738990740 cfg=1 now=207389 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=205000 hpet=20745975301 cfg=1 now=207459 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=220000 hpet=20935739477 cfg=1 now=209357 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=220000 hpet=21192756110 cfg=1 now=211927 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=210000 hpet=21242376915 cfg=1 now=212423 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=210000 hpet=21249514431 cfg=1 now=212495 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=225000 hpet=21408148298 cfg=1 now=214081 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=225000 hpet=21671002323 cfg=1 now=216709 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=215000 hpet=21744475728 cfg=1 now=217444 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=215000 hpet=21751168570 cfg=1 now=217511 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=230000 hpet=21880254709 cfg=1 now=218802 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=230000 hpet=22148560805 cfg=1 now=221485 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=220000 hpet=22246882832 cfg=1 now=222468 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=220000 hpet=22253914699 cfg=1 now=222539 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=235000 hpet=22353061835 cfg=1 now=223530 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=235000 hpet=22627303016 cfg=1 now=226273 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=225000 hpet=22748777290 cfg=1 now=227487 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=225000 hpet=22755976786 cfg=1 now=227559 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=240000 hpet=22825556820 cfg=1 now=228255 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=240000 hpet=23105840612 cfg=1 now=231058 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=230000 hpet=23251262727 cfg=1 now=232512 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=230000 hpet=23258314941 cfg=1 now=232583 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=245000 hpet=23297357849 cfg=1 now=232973 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=245000 hpet=23583683008 cfg=1 now=235836 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=235000 hpet=23752862400 cfg=1 now=237528 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=235000 hpet=23760472710 cfg=1 now=237604 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=250000 hpet=23769132350 cfg=1 now=237691 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=250000 hpet=24061660323 cfg=1 now=240616 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=255000 hpet=24242047575 cfg=1 now=242420 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=240000 hpet=24255364378 cfg=1 now=242553 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=240000 hpet=24263826609 cfg=1 now=242638 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=255000 hpet=24540986709 cfg=1 now=245409 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=260000 hpet=24715263889 cfg=1 now=247152 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=245000 hpet=24758267611 cfg=1 now=247582 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=245000 hpet=24767081756 cfg=1 now=247670 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=260000 hpet=25019627638 cfg=1 now=250196 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=265000 hpet=25187572794 cfg=1 now=251875 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=250000 hpet=25260673333 cfg=1 now=252606 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=250000 hpet=25269232953 cfg=1 now=252692 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=265000 hpet=25498175776 cfg=1 now=254981 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=270000 hpet=25660276405 cfg=1 now=256602 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=255000 hpet=25762656630 cfg=1 now=257626 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=255000 hpet=25771802031 cfg=1 now=257717 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=270000 hpet=25975826286 cfg=1 now=259758 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=275000 hpet=26132272735 cfg=1 now=261322 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=260000 hpet=26264266469 cfg=1 now=262642 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=260000 hpet=26274175872 cfg=1 now=262741 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=275000 hpet=26454988822 cfg=1 now=264549 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=280000 hpet=26605478955 cfg=1 now=266054 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=265000 hpet=26767706911 cfg=1 now=267677 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=265000 hpet=26777409266 cfg=1 now=267774 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=280000 hpet=26932829797 cfg=1 now=269328 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=285000 hpet=27077395831 cfg=1 now=270773 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=270000 hpet=27270956718 cfg=1 now=272709 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=270000 hpet=27280863018 cfg=1 now=272808 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=285000 hpet=27412275576 cfg=1 now=274122 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=290000 hpet=27551202142 cfg=1 now=275511 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=275000 hpet=27774790317 cfg=1 now=277747 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=275000 hpet=27784628273 cfg=1 now=277846 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=290000 hpet=27892537156 cfg=1 now=278925 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=295000 hpet=28025401525 cfg=1 now=280253 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=280000 hpet=28277707670 cfg=1 now=282777 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=280000 hpet=28286974754 cfg=1 now=282869 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=295000 hpet=28370493934 cfg=1 now=283704 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=300000 hpet=28497712814 cfg=1 now=284977 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=285000 hpet=28780711890 cfg=1 now=287807 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=285000 hpet=28789926314 cfg=1 now=287899 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=300000 hpet=28849731882 cfg=1 now=288497 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=305000 hpet=28970515386 cfg=1 now=289705 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=290000 hpet=29283806974 cfg=1 now=292838 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=290000 hpet=29292785582 cfg=1 now=292927 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=305000 hpet=29328676417 cfg=1 now=293286 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=310000 hpet=29443369354 cfg=1 now=294433 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=295000 hpet=29787431009 cfg=1 now=297874 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=295000 hpet=29796852179 cfg=1 now=297968 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=310000 hpet=29808322188 cfg=1 now=298083 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=315000 hpet=29916561311 cfg=1 now=299165 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=315000 hpet=30286078639 cfg=1 now=302860 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=300000 hpet=30290134331 cfg=1 now=302901 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=300000 hpet=30299906860 cfg=1 now=302999 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=320000 hpet=30389674098 cfg=1 now=303896 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=320000 hpet=30765817528 cfg=1 now=307658 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=305000 hpet=30793224977 cfg=1 now=307932 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=305000 hpet=30802852851 cfg=1 now=308028 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=325000 hpet=30862080579 cfg=1 now=308620 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=325000 hpet=31243663017 cfg=1 now=312436 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=310000 hpet=31295036444 cfg=1 now=312950 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=310000 hpet=31306013525 cfg=1 now=313060 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=330000 hpet=31335669992 cfg=1 now=313356 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=330000 hpet=31723026564 cfg=1 now=317230 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=315000 hpet=31799034412 cfg=1 now=317990 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=335000 hpet=31809695863 cfg=1 now=318096 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=315000 hpet=31811321584 cfg=1 now=318113 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=335000 hpet=32203768871 cfg=1 now=322037 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=340000 hpet=32283393950 cfg=1 now=322833 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=320000 hpet=32303664989 cfg=1 now=323036 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=320000 hpet=32315065243 cfg=1 now=323150 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=340000 hpet=32682608098 cfg=1 now=326826 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=345000 hpet=32756594378 cfg=1 now=327565 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=325000 hpet=32806664233 cfg=1 now=328066 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=325000 hpet=32819788981 cfg=1 now=328197 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=345000 hpet=33162073494 cfg=1 now=331620 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=350000 hpet=33230587602 cfg=1 now=332305 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=330000 hpet=33309857550 cfg=1 now=333098 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=330000 hpet=33322850431 cfg=1 now=333228 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=350000 hpet=33641311877 cfg=1 now=336413 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=355000 hpet=33703276208 cfg=1 now=337032 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=335000 hpet=33811950790 cfg=1 now=338119 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=335000 hpet=33825032877 cfg=1 now=338250 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=355000 hpet=34119669413 cfg=1 now=341196 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=360000 hpet=34175997072 cfg=1 now=341759 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=340000 hpet=34314865853 cfg=1 now=343148 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=340000 hpet=34328582164 cfg=1 now=343285 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=360000 hpet=34598936892 cfg=1 now=345989 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=365000 hpet=34650300564 cfg=1 now=346502 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=345000 hpet=34818158351 cfg=1 now=348181 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=345000 hpet=34831836886 cfg=1 now=348318 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=365000 hpet=35078082020 cfg=1 now=350780 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=370000 hpet=35123302728 cfg=1 now=351232 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=350000 hpet=35321165113 cfg=1 now=353211 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=350000 hpet=35334689660 cfg=1 now=353346 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=370000 hpet=35556612330 cfg=1 now=355566 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=375000 hpet=35595414149 cfg=1 now=355954 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=355000 hpet=35823554741 cfg=1 now=358235 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=355000 hpet=35837629571 cfg=1 now=358376 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=375000 hpet=36035471709 cfg=1 now=360354 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=380000 hpet=36068200094 cfg=1 now=360681 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=360000 hpet=36325852083 cfg=1 now=363258 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=360000 hpet=36340499395 cfg=1 now=363404 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=380000 hpet=36514213201 cfg=1 now=365142 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=385000 hpet=36540516933 cfg=1 now=365405 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=365000 hpet=36828994419 cfg=1 now=368289 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=365000 hpet=36844342593 cfg=1 now=368443 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=385000 hpet=36993572384 cfg=1 now=369935 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=390000 hpet=37013727319 cfg=1 now=370137 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=370000 hpet=37331571819 cfg=1 now=373315 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=370000 hpet=37347160856 cfg=1 now=373471 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=390000 hpet=37472007335 cfg=1 now=374720 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=395000 hpet=37486131508 cfg=1 now=374861 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=375000 hpet=37834671610 cfg=1 now=378346 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=375000 hpet=37850495253 cfg=1 now=378504 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=395000 hpet=37950827866 cfg=1 now=379508 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=400000 hpet=37958513086 cfg=1 now=379585 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=380000 hpet=38336078567 cfg=1 now=383360 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=380000 hpet=38352650724 cfg=1 now=383526 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=400000 hpet=38429405438 cfg=1 now=384293 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=405000 hpet=38432057252 cfg=1 now=384320 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=385000 hpet=38840585803 cfg=1 now=388405 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=385000 hpet=38857415263 cfg=1 now=388574 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=410000 hpet=38907125719 cfg=1 now=389071 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=405000 hpet=38910716417 cfg=1 now=389107 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=390000 hpet=39345078546 cfg=1 now=393450 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=390000 hpet=39361467622 cfg=1 now=393614 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=415000 hpet=39380764222 cfg=1 now=393807 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=410000 hpet=39389962922 cfg=1 now=393899 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=395000 hpet=39847693754 cfg=1 now=398476 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=420000 hpet=39853866362 cfg=1 now=398538 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=395000 hpet=39865171599 cfg=1 now=398651 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=415000 hpet=39868691950 cfg=1 now=398686 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=425000 hpet=40327128016 cfg=1 now=403271 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=420000 hpet=40347639667 cfg=1 now=403476 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=400000 hpet=40350875913 cfg=1 now=403508 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=400000 hpet=40367533525 cfg=1 now=403675 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=430000 hpet=40798945398 cfg=1 now=407989 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=425000 hpet=40825285294 cfg=1 now=408252 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=405000 hpet=40852485046 cfg=1 now=408524 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=405000 hpet=40869685160 cfg=1 now=408696 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=435000 hpet=41270836184 cfg=1 now=412708 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=430000 hpet=41303135049 cfg=1 now=413031 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=410000 hpet=41354072313 cfg=1 now=413540 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=410000 hpet=41371334121 cfg=1 now=413713 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=440000 hpet=41742345766 cfg=1 now=417423 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=435000 hpet=41781078220 cfg=1 now=417810 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=415000 hpet=41855480721 cfg=1 now=418554 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=415000 hpet=41873289435 cfg=1 now=418732 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=445000 hpet=42215077905 cfg=1 now=422150 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=440000 hpet=42259507138 cfg=1 now=422595 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=420000 hpet=42357179868 cfg=1 now=423571 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=420000 hpet=42375634011 cfg=1 now=423756 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=450000 hpet=42687047503 cfg=1 now=426870 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=445000 hpet=42736835143 cfg=1 now=427368 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=425000 hpet=42858458804 cfg=1 now=428584 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=425000 hpet=42876980461 cfg=1 now=428769 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=455000 hpet=43159571512 cfg=1 now=431595 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=450000 hpet=43215186287 cfg=1 now=432151 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=430000 hpet=43360420429 cfg=1 now=433604 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=430000 hpet=43379241887 cfg=1 now=433792 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=460000 hpet=43631484746 cfg=1 now=436314 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=455000 hpet=43693852307 cfg=1 now=436938 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=435000 hpet=43863328845 cfg=1 now=438633 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=435000 hpet=43882693647 cfg=1 now=438826 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=465000 hpet=44104877273 cfg=1 now=441048 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=460000 hpet=44173188890 cfg=1 now=441731 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=440000 hpet=44366615860 cfg=1 now=443666 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=440000 hpet=44385555546 cfg=1 now=443855 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=470000 hpet=44577904318 cfg=1 now=445779 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=465000 hpet=44651437155 cfg=1 now=446514 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=445000 hpet=44869322573 cfg=1 now=448693 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=445000 hpet=44888805370 cfg=1 now=448887 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=475000 hpet=45051104354 cfg=1 now=450511 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=470000 hpet=45130371505 cfg=1 now=451303 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=450000 hpet=45371830017 cfg=1 now=453718 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=450000 hpet=45391351373 cfg=1 now=453913 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=480000 hpet=45524126418 cfg=1 now=455241 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=475000 hpet=45610533836 cfg=1 now=456105 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=455000 hpet=45876026790 cfg=1 now=458760 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=455000 hpet=45896015261 cfg=1 now=458960 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=485000 hpet=45998409347 cfg=1 now=459984 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=480000 hpet=46089386904 cfg=1 now=460893 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=460000 hpet=46378523576 cfg=1 now=463785 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=460000 hpet=46398662107 cfg=1 now=463986 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=490000 hpet=46470916446 cfg=1 now=464709 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=485000 hpet=46568234104 cfg=1 now=465682 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=465000 hpet=46881534828 cfg=1 now=468815 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=465000 hpet=46902513221 cfg=1 now=469025 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=495000 hpet=46944428009 cfg=1 now=469444 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=490000 hpet=47047573527 cfg=1 now=470475 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=470000 hpet=47383828618 cfg=1 now=473838 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=470000 hpet=47405088537 cfg=1 now=474050 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=500000 hpet=47417529014 cfg=1 now=474175 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=495000 hpet=47527019612 cfg=1 now=475270 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=475000 hpet=47886713766 cfg=1 now=478867 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=505000 hpet=47889138629 cfg=1 now=478891 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=475000 hpet=47907318805 cfg=1 now=479073 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=500000 hpet=48004863916 cfg=1 now=480048 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=510000 hpet=48362276365 cfg=1 now=483622 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=480000 hpet=48389332027 cfg=1 now=483893 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=480000 hpet=48411822142 cfg=1 now=484118 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=505000 hpet=48484518655 cfg=1 now=484845 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=515000 hpet=48835900984 cfg=1 now=488358 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=485000 hpet=48893029503 cfg=1 now=488930 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=485000 hpet=48915375011 cfg=1 now=489153 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=510000 hpet=48964281959 cfg=1 now=489642 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=520000 hpet=49309547161 cfg=1 now=493095 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=490000 hpet=49395937507 cfg=1 now=493959 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=490000 hpet=49418520596 cfg=1 now=494185 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=515000 hpet=49443826564 cfg=1 now=494438 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=525000 hpet=49782756746 cfg=1 now=497827 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=495000 hpet=49898820361 cfg=1 now=498988 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=495000 hpet=49921444179 cfg=1 now=499214 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=520000 hpet=49922368412 cfg=1 now=499223 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=530000 hpet=50254857180 cfg=1 now=502548 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=525000 hpet=50400020933 cfg=1 now=504000 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=500000 hpet=50401031930 cfg=1 now=504010 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=500000 hpet=50425017307 cfg=1 now=504250 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=535000 hpet=50728961725 cfg=1 now=507289 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=530000 hpet=50879058528 cfg=1 now=508790 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=505000 hpet=50903500428 cfg=1 now=509034 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=505000 hpet=50927177506 cfg=1 now=509271 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=540000 hpet=51201256715 cfg=1 now=512012 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=535000 hpet=51357407722 cfg=1 now=513574 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=510000 hpet=51405707842 cfg=1 now=514057 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=510000 hpet=51430239932 cfg=1 now=514302 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=545000 hpet=51674261216 cfg=1 now=516742 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=540000 hpet=51836531391 cfg=1 now=518365 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=515000 hpet=51909204521 cfg=1 now=519091 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=515000 hpet=51933696023 cfg=1 now=519336 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=550000 hpet=52150162157 cfg=1 now=521501 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=545000 hpet=52319689700 cfg=1 now=523196 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=520000 hpet=52415217939 cfg=1 now=524152 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=520000 hpet=52439757139 cfg=1 now=524397 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=555000 hpet=52623270237 cfg=1 now=526232 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=550000 hpet=52798650544 cfg=1 now=527986 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=525000 hpet=52918251829 cfg=1 now=529182 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=525000 hpet=52943316432 cfg=1 now=529433 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=560000 hpet=53097143963 cfg=1 now=530971 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=555000 hpet=53277995709 cfg=1 now=532779 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=530000 hpet=53421675200 cfg=1 now=534216 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=530000 hpet=53447541314 cfg=1 now=534475 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=565000 hpet=53571030630 cfg=1 now=535710 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=560000 hpet=53758469991 cfg=1 now=537584 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=535000 hpet=53925562917 cfg=1 now=539255 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=535000 hpet=53951911876 cfg=1 now=539519 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=570000 hpet=54043837612 cfg=1 now=540438 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=565000 hpet=54237246810 cfg=1 now=542372 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=540000 hpet=54430212790 cfg=1 now=544302 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=540000 hpet=54456315357 cfg=1 now=544563 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=575000 hpet=54518569905 cfg=1 now=545185 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=570000 hpet=54717703508 cfg=1 now=547177 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=545000 hpet=54933514026 cfg=1 now=549335 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=545000 hpet=54958908395 cfg=1 now=549589 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=580000 hpet=54990570060 cfg=1 now=549905 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=575000 hpet=55195067464 cfg=1 now=551950 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=550000 hpet=55435821384 cfg=1 now=554358 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=550000 hpet=55461578961 cfg=1 now=554615 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=585000 hpet=55463484931 cfg=1 now=554634 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=580000 hpet=55675824769 cfg=1 now=556758 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=590000 hpet=55936886728 cfg=1 now=559368 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=555000 hpet=55940318171 cfg=1 now=559403 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=555000 hpet=55966116162 cfg=1 now=559661 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=585000 hpet=56153964207 cfg=1 now=561539 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=595000 hpet=56408896642 cfg=1 now=564088 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=560000 hpet=56442429404 cfg=1 now=564424 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=560000 hpet=56468778448 cfg=1 now=564687 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=590000 hpet=56632800264 cfg=1 now=566327 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=600000 hpet=56881797581 cfg=1 now=568817 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=565000 hpet=56945211546 cfg=1 now=569452 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=565000 hpet=56971325273 cfg=1 now=569713 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=595000 hpet=57110538560 cfg=1 now=571105 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=605000 hpet=57353497306 cfg=1 now=573534 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=570000 hpet=57446606227 cfg=1 now=574466 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=570000 hpet=57472867251 cfg=1 now=574728 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=600000 hpet=57588196496 cfg=1 now=575881 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=610000 hpet=57825113605 cfg=1 now=578251 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=575000 hpet=57948214102 cfg=1 now=579482 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=575000 hpet=57974933686 cfg=1 now=579749 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=605000 hpet=58066736915 cfg=1 now=580667 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=615000 hpet=58297844234 cfg=1 now=582978 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=580000 hpet=58450711387 cfg=1 now=584507 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=580000 hpet=58477670533 cfg=1 now=584776 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=610000 hpet=58545092484 cfg=1 now=585450 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=620000 hpet=58769811969 cfg=1 now=587698 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=585000 hpet=58952509393 cfg=1 now=589525 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=585000 hpet=58979808230 cfg=1 now=589797 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=615000 hpet=59023729668 cfg=1 now=590237 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=625000 hpet=59243212440 cfg=1 now=592432 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=590000 hpet=59455400092 cfg=1 now=594553 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=590000 hpet=59483031529 cfg=1 now=594830 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=620000 hpet=59501784244 cfg=1 now=595017 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=630000 hpet=59715519249 cfg=1 now=597155 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=595000 hpet=59957196913 cfg=1 now=599571 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=625000 hpet=59979421374 cfg=1 now=599794 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=595000 hpet=59984600188 cfg=1 now=599845 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=635000 hpet=60187825332 cfg=1 now=601878 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=630000 hpet=60457910947 cfg=1 now=604579 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=600000 hpet=60459504310 cfg=1 now=604595 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=600000 hpet=60487534618 cfg=1 now=604875 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=640000 hpet=60660121070 cfg=1 now=606601 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=635000 hpet=60935572641 cfg=1 now=609355 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=605000 hpet=60961306105 cfg=1 now=609613 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=605000 hpet=60989385401 cfg=1 now=609893 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=645000 hpet=61132137564 cfg=1 now=611321 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=640000 hpet=61414611297 cfg=1 now=614146 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=610000 hpet=61464340365 cfg=1 now=614643 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=610000 hpet=61492703009 cfg=1 now=614926 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=650000 hpet=61605335438 cfg=1 now=616053 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=645000 hpet=61893365302 cfg=1 now=618933 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=615000 hpet=61966705522 cfg=1 now=619666 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=615000 hpet=61995265748 cfg=1 now=619952 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=655000 hpet=62077540055 cfg=1 now=620775 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=650000 hpet=62371110733 cfg=1 now=623711 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=620000 hpet=62468613811 cfg=1 now=624686 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=620000 hpet=62497807490 cfg=1 now=624978 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=660000 hpet=62550257785 cfg=1 now=625502 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=655000 hpet=62850899789 cfg=1 now=628508 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=625000 hpet=62971694507 cfg=1 now=629716 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=625000 hpet=63000728026 cfg=1 now=630007 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=665000 hpet=63022805760 cfg=1 now=630228 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=660000 hpet=63328642161 cfg=1 now=633286 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=630000 hpet=63473515804 cfg=1 now=634735 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=670000 hpet=63495107739 cfg=1 now=634951 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=630000 hpet=63503476063 cfg=1 now=635034 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=665000 hpet=63806990381 cfg=1 now=638069 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=675000 hpet=63966905800 cfg=1 now=639669 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=635000 hpet=63975711280 cfg=1 now=639757 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=635000 hpet=64005729079 cfg=1 now=640057 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=670000 hpet=64285335996 cfg=1 now=642853 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=680000 hpet=64439413015 cfg=1 now=644394 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=640000 hpet=64477695551 cfg=1 now=644776 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=640000 hpet=64507678214 cfg=1 now=645076 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=675000 hpet=64763181991 cfg=1 now=647631 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=685000 hpet=64911026998 cfg=1 now=649110 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=645000 hpet=64980238224 cfg=1 now=649802 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=645000 hpet=65011626721 cfg=1 now=650116 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=680000 hpet=65243841074 cfg=1 now=652438 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=690000 hpet=65386256915 cfg=1 now=653862 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=650000 hpet=65483831728 cfg=1 now=654838 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=650000 hpet=65515663173 cfg=1 now=655156 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=685000 hpet=65721589858 cfg=1 now=657215 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=695000 hpet=65858451505 cfg=1 now=658584 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=655000 hpet=65985730701 cfg=1 now=659857 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=655000 hpet=66018116802 cfg=1 now=660181 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=690000 hpet=66200128571 cfg=1 now=662001 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=700000 hpet=66331359370 cfg=1 now=663313 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=660000 hpet=66488319045 cfg=1 now=664883 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=660000 hpet=66520671923 cfg=1 now=665206 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=695000 hpet=66678189983 cfg=1 now=666781 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=705000 hpet=66803660188 cfg=1 now=668036 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=665000 hpet=66990729614 cfg=1 now=669907 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=665000 hpet=67023719956 cfg=1 now=670237 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=700000 hpet=67157023468 cfg=1 now=671570 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=710000 hpet=67276062106 cfg=1 now=672760 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=670000 hpet=67493730232 cfg=1 now=674937 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=670000 hpet=67527197206 cfg=1 now=675271 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=705000 hpet=67636082635 cfg=1 now=676360 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=715000 hpet=67750442895 cfg=1 now=677504 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=675000 hpet=67997410980 cfg=1 now=679974 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=675000 hpet=68030662696 cfg=1 now=680306 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=710000 hpet=68114626749 cfg=1 now=681146 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=720000 hpet=68222541565 cfg=1 now=682225 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=680000 hpet=68498814770 cfg=1 now=684988 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=680000 hpet=68532435814 cfg=1 now=685324 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=715000 hpet=68592783421 cfg=1 now=685927 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=725000 hpet=68694543130 cfg=1 now=686945 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=685000 hpet=69001211212 cfg=1 now=690012 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=685000 hpet=69034585141 cfg=1 now=690345 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=720000 hpet=69070732095 cfg=1 now=690707 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=730000 hpet=69167264205 cfg=1 now=691672 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=690000 hpet=69504008847 cfg=1 now=695040 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=690000 hpet=69537838345 cfg=1 now=695378 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=725000 hpet=69549684042 cfg=1 now=695496 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=735000 hpet=69640183821 cfg=1 now=696401 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=695000 hpet=70005926213 cfg=1 now=700059 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=730000 hpet=70027316649 cfg=1 now=700273 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=695000 hpet=70039897863 cfg=1 now=700398 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=740000 hpet=70112110766 cfg=1 now=701121 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=735000 hpet=70505762403 cfg=1 now=705057 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=700000 hpet=70508430225 cfg=1 now=705084 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=700000 hpet=70542548913 cfg=1 now=705425 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=745000 hpet=70584730197 cfg=1 now=705847 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=740000 hpet=70983419666 cfg=1 now=709834 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=705000 hpet=71010535769 cfg=1 now=710105 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=705000 hpet=71045097940 cfg=1 now=710450 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=750000 hpet=71057334853 cfg=1 now=710573 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=745000 hpet=71462666193 cfg=1 now=714626 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=710000 hpet=71513031049 cfg=1 now=715130 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=755000 hpet=71529777271 cfg=1 now=715297 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=710000 hpet=71547840930 cfg=1 now=715478 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=750000 hpet=71941188525 cfg=1 now=719411 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=760000 hpet=72003925298 cfg=1 now=720039 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=715000 hpet=72016640150 cfg=1 now=720166 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=715000 hpet=72052175026 cfg=1 now=720521 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=755000 hpet=72421627486 cfg=1 now=724216 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=765000 hpet=72477637600 cfg=1 now=724776 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=720000 hpet=72520437307 cfg=1 now=725204 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=720000 hpet=72555425368 cfg=1 now=725554 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=760000 hpet=72900782895 cfg=1 now=729007 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=770000 hpet=72950694948 cfg=1 now=729506 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=725000 hpet=73023332041 cfg=1 now=730233 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=725000 hpet=73058369453 cfg=1 now=730583 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=765000 hpet=73379040522 cfg=1 now=733790 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=775000 hpet=73423381150 cfg=1 now=734233 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=730000 hpet=73526818771 cfg=1 now=735268 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=730000 hpet=73562501427 cfg=1 now=735624 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=770000 hpet=73861039325 cfg=1 now=738610 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=780000 hpet=73900098362 cfg=1 now=739000 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=735000 hpet=74032479442 cfg=1 now=740324 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=735000 hpet=74067211792 cfg=1 now=740672 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=775000 hpet=74339380328 cfg=1 now=743393 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=785000 hpet=74372402986 cfg=1 now=743723 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=740000 hpet=74535732071 cfg=1 now=745357 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=740000 hpet=74570683461 cfg=1 now=745706 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=780000 hpet=74817928152 cfg=1 now=748179 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=790000 hpet=74845264872 cfg=1 now=748452 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=745000 hpet=75038748697 cfg=1 now=750387 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=745000 hpet=75073552737 cfg=1 now=750735 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=785000 hpet=75296494652 cfg=1 now=752964 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=795000 hpet=75318255651 cfg=1 now=753182 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=750000 hpet=75541336883 cfg=1 now=755413 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=750000 hpet=75576229591 cfg=1 now=755762 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=790000 hpet=75775326247 cfg=1 now=757753 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=800000 hpet=75790754796 cfg=1 now=757907 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=755000 hpet=76043634419 cfg=1 now=760436 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=755000 hpet=76078688418 cfg=1 now=760786 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=795000 hpet=76254384833 cfg=1 now=762543 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=805000 hpet=76264320838 cfg=1 now=762643 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=760000 hpet=76547131423 cfg=1 now=765471 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=760000 hpet=76583031997 cfg=1 now=765830 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=800000 hpet=76733017714 cfg=1 now=767330 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=810000 hpet=76736806582 cfg=1 now=767367 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=765000 hpet=77049037327 cfg=1 now=770490 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=765000 hpet=77085581970 cfg=1 now=770855 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=815000 hpet=77209123581 cfg=1 now=772091 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=805000 hpet=77212413307 cfg=1 now=772124 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=770000 hpet=77551475162 cfg=1 now=775514 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=770000 hpet=77588135484 cfg=1 now=775881 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=820000 hpet=77681906165 cfg=1 now=776819 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=810000 hpet=77690757524 cfg=1 now=776907 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=775000 hpet=78053880871 cfg=1 now=780538 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=775000 hpet=78090810855 cfg=1 now=780907 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=825000 hpet=78155132177 cfg=1 now=781551 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=815000 hpet=78170399467 cfg=1 now=781703 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=780000 hpet=78557475257 cfg=1 now=785574 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=780000 hpet=78595040830 cfg=1 now=785950 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=830000 hpet=78628003733 cfg=1 now=786279 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=820000 hpet=78649952274 cfg=1 now=786499 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=785000 hpet=79061084243 cfg=1 now=790610 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=785000 hpet=79099572182 cfg=1 now=790995 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=835000 hpet=79102627079 cfg=1 now=791026 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=825000 hpet=79129504403 cfg=1 now=791295 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=790000 hpet=79562777404 cfg=1 now=795627 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=840000 hpet=79574844598 cfg=1 now=795748 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=790000 hpet=79602720616 cfg=1 now=796027 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=830000 hpet=79608142457 cfg=1 now=796081 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=845000 hpet=80047253829 cfg=1 now=800472 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=795000 hpet=80066578701 cfg=1 now=800665 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=835000 hpet=80086809291 cfg=1 now=800868 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=795000 hpet=80106690997 cfg=1 now=801066 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=850000 hpet=80526330445 cfg=1 now=805263 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=840000 hpet=80571355630 cfg=1 now=805713 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=800000 hpet=80574203235 cfg=1 now=805741 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=800000 hpet=80615520176 cfg=1 now=806155 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=855000 hpet=81004758541 cfg=1 now=810047 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=845000 hpet=81054473467 cfg=1 now=810544 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=805000 hpet=81082904633 cfg=1 now=810828 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=805000 hpet=81122709400 cfg=1 now=811227 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=860000 hpet=81476962970 cfg=1 now=814769 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=850000 hpet=81532424052 cfg=1 now=815324 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=810000 hpet=81584786168 cfg=1 now=815847 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=810000 hpet=81624653481 cfg=1 now=816246 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=865000 hpet=81948958045 cfg=1 now=819489 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=855000 hpet=82010673926 cfg=1 now=820106 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=815000 hpet=82087395174 cfg=1 now=820873 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=815000 hpet=82127004778 cfg=1 now=821270 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=870000 hpet=82421795567 cfg=1 now=824217 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=860000 hpet=82489214374 cfg=1 now=824892 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=820000 hpet=82589792745 cfg=1 now=825897 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=820000 hpet=82629054275 cfg=1 now=826290 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=875000 hpet=82893890665 cfg=1 now=828938 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=865000 hpet=82966772972 cfg=1 now=829667 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=825000 hpet=83091487775 cfg=1 now=830914 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=825000 hpet=83131507697 cfg=1 now=831315 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=880000 hpet=83366698049 cfg=1 now=833666 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=870000 hpet=83445313506 cfg=1 now=834453 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=830000 hpet=83594100559 cfg=1 now=835940 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=830000 hpet=83633851583 cfg=1 now=836338 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=885000 hpet=83838709495 cfg=1 now=838387 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=875000 hpet=83923949247 cfg=1 now=839239 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=835000 hpet=84096109543 cfg=1 now=840961 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=835000 hpet=84137306028 cfg=1 now=841373 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=890000 hpet=84312413416 cfg=1 now=843124 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=880000 hpet=84403536326 cfg=1 now=844035 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=840000 hpet=84600517243 cfg=1 now=846005 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=840000 hpet=84640783597 cfg=1 now=846407 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=895000 hpet=84784416692 cfg=1 now=847844 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=885000 hpet=84882850996 cfg=1 now=848828 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=845000 hpet=85102615314 cfg=1 now=851026 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=845000 hpet=85142729903 cfg=1 now=851427 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=900000 hpet=85256726419 cfg=1 now=852567 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=890000 hpet=85360595484 cfg=1 now=853605 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=850000 hpet=85604211920 cfg=1 now=856042 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=850000 hpet=85644578839 cfg=1 now=856445 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=905000 hpet=85728526269 cfg=1 now=857285 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=895000 hpet=85838751610 cfg=1 now=858387 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=855000 hpet=86106870630 cfg=1 now=861068 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=855000 hpet=86147240969 cfg=1 now=861472 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=910000 hpet=86202611148 cfg=1 now=862026 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=900000 hpet=86318005958 cfg=1 now=863180 t3=1/0/0/0 rwzd
+TBCLK cpu=3 ticks=860000 hpet=86609061544 cfg=1 now=866090 t3=1/0/0/0 rwzd
+TBCLK cpu=2 ticks=860000 hpet=86649494665 cfg=1 now=866494 t3=1/0/0/0 rwzd
+TBCLK cpu=0 ticks=915000 hpet=86674913118 cfg=1 now=866749 t3=1/0/0/0 rwzd
+TBCLK cpu=1 ticks=905000 hpet=86796137399 cfg=1 now=867961 t3=1/0/0/0 rwzd

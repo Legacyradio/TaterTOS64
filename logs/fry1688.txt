@@ -1,0 +1,30 @@
+fry1688 — 2026-06-20 23:05 CDT
+STEP: VERIFIED argv+stdout wiring; hermes still does NOT work (no banner);
+      added bootstrap-level diagnostic.
+
+VERIFY (fry1688 run; serial /tmp/fry1688_qemu_serial.log + screenshot
+  /tmp/fry1688_crop.png — observed, not assumed):
+  * argv DELIVERED: serial shows "HERMESMAIN argc=2
+    /nvme/opt/hermes-agent/tatertos_bootstrap.py". fry1675 shim works.
+  * stdout->GUI WORKS: screenshot shows "HERMESSTDOUT-OK" (my fd1 marker).
+  * NO crash: 0 USER FAULT pid=10; python advanced to 657 VM-commits then
+    settled and returned to /> cleanly.
+  * BUT: the bootstrap banner ("PYTHON ENVIRONMENT" ...) NEVER appeared. Only
+    my pre-Py_BytesMain marker printed. So python inits + exits clean but the
+    SCRIPT produces no output. NOT WORKING. (Per Zack: do not call it fixed
+    until the banner is on screen.)
+
+OPEN QUESTION: does the script BODY execute (and print() is broken), or does the
+  body not run at all? No python stderr/traceback in serial -> no unhandled
+  exception, no "can't open file".
+
+DIAG ADDED (fry1689 TEMP, sysroot/opt/hermes-agent/tatertos_bootstrap.py top):
+  os.write(2,"BTSTRAP-RAN")  -> serial: proves body executes (raw, bypasses io)
+  os.write(1,"BTSTRAP-RAWFD1") -> GUI: raw fd1 from python
+  print("BTSTRAP-PRINT-TEST") -> GUI: tests CPython print()/TextIOWrapper
+  Re-stage only (no python/kernel rebuild). Isolates body-runs vs print-broken.
+
+NEXT (fry1689): build_iso.sh restage, boot, run hermes; read serial for
+  BTSTRAP-RAN, screenshot for BTSTRAP-RAWFD1 / BTSTRAP-PRINT-TEST.
+CLEANUP owed: remove fry1685 FBT (irqdesc.c), fry1688 diag (python.c),
+  fry1689 diag (bootstrap.py).

@@ -1,0 +1,38 @@
+fry1772 — revert native lazy-mmap change; restore known-good baseline — 2026-06-26
+==========================================================================
+WHAT: Reverted the fry1768 native change (which hung — fry1771) and rebuilt to a
+known-good, bootable baseline. Working tree is now back to original on all three
+edit sites touched this session.
+
+REVERT:
+  - src/kernel/proc/syscall.c, vm_map_anon_private_region (~2994): restored the
+    original EAGER path — vm_commit_private_pages() for non-RESERVE anon, the
+    matching vm_release_private_pages() error cleanup, and committed=1 in
+    vm_region_fill. Removed the fry1768 lazy comment/body.
+  - (Already reverted in fry1768: linux_compat.h LNX_MAP_POPULATE; syscall.c
+    LNX_mmap sparse_reserve. Confirmed still baseline.)
+
+VERIFY TREE STATE (read-checked):
+  - LNX_MAP_POPULATE: not present.
+  - LNX_mmap sparse_reserve: the >= 64 MiB gate (baseline).
+  - vm_map_anon_private_region: eager (baseline).
+
+BUILD:
+  - make kernel -> KBUILD_EXIT=0, kernel.elf relinked.
+  - QEMU confirmed dead (bracket-trick) before ISO; bash build_iso.sh ->
+    ISO_EXIT=0, out/tatertos64v3.iso 164825088 bytes, mtime 14:21:26.
+  => Boots to the SAME known-good state as fry1761 (slow-but-works import; the
+     churn is back, but it FUNCTIONS — no hang).
+
+STATUS: back to square one on the churn, but on solid ground. The blanket-lazy
+approach is rejected (hangs threading/futex). A correct fix must NOT make memory
+that threading/futex/loader needs eagerly-backed lazy, and must NOT lean on the
+`lx_` demand handler for native memory.
+
+NEXT: do NOT re-attempt a fix without agreeing the approach with Zack first.
+Candidate directions to discuss (NOT yet implemented):
+  (a) Per-process freed-page cache on the NATIVE munmap/mmap path so the repeated
+      same-size remap reuses pages without re-alloc+zero — keeps eager backing
+      (threading-safe) but kills the alloc/zero churn. No demand-paging involved.
+  (b) Identify the specific 132 KB remap source in CPython (zipimport read window)
+      and address it in the native libc/python layer.

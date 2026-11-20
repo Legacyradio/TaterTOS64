@@ -1,0 +1,38 @@
+fry1790 — per-thread TLS: spawned threads get their own %fs block (kernel-side) — 2026-06-26
+==========================================================================
+WHAT: Fixed the fry1788/1789 blocker — native pthreads shared the main thread's
+TLS, crashing CPython's _PyThreadState_Attach. Now each spawned thread gets its
+OWN variant-II TLS block + %fs base. Kernel-only (no libc/syscall changes). Built
+clean; boot verify next.
+
+ROOT CAUSE (fry1789): process_create_user_thread set user_fs_base=0; only the ELF
+loader built TLS, and only for the main thread. __thread vars (CPython tstate,
+mimalloc heap) collided across threads.
+
+CHANGES (all native):
+  - elf.h: + struct fry_tls_template {has_tls,vaddr,filesz,memsz,align,tls_alloc};
+    elf_load_fry() gains a tmpl_out param.
+  - elf.c: capture PT_TLS p_vaddr (the pristine .tdata source, mapped RO in the
+    image); fill tmpl_out when the main-thread TLS is laid out.
+  - process.h: #include "elf.h"; fry_process_shared += tls_tmpl + tls_thread_next
+    (bump cursor for a per-thread TLS arena above FRY_TLS_REGION_BASE).
+  - process.c:
+      * process_tls_stash_template(): both process_launch callers stash the
+        template + init the arena cursor (0x7FFF80100000, 1MB above main TLS).
+      * process_build_thread_tls(): mirrors elf.c's main-thread layout —
+        [.tdata | .tbss | TCB], tp = base+tls_alloc, self-pointer *(tp)=tp,
+        pristine .tdata copied from template vaddr; maps+zeros the block in the
+        shared cr3; sets p->user_fs_base = tp. Arena bump per thread.
+      * process_create_user_thread(): calls it instead of user_fs_base=0; FAILS
+        the spawn on OOM/arena-exhaustion rather than run with a colliding %fs.
+  The scheduler already loads next->user_fs_base on switch (sched.c:1135), so the
+  new thread runs with %fs at its own TCB.
+
+BUILD: make kernel KEXIT=0, kernel.elf @ 20:12:22, no errors/new warnings.
+
+KNOWN TODO (get-it-working first, per Zack): the per-thread TLS block is
+bump-allocated and NOT freed on thread exit (VA + phys leak per spawn). Fine for
+verification; add teardown-time free later. Arena holds ~128k thread blocks.
+
+NEXT (fry1791): ISO + boot + `hermes`; expect past the _PyThreadState_Attach
+abort. Read the next state.

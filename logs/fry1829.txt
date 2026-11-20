@@ -1,0 +1,58 @@
+fry1829 — BOOT 1 of the new chain: boot clean, GUI spawns, but the dock click
+          MISSED. Cause found: QEMU had no absolute pointer — 2026-09-26
+==========================================================================
+WHAT: First boot of the fry1828 ISO. Boot is healthy. No verification criterion
+was measured because the Shell never opened — my click did not land. Cause
+diagnosed, not guessed. No source changed.
+Serial: /tmp/fry1829_qemu_serial.log (38 lines).
+
+=== BOOT RESULT — CLEAN, NOTHING REGRESSED ===
+  DHCP:OK
+  selftest: 106 passed, 0 failed
+  init: pid=5
+  SPAWN_OK path=/system/GUI.FRY pid=9 parent=5
+  Desktop renders: wallpaper, full dock, taskbar.
+The kernel now carries shebang_parse() and the shell carries resolve_program();
+neither has broken boot.
+
+=== ✅ CLEARS AN OPEN QUESTION FROM fry1821 ===
+fry1821 recorded "no SPAWN_OK / GUI pid lines appear on serial" and explicitly
+declined to call it a regression. This boot shows
+"SPAWN_OK path=/system/GUI.FRY pid=9 parent=5" plainly. So that was TIMING —
+fry1821's serial was read before those lines were emitted — not a defect.
+Declining to write it up as a bug was the right call; fry1811 invented a bug
+from exactly this kind of absence and had to retract it.
+
+=== ❌ THE CLICK MISSED — CAUSE IDENTIFIED ===
+Ran the fry1811 recipe: query geometry, windowactivate --sync, mousemove to
+absolute coords, click 1.
+  window geometry at query time: 1280x800+2556+276
+  computed target: (2556+1223, 276+347) = (3779, 623)
+  expected guest coords: (1223, 347) = the Shell dock icon
+  SCREENSHOT SHOWS: pointer rendered at roughly (640, 406) in the guest, and
+  no Shell window. Nothing was clicked.
+CAUSE: the QEMU command line has no pointer device, so the guest gets the
+default PS/2 mouse, which is RELATIVE. Absolute host coordinates cannot map
+onto a relative pointer — xdotool moves the host cursor to (3779,623) and QEMU
+delivers a movement DELTA to the guest, which lands wherever the guest's own
+pointer happened to be plus that delta. The arithmetic in the recipe assumes an
+absolute device that was never present.
+This also means the fry1811 recipe is not reliable as written. It appears to
+have worked there by luck of the accumulated delta, which is why the same recipe
+produced a hit once and a miss now.
+
+=== FIX APPLIED (launch flags only, no rebuild) ===
+Relaunched with:  -usb -device usb-tablet
+A USB tablet is an ABSOLUTE pointing device: the guest receives the actual
+coordinate, so host-to-guest mapping becomes exact and repeatable. This is the
+standard fix and costs nothing but two flags. Continues in fry1830.
+
+=== NOTE FOR THE RECIPE ===
+fry1811's xdotool recipe should be amended wherever it is referenced: it is
+correct ONLY when the VM was launched with an absolute pointer. Without
+-device usb-tablet the coordinate maths is meaningless. launch_debug.sh does
+not include it either, nor -smp.
+
+=== WHAT IS NOT CLAIMED ===
+No criterion from fry1819 or fry1828 was measured. PATH resolution, shebang
+handling and the five libc fixes all remain UNVERIFIED.

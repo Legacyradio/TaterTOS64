@@ -1,0 +1,54 @@
+fry1465 - Implement Linux chdir(80)/fchdir(81). Clears the posix_spawn
+ENOSYS; advances the spawn failure to EBADF on dup2 (next: vfork child
+fd-table copy is incomplete).
+Date: 2026-06-13. Author: Claude (Opus 4.8).
+========================================================================
+
+WHY
+------------------------------------------------------------------------
+fry1464 (vfork suspend) stopped the child stack-smashing abort, but the
+spawn children still _exit(127). Trace: every vfork child hit
+"unimplemented nr=80" = chdir. Bun's posix_spawn calls chdir in the child
+(spawn cwd) before execve; ENOSYS there fails the spawn. Claude debug:
+"posix_spawn 'rg' ENOSYS". Ripgrep is EMBEDDED (re-exec of /nvme/RCLAUDE
+.LXE), so this is a syscall gap, not a missing binary.
+
+WHAT CHANGED
+------------------------------------------------------------------------
+- src/kernel/proc/linux_compat.h: #define LNX_chdir 80, LNX_fchdir 81.
+- src/kernel/proc/syscall.c:
+  * case LNX_chdir: copy_user_string(path) -> resolve_at_path(AT_FDCWD)
+    -> vfs_stat -> ENOTDIR if not a dir -> store in shared->cwd. Mirrors
+    the existing native SYS_CHDIR exactly. Returns 0 / -errno.
+  * case LNX_fchdir: fd -> shared->fd_paths[fd] (recorded by the dirfd
+    resolver) -> vfs_stat dir check -> store in shared->cwd. -EBADF if the
+    fd has no path, -ENOTDIR if not a directory.
+
+BUILD: make kernel EXIT 0. Full rebuild (fresh creds) EXIT 0
+(/tmp/fry1465_build.log).
+
+BOOT (-smp 4, serial /tmp/s_fry1465.log; killed by real pid after result)
+------------------------------------------------------------------------
+VERDICT:
+- "unimplemented nr=80" count = 0  (chdir wired).
+- "stack smashing" = 0, SIGABRT(sig6) = 0  (vfork fix still holds).
+- MAIN INFERENCE STILL CLEAN: subtype:success, is_error:false,
+  "Hello from TaterTOS — your friendly, tater-powered operating system
+  awaits!".
+- BUT spawn still fails, error ADVANCED ENOSYS -> EBADF:
+  child dup2 (nr=33) returns rc=-9 EBADF for pids 20-24; claude logs
+  "posix_spawn 'rg' EBADF" and "MCP server agent-bus ... EBADF".
+
+NEXT GAP (fixed in fry1466)
+------------------------------------------------------------------------
+The vfork child's fd table is an incomplete clone. copy_vfork_fd_table
+started at f=3 and copied only pipes/stdio/dir, SKIPPING FD_FILE (the
+comment: "VFS files ... need real refcounts before they can be copied").
+claude opens /dev/null (FD_FILE) and posix_spawn does dup2(/dev/null,
+0/1/2) for child stdio; the source FD_FILE is absent in the child -> dup2
+EBADF -> spawn fails. => copy FD_FILE to the vfork child by RE-OPENING the
+recorded path (independent pool-allocated vfs_file; sharing the pointer
+would double-free, since vfs_file has no refcount).
+
+STILL OPEN (low priority): nr=294 inotify_init1, nr=40 sendfile,
+nr=326 copy_file_range, nr=332 statx. OAuth rotates ~8h (restage on rebuild).

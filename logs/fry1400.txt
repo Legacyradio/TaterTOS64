@@ -1,0 +1,48 @@
+fry1400 — Tater Bridge / Claude Code: function-ID dump -> embedded bytecode-cache suspect; TBZSCAN: 136MB of the RW PT_LOAD present-but-zero at crash
+Date: 2026-06-11. Author: Claude (Fable 5). Session continues fry1396.
+(Split from the consolidated session log per planv3 rule 5 — one step per file.)
+========================================================================
+[05:30] FUNCTION-ID DUMP (boot #3) + NEW PRIME SUSPECT — THE STREAMING LOADER
+  (returns, with a mechanism fry1396's argument does NOT exclude):
+  - TBBFP50 (src+0x50 object, 0x6FBF gigacage): offset-like ints
+    +0x28=+0x38=0x3AAA30, +0x58=0x3AAB1C (a ~236B span), +0x10=0x21BF88,
+    +0x40=0x1FA048 — tested against bundled-JS candidates on host: NOT
+    source-text offsets. Slices at base 155136608 (the '#!/usr/bin/env bun'
+    bundle region) show structured serialized records => these are offsets
+    into Bun's EMBEDDED JSC BYTECODE CACHE (claude ships precompiled
+    bytecode; UnlinkedCodeBlocks are DESERIALIZED, not parsed).
+  - src object holds ExecutionCounter-like values (+0xA8 = {-995, 1000.0f},
+    +0xB0 = 5000) — tiering state present, counts zero.
+  - readelf 2.1.172: the bundle marker (file 0x93F45E0) lies INSIDE the
+    140MB RW PT_LOAD (file 0x5EED9A0..0xED2D000, VA 0x60ED9A0+0x8E3F660,
+    filesz==memsz). The bytecode cache is DEMAND-STREAMED FROM NVMe BY OUR
+    LOADER. A zero-filled page hole there => header-valid-but-empty
+    deserialized objects, deterministic every boot. fry1396 only excluded
+    a FIXED-FILE-OFFSET corrupt page; a STRUCTURALLY-POSITIONED hole
+    (extent/bitmap boundary, segment-tail rounding) tracks the layout.
+  - The pre-crash 'pread64 fd=11 len=256 -> 36' was /proc/self/statm
+    (event-loop heartbeat, 106x) — benign, noted to kill the red herring.
+[05:35] EXPERIMENT (edit 11, boot #4 building): TBZSCAN — at TBBFDUMP time,
+  walk the RW PT_LOAD page-by-page (36,416 pages) via
+  vmm_virt_to_phys_user(cr3): for PRESENT pages, test all-zero; emit
+  compressed TBZRUN index ranges. Host-side intersect with the file's
+  zero-page map (precomputed: 509 file-zero / 35,907 file-nonzero pages,
+  /tmp/file_zero_pages.txt). Any page all-zero in memory but nonzero in
+  file = LOADER HOLE = root cause located.
+[05:55] TBZSCAN RESULT (boot #4) — THE ZERO REGION FOUND, AND IT'S ENORMOUS:
+  ALL 36,416 pages of the RW PT_LOAD are PRESENT; 36,147 (99.2%) are
+  ALL-ZERO in memory while the FILE is nonzero there (35,710 hole pages).
+  The only real content: 269 pages, all in the FIRST ~2.9MB of the segment
+  (VA 0x60ED000..0x63ADFFF = .data/.got/.dynamic — the part the program
+  WRITES at runtime). Everything past VA 0x63AE000 (file 0x61AE000,
+  ~102MB into the binary) — 136MB including the ENTIRE embedded Bun module
+  graph + JSC bytecode cache — is ZERO. The empty UnlinkedCodeBlock is one
+  tiny visible symptom of a 136MB hole; Bun survives because most module
+  data is pread() from the file (works), only the mapped-pointer paths see
+  zeros.
+  ALSO RULED OUT THIS BOOT: loader DID claim full streaming ("LINUXELF:
+  streamed seg done va=60ed9a0 file=8e3f660"); NO madvise/DONTNEED ever
+  touched the image range. So either ToTFS/VFS reads returned ZEROS for
+  deep file offsets (good data stops at file ~0x61AE000 = 102,293,504 — and
+  the RO+RX segments below ~99.5MB all work), or something zeroed the pages
+  post-load without a vm-op beacon.

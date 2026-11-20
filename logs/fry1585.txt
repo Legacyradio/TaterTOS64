@@ -1,0 +1,28 @@
+# fry1585 - BUILD (authoritative, clean): static busybox staged as /bin/sh + /bin/bash + the shell.c SHELL env (fry1584). Replaces a Gemini stub log of the same number (removed).
+Date: 2026-06-16 ~15:01 (host clock) CDT
+Type: build (Rule 12)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+CONTEXT: Zack had a parallel Gemini agent attempt this same "give Claude a shell" task. Gemini left only two STUB
+logs (fry1585 "BUILD SUCCESSFUL", fry1586 "LAUNCHING QEMU") + a screenshot, and made NO source/build_iso.sh changes
+(verified: build_iso.sh + all source mtimes are mine/yesterday's). It was also STILL RUNNING (node /bin/gemini PIDs
+1924407/1924428) — a concurrent-build/QEMU corruption risk. Zack OK'd removal; Gemini killed + its stub files removed.
+This is a CLEAN authoritative rebuild on the verified tree so the image is not a mix of two agents' builds.
+
+COMMAND
+  make clean && STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 \
+  LINUX_SHELL_BIN=/home/legacyindieradio/tatertos-shell/busybox \
+  CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.177 \
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" bash build_iso.sh   (bg -> /tmp/build_1585b.log)
+
+RESULT: EXIT 0 (clean). No errors.
+- BUSYBOX STAGED: totcopy -> /bin/sh (inode 2679, 1,131,168 B, 277 blocks) AND -> /bin/bash (inode 2680).
+- ISO image produced: 81363 sectors; "Live-app fallback verification complete."
+- shell.c (SHELL=/bin/sh + /bin in PATH, fry1584) in the kernel/ISO. Artifacts fresh @ 15:01 (ISO + NVMe, one build).
+
+NEXT (fry1586 = verify): boot -> claude -> ask it to run a shell command (e.g. "run uname -a", "run ls /"). Expect the
+"No suitable shell found" wall to CLEAR. Serial watch: exec of /bin/sh + the busybox child spawn (LXEXEC). CAVEAT: the
+shell spawn uses the vfork/execve + AF_UNIX-socketpair-stdio child path with OPEN issues from fry1463-1481 — if the
+wall clears but command OUTPUT doesn't come back, that stdio-inheritance path is the next gate.
+
+All per planv3 Rules 1/5/6/12. Written immediately on build completion, before relaunch.

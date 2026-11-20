@@ -1,0 +1,44 @@
+fry1488 — 2026-06-14. Author: Claude (Opus 4.8).
+STEP TYPE: full re-audit of the rg/Grep saga at Zack's direction (don't trust grep, re-read ALL build logs). Supersedes the SHAKY parts of fry1487. No source edited, no build, no run. Method: read the human step-logs in full; verify serials by LITERAL presence/count + DIRECT Read of raw regions (grep used only to locate literals, never for timing/arithmetic).
+
+=== WHAT I RETRACT FROM fry1487 ===
+- The "~722 s / ~150 KB/s load rate" and "boot load was fast vs execve slow" claims were derived from grep+now= arithmetic and a command that ERRORED (empty captures, negative span). I do NOT have a trustworthy load-rate measurement. RETRACTED. The CORE finding (execve of the rg self-re-exec never completes) does NOT depend on those numbers and stands on multi-run literal evidence below.
+
+=== THE PREVIOUS CHAIN FLIP-FLOPPED 3x ON THE SAME HANG (root of "we took 10 steps back") ===
+- fry1484: 64-slot hang = "kernel epoll_pwait2/timerfd busy-spin bug."
+- fry1485: REVERSED — hang = "HTTP 429 rate limiting," declared rg FIXED, "only one clean run after the 429 window resets remains." <-- THIS is the "few polish things, we're set" Zack was told.
+- HANDOFF (later same night): REVERSED again — the "429" was FABRICATED from a bad grep (timestamp digits); re-cast as a "futex deadlock on e8c8."
+- (fry1486/1487, me): killed the e8c8/e880 futex theory, but added a 4th theory with shaky timing.
+
+=== VERIFIED FACTS (literal counts across 4 serials; + direct Read) ===
+Table (init / success / rg self-re-exec execve of RCLAUDE.LXE / that execve completed / "429" count):
+  s_fry1483 (16-slot): init=YES success=YES  rg-execve=0  execve-ok=0  429=47   => WORKS
+  s_rg_a1   (64-slot): init=no  success=no   rg-execve=1  execve-ok=0  429=35   => HANGS
+  s_rg_a4   (64-slot): init=no  success=no   rg-execve=1  execve-ok=0  429=43   => HANGS
+  s_32      (32-slot): init=no  success=no   rg-execve=1  execve-ok=0  429=95   => HANGS
+
+1. "429" is NOISE, confirmed: the SUCCESS run has 47 — MORE than two hanging runs. 429 does not correlate with hangs. Dead theory, do not revisit.
+2. EXACT correlation, 3 independent hanging runs: claude reaches success ONLY when rg's spawn fails early (16-slot) and the self-re-exec NEVER happens. Every run where the socket pool is big enough for rg's spawn to proceed (32/64) does exactly ONE execve of /nvme/RCLAUDE.LXE and it NEVER completes (TBEXECVE ok=0) -> claude hangs before init.
+3. DIRECT READ of s_rg_a1 lines 13401-13444 (64-slot), eyes-on, no grep parse:
+   13401 TBVFORK parent=5 child=22
+   13406-13413 child 22: rt_sigaction (EINVAL, harmless) + openat /dev/null + dup2 -> fds 0/1/2  (normal posix_spawn child)
+   13414 TBEXECVE enter pid=22 path=/nvme/RCLAUDE.LXE argc=2 envc=9
+   13415-16 LINUXELF load start/open
+   13417->end: ONLY pid 6's e8c8/e880 100ms heartbeat, to run-timeout (~415 s). pid 5 (vfork parent) emits nothing = suspended. Load never finishes.
+   Segment progress (literal LINUXELF lines): PT_LOAD2 va=200000 done @26677; PT_LOAD3 va=24aa400 started @26679; log ends @27577 still in PT_LOAD3.
+
+=== THE REAL ROOT CAUSE (code-confirmed, not grep) ===
+claude's Grep tool runs ripgrep in "embedded" mode = it re-execs its OWN 250 MB binary (RCLAUDE.LXE) as `rg`. It does this via vfork+execve. Our kernel:
+ - LNX_vfork SUSPENDS the calling thread until the child execve's or exits.
+ - lx_execve_current (syscall.c:5128): elf_load_linux (:5140) EAGER-loads the whole 250 MB image, THEN wakes the vfork parent (:5220). The loader (linux_elf.c:343-377) pmm_alloc_page + streams each segment from the file. No COW/shared-page/refcount exists in the VMM (verified absent).
+ => The rg self-re-exec's execve takes longer than the whole run to finish; the vfork parent (claude main, pid 5) is suspended the entire time; claude never reaches session init. At 16 slots rg's spawn fails first (socketpair ENFILE/EBADF), so the self-re-exec never happens and claude completes (degraded: no Grep).
+
+=== HONEST STATUS ===
+- MILESTONE "claude runs in TaterTOS" IS REAL: fry1483 (16-slot) reaches {"type":"result","subtype":"success"} on a live authenticated session. NOT square one.
+- rg/Grep is NOT fixed (fry1485 was premature). The FRY_SOCK_MAX 16->64 bump only stopped rg's SPAWN from erroring; it did not make rg RUN — the spawned child hangs loading the 250 MB self-image.
+- WHAT'S OPEN, precisely: make a large vfork+execve (the 250 MB self-re-exec) actually complete fast enough / without freezing the parent. NOT a polish item. Candidate fixes (unchanged from fry1487, minus the retracted timing): (A) wake the vfork parent at AS-commit instead of after full load — removes the freeze but rg may still be slow; (B) reuse/share the already-resident RCLAUDE.LXE pages on re-exec — needs page refcount/COW the VMM lacks = bigger; (C) demand-page the loader. NEED a reliable boot-load-vs-execve-load timing (read directly, not grep) before committing A vs B/C.
+
+=== STILL UNVERIFIED (do NOT assert until measured reliably) ===
+- Whether the 250 MB load is INHERENTLY slow or only slow under the hung-state contention. This decides A (cheap) vs B/C (expensive). Measure boot-load duration by DIRECT READ of now= at load-start vs launch-ok, not grep.
+
+Tree unchanged: FRY_SOCK_MAX=16 (safe, boots working claude). Nothing built/run/pushed this step. Codex co-edits syscall.c/process.c — serialize.

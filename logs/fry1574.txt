@@ -1,0 +1,41 @@
+# fry1574 - REVISION: the freeze is NOT a userspace spin. TBSPIN fired ZERO times despite pid=14 being state=PROC_RUNNING. A truly-executing userspace thread would be caught by the 1kHz timer. Combined with TBMAIN oncpu=0 (RUNNING but not the current task on any CPU), pid=14 is STRANDED — marked runnable but dropped from the scheduler, never actually run. A scheduler runqueue/enqueue bug, not a spin. The "hhello worked" window was timing luck before the strand.
+Date: 2026-06-16 03:55 CDT
+Type: verify + diagnosis (TBSPIN/TBMAIN, fry1573 build)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+---------------------------------------------------------------------------------
+DECISIVE EVIDENCE
+---------------------------------------------------------------------------------
+- TBSPIN (fires when the timer IRQ interrupts the claude main thread in USERSPACE): ZERO occurrences across the whole
+  run, including the entire post-freeze span. If pid=14 were busy-spinning in userspace, the 1 kHz timer would catch it
+  on essentially every tick -> hundreds of TBSPIN. None -> pid=14 is NOT executing in userspace.
+- TBMAIN (every heartbeat, post-freeze): pid=14 state=1 (PROC_RUNNING) but oncpu=0 (current[procs[i].cpu] != pid=14),
+  persistently; futex_key=0, poll=0, wake=0. So it is marked RUNNING but is NOT the current task on its CPU and is not
+  blocked on any wait.
+- read(fd=0)=2 (startup only), 25 keys delivered, not echoed. VM ALIVE.
+
+=> CONCLUSION: pid=14 is STRANDED in state PROC_RUNNING while being on NO CPU and (evidently) NO runqueue, so the
+   scheduler never selects it again. This is a SCHEDULER bug: a runnable thread lost from the runqueue (woken/left
+   RUNNING but not enqueued, or dequeued on a context-switch/migration and not re-pushed). It is hypothesis (B)/(C)
+   from fry1566, now confirmed; and it REVISES fry1571's "userspace spin" (state=RUNNING alone was misleading — the
+   thread is runnable-but-lost, not running).
+
+GOT-LUCKY ANSWER (Zack's question): YES. The fry1560 "hhello" echo was timing luck. The stranding bug is always
+present; the diagnostic beacons' serial latency sometimes delays the strand enough that a keystroke is read before
+pid=14 falls off the runqueue. Intermittent by nature.
+
+---------------------------------------------------------------------------------
+WHERE TO FIX
+---------------------------------------------------------------------------------
+The scheduler path that leaves pid=14 PROC_RUNNING but off the runqueue. pid=14's last act before the strand was a
+burst of futex WAKE-calls (waking workers); right after returning to userspace it should keep running as current, then
+on the next timer tick sched_tick context-switches. Suspect: sched_tick's switch/pick-next logic dequeues or switches
+away from the current PROC_RUNNING task WITHOUT re-pushing it to a runqueue (esp. on CPU migration cpu0<->cpu2 seen in
+TBMAIN), or a wake that sets RUNNING without rq_push. Read sched.c: wake_runnable_locked (rq_push), sched_tick switch
+(946+), sched_yield, and the migration/load-balance path. Find where a RUNNING current task can be left un-enqueued.
+Add a one-shot beacon if needed: at sched_tick, if pid=14 is PROC_RUNNING && not current[anycpu] && not on any rq ->
+log "TBLOSTRUN" with where. Then fix (re-enqueue on switch-away / fix the migration). Keep Claude fully networked.
+
+NEXT (own fry log): read the scheduler switch/wake/migration paths -> pin the strand -> fix.
+
+All per planv3 Rules 1/5/6/12. Written immediately on this revision.

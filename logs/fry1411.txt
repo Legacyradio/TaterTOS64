@@ -1,0 +1,35 @@
+fry1411 — Tater Bridge / Claude Code: sendmmsg/recvmmsg + the silent-ENOSYS
+blind spot.
+Date: 2026-06-11 ~1:05 PM CDT. Author: Claude (Fable 5). Follows fry1410.
+========================================================================
+
+WHAT WAS FOUND (fry1410 boot analysis)
+====
+- LXUDP tx/rx beacons: ZERO lines. Traced resolver syscalls (42/44/45/
+  46/47/271): ZERO errno returns. The resolver creates its socket then
+  goes invisible — nothing sent through SYS_SEND/SYS_SENDTO paths.
+- Beacons verified present in the booted kernel (strings on kernel.elf).
+- ROOT OF THE INVISIBILITY: the dispatcher's default (unimplemented)
+  branch logs via kprint(), which is CONSOLE-FILTERED — unimplemented
+  syscalls never reached the serial log. glibc's resolver sends its
+  parallel A+AAAA DNS queries via SENDMMSG (nr=307) — unimplemented and
+  silently ENOSYS'd. The resolver treats the send failure as "server
+  unreachable", retries once (2nd socket, matches fry1409), gives up.
+
+CHANGES (compile clean)
+====
+1. Unimplemented-syscall print switched kprint -> kprint_serial_only.
+   Serial is the record; this blind spot cost a full boot cycle.
+2. +LNX_sendmmsg(307): loops SYS_SENDMSG over the 64-byte mmsghdr array,
+   writes per-message msg_len at +56, returns messages sent (error only
+   if the first send fails) — Linux semantics.
+3. +LNX_recvmmsg(299): same shape over SYS_RECVMSG; first message honors
+   blocking, later ones stop at -EAGAIN.
+4. LXUDP tx(msg) beacon added to SYS_SENDMSG's DGRAM branch (the path
+   sendmmsg delegates to) — visibility parity with send/sendto.
+
+NEXT
+====
+Rebuild + boot: expect "LXUDP tx(msg) dst=10.0.2.3:53", then "LXUDP rx"
+with the slirp answer, resolver completes, TCP socket + SYS_CONNECT to
+api.anthropic.com, TLS bytes, first in-OS reply. Results -> fry1412.

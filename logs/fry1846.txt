@@ -1,0 +1,11 @@
+fry1846 - FINDING: open() of a MISSING file under /nvme crashes python3.fry with a NULL deref (2026-11-17 14:37:03 CST)
+WHY: fry1845 NEXT - prove the failing open() directly on the working (bare argv[0]) route. Sur's GO (fry1842). No code changed.
+WHAT / HOW: fresh boot (run.sh iso5), typed at 0.5 s/key: python3 -c open("/nvme/pyvenv.cfg")   (file does not exist). Second typed command was corrupted by the typing harness (not evidence).
+WHERE: ~/tatertos-test-20261117/run-iso5.{png,serial.log}
+RESULT (observed, serial): 
+  !EXC vec=0E err=4 RIP=0x4EA2F1 CS=2B CR2=0x0   USER FAULT: pid=13 tid=13 vec=14 err=0x4 rip=0x4ea2f1 cr2=0x0   (rax=0, rcx=0x403547, rbx=0x7FFFFFFFFB30)
+  = user-mode NULL-pointer READ in python3.fry while opening a nonexistent file. Screen: HERMESSTDOUT-OK, no Python traceback.
+  The OTHER commands: open of an EXISTING file (os.py).close() completed (HERMESSTDOUT-OK, no fault).
+  So: a failing open() (ENOENT) is mishandled in the libc/kernel error path - and in route 1 the same missing-file open (getpath reading /nvme/pyvenv.cfg) surfaces as "OSError errno 0" instead of FileNotFoundError.
+  Caveat: iso5 serial log is truncated (no GUI spawn lines), so the surrounding context is incomplete; single run.
+NEXT: fry1847 = resolve RIP 0x4EA2F1 / 0x403547 to a function (need the ELF symbols behind python3.fry) and read that libc/kernel code path (open failure -> errno).

@@ -1,0 +1,33 @@
+fry1718 — 2026-06-21 09:45 CDT
+STEP: Made ToTFS disk size DYNAMIC / hardware-agnostic (Zack greenlit). Kernel +
+      heap + build_iso. Built clean. NOT yet verified on boot.
+
+CHANGES:
+  1. totfs.h: struct totfs_fs.block_bitmap is now `uint8_t *` (heap pointer) +
+     `uint64_t block_bitmap_bytes`, instead of a fixed inline 32KB array. Updated the
+     TOTFS_KBMP_BLOCKS comment (no longer a cap; kept as historical default).
+  2. totfs.c: extern kmalloc. At mount, kmalloc(sb.block_bitmap_blocks*4096) and read
+     ALL bitmap blocks (dropped the >TOTFS_KBMP_BLOCKS=8 clamp). Allocator bound
+     (alloc_block) + free_block bound now use fs->block_bitmap_bytes*8 (actual cache
+     capacity) instead of the constant. OOM-checked.
+  3. heap.c: heap_init tries up to 4096 pages (16MB), largest-first w/ graceful
+     fallback (was 256 pages = 1MB). 16MB bitmap maps ~512GB. 1MB heap was itself a
+     consumer-OS limit.
+  4. build_iso.sh: NVME_SIZE_MB env (default 8192 = 8GB), SPARSE via truncate (only
+     real data uses host disk), recreate when size differs. Partition fills disk;
+     mktotfs auto-sizes -> ToTFS adapts to ANY image/drive.
+
+BUILD VERIFY:
+  - make kernel EXIT=0 (no totfs/heap/kmalloc errors); kernel.elf 09:42:26.
+  - build_iso EXIT=0. "Creating NVMe image (sparse): 8192 MB". mktotfs: formatted
+    2096896 blocks (8191 MB), free_blocks=2095805, free_inodes=16382. claude
+    RCLAUDE.LXE 233584424 staged (auto). python3 staged. ISO 09:43:23 (newest).
+  - SPARSE confirmed: nvme logical 8589934592 B (8GB) but du = 460M actual on host.
+  - block_bitmap_blocks = 2096896/32768 = 64 -> kernel kmalloc 256KB (fits 16MB heap).
+
+EXPECTED on boot: ToTFS mounts "2096896 blocks"; no OOM; claude `mkdir /nvme/claude-0`
+  succeeds (8GB free) -> claude actually starts. Inodes still 16384 (separate axis;
+  enough for now).
+
+NEXT: shut VM, boot, check serial for ToTFS mount geometry + heap OK, Zack types
+  `claude` to verify it runs -> fry1719. Then resume hermes PT_TLS linker fix.

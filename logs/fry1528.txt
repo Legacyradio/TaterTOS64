@@ -1,0 +1,53 @@
+fry1528 - FIX + VERIFIED: Claude TUI RENDERS in the GUI Shell window (fd-12 stdout-dup routing)
+Date: 2026-06-15 14:49:02 CDT
+
+Type: CODE CHANGE + HEADED GUI VERIFICATION.
+Implements the fix scoped in fry1527 (Claude writes its UI to fd 12, a dup of
+stdout; the fry1526 routing only caught fd 1/2, so fd 12 -> FD_STDIO ->
+kprint_write -> discarded under the GUI).
+
+Why (Rule 6): route stdout/stderr DUPS (FD_STDIO realfd 1/2, e.g. node/Bun's fd 12),
+not just literal fd 1/2, into the GUI child's outbuf so the Shell pump renders them.
+
+Change (src/kernel/proc/syscall.c, lx_write_fd):
+  - New helper lx_is_gui_child(cur): gui_process_running() && !process_name_is_gui.
+  - New helper lx_write_outbuf(cur, shared, src, len): block-until-space ring write
+    into shared->outbuf (no dropped bytes); factored out of the fry1526 inline loop.
+  - fd==1||fd==2 branch: now calls lx_write_outbuf for GUI children (was inline).
+  - FD_STDIO branch (realfd==1||2): NEW - calls lx_write_outbuf for GUI children
+    before falling back to kprint_write. This is what catches fd 12.
+  Non-GUI path unchanged (kprint_write -> validated serial/stream-json harness).
+
+Build (Rule 12, clean): BUILD_EXIT=0, no errors. syscall.o compiled. Log
+  /tmp/fry1528_build.log.
+
+Headed GUI run (INIT.FRY -> GUI.FRY): /tmp/fry1528_serial.log; screenshot
+  /tmp/fry1528_render.png. User opened Shell + typed "claude".
+
+RESULT - SUCCESS. Claude Code's TUI now RENDERS CLEANLY in the Shell window:
+  - Load fast (load done serial line 354); node alive, TBEXIT group = 0.
+  - Claude wrote its UI to fd 12: TBSTDOUT pid=14 fd=12 len=637 (line 6057). With the
+    new FD_STDIO routing those 637 bytes reached the outbuf -> Shell pump -> C1
+    parser -> window.
+  - On-screen (fry1528_render.png), correctly positioned, NO garble, NO literal
+    escape chars, proper line layout:
+        "Configuration error
+         The configuration file at /nvme/.claude.json contains invalid JSON.
+         JSON Parse error: Unexpected EOF
+         Choose an option:
+           1. Exit and fix manually
+           2. Reset with default configuration
+         Enter to confirm   Esc to cancel"
+  => End-to-end chain proven: fast load + fd0 stdin (alive) + fd-12 output routing +
+     C1 VT/ANSI parser + pump full-drain = Claude's interactive UI painting in the
+     TaterTOS desktop. C1 is now verified.
+
+Separate issue surfaced (NOT a regression; next item):
+  /nvme/.claude.json is corrupted (truncated JSON / "Unexpected EOF"). Almost
+  certainly from earlier runs where the atomic config write's rename() returned -5
+  (fry1522). Claude itself is offering to reset it (option 2). Fixes: implement
+  rename (nr=82) so atomic config writes succeed, and/or delete the corrupt
+  /nvme/.claude.json so Claude regenerates it. Also still pending: end-to-end INPUT
+  test (navigate the menu with keystrokes) to confirm the keyboard->prompt path.
+
+No commit. No hashes (Rule 16). VM left running.

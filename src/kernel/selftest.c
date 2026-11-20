@@ -74,7 +74,7 @@ void kernel_selftest(void) {
     /* Struct/constant sizes */
     st_check("FRY_FD_MAX",        FRY_FD_MAX,        64);
     st_check("FRY_PROC_MAX",      FRY_PROC_MAX,      256);
-    st_check("FRY_VMREG_MAX",     FRY_VMREG_MAX,     256);
+    st_check("FRY_VMREG_MAX",     FRY_VMREG_MAX,     2048);
     st_check("FRY_SHM_MAX",       FRY_SHM_MAX,       128);
     st_check("FRY_VM_SHARED_MAX", FRY_VM_SHARED_MAX, 128);
     st_check("FRY_PATH_MAX",      FRY_PATH_MAX,      128);
@@ -119,7 +119,7 @@ void kernel_selftest(void) {
     st_check("EINPROGRESS",  EINPROGRESS,  115);
 
     /* Phase 4: new limits */
-    st_check("FRY_SOCK_MAX",       FRY_SOCK_MAX,       16);
+    st_check("FRY_SOCK_MAX",       FRY_SOCK_MAX,       64);  /* 64 leaves headroom for rg child fd-copy after fry1489 loader-cache fixed RCLAUDE.LXE self-reexec. */
     st_check("FRY_SOCK_UDP_RXMAX", FRY_SOCK_UDP_RXMAX,  4);
     st_check("FRY_SOCK_UDP_PKTSZ", FRY_SOCK_UDP_PKTSZ, 512);
 

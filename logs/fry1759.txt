@@ -1,0 +1,34 @@
+fry1759 — native hermes: add `select` + asyncio-chain builtins — 2026-06-26
+==========================================================================
+WHAT: After fry1758, hermes_cli.main advanced to "No module named 'select'"
+(shot1759.png). Added select + the dependency-free asyncio-chain builtins so the
+import chain doesn't stall one module per boot cycle.
+
+ROOT ANALYSIS:
+  - selectmodule.c calls select() unconditionally; libc had NO select() (only
+    poll/epoll/fcntl). sys/select.h declared select() ("via fry_poll") but it was
+    never implemented.
+  - pyconfig.h: HAVE_POLL=1, HAVE_EPOLL=1, HAVE_SELECT NOT defined — fine, select.c
+    still needs the symbol.
+
+CHANGES:
+  1. src/user/libc/posix.c — implemented select() OVER poll() (build pollfd[] from
+     the three fd_sets, translate timeval->ms, poll(), rebuild fd_sets; bits ready
+     in N sets counted N times = glibc semantics). pselect() wraps select()
+     (sigmask ignored — no signal delivery during poll-block). Added
+     #include <sys/select.h>.
+  2. external/.../Modules/selectmodule.c — added #include <sys/select.h> (TaterTOS
+     surfaces fd_set/FD_SETSIZE/FD_* there, not via <sys/types.h> as glibc does).
+     Without it: "fd_set undeclared / FD_SETSIZE undeclared" compile errors.
+  3. config.c — extern + inittab for: select, _heapq, _bisect, _queue.
+  4. Python3.mk — added selectmodule.c, _heapqmodule.c, _bisectmodule.c,
+     _queuemodule.c to CPYTHON_MODULES_SRCS.
+  (_heapq/_bisect/_queue are pure/thread-only stdlib C, no external libs — added
+   proactively; asyncio/selectors/queue reach them next.)
+
+BUILD: posix.o rebuilt via MAIN Makefile (Python3.mk has no libc .o rule — only
+gap_stubs.o), EXIT=0. First python3 link FAILED (selectmodule fd_set) -> added the
+sys/select.h include -> `make -f Python3.mk python3` BUILD_EXIT=0. All 4 module .o
+present. python3.fry 14672760 -> 14717672 bytes (08:57).
+
+NEXT (fry1760): kill QEMU, build_iso.sh, boot, `hermes`, read the next import result.

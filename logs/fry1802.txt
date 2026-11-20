@@ -1,0 +1,114 @@
+fry1802 — ✅ TLS BLOCKER DEAD: fry1801 fix VERIFIED on hardware; new blocker = asyncio import — 2026-08-10
+==========================================================================
+WHAT: Booted the fry1801 ISO, Zack ran `hermes`. The fry1801 libc fix is CONFIRMED
+WORKING against all four pre-registered criteria. The _PyThreadState_Attach abort
+that has blocked hermes since fry1788 (2026-06-26) is GONE. The agent now runs
+past main() into the interactive CLI and fails LATER, on a different, ordinary
+Python import problem. No source changed this step.
+
+=== VERIFICATION — all four criteria stated in advance in fry1801, all met ===
+  TLSDBG get MAIN tid=9 tgid=9 fs=7fff80000138 (baseline, printed once)
+  TLSDBG build tid=10 OK fs=7fff80100138 bbase=7fff80100000 alloc=312 next=7fff80102000
+  TLSDBG spawn path=NATIVE tid=10 parent=9 fs=7fff80100138 entry=400150
+  TLSDBG get THREAD tid=10 tgid=9 fs=7fff80100138     (x many, unchanging)
+  >>> ZERO "TLSDBG set" LINES IN THE ENTIRE 1405-LINE SERIAL <<<
+
+  1. kernel still builds tid=10's block .................. YES (fs=7fff80100138)
+  2. path=NATIVE ......................................... YES
+  3. NO "TLSDBG set tid=10" line ......................... CONFIRMED, none at all
+  4. get THREAD returns the KERNEL block, not a heap addr  YES — 7fff80100138,
+       vs fry1800's 10005592c30. tid=10's %fs is now DISTINCT from the main
+       thread's 7fff80000138 and STABLE for the thread's entire life.
+  AND: no "Fatal Python error", no "USER FAULT", no "!EXC" anywhere in the log.
+
+  => fry1800's root cause is CONFIRMED BY EXPERIMENT. fry_thread_trampoline
+     (libc.c:421) overwriting the kernel's ELF TLS base WAS the whole bug.
+     fry1790's per-thread TLS was correct all along and is now actually reaching
+     the thread that needs it.
+
+=== HISTORY CORRECTION (Zack was right; I had this wrong) ===
+I had framed this as "hermes has never worked." WRONG. The logs record a REAL
+earlier success: `tatertos_bootstrap.py` (the dev diagnostic) passed end-to-end
+— "hermes runs CPython end-to-end *** WORKS ***", hermes_constants / hermes_state
+/ hermes_time / hermes_logging all OK (fry~1721-1756 era).
+RECONCILIATION (this does NOT contradict the diagnosis, it explains it):
+  - Up to fry1782, bare `hermes` ran tatertos_bootstrap.py — SINGLE-THREADED.
+    It never called pthread_create, so it never entered fry_thread_trampoline
+    and its %fs was never clobbered. It legitimately worked.
+  - fry1783 changed cmd_hermes so bare `hermes` launches the FULL agent CLI
+    (hermes_cli.main) — a product decision Zack asked for (a shipped product
+    must not show a test report).
+  - fry1784-1787 then ground through import blockers (_ctypes, zlib,
+    unicodedata, _csv, _statistics, _asyncio).
+  - fry1788: full agent imports completely, reaches main(), spawns its first
+    thread (via _asyncio) -> hits the TLS bug.
+  => The code did not regress between fry1782 and fry1788. THE WORKLOAD CHANGED
+     from single-threaded to threaded. That is why the blocker looked like it
+     appeared out of nowhere.
+Also confirmed from the logs: MULTIPLE AGENTS have worked this tree — fry1651's
+author line is "Codex", and it describes shell commands "that DeepSeek had added"
+to an older stub shell. Zack's instinct about other instances is documented fact,
+not a feeling.
+
+=== NEW BLOCKER (different failure, much further along) ===
+serial :1321. A clean Python traceback — NOT a crash, NOT a fault:
+  File "/nvme/opt/hermes-agent/hermes", line 11, in <module> -> main()
+  File ".../hermes_cli/main.py", line 16143, in main -> cmd_chat(args)
+  File ".../hermes_cli/main.py", line 2137, in cmd_chat
+      from cli import main as cli_main
+  File "/nvme/opt/hermes-agent/cli.py", line 57
+      from prompt_toolkit.history import FileHistory
+  File ".../site-packages/prompt_toolkit/__init__.py", line 27
+  File ".../prompt_toolkit/application/application.py", line 3 -> import asyncio
+  File "/nvme/usr/local/lib/python3.14/asyncio/__init__.py", line 26
+      __all__ = (base_events.__all__ + ...)
+  NameError: name 'base_events' is not defined
+
+SIGNIFICANCE: this is the FURTHEST hermes has ever run. main() -> cmd_chat ->
+the interactive CLI's own imports. Everything before it (the entire agent import
+chain, httpx/idna/ssl, thread spawn) now succeeds.
+
+NOT YET DIAGNOSED — do not guess. asyncio/__init__.py does `from .base_events
+import *` and then references the bare name `base_events` on line 26, which
+normally resolves because importing a submodule binds it as an attribute of the
+parent package (and __init__'s globals ARE that namespace). The name being
+undefined means that binding did not happen. Candidate directions, IN ORDER, to
+be settled by evidence not reading:
+  1. A swallowed/failed submodule import earlier in asyncio/__init__.py.
+  2. Interaction with the BUILTIN _asyncio C module added in fry1787 (it is in
+     the inittab; a builtin shadowing/ordering effect on the package attribute
+     binding is plausible and must be checked, not assumed).
+  3. An import-system defect in this CPython port around submodule attribute
+     binding on the parent package.
+  4. Incomplete asyncio stdlib staging (are ALL asyncio/*.py present on the
+     image?) — cheapest to check first.
+EXPLICITLY UNKNOWN whether this is related to the fry1801 change. It is a plain
+import-time NameError on the main thread and there is no evidence tying it to
+TLS, but that is an absence of evidence, not a clearance. If any doubt remains
+it can be settled by booting the PREVIOUS ISO and confirming this traceback is
+unreachable there (it is — that build aborted earlier), or by a targeted
+`python3 -c "import asyncio"` run.
+
+=== RUN DETAILS ===
+  ISO: out/tatertos64v3.iso 2026-08-10 22:26:06 (carries python3.fry 22:23:56)
+  QEMU pid 1053887. Serial: logs/fry1802_serial.log (1405 lines).
+  Boot: DHCP:OK, selftest 106/0, GUI pid=7, SHELL pid=8 at ~17s.
+  HERMESMAIN at :77. Traceback at :1321. VM STILL RUNNING at log time.
+  vCPU COUNT: 1 (no -smp flag). Deliberate — see below.
+
+=== SMP: THE REASON TO STAY AT 1 CPU HAS NOW EXPIRED ===
+-smp was withheld since fry1797 so the threading investigation stayed comparable
+to fry1795. That comparison is finished. The bug turned out to be a deterministic
+%fs overwrite, which 1 vCPU exposed perfectly well.
+RECOMMENDED NEXT (not yet approved): re-run with `-smp 4`, same ISO, same probes,
+ONLY the core count changed — a clean controlled comparison. Rationale: on 1 vCPU
+threads only timeshare and never truly run in parallel. sched.c:1135 restores
+next->user_fs_base on every context switch; with 4 CPUs that happens concurrently
+across cores. The fix can pass on 1 core and still be wrong on 4. Real parallelism
+is the actual test, and the documented working Claude launch used -smp 4.
+
+=== STILL OWED (unchanged, not addressed this step) ===
+  - Python3.mk has no -MMD/-MP header tracking (fry1793 class hazard).
+  - 🔴 603 uncommitted files; last commit 733c2f1a 2026-06-08. Two months of work
+    across at least three different agents is unversioned — no diff to audit, no
+    revert path. `gh auth setup-git` first (stored PATs expired).

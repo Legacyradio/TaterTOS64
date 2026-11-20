@@ -1,0 +1,44 @@
+fry1445 — Allocator-fix boot. THE OS GAVE CLAUDE A VOICE: every EIO is
+gone and claude's own debug log now streams to serial via TBWRDATA —
+33 file writes, timestamped DEBUG/ERROR lines, the CLI bootstrap
+narrating itself ("MDM settings load completed", "configureGlobalMTLS
+complete", "Loaded 145 bundled root certificates", "[claudeai-mcp]
+Fetched 0 servers", "[STARTUP] Running setup()..."). The fry1444
+multi-block bitmap fix is VERIFIED: mkdirs that EIO'd for three boots
+now succeed (only mkdir /nvme = EEXIST remains, which is correct).
+Still no stream-json/result: claude's log names the NEXT blockers
+itself — ENOSYS on file-metadata syscalls — and the narrative stops at
+setup(). fry1446 implements them.
+Date: 2026-06-12 05:4x CDT. Author: Claude (Fable 5).
+========================================================================
+
+WHAT CLAUDE SAID (key lines from its debug log, via TBWRDATA)
+------------------------------------------------------------------------
+  [ERROR] Failed to save config with lock: ENOSYS utimensat
+  [ERROR] Failed to write file atomically: ENOSYS fchmod
+  [ERROR] Config fallback write also failed; continuing without
+          persisting: ENOSYS ...
+  last line before silence: "[STARTUP] Running setup()..."
+After setup() begins, ZERO further file writes for the rest of the run
+(network phase + exit 0 as before) — something in/after setup() dies
+on another missing piece, most likely one of the same ENOSYS family.
+
+UNIMPLEMENTED SYSCALLS HIT THIS BOOT (LINUXSYS census)
+------------------------------------------------------------------------
+  74 fsync, 84 rmdir, 88 symlink, 90 chmod, 91 fchmod,
+  280 utimensat, 332 statx (glibc falls back on statx; rest are real
+  gaps in front of claude's file layer).
+
+VERIFIED THIS BOOT
+------------------------------------------------------------------------
+- Multi-block bitmap allocator: dirs created on a volume whose first
+  128 MB of block-bitmap space is fully consumed by RCLAUDE.LXE.
+- ToTFS in-OS create/write under real load: debug log file, temp
+  files, lock files (fds 14/17/18/19 all FD_FILE writes).
+- The debug-text-to-serial pipeline (TBWRDATA, fry1440) works exactly
+  as designed — claude debugging claude through the kernel beacon.
+
+TEST COMMANDS (rule 10): boot as fry1432, serial /tmp/s_fry1445.log;
+  grep -a "TBWRDATA" /tmp/s_fry1445.log     # claude's own narrative
+  grep -a "LINUXSYS: unimplemented" /tmp/s_fry1445.log
+========================================================================

@@ -1,0 +1,21 @@
+fry1403 — Tater Bridge / Claude Code: build perm fix (cp -L read-only mode); boot #8: mkdir works, unlink gap; ramdisk name[32] truncation + 256-file cap fixed; +LNX_unlink/unlinkat
+Date: 2026-06-11. Author: Claude (Fable 5). Session continues fry1396.
+(Split from the consolidated session log per planv3 rule 5 — one step per file.)
+========================================================================
+[12:10 PM] Boot #8 (build had failed -> #8 was a stale-log misread; build
+  perm bug: cp -L preserved the CA bundle's 444 mode and prepare_linux_etc
+  runs once per staged image -> second cp failed. Fixed: rm -f + chmod 644.)
+  REAL boot #8 results: crash count 0 again (fix holding across 3 boots);
+  mkdir nr=83 now returns -EEXIST (= WORKING; mkdir -p walks parents);
+  NEW gap unlink nr=87 x6 (claude config tmp-file replace path); CA cert
+  STILL ENOENT despite being in the FAT image.
+[12:20 PM] CA-cert root causes found in the ramdisk handoff layer:
+  (1) ramdisk_entry.name[32] TRUNCATED "etc/ssl/certs/ca-certificates.crt"
+  (34 chars) at pack time -> kernel lookup could never match. name -> 64.
+  (2) RAMDISK_MAXFILES 256 with SILENT truncation of the recursive scan ->
+  512. (efi_handoff.h is shared by loader+kernel, rebuilt together.)
+  Wired +LNX_unlink(87) -> SYS_UNLINKAT(AT_FDCWD, path, 0) and
+  +LNX_unlinkat(263) passthrough (FRY_AT_REMOVEDIR 0x200 == Linux).
+  Boot #9 building: expect config writes to complete, CA bundle to open,
+  then DNS/TCP attempt (claude -p needs an API key in env to go further —
+  check TBRIDGE launch env if it stalls at auth).

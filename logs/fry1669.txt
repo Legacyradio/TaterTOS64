@@ -1,0 +1,29 @@
+fry1669 — 2026-06-20 12:10 CDT
+STEP: Instrument kernel + shell to pinpoint the native-python `hermes`
+      startup-freeze syscall (TEMP diagnostic edits, will be reverted).
+
+WHY: fry1668 established the freeze is a kernel syscall that never returns,
+     occurring AFTER encodings imports and BEFORE tatertos_bootstrap.py prints.
+     pid 13's userspace syscalls are not in the serial output, so we cannot see
+     which call wedges. Add a trace; the last logged syscall = the culprit.
+
+CHANGES:
+  1) src/kernel/proc/syscall.c — native_syscall_dispatch() body (line ~8033):
+     gated trace via kprint_serial_only(): for any process whose name contains
+     "py" (matches "/nvme/apps/python3.fry"), print
+       "PYSC pid=<pid> nr=<num> a1/a2/a3"
+     on EVERY syscall. Serial-only (won't touch GUI). Marked "fry1669 TEMP".
+     WHY here: python3.fry is a native .fry binary -> native ABI ->
+     native_syscall_dispatch. The last PYSC before the freeze names the call.
+  2) src/user/shell/shell.c — main() before the input loop (line ~1080):
+     headless one-shot auto-run of `hermes` after a 3s settle (fry_sleep), via
+     execute_command(1,{"hermes"}). Marked "fry1669 TEMP".
+     WHY: removes dependence on the remote AnyDesk GUI; lets us boot headless
+     (-display none -serial file=...) and capture the freeze deterministically.
+
+NON-ISSUE: LSP/clang flagged fry_limits.h "not found" + FRY_* undeclared —
+     that's the editor lacking the cross-compiler -I paths, not a real error;
+     these symbols are pre-existing and compile under build_iso.sh.
+
+NEXT (fry1670): clean+verbose rebuild (planv3 rule 12), boot headless with
+     serial capture, read last PYSC line, identify culprit syscall.

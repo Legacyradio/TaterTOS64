@@ -1,0 +1,10 @@
+fry1839 - HERMES DIAGNOSIS STEP C4: builtin route 'hermes -z hello' on the same boot (2026-11-17 14:10:07 CST)
+WHY: separate launch-route difference from build regression (fry1838 NEXT). No code changed.
+WHAT / HOW: typed 'hermes -z hello' (cmd_hermes builtin -> fry_spawn_args python3.fry + shell_env) into the same Shell at ~14:09:00; watched serial + screenshots (s8/s9.png) for ~60 s.
+WHERE: ~/tatertos-test-20261117/serial.log (285 lines; 233 are TBPROCIN spam), s9.png.
+RESULT (observed): serial shows only "HERMESMAIN argc=4 /nvme/opt/hermes-agent/hermes" for this run. NO getpath OSError, NO Fatal Python error for this run (the Fatal block in the log belongs to the fry1838 full-path run, earlier line).
+  Screen: "HERMESSTDOUT-OK" then the cursor with NO prompt returned after ~60 s = the hang symptom of fry1810 (silent block, no output), reproduced on the 09-26 build.
+  So the two routes DIFFER on the same boot: full path (kernel shebang route) -> python dies in getpath with errno-0 OSError; builtin route -> Python initialises and then blocks silently.
+  TLSDBG line not printed again (printed once per boot by design), so no new thread-spawn evidence either way.
+CONFIDENCE: 1 run each, same boot; ordering effect not excluded (full-path run came first). Not repeated yet.
+NEXT: read Sur's history files (HERMES-HISTORY-FROM-SUR.txt, HERMES-HISTORY-2-DEBUG-APP.txt) and add the regression hunt as fry1840; then final report. Next test idea (not run): get the Python stack of the builtin-route hang (faulthandler is already in env; try Ctrl-\ / SIGABRT via kill).

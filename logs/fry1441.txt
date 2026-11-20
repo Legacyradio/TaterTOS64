@@ -1,0 +1,38 @@
+fry1441 — --debug boot. ROOT CAUSE OF THE SILENT OUTPUT NAMED BY THE
+NEW MKDIR FORENSICS: claude has NO WRITABLE FILESYSTEM anywhere.
+  TBFAIL mkdir path="/.claude/debug" rc=EIO   (debug-log dir, HOME=/)
+  TBFAIL mkdir path="/tmp/claude-0"  rc=EIO   (its TMPDIR work dir)
+Root and /tmp live on the read-only boot ramdisk whose mount ops have
+no mkdir (vfs_mkdir -> -1 -> EIO). The CLI bootstrap needs its debug/
+temp/session dirs; their creation failing kills the emitter and
+transcript layer silently while the agent loop (auth, gating,
+inference) runs to success — exactly the fry1437/1439 shape. No
+TBWRDATA lines: claude never got far enough to write a single file.
+Date: 2026-06-12 04:5x CDT. Author: Claude (Fable 5).
+========================================================================
+
+EVIDENCE
+------------------------------------------------------------------------
+- Same healthy run shape as fry1437/1439 (TBEXIT code=0).
+- --debug produced zero file writes because the debug DIRECTORY could
+  not be created — the forensic mkdir paths are the smoking gun the
+  lone path-less "mkdir EIO" of fry1437/1439 was hiding.
+- VFS audit: the "/" mount (boot ramdisk) and everything under it
+  including /tmp has ops->mkdir == 0; vfs_mkdir returns -1 (mapped to
+  EIO). The /nvme secondary ToTFS mount has the FULL writable op set
+  (write/create/mkdir/unlink/truncate/rename — vfs.c sec_totfs_ops).
+
+WHY THIS EXPLAINS THE WHOLE OUTPUT GAP
+------------------------------------------------------------------------
+claude -p's CLI layer sets up debug logging, temp workspace
+($TMPDIR/claude-0), and the session transcript dir at startup. On the
+host, these never fail, so the emitter starts and every stream-json
+event is written as it happens. In the guest every one of those
+mkdirs EIO'd; the CLI swallowed the failures, the emitter never came
+up, and the run proceeded output-less to a "successful" exit 0. This
+also retroactively explains fry1430's host/guest divergence window.
+
+FIX = fry1442 (next step): move claude onto the writable mount.
+TEST COMMANDS (rule 10): boot as fry1432, serial /tmp/s_fry1441.log;
+  grep -a "TBFAIL mkdir" /tmp/s_fry1441.log
+========================================================================

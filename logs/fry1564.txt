@@ -1,0 +1,74 @@
+# fry1564 - CONSOLIDATED ROOT CAUSE + HANDOFF: in-OS Claude input. The input mystery is fully solved down to mechanism. Remaining bug = JSC stop-the-world GC cannot hold threads suspended (sig=30 + sigsuspend + confirm-semaphore handshake), so the main thread hangs every GC and stops reading stdin.
+Date: 2026-06-16 01:50 CDT
+Type: consolidation / handoff (no code change this step)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+===================================================================================
+THE FULL CHAIN (what we proved tonight, fry1544-1563)
+===================================================================================
+SHIPPED + VERIFIED:
+- fry1544-1546: network-teardown KERNEL PANIC fixed (1 MB `struct tcp_conn dummy` moved off the kernel stack in
+  tcp_process's RST path). OS survives the killed-helper teardown that used to triple-fault/reset. VERIFIED.
+- fry1551-1552: /proc/self/stat implemented in tbridgefs (real procfs gap; stops ENOENT spam). VERIFIED at file level.
+
+INPUT — PROVEN WORKING, then freezes:
+- OS input delivery is CORRECT: every keystroke reaches Claude's stdin inbuf (29 keys one run, "hello" the next).
+- Kernel epoll + poll_check_fd are CORRECT (fd0 reports POLLIN only when buffered; TBFD0 chk=1 caught it).
+- fry1560: TYPING ECHOED — screenshot shows "hhello" in the prompt; Claude read(fd0) consumed 6+2 bytes. PROVEN.
+- Then it FROZE: the main thread (pid=14) stopped polling the stdin epoll set (epfd=5) and went silent; later keys
+  (backspaces/Enter) sat unread.
+
+RULED OUT (with evidence): MCP servers; missing /proc/self/stat; epoll EPOLLONESHOT (kernel level-triggers fd0);
+DNS/network (works); spurious socket readiness (POLLIN gated on real rx); JSC futex lost-wakeup (jsc waits all
+return); scheduler wake/enqueue (has a lost-wakeup detector + prior fix fry1506); worker crash (no tgid=14 SEGV).
+
+===================================================================================
+ROOT CAUSE (mechanism, fry1563-1564)
+===================================================================================
+The freeze is JSC's stop-the-world garbage collector failing to suspend threads:
+- pid=15 = JSC GC/coordinator. To GC, it suspends every other tgid=14 thread via signal sig=30 (handler 0x4c23470),
+  scans their stacks, then resumes them. The main thread (pid=14) initiates GC and busy-waits (userspace) for the
+  world to stop before continuing its event loop.
+- The sig=30 handler parks the thread with rt_sigsuspend (nr=130) until resume. TaterTOS rt_sigsuspend
+  (syscall.c:1662) DOES block: `while(!lx_pending_handled_mask(cur)){sched_block;sched_yield;}`.
+- BUG OBSERVED: rt_sigsuspend returns -EINTR (rc=0xfffffffffffffffc) IMMEDIATELY. Reason: while the thread runs its
+  sig=30 handler, pid=15 queues ANOTHER sig=30 to it (seen in-trace: "TBSIG queue sender=15 target=19 sig=30" between
+  deliver and sigreturn). JSC's sigsuspend mask UNBLOCKS sig=30 (to receive resume), so the already-pending duplicate
+  sig=30 makes sigsuspend return at once -> handler returns (sigreturn) -> thread RESUMES instead of staying parked.
+- WHY pid=15 sends duplicates: it never receives the handler's "I am suspended" confirmation (a semaphore = futex
+  post from the handler back to the coordinator), so it retries the suspend signal. sig=30 lifecycle counts:
+  queue=122, deliver=106, sigreturn=106 -> 16 suspend signals queued-but-never-delivered; pid=15 keeps re-signaling
+  19/41 AFTER the freeze.
+NET: stop-the-world never completes -> pid=14 (main/event loop) hangs waiting -> stdin no longer polled -> input dead.
+It is intermittent because the debug beacons' serial latency opened a brief pre-GC window where typing worked.
+
+===================================================================================
+FIX DIRECTION (next session / next steps) — keep Claude FULLY NETWORKED
+===================================================================================
+The failing link is the JSC suspend/confirm handshake under TaterTOS signal+futex semantics. Candidate fixes, in order:
+1) CONFIRM the confirmation path: trace what pid=15 does between sending sig=30 to a target and re-sending — is it
+   futex/sem_wait-ing for the handler's sem_post and timing out? Find why the handler's post (futex_wake) does not
+   satisfy pid=15's wait (lost wake on the semaphore futex, or pid=15 polls with a short timeout and re-signals).
+   FIX that so one suspend signal + one confirmation suffices (no duplicate sig=30) -> sigsuspend then blocks until the
+   real resume.
+2) SIGNAL-DELIVERY-TO-BLOCKED-THREADS: the 16 undelivered sig=30 suggest threads blocked in futex/epoll are not getting
+   pending signals delivered (no EINTR interrupt of the wait). Make a blocking wait (futex/epoll/poll) return EINTR and
+   run the pending handler when a signal is posted -> every thread reaches the safepoint. (Real, networked-safe.)
+3) sigsuspend semantics: ensure the signal CURRENTLY being handled is masked during its own handler (Linux default,
+   unless SA_NODEFER), and that lx_pending_handled_mask / rt_sigsuspend only return for a signal delivered AFTER the
+   wait began, not one already pending from the same suspend round.
+Verify after: GC completes; main thread resumes; typing stays live ACROSS a GC; type a prompt + Enter -> Claude responds.
+Then: remove TBFD0 (fry1554) + TBEPW (fry1558) beacons; re-verify with MCP ON (drop CLAUDE_NO_MCP); re-verify the
+teardown panic fix still holds.
+
+===================================================================================
+REPRO / MECHANICS
+===================================================================================
+Build: make clean && STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.177 \
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+Run (headed): setsid -f env DISPLAY=:0 qemu-system-x86_64 ... -cdrom out/tatertos64v3.iso -drive ...nvme... -device e1000
+  ... -display gtk -serial file:/tmp/serial.log  (full cmd in fry1543/1546).
+Drive: Shell -> claude -> trust -> main UI -> type. Serial = truth. Key greps: TBPROCIN (delivery), TBREAD fd=0 (consume),
+  TBFD0 (fd0 epoll readiness), TBEPW (which epoll set), TBSIG ...sig=30 (GC suspend), TBFUTEX jsc-*, rt_sigsuspend rc.
+
+All per planv3 Rules 1/5/6/12. Written as the consolidated handoff for the input thread.

@@ -1,0 +1,29 @@
+fry1698 — 2026-06-21 00:10 CDT
+STEP: VERIFY Step 1 (os.environ fix) — WORKS. New blocker: pymalloc crash.
+
+VERIFY (serial /tmp/fry1698_qemu_serial.log + screenshot /tmp/fry1698_crop.png,
+  observed):
+  * STEP 1 SUCCESS: serial shows ENV-HOME='/nvme', ENV-COUNT=10. The
+    "Could not determine home directory" RuntimeError is GONE. os.environ is
+    populated from the kernel env (fry1697 fix verified end-to-end).
+  * Bootstrap now prints the full PYTHON ENVIRONMENT banner (Python 3.14.5,
+    Prefix /nvme/usr/local, Path entries: 5, path list) and reaches the
+    STANDARD LIBRARY section header — further/cleaner than before.
+
+NEW BLOCKER (separate, deeper): python pid=10 faults:
+  USER FAULT pid=10 vec=14 err=0x4 rip=0x6b5c0f cr2=0x10
+  nm python3.elf: rip 0x6b5c0f is IN _PyObject_Malloc (0x6b5bf0..0x6b5da0, +0x1f).
+  err=0x4 = user read of not-present page; cr2=0x10 = deref of (NULL+0x10) =
+  a NULL pool/arena pointer inside pymalloc. Classic signature: new_arena()/pool
+  management returned NULL (e.g. arena mmap failing) and got dereferenced, OR a
+  pymalloc invariant/heap state is corrupt on this platform. Self-test does NOT
+  complete (drops to prompt at STANDARD LIBRARY).
+  Note: this is the actual allocator, so it can present non-deterministically.
+
+NEXT: investigate the pymalloc/arena path (does the arena mmap via
+  vm_commit_private_pages ever return NULL/short? check SYS_MMAP failure modes
+  + pymalloc new_arena handling). NOT part of Step 1 — fresh issue.
+
+STEP 1 STATUS: DONE + VERIFIED. Roadmap Step 2 (_ssl) / Step 3 (agent) unchanged.
+CLEANUP still owed: fry1685 FBT (irqdesc.c), fry1688 marker (python.c), fry1697
+  diag (bootstrap.py), fake _ssl registration (config.c).

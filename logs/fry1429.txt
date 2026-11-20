@@ -1,0 +1,42 @@
+fry1429 — Tater Bridge / Claude Code: stream-json flight recorder came
+back EMPTY — claude never emits even the system/init event in-guest.
+It dies (silently, exit 0) BEFORE session start, after the stdin
+warning. Host lab then eliminated the environment AND MCP config as
+causes: the guest's exact 5-var env reproduces a PERFECT run on host
+(full event stream + reply), with or without the agent-bus mcpServer
+in .claude.json. Auth files confirmed read in-guest (3x
+/.claude/.credentials.json opens). Only unimplemented syscall hit:
+statx (benign glibc fallback). The divergence is kernel-behavioral
+and sits between the stdin warning and init-event emission.
+Date: 2026-06-12. Author: Claude (Fable 5).
+========================================================================
+
+GUEST BOOT (-smp 2, argv + stream-json + --verbose)
+====
+- TBSTDOUT count: 1 (the 157B stdin warning, stderr). ZERO stdout
+  writes; ZERO JSON events. On host the init event is the FIRST
+  stdout write and follows the stdin warning within ~a few hundred
+  syscalls. So the failure window is now precisely bracketed:
+  [stderr stdin-warning write] -> [should-be init-event write].
+- Otherwise the usual shape: 3x :443 connects, responses received,
+  ~60s of event-loop life, TBEXIT group code=0, census 0/0/0/8.
+
+HOST LAB (same binary, guest-equivalent conditions)
+====
+1. env -i PATH=/apps LD_LIBRARY_PATH=/usr/lib:/lib64 HOME=<ro, auth
+   only> TMPDIR=/tmp TATERTOS=1, stdin non-tty: stream-json run is
+   PERFECT (5.6KB events incl init, result; RC=0) — environment
+   exonerated, read-only HOME exonerated (again), PATH-with-no-
+   spawnables exonerated (MCP/agent-bus spawn fails gracefully).
+2. Same with mcpServers stripped: identical success — MCP config
+   exonerated as a hard blocker either way.
+
+NEXT (fry1430) — DIVERGENCE-WINDOW FULL TRACE
+====
+Landed in tree: TBFULL — full unfiltered syscall trace (nr, a1-a3,
+rc) for 3000 tgid-3 syscalls, armed exactly at the stdin-warning
+stderr write (lx_write_fd arm site; dispatch-tail printer). Host
+reference: strace -f of the same run, cut at the warning write, next
+~3000 syscalls. First structural divergence = the bug. No more
+one-hypothesis boots.
+Raw serial: /tmp/s_fry1429.log.

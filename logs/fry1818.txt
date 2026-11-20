@@ -1,0 +1,68 @@
+fry1818 — nanosleep() ALWAYS FAILED (ENOSYS) while SYS_NANOSLEEP sat unused;
+          nanosleep + clock_nanosleep now real — 2026-09-26
+==========================================================================
+WHAT: Third find of the gap_stubs.c sweep. Code edited; log written BEFORE the
+build per planv3 rule 5/6. Not built at time of writing.
+
+=== THE DEFECT ===
+  src/user/libc/gap_stubs.c:254 (BEFORE)
+      int nanosleep(const struct timespec *req, struct timespec *rem)
+      { (void)req;(void)rem; errno=ENOSYS; return -1; }
+  src/user/libc/gap_stubs.c:234 (BEFORE)
+      int clock_nanosleep(clockid_t c, int f, const struct timespec *req,
+                          struct timespec *rem) { return nanosleep(req,rem); }
+nanosleep never slept and never succeeded, and clock_nanosleep inherited that by
+delegating to it. Unlike the other stubs fixed today this one FAILED HONESTLY —
+it just failed at something the OS can actually do.
+
+=== THE IMPLEMENTATION ALREADY EXISTED, UNUSED ===
+  src/include/tatertos/syscall.h:139   SYS_NANOSLEEP = 87
+  src/kernel/proc/syscall.c case 87    validates tv_sec/tv_nsec, converts to
+      milliseconds (rounding sub-millisecond sleeps up to 1ms rather than to 0),
+      sched_sleep(cur->pid, ms) + sched_yield(), writes a zero remainder
+  src/user/libc/libc.c:796             long fry_nanosleep(const struct
+                                         fry_timespec*, struct fry_timespec*)
+fry_nanosleep had NO callers anywhere in the tree. A complete kernel sleep path
+has been unreachable behind a stub that returned ENOSYS.
+
+=== WHY IT MATTERS ===
+Every bounded wait in userspace goes through nanosleep or clock_nanosleep:
+SQLite's busy handler, Python threading timeouts, and any retry-with-backoff
+loop — including hermes_state.SessionDB's own jittered retry
+(_WRITE_RETRY_MIN_S 0.020 / _WRITE_RETRY_MAX_S 0.150, hermes_state.py:394-396).
+A sleep primitive that returns ENOSYS turns a polite retry loop into either a
+hard failure or a hot spin, depending entirely on how the caller reacts.
+Note CPython has other sleep paths (select/poll based) and usleep()/sleep() in
+posix.c:615-623 were always real, so this did NOT break everything — but
+anything reaching for nanosleep specifically got a failure.
+
+=== CHANGE ===
+src/user/libc/posix.c — added before usleep():
+  int nanosleep(const struct timespec *req, struct timespec *rem)
+    NULL req -> EFAULT; negative tv_sec, negative tv_nsec or tv_nsec >= 1e9 ->
+    EINVAL (POSIX). Converts struct timespec -> struct fry_timespec (fry.h:209,
+    both fields int64_t), calls fry_nanosleep(), copies the remainder back when
+    the caller asked for one, maps a negative return to errno = -rc.
+  int clock_nanosleep(clockid_t clock_id, int flags,
+                      const struct timespec *req, struct timespec *rem)
+    Returns the error NUMBER directly rather than setting errno, per POSIX —
+    the old stub got this wrong too by forwarding nanosleep's -1.
+    TIMER_ABSTIME (time.h:81) is honoured properly: the absolute deadline is
+    converted to a relative interval against the SAME clock via clock_gettime()
+    (time_ext.c:164), with nanosecond borrow. A deadline already in the past
+    returns 0 immediately, and rem is deliberately not written in the absolute
+    case, both as POSIX specifies.
+src/user/libc/gap_stubs.c:234 and :254 — both stubs DELETED with comments
+recording what they did and not to reinstate them.
+
+=== HONEST LIMITATION ===
+The kernel's case 87 quantises to MILLISECONDS. A request finer than 1ms sleeps
+for 1ms, so sub-millisecond precision is not available. That is a property of
+the kernel path, not of this wrapper, and it is not hidden behind a rounding
+trick here. Finer granularity would be a kernel change and is not in scope.
+
+=== WHAT IS NOT CLAIMED ===
+Not built, not booted. Not claimed to fix the hermes hang — though of the five
+defects found today this is the one whose failure mode (a wait that cannot
+wait) is closest in shape to a startup that never returns. That is a REASON TO
+LOOK, not a finding.

@@ -1,0 +1,63 @@
+fry1536 - FIX + VERIFIED: epoll(fd0) support -> Claude is INTERACTIVE, reaches its main UI
+Date: 2026-06-15 16:00:47 CDT
+
+Type: CODE CHANGE + HEADED GUI VERIFICATION.
+Implements the fix designed in fry1535 (interactive input dead because epoll_ctl on
+fd 0 returned EBADF, so libuv could not arm its raw-mode stdin watcher -> keystrokes
+read but never dispatched to the Ink prompt). User's diagnosis ("breaks when Claude
+takes over the terminal") pinpointed it.
+
+Why (Rule 6): Claude's interactive TUI manages stdin via libuv epoll on fd 0. fd 0
+has no fd object (serviced through the inbuf ring), so epoll_ctl rejected it (EBADF)
+and stdin was unwatchable. Make fd 0 a valid epoll target and report its readiness
+from the inbuf so the watcher wakes per keystroke.
+
+Change (src/kernel/proc/syscall.c):
+  1) lx_epoll_ctl_fd (~4210): allow target_fd == 0 through the fd-object check
+     (skip the !fd_ptrs/FD_NONE -> EBADF guard for fd 0). add/mod/del then store an
+     epoll item with fd==0 generically. epoll_et_token already returns 0 for fd 0
+     (tokenless) -> level-triggered fallback in the wait loop, which is correct.
+  2) poll_check_fd (~912): for a GUI child (gui_process_running() &&
+     !process_name_is_gui), fd 0 reports FRY_POLLIN ONLY when the inbuf has data
+     (inbuf_head != inbuf_tail), else 0 - so epoll_wait wakes exactly on a keystroke
+     and does not busy-spin on empty stdin. Non-GUI keeps the legacy always-ready
+     behavior (validated serial/stream-json harness untouched). Same inbuf-driven
+     rule applied to the FD_STDIO realfd==0 (stdin dup) branch.
+  Forward-declared process_name_is_gui / gui_process_running for use in poll_check_fd.
+  lx_epoll_wait_fd already calls poll_check_fd per item, so this wires through with
+  no further change.
+
+Build (Rule 12, clean): BUILD_EXIT=0, no errors. syscall.o compiled. Log
+  /tmp/fry1536_build.log.
+
+Headed run (/tmp/fry1536_serial.log; screenshot /tmp/fry1536_render.png): user
+opened Shell, typed claude, reached the trust prompt, pressed Enter.
+
+RESULT - SUCCESS. Claude is INTERACTIVE and reached its MAIN UI:
+  - epoll_ctl on fd 0 now returns EEXIST (-17, rc=0xffffffffffffffef) instead of
+    EBADF (-9): the stdin watcher REGISTERS (first ADD succeeds; EEXIST is libuv
+    re-adding an already-registered fd - normal).
+  - After Enter at the trust prompt, Claude wrote an 1818-byte UI repaint
+    (TBSTDOUT pid=14 fd=12 len=1818, line 21901) - it responded to the keypress and
+    re-rendered. fd0 reads dropped to ~5 (epoll-gated, no spin).
+  - Claude PROGRESSED PAST the trust prompt and SPAWNED subprocesses (pids 28/29/36
+    exiting, separate tgids - claude running tools/commands).
+  - On screen: Claude Code's real main interface - example prompts
+    ("write a test for <filepath>"), /doctor setup notices (it flags the claude
+    binary at /nvme/.local/bin as missing since it runs from /nvme/RCLAUDE.LXE),
+    the input box (cursor), and the "for shortcuts / for agents" footer.
+  => The last interactivity blocker is CLEARED. Claude Code now RUNS INTERACTIVELY
+     in the TaterTOS GUI: loads in seconds, renders its TUI, accepts keyboard input,
+     confirms the trust prompt, and enters its main UI.
+
+MILESTONE (this session, all verified + logged 1521-1536): in-OS interactive Claude
+Code in the TaterTOS desktop. Chain: totfs read batching (fast load) + bounce-buffer
+(correct user reads) + rename rewrite (atomic writes) + fd0 blocking read (no
+EOF-exit) + fd1/2 & fd12 output routing (TUI to the Shell window) + C1 VT parser
+(clean render) + epoll(fd0) (interactive input).
+
+Remaining polish (not blockers): C2 SGR color + small-terminal (78x22) layout
+crowding/garble seen in the main UI; cosmetic post-child-exit Shell repaint;
+optional: provide /nvme/.local/bin/claude so /doctor stops flagging it.
+
+No commit. No hashes (Rule 16). VM left running.

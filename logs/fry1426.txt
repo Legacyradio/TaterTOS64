@@ -1,0 +1,66 @@
+fry1426 — Tater Bridge / Claude Code: stdio-dup "fix" was a NO-OP (my
+fry1425 root-cause was WRONG — fd_is_open() already special-cases fds
+0-2 as open, so Bun's fcntl(1, F_DUPFD_CLOEXEC) was never failing).
+Boot behaved identically: clean exit_group(0), zero output. Owned:
+I patched a precondition without testing it. Evidence beacons +
+PROPER ioctl implementation land in fry1427.
+Date: 2026-06-12. Author: Claude (Fable 5).
+========================================================================
+
+WHAT HAPPENED
+====
+- Rebuilt with the lx_dup_fd_at / dup2 validity changes + F_GETFL
+  stdio default. Boot -smp 2: claude launched, API traffic flowed,
+  exit_group(0), NO reply text on serial, same failing shutdown
+  housekeeping as 1425.
+- Post-mortem re-read of fd_is_open() (syscall.c): `if (fd >= 0 &&
+  fd <= 2) return 1;` — fds 0-2 were ALWAYS "open". The -EBADF I
+  blamed in fry1425 could never fire for oldfd=1. Both fry1426 edits
+  were no-ops (kept: they're harmless and make the intent explicit,
+  but they fixed nothing).
+- Audited the rest of the output chain in source: dup -> FD_STDIO
+  install OK; epoll_ctl ADD accepts FD_STDIO; poll readiness returns
+  FRY_POLLOUT for stdout dups; lx_write_fd FD_STDIO -> kprint_write
+  -> serial. Every layer LOOKS correct, yet no write is ever
+  attempted (TBTRACE logs failures only; a successful stdout write
+  would print its payload via kprint_write — no payload ever seen).
+  Conclusion: stop inferring, instrument the actual path.
+
+PROCESS NOTE (Zack-flagged, correct)
+====
+- Stale processes: fry1425's QEMU idled ~40min past claude's exit
+  before being killed; an old fry1424 monitor was also still alive.
+  Standard now: monitor fires on TBEXIT -> kill the boot immediately;
+  one boot stack + one monitor alive at any time, verified with ps.
+- pkill -f "qemu..." matched my own shell's cmdline and killed it
+  (exit 144) — use the saved PID, not pkill -f with the full pattern.
+
+THE ioctl STUB (Zack-flagged, correct — planv3 violation class)
+====
+LNX_ioctl returns -ENOTTY for EVERY command on EVERY fd kind. Host
+strace of claude 2.1.172: ~1,200 ioctls — TCGETS2 (dominant, fds
+0-7), TIOCGWINSZ, TIOCGPGRP, FIOCLEX. For TTY queries on non-tty fds
+ENOTTY matches real Linux (host redirect gets ENOTTY too). REAL
+divergence: FIOCLEX must SUCCEED (sets close-on-exec) — we fail it.
+FIONBIO must set O_NONBLOCK. FIONREAD must answer from buffers.
+"ioctl FIONREAD -> tolerated" on the watchlist was a stub
+normalizing itself; that classification is retired. Nothing is
+"tolerated" — it is either correct-per-Linux or it is an open bug.
+
+NEXT (fry1427) — two things, both in tree before build
+====
+1. EVIDENCE BEACONS (landed): TBDUP (stdio dup events), TBSTDOUT
+   (every tgid-3 write bound for stdout/stderr/FD_STDIO, cap 400),
+   TBIOCTL (stdio-fd ioctl probes). Settles "did Bun dup / did Bun
+   ever write" with direct observation.
+2. PROPER ioctl dispatch (replacing the blanket): validity by fd,
+   FIOCLEX/FIONCLEX really toggle cloexec, FIONBIO really toggles
+   O_NONBLOCK, FIONREAD answers pipe/socket readable bytes, TTY
+   queries (TCGETS/TCGETS2/TIOCGWINSZ/TIOCGPGRP/TCSETS*) honestly
+   ENOTTY until a real termios device exists, default ENOTTY (the
+   actual Linux errno for inappropriate-ioctl).
+ALSO QUEUED (from fry1425, unchanged): CA store staging in
+build_iso.sh (/etc/ssl/cert.pem + hashed dir) — the TLS-stall lead.
+STANDING ORDER (Zack, recorded): this OS is headed to production.
+No shortcuts, no minimal impls, no "tolerated" stubs — correctness
+is the bar for every change from here.

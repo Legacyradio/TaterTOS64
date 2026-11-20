@@ -1,0 +1,31 @@
+fry1720 — 2026-06-21 13:47 CDT
+STEP: Resumed hermes. Added PT_TLS to user_linker.ld + fixed kernel p_align handling.
+      python3.elf NOW has a real PT_TLS segment. Built clean. NOT yet verified.
+
+CHANGES:
+  1. user_linker.ld: declared `tls PT_TLS FLAGS(4)` in PHDRS (explicit PHDRS means ld
+     won't auto-create it) and added:
+       .tdata ALIGN(0x40) : { *(.tdata .tdata.* .gnu.linkonce.td.*) } :data :tls
+       .tbss  ALIGN(0x40) (NOLOAD) : { *(.tbss .tbss.* .gnu.linkonce.tb.*) *(.tcommon) } :tls
+  2. VERIFIED at binary level: readelf -l python3.elf now shows
+       TLS  off 0x6b13c0 vaddr 0xab03c0  FileSiz 0x8  MemSiz 0x51  align 0x8
+     (was: 0 TLS segments). filesz 8 = .tdata _mi_heap_default; memsz 0x51=81 =
+     +.tbss (_Py_tss_tstate, pkgcontext, recurse).
+  3. p_align FIX (elf.c): the segment p_align came out 8 (ALIGN(0x40) set the section
+     ADDRESS, not sh_addralign). The kernel was clamping tls_align up to 16, but the
+     linker computed the -8 tpoffs with align_up(81,8)=88. Clamp->16 gives
+     align_up(81,16)=96 -> tp shifted +8 -> every __thread var misses by 8 (the same
+     class of bug). Changed `if (tls_align<16) tls_align=16` -> `if (tls_align<1)
+     tls_align=1` so the kernel honors the ELF p_align exactly. Now kernel
+     tls_alloc=align_up(81,8)=88=linker block size; tp-8 = _Py_tss_tstate. Match.
+
+BUILD: make kernel EXIT=0 (kernel.elf 13:46:09); build_iso EXIT=0 (ISO 13:46:45);
+  claude auto-staged; python3.fry (with PT_TLS) staged inode 33. 8GB nvme intact.
+
+EXPECTED on boot+hermes: kernel finds PT_TLS -> maps region @0x7FFF80000000, copies
+  .tdata, zeroes .tbss, fs_base=tp, writes self-ptr at fs:0. __builtin_thread_pointer
+  ()=tp; _Py_tss_tstate resolves into the region; _PyThreadState_Attach sees NULL old
+  state (no fatal); self-test proceeds. STILL prior changes in: kernel self-ptr write,
+  libc tls_base@offset0.
+
+NEXT: reboot, Zack types `hermes`, read serial to END -> fry1721 (actual end state).

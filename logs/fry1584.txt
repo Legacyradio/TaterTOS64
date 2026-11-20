@@ -1,0 +1,36 @@
+# fry1584 - GIVE CLAUDE A SHELL (tools): stage a static busybox as /bin/sh + set SHELL=/bin/sh so the Claude Code Bash tool stops failing with "No suitable shell found" (the in-OS Claude self-reported this, fry1583 screenshot).
+Date: 2026-06-16 08:40 CDT
+Type: tool-enablement: fetch static shell + code change (shell.c env) + build
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+WHY (Rule 6)
+- fry1583: a full conversation with Claude IN TaterTOS works; Claude's own self-diagnosis: web search + network fine,
+  but Bash tool "Hit a wall — No suitable shell found. Claude CLI requires a POSIX shell environment (bash/sh/zsh +
+  $SHELL)." TaterTOS had no shell binary and shell.c's claude envp had no SHELL.
+- The linuxulator runs STATIC ELFs (like RCLAUDE.LXE); host bash/sh are DYNAMIC -> can't stage them. Use a static shell.
+
+WHAT WAS DONE
+1. Fetched the official static busybox: https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox
+   -> ~/tatertos-shell/busybox. Verified: "ELF 64-bit x86-64, statically linked, stripped", 1,131,168 bytes, runs;
+   applets include sh/ash + ls/cat/grep/find/env/uname; STANDALONE shell confirmed (./busybox sh -c 'ls; uname' runs
+   the applets internally, no separate binaries needed) -> one binary covers the Bash tool's needs.
+2. shell.c cmd_claude envp: added "SHELL=/bin/sh" and prepended "/bin" to PATH. (WHY-comment in source.)
+3. Staging: build_iso.sh ALREADY has stage_linux_shell_totfs (gated on STAGE_CLAUDE=1) that pushes $LINUX_SHELL_BIN to
+   /bin/sh AND /bin/bash (build_iso.sh:425-434, default /bin/bash = host dynamic, won't run). Just override
+   LINUX_SHELL_BIN=~/tatertos-shell/busybox at build time -> /bin/sh = static busybox in the ToTFS image.
+
+BUILD (this step's command)
+  make clean
+  STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 LINUX_SHELL_BIN=/home/legacyindieradio/tatertos-shell/busybox \
+  CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.177 \
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+
+NEXT (fry1585 = build result; fry1586 = verify): boot -> claude -> ask it to run a shell command (e.g. "run `ls` and
+tell me what's there" / "run `uname -a`"). Watch: does it stop saying "No suitable shell found" and actually exec
+/bin/sh? Serial: LXEXEC/exec beacons for /bin/sh, the busybox child spawn. NOTE: spawning the shell uses the
+vfork/execve + AF_UNIX-socketpair-stdio child path that had open issues in fry1463-1481 — if "No suitable shell found"
+clears but the command output doesn't return, that subprocess-stdio path is the next gate (expected; chase it then).
+busybox staged as /bin/bash too (busybox has no "bash" applet -> would error if invoked as bash; SHELL=/bin/sh steers
+Claude to /bin/sh which busybox handles as ash).
+
+All per planv3 Rules 1/5/6/12. Written immediately on the change, before the build.

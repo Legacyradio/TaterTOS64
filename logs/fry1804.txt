@@ -1,0 +1,125 @@
+fry1804 — asyncio NameError UNMASKED: real blocker is missing _SC_IOV_MAX in sysconf — 2026-08-10
+==========================================================================
+WHAT: Diagnosed the fry1802/1803 asyncio failure to root cause using in-OS
+experiments driven by xdotool. The NameError was a MASKING ARTIFACT of standard
+CPython behaviour, not a TaterTOS defect. The real blocker is a one-line gap in
+the port: `_SC_IOV_MAX` is not defined, so os.sysconf('SC_IOV_MAX') raises
+ValueError and aborts the asyncio import. No source changed this step.
+
+=== METHOD CHANGE: I now drive the VM keyboard myself ===
+Zack: "cant you just xdo the text?" — correct, and I had been needlessly making
+him type. `xdotool` works on the QEMU GTK window. RULES LEARNED (record these):
+  - Window: `xdotool search --name QEMU` -> the REAL one is the 1280x800 window
+    (id had a decoy 10x10 "qemu" window alongside it).
+  - MUST use XTEST (plain `xdotool type`), NOT `--window <id>`. Synthetic events
+    sent with --window are IGNORED by QEMU's GTK display. Activate the window
+    first: `xdotool windowactivate --sync <id>`.
+  - Do NOT send ctrl+u to clear the line — it leaks a literal 'u' into the guest
+    ("upython3: command not found").
+  - KEYSTROKES GET DUPLICATED at --delay 50..110 ("hasattrr", "ppython3").
+    Keep commands SHORT; verify by screenshot before trusting a null result.
+  - Screenshot with `import -window <id> out.png` to see actual guest state.
+
+🔴 SHELL TOKENIZER CONSTRAINT (shell.c:553-559): the shell splits the command
+line on SPACES ONLY. There is NO quote handling whatsoever. So
+`python3 -c "import asyncio"` becomes three argv entries and breaks. All in-OS
+one-liners MUST BE SPACE-FREE, e.g. `python3 -c __import__("asyncio")`.
+Quotes pass through verbatim (they are not stripped), so they work inside the
+Python string. Also: stdout(fd1) goes to the GUI window, stderr(fd2) goes to the
+SERIAL — write diagnostics to sys.stderr or they are invisible in the log.
+
+=== EXPERIMENT 1 — does it reproduce outside hermes? NO ===
+  python3 -c __import__("asyncio")     -> SUCCEEDS. No traceback, clean prompt.
+  (verified by screenshot AND by absence of any traceback in the serial)
+=> asyncio imports fine standalone. The failure is context-dependent, so a broken
+   import system was ruled OUT immediately.
+
+=== EXPERIMENT 2 — is the NameError a masking artifact? YES ===
+Hypothesis: if a submodule is already in sys.modules when asyncio/__init__ runs,
+`from .base_events import *` is served from sys.modules and SKIPS
+_find_and_load_unlocked(), which is the only place that does
+setattr(parent_module, child, module). Line 26's bare name then cannot resolve.
+IN-OS TEST (space-free):
+  python3 -c sys=__import__("sys");sys.modules["asyncio.base_events"]=__import__("types").ModuleType("asyncio.base_events");__import__("asyncio")
+  -> REPRODUCED the exact "NameError: name 'base_events' is not defined"
+     (serial :3751-3758).
+HOST CONTROL — the decisive one:
+  host CPython 3.14.6 (/usr/lib/python3.14), same test -> FAILS IDENTICALLY.
+=> This is STANDARD CPYTHON BEHAVIOUR on any platform. NOT a TaterTOS bug.
+   The NameError is what you get on the SECOND import attempt after a FIRST
+   attempt failed partway: CPython removes sys.modules['asyncio'] on failure but
+   LEAVES the submodules it already loaded. The retry re-runs __init__ and dies
+   on the stale-submodule NameError, HIDING the original error.
+
+=== EXPERIMENT 3 — unmask the first failure. THE REAL BLOCKER ===
+  python3 -c __import__("prompt_toolkit")
+  -> serial :4105-4122:
+     prompt_toolkit/__init__.py:27 -> application/__init__.py:3
+       -> application/application.py:3 -> import asyncio
+       -> asyncio/__init__.py:48   from .unix_events import *
+       -> asyncio/unix_events.py:23  from . import selector_events
+       -> asyncio/selector_events.py:37  SC_IOV_MAX = os.sysconf('SC_IOV_MAX')
+     ValueError: unrecognized configuration name
+
+=== ROOT CAUSE (exact) ===
+asyncio/selector_events.py:33-39 (upstream, unmodified):
+    _HAS_SENDMSG = hasattr(socket.socket, 'sendmsg')
+    if _HAS_SENDMSG:
+        try:
+            SC_IOV_MAX = os.sysconf('SC_IOV_MAX')
+        except OSError:              # <-- catches OSError ONLY
+            _HAS_SENDMSG = False
+Upstream DOES guard this call — but only against OSError. CPython's
+posix_sysconf raises **ValueError("unrecognized configuration name")** when the
+name is absent from os.sysconf_names, and ValueError sails straight through the
+handler and aborts the import.
+
+WHY THE NAME IS ABSENT: src/include/unistd.h defines _SC_CLK_TCK, _SC_OPEN_MAX,
+_SC_PAGESIZE, _SC_NPROCESSORS_ONLN/CONF, _SC_PHYS_PAGES, _SC_AVPHYS_PAGES,
+_SC_LINE_MAX, _SC_HOST_NAME_MAX, _SC_TTY_NAME_MAX, _SC_GETPW_R_SIZE_MAX —
+but NOT _SC_IOV_MAX. CPython's posixmodule.c builds its sysconf_names table from
+`#ifdef _SC_*` guards, so an undefined macro means the key does not exist at all.
+Confirmed shape of the message matches CPython's undefined-name path exactly.
+Also note src/user/libc/posix.c:598 sysconf() only handles _SC_CLK_TCK,
+_SC_PAGESIZE and _SC_NPROCESSORS_ONLN, returning -1 for everything else.
+
+OPEN SUB-QUESTION (honest, unresolved): experiment 1 showed standalone
+`import asyncio` SUCCEEDING, which means selector_events was imported there
+WITHOUT calling sysconf — i.e. _HAS_SENDMSG was False in that process
+(socket.socket had no 'sendmsg'), while it was True under prompt_toolkit.
+I attempted to measure hasattr(socket.socket,'sendmsg') in-OS twice; BOTH
+attempts were corrupted by xdotool keystroke duplication ("hasattrr",
+"ppython3") and produced no reading. NOT MEASURED — do not assume either way.
+It does not change the fix (SC_IOV_MAX must work regardless) but it should be
+measured before anyone claims to understand the full picture.
+
+=== PROPOSED FIX (fry1805 — NOT approved, awaiting Zack) ===
+Do it properly in the OS, not by patching stdlib:
+  1. src/include/unistd.h: `#define _SC_IOV_MAX 60`   (the Linux value)
+  2. src/user/libc/posix.c:598 sysconf(): `if (name == _SC_IOV_MAX) return 1024;`
+     (Linux IOV_MAX is 1024; asyncio uses it to cap sendmsg iovec batches)
+Rejected alternative: editing asyncio/selector_events.py to catch ValueError.
+That is patching the stdlib to hide an OS gap — wrong layer, and it would have
+to be re-applied on every Python upgrade.
+
+🔴 BUILD HAZARD FOR THIS FIX — THE fry1793 CLASS, STILL LIVE IN Python3.mk:
+unistd.h is a HEADER. The MAIN Makefile has -MMD/-MP since fry1796, but
+**Python3.mk does NOT** (verified: no MMD/MP/DEPFILES anywhere in it). CPython's
+posixmodule.o will NOT rebuild from a header edit — the fix would silently not
+take, and would look like "the fix didn't work". The affected objects must be
+deleted explicitly before `make -f Python3.mk python3`, or Python3.mk must get
+dependency tracking first (the cleaner option, and it is already owed).
+ALSO: `make -f Python3.mk python3` alone cannot build libc objects — the main
+Makefile owns that rule (fry1801). Order: main Makefile for libc/headers, then
+Python3.mk for the relink.
+
+=== STATUS OF THE SESSION'S BLOCKERS ===
+  TLS / _PyThreadState_Attach (fry1788-1801) ...... CLOSED, verified 1 and 4 CPU
+  Network (missing -netdev)  ....................... CLOSED, DHCP:OK
+  Stale objects (fry1793) .......................... CLOSED for main Makefile
+  asyncio import ................................... ROOT-CAUSED, fix proposed
+  Python3.mk header deps ........................... OWED (now actively blocking)
+  🔴 603 uncommitted files, last commit 2026-06-08 .. OWED
+
+VM STATE: QEMU pid 1053887 still running, -smp 4, Shell responsive.
+Serial: logs/fry1803_serial.log (4200+ lines, shared with fry1803).

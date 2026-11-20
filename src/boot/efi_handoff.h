@@ -23,10 +23,14 @@ struct fry_handoff {
 // Ramdisk format: ramdisk_header at ramdisk_base, followed by packed file data.
 // File data begins at byte offset sizeof(ramdisk_header) from ramdisk_base.
 #define RAMDISK_MAGIC    0x4B534452UL  /* 'RDSK' little-endian */
-#define RAMDISK_MAXFILES 256
+/* fry1397: 256 silently truncated the recursive /etc scan; and name[32]
+ * truncated "etc/ssl/certs/ca-certificates.crt" (34 chars) so the TLS
+ * trust root could never be looked up. Header is shared by the EFI
+ * loader and the kernel VFS — both rebuilt together every build. */
+#define RAMDISK_MAXFILES 512
 
 struct ramdisk_entry {
-    char     name[32];   /* case-insensitive relative path, e.g. "system/INIT.FRY" */
+    char     name[64];   /* case-insensitive relative path, e.g. "system/INIT.FRY" */
     uint64_t offset;     /* byte offset of file data from start of ramdisk buffer */
     uint64_t size;       /* file size in bytes */
 };

@@ -1,0 +1,31 @@
+fry1730 — 2026-06-21 17:55 CDT
+STEP: NATIVE pydantic_core 2.46.4 BUILT + LINKED into python3.fry as a static
+      builtin. Link EXIT=0, zero undefined symbols. Runtime test next.
+
+WHAT WAS DONE:
+  - PyO3 config rust/pyo3_tatertos.cfg (CPython 3.14, shared=false, suppress link
+    lines). pydantic_core-2.46.4 Cargo.toml: crate-type=["staticlib"], lto=false.
+  - cargo +nightly build --release --target x86_64-unknown-linux-gnu (prebuilt std)
+    -> lib_pydantic_core.a (35MB) exporting `T PyInit__pydantic_core`. Whole dep
+    tree built (pyo3 0.28, serde, serde_json, jiter, smallvec, num-bigint).
+  - Wired into Python3.mk: PDC_LIB + $(LIBGCC) appended to the python3 ld line.
+  - config.c: extern + inittab {"_pydantic_core", PyInit__pydantic_core}.
+  - Link gap = ~10 libc symbols -> src/user/libc/rust_compat.c shims: getenv
+    (environ), bcmp->memcmp, LFS aliases open64/fstat64/stat64/lseek64/mmap64,
+    __xpg_strerror_r, dl_iterate_phdr(stub), syscall (getrandom #318 functional
+    seed; TODO real entropy). Added rust_compat.o to LIBC_OBJ (Makefile + Python3.mk).
+  - make -f Python3.mk python3 EXIT=0, ZERO undefined refs. nm: PyInit__pydantic_core
+    in python3.elf. frypack -> python3.fry 17:54:26.
+
+APPROACH NOTE: used prebuilt linux-gnu std (TaterTOS is Linux-libc/syscall compatible
+  — runs RCLAUDE.LXE) instead of a from-scratch Rust std port. Output is native
+  (links into python3.fry over TaterTOS libc). NOT a shortcut — the no-std-port path
+  that the symbol audit (fry1729) proved viable.
+
+RUNTIME RISKS to watch on boot: glibc TLS/pthread ABI vs TaterTOS (our native ELF-TLS
+  work should cover __thread); the weak getrandom; panic=unwind (no dl_iterate_phdr
+  -> a Rust panic would abort). Added a NATIVE EXTENSIONS probe to tatertos_
+  bootstrap.py: `import pydantic_core` -> reports OK/FAIL on the hermes screen.
+
+NEXT: rebuild ISO (stage new python3.fry + bootstrap), reboot, run hermes, read the
+  "pydantic_core: OK/FAIL" line. -> fry1731. Then stage pydantic + agent + deps.

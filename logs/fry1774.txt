@@ -1,0 +1,31 @@
+fry1774 — implement native PMM hot-page cache — 2026-06-26
+==========================================================================
+WHAT: Implemented the fry1773 design in src/kernel/mm/pmm.c. All native PMM, under
+the existing g_pmm_lock, no compat surface, memory stays eagerly backed. Build is
+the next step (fry1775).
+
+EDITS (src/kernel/mm/pmm.c):
+  1. State (after g_pmm_lock): #define PMM_PCACHE_MAX 512u; static uint64_t
+     pmm_pcache[PMM_PCACHE_MAX]; static uint32_t pmm_pcache_count;  (BSS, zero-init
+     -> empty at boot; caps parked memory at 2 MB.)
+  2. pmm_pcache_flush_locked() (after free_block): returns every cached page to
+     the buddy via the real free_block() (coalescing). Caller holds lock.
+  3. alloc_pages_range_flush_locked() (before reserve_early_pool): buddy alloc;
+     on failure with a non-empty cache, flush then retry once.
+  4. pmm_alloc_page(): pop from pmm_pcache first (O(1)); else buddy. Cached frame
+     already carries meta=used(0) and is counted in pmm_used_pages -> hand back
+     as-is.
+  5. pmm_free_pages(): after the meta_is_used() check, if order-0 and cache has
+     room, PUSH to cache and return (skip free_block coalescing). Meta stays
+     used(0), pmm_used_pages unchanged. Multi-page blocks still go to the buddy.
+  6. Routed the constrained / multi-page allocators through the flush-retry
+     wrapper: pmm_alloc_early_low, pmm_alloc_page_below, pmm_alloc_pages,
+     pmm_alloc_pages_range, pmm_alloc_pages_below.
+
+ACCOUNTING (verified by reading): caching skips free_block so pmm_used_pages is
+NOT decremented; pop does NOT re-increment -> no double/under-count. A cached page
+held as used(0) the whole time; flush via free_block decrements correctly. Meta on
+a popped page == what a fresh buddy alloc(order 0) would set. Double-free guarded
+by the pre-existing meta_is_used() check.
+
+NEXT (fry1775): make kernel; verify BUILD_EXIT=0 + fresh mtime.

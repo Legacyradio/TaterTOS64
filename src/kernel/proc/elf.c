@@ -53,8 +53,18 @@ struct elf64_phdr {
 } __attribute__((packed));
 
 #define PT_LOAD 1
+#define PT_TLS  7
 #define PF_X 1
 #define PF_W 2
+
+/* Native .fry ELF TLS (variant II, x86-64).  The TLS image + thread-control
+ * block live at a fixed VA in the unused gap between the mmap arena top
+ * (FRY_VM_USER_LIMIT = 0x7FFF00000000) and the user stack base
+ * (USER_STACK_TOP - 16MB = 0x7FFFFF000000).  Above VM_USER_LIMIT, so SYS_MMAP /
+ * vm_find_free_range never collide with it. */
+#define FRY_TLS_REGION_BASE 0x00007FFF80000000ULL
+#define FRY_TLS_TCB_RESERVE 0x1000ULL          /* room for libc struct fry_tls_block */
+#define FRY_TLS_MEMSZ_MAX   0x00400000ULL       /* 4MB sanity cap on the TLS image */
 
 static uint32_t crc32_table[256];
 static int crc_init_done;
@@ -164,9 +174,13 @@ static uint64_t pml4_virt_to_phys(uint64_t pml4_phys, uint64_t virt) {
     return (pt[pt_i] & 0x000FFFFFFFFFF000ULL) + (virt & 0xFFFULL);
 }
 
-int elf_load_fry(const char *path, uint64_t *cr3_out, uint64_t *entry_out, uint64_t *user_rsp_out) {
+int elf_load_fry(const char *path, uint64_t *cr3_out, uint64_t *entry_out, uint64_t *user_rsp_out,
+                 uint64_t *tls_base_out, struct fry_tls_template *tmpl_out) {
     if (!path || !cr3_out || !entry_out || !user_rsp_out) return elf_fail(ELF_LOAD_ERR_BAD_ARGS);
     g_elf_last_error = ELF_LOAD_OK;
+    if (tls_base_out) *tls_base_out = 0;
+    if (tmpl_out) { tmpl_out->has_tls = 0; tmpl_out->vaddr = 0; tmpl_out->filesz = 0;
+                    tmpl_out->memsz = 0; tmpl_out->align = 0; tmpl_out->tls_alloc = 0; }
 
     struct vfs_file *f = vfs_open(path);
     if (!f) return elf_fail(ELF_LOAD_ERR_OPEN);
@@ -315,6 +329,114 @@ int elf_load_fry(const char *path, uint64_t *cr3_out, uint64_t *entry_out, uint6
         if (!phys) { vmm_destroy_address_space(pml4_phys); temp_free_pages(tmp_phys, tmp_pages); return elf_fail(ELF_LOAD_ERR_STACK_ALLOC); }
         vmm_map_user(pml4_phys, stack_base + i * 4096ULL, phys, VMM_FLAG_WRITE | VMM_FLAG_USER | VMM_FLAG_NO_EXECUTE);
         mem_zero((uint8_t *)(uintptr_t)vmm_phys_to_virt(phys), 4096);
+    }
+
+    /* ---- ELF TLS (variant II, x86-64) ----------------------------------
+     * Lay out the PT_TLS image so __thread vars (CPython _Py_tss_tstate,
+     * mimalloc _mi_heap_default, ...) have real backing at their linker-
+     * assigned negative offsets from %fs.  Segments are already mapped, and
+     * the file payload buffer is still live, so the .tdata init image is read
+     * straight from the payload. */
+    uint64_t tls_off = 0, tls_filesz = 0, tls_memsz = 0, tls_align = 0, tls_vaddr = 0;
+    int has_tls = 0;
+    for (uint16_t i = 0; i < eh->e_phnum; i++) {
+        if (ph[i].p_type != PT_TLS) continue;
+        tls_off    = ph[i].p_offset;
+        tls_vaddr  = ph[i].p_vaddr;     /* fry1790: pristine .tdata source VA */
+        tls_filesz = ph[i].p_filesz;
+        tls_memsz  = ph[i].p_memsz;
+        tls_align  = ph[i].p_align;
+        has_tls = 1;
+        break;                          /* ABI permits at most one PT_TLS */
+    }
+
+    if (has_tls && tls_memsz > 0) {
+        /* Honor the ELF p_align exactly: the linker computed the local-exec tpoffs
+         * using tls_block_size = align_up(p_memsz, p_align).  Clamping the align UP
+         * (was: <16 -> 16) makes the kernel's tls_alloc larger than the linker's
+         * block, shifting tp so every __thread var misses by the delta (fry1720).
+         * p_align is a power of two; guard only the degenerate 0 case. */
+        if (tls_align < 1) tls_align = 1;
+        if (tls_align > 0x200000ULL ||                       /* > 2MB align: refuse */
+            tls_filesz > tls_memsz ||
+            tls_memsz > FRY_TLS_MEMSZ_MAX ||
+            tls_off > h->payload_size ||
+            tls_filesz > (uint64_t)h->payload_size - tls_off) {
+            vmm_destroy_address_space(pml4_phys);
+            temp_free_pages(tmp_phys, tmp_pages);
+            return elf_fail(ELF_LOAD_ERR_BOUNDS);
+        }
+
+        uint64_t tls_alloc  = (tls_memsz + (tls_align - 1)) & ~(tls_align - 1);
+        uint64_t region_base = FRY_TLS_REGION_BASE;          /* TLS image start */
+        uint64_t tp          = region_base + tls_alloc;      /* %fs / thread pointer */
+        uint64_t map_start   = region_base;                  /* page-aligned by const */
+        uint64_t map_end     = (tp + FRY_TLS_TCB_RESERVE + 0xFFFULL) & ~0xFFFULL;
+
+        if (map_end > USER_STACK_TOP - USER_STACK_PAGES * 4096ULL) {
+            vmm_destroy_address_space(pml4_phys);
+            temp_free_pages(tmp_phys, tmp_pages);
+            return elf_fail(ELF_LOAD_ERR_BOUNDS);
+        }
+
+        for (uint64_t va = map_start; va < map_end; va += 4096) {
+            uint64_t phys = pmm_alloc_page();
+            if (!phys) {
+                vmm_destroy_address_space(pml4_phys);
+                temp_free_pages(tmp_phys, tmp_pages);
+                return elf_fail(ELF_LOAD_ERR_TLS_ALLOC);
+            }
+            vmm_map_user(pml4_phys, va, phys, VMM_FLAG_WRITE | VMM_FLAG_USER | VMM_FLAG_NO_EXECUTE);
+            mem_zero((uint8_t *)(uintptr_t)vmm_phys_to_virt(phys), 4096);
+        }
+
+        /* Copy .tdata init image into [region_base, region_base+filesz).
+         * region_base is page-aligned so each chunk starts at page offset 0. */
+        uint64_t copied = 0;
+        while (copied < tls_filesz) {
+            uint64_t va = region_base + copied;
+            uint64_t phys = pml4_virt_to_phys(pml4_phys, va & ~0xFFFULL);
+            if (!phys) {
+                vmm_destroy_address_space(pml4_phys);
+                temp_free_pages(tmp_phys, tmp_pages);
+                return elf_fail(ELF_LOAD_ERR_SEG_TRANSLATE);
+            }
+            uint64_t page_off = va & 0xFFFULL;
+            uint64_t chunk = 4096 - page_off;
+            if (chunk > tls_filesz - copied) chunk = tls_filesz - copied;
+            mem_copy((uint8_t *)(uintptr_t)(vmm_phys_to_virt(phys) + page_off),
+                     payload + tls_off + copied, chunk);
+            copied += chunk;
+        }
+        /* x86-64 variant-II ABI: the word at the thread pointer (fs:0) MUST hold
+         * the thread-pointer self-value (glibc tcbhead_t.tcb).  CPython & mimalloc
+         * read the thread pointer via __builtin_thread_pointer() (mov %fs:0,%reg)
+         * for every __thread access, so without this self-pointer all __thread
+         * vars resolve against a garbage base and this TLS region is never used.
+         * Write it through the user page (the kernel cannot deref the user VA). */
+        {
+            uint64_t tcb_phys = pml4_virt_to_phys(pml4_phys, tp & ~0xFFFULL);
+            if (!tcb_phys) {
+                vmm_destroy_address_space(pml4_phys);
+                temp_free_pages(tmp_phys, tmp_pages);
+                return elf_fail(ELF_LOAD_ERR_SEG_TRANSLATE);
+            }
+            /* tp is >=16-aligned (tls_align>=16), so the 8-byte store never
+             * crosses the page boundary at tp & ~0xFFF. */
+            *(uint64_t *)(uintptr_t)(vmm_phys_to_virt(tcb_phys) + (tp & 0xFFFULL)) = tp;
+        }
+        /* .tbss [region_base+filesz, tp) stays zero from the map loop; the TCB
+         * positive area (tp+8 .. tp+reserve) is libc's struct fry_tls_block. */
+
+        if (tls_base_out) *tls_base_out = tp;
+        if (tmpl_out) {
+            tmpl_out->has_tls   = 1;
+            tmpl_out->vaddr     = tls_vaddr;
+            tmpl_out->filesz    = tls_filesz;
+            tmpl_out->memsz     = tls_memsz;
+            tmpl_out->align     = tls_align;
+            tmpl_out->tls_alloc = tls_alloc;
+        }
     }
 
     *cr3_out = pml4_phys;

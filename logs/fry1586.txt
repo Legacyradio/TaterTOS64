@@ -1,0 +1,30 @@
+# fry1586 - SHELL FOUND but execve failed (ENOENT): SHELL=/bin/sh pointed at the RO ramdisk root; busybox is actually at /nvme/bin/sh (ToTFS mounts under /nvme). FIX: SHELL=/nvme/bin/sh + PATH=/nvme/bin. Also confirmed the "typing freeze" is the demand-paging grind (NOT Gemini, NOT the shell).
+Date: 2026-06-16 ~15:20 (host clock) CDT
+Type: diagnosis (serial) + code change (shell.c env) + build
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+WHY (Rule 6) — the fry1585 verify result:
+- WIN: the "No suitable shell found" wall CLEARED. Claude's Bash tool ran /bin/sh -c "<cmd>": serial shows
+  TBEXECVE enter pid=38 path=/bin/sh argc=3 envc=17, TBDUP2 fd24->0/fd29->1/fd31->2 (socketpair stdio), LINUXELF open.
+- BUT execve FAILED: TBTRACE ret pid=38 nr=59 execve rc=-2 (ENOENT) -> TBEXIT group pid=38 code=127 (exec-failed).
+- ROOT CAUSE: linux_elf.c prints "LINUXELF: open <path>" then vfs_open(path); if vfs_open==NULL -> return -ENOENT
+  (linux_elf.c:367-369). So vfs_open("/bin/sh") returned NULL. The ToTFS (NVMe) mounts at /nvme in the guest (that is
+  why RCLAUDE is launched as /nvme/RCLAUDE.LXE; totcopy "/X" -> guest "/nvme/X"). So busybox totcopy'd to ToTFS "/bin/sh"
+  is at guest /nvme/bin/sh. SHELL=/bin/sh pointed at the RO BOOT RAMDISK root (which has no /bin/sh) -> ENOENT.
+- busybox itself is fine: ET_EXEC x86-64 static (same type as RCLAUDE), opens; the path was just wrong.
+
+FIX (src/user/shell/shell.c cmd_claude envp)
+- SHELL=/bin/sh -> SHELL=/nvme/bin/sh   (where busybox actually is)
+- PATH=/bin:... -> PATH=/nvme/bin:...   (so tool/command lookup finds the staged bin)
+- WHY-comment updated in source.
+
+ALSO CONFIRMED (answering "wtf did gemini do?"): the "typing stopped" is the DEMAND-PAGING grind (fry1583), NOT Gemini
+(it made no code changes; verified) and NOT the shell. TBDPF cr2 still ADVANCES per fault (5A549246000->9247008->...);
+the main thread is just slowly faulting in pages. Loading busybox + spawning the subprocess adds memory work -> more grind.
+
+NEXT (fry1587 build, fry1588 verify): rebuild (LINUX_SHELL_BIN kept so busybox restages), boot, ask Claude to run a
+command. Expect execve(/nvme/bin/sh) to SUCCEED (busybox loads). THEN watch whether the command OUTPUT flows back via
+the socketpair stdio (the dup2 fd24->0 etc.) — that AF_UNIX-socketpair-stdio inheritance is the fry1463-1481 gate; if
+the shell runs but output doesn't return, that's the next fix.
+
+All per planv3 Rules 1/5/6/12. Written immediately on the diagnosis+fix, before the build.

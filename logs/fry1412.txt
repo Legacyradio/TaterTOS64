@@ -1,0 +1,33 @@
+fry1412 — Tater Bridge / Claude Code: resolver bails pre-send; arg-level
+socket/connect visibility.
+Date: 2026-06-11 ~1:20 PM CDT. Author: Claude (Fable 5). Follows fry1411.
+========================================================================
+
+WHAT WAS FOUND (fry1411 boot)
+====
+- sendmmsg/recvmmsg implemented + unimplemented-logger now serial-visible:
+  and the resolver does NOT call sendmmsg after all — no LXUDP beacons,
+  no unimplemented socket-family nrs (only statx). 
+- The AF_INET DGRAM socket (fd=17) is created then CLOSED WITHOUT ANY
+  send (an openat reuses fd 17 between the two socket creations).
+- TWO socket() calls fail EAFNOSUPPORT (rc=-97) — likely AF_INET6
+  attempts (resolver v6 probe or Bun uSockets v6-first), but the failure
+  beacon didn't print domain/type so it's unconfirmed.
+- glibc send_dg path: socket -> connect -> poll(POLLOUT) -> send. The
+  bail point is between socket and send; connect rc and poll behavior
+  are the suspects (connect errno would have traced; poll misbehavior
+  would not).
+
+CHANGES (compile clean)
+====
+1. LXSOCK beacon now ALSO prints failed creations (domain/type ->
+   EAFNOSUPPORT) — confirms who asks for AF_INET6/AF_UNIX.
+2. New LXCONN beacon in LNX_connect: family, dst ip:port, addrlen, rc —
+   success AND failure, so the resolver's connect outcome is visible.
+
+NEXT
+====
+Boot -> read LXCONN/LXSOCK-fail lines. If connect succeeds and still no
+send: instrument lx_poll_fds returns for the resolver's fd (poll
+semantics bug — e.g. POLLOUT not reported, revents mask, or instant-0
+return on timeout=0). If connect fails: fix what it shows. -> fry1413.

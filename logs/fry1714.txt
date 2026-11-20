@@ -1,0 +1,40 @@
+fry1714 — 2026-06-21 09:25 CDT
+STEP: Diagnosed why `claude` (Claude Code in TaterTOS) stopped working. ROOT CAUSE
+      is MINE, but NOT a code edit — it's a build-side mistake. Recoverable.
+
+WHAT HAPPENED:
+  - build_iso.sh REFORMATS the nvme ToTFS on EVERY run: sgdisk --zap-all (l.390) +
+    mktotfs (l.410) rebuild the partition from scratch, wiping its contents. It then
+    re-stages the small native apps + (via stage_hermes, STAGE_HERMES default 1)
+    python3.fry.
+  - The REAL Claude Code is the Linux binary /nvme/RCLAUDE.LXE (shell.c:1028
+    cmd_claude -> fry_spawn_linux_args). It is staged ONLY when STAGE_CLAUDE=1 AND
+    CLAUDE_BIN set (build_iso.sh:437). It lives ONLY on the nvme (too big for the
+    ramdisk, ~223MB).
+  - I ran build_iso.sh TWICE for the hermes work (08:52, 08:54) WITHOUT
+    STAGE_CLAUDE=1 / CLAUDE_BIN. Both reformatted the nvme and did NOT re-stage
+    RCLAUDE.LXE. -> /nvme/RCLAUDE.LXE gone -> `claude` => "launch failed (Is
+    STAGE_CLAUDE=1 in the image?)".
+  - NOT caused by my elf.c/libc.c edits: RCLAUDE.LXE is a Linux glibc binary loaded
+    by the linux-compat path (NOT elf_load_fry, NOT our libc). claude.fry (313KB
+    native launcher) was relinked at 08:54 by build_iso's `make ... claude` (l.300)
+    but that is not the binary that runs.
+
+RECOVERY (verified prerequisites):
+  - Real binary present: /home/legacyindieradio/.local/share/claude/versions/2.1.185
+    (233584424 B, ELF x86-64 dynamic). (symlink ~/.local/bin/claude -> 2.1.185)
+  - Auth staged automatically (NOT gated on STAGE_CLAUDE): build_iso.sh:449 stages
+    $HOME/.claude.json (09:09) + .claude/.credentials.json (08:05). Present. OK.
+  - FIX = rebuild ISO with:
+      STAGE_CLAUDE=1 STAGE_HERMES=1 \
+      CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.185 \
+      ./build_iso.sh
+    -> reformats nvme, re-stages RCLAUDE.LXE (250MB) + python3 + apps + auth.
+
+LESSON (build discipline): ANY build_iso.sh run reformats the nvme. From now on
+  ALWAYS pass STAGE_CLAUDE=1 CLAUDE_BIN=<latest version> (and STAGE_HERMES=1) so the
+  nvme keeps BOTH the claude binary and python3. (Record in handoff/memory.)
+
+NEXT: awaiting Zack on sequencing — recommend: restore claude first (rebuild with
+  STAGE_CLAUDE=1, NO linker change), verify `claude` works, THEN do the hermes
+  PT_TLS linker fix as a separate rebuild. Or combine into one rebuild if he prefers.

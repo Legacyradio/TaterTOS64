@@ -1,0 +1,29 @@
+fry1672 — 2026-06-20 13:10 CDT
+STEP: Fix the ioctl=SYS_REBOOT bug (and the matching landmine cluster).
+
+WHY: fry1671 proved native nr=11 (SYS_REBOOT) was issued by fry_ioctl on every
+     ioctl() call; CPython's ioctl(fd,FIOCLEX) at startup rebooted/halted the VM
+     -> the "hermes freeze". Grep found 3 sibling stubs firing fry_syscall_raw
+     at equally-wrong numbers. Fixed the whole class so python can't trip them.
+
+CHANGES:
+  src/user/libc/posix.c
+    + #include <sys/ioctl.h>
+    * Rewrote ioctl(): NEVER calls fry_ioctl/raw syscall. Translates the
+      requests upstream code uses:
+        FIOCLEX    -> fcntl(fd, F_SETFD, FD_CLOEXEC)
+        FIONCLEX   -> fcntl(fd, F_SETFD, 0)
+        FIONBIO    -> fcntl(fd, F_SETFL, +/- O_NONBLOCK)
+        TIOCGWINSZ -> fill winsize 24x80 for tty fds, else ENOTTY
+        default    -> errno=ENOTTY, -1
+  src/user/libc/libc.c
+    * fry_ioctl       -> return -ENOTTY (was raw 11 == SYS_REBOOT). Backstop.
+    * fry_getsockname -> return -ENOSYS (was raw 42 == SYS_WIFI_INIT_LOG)
+    * fry_getpeername -> return -ENOSYS (was raw 43 == unused gap)
+    * fry_sigaction   -> return 0 no-op (was raw 13 == SYS_WAIT; TaterTOS
+                         delivers no async signals, so report success)
+
+VERIFY (fry1673): clean rebuild (PYSC trace still in syscall.c), boot headed,
+     user runs `hermes`. Expect: python passes the old nr=11 point and prints
+     "PYTHON ENVIRONMENT". If it stops elsewhere, the trace names the next call.
+     After it works, remove the PYSC trace and do a final clean build.

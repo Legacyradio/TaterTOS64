@@ -37,9 +37,13 @@ struct fry_process;
 #define LNX_pread64           17
 #define LNX_readv             19
 #define LNX_writev            20
+#define LNX_poll              7
 #define LNX_access            21
 #define LNX_sched_yield       24
+#define LNX_mremap            25
 #define LNX_madvise           28
+#define LNX_pipe              22   /* fry1590: legacy pipe(2) — busybox sh uses it */
+#define LNX_pipe2             293  /* fry1590: pipe2(fds, flags) */
 #define LNX_dup               32
 #define LNX_dup2              33
 #define LNX_nanosleep         35
@@ -47,15 +51,47 @@ struct fry_process;
 #define LNX_getdents64        217
 #define LNX_getpid            39
 #define LNX_socket            41
+#define LNX_connect           42
+#define LNX_accept            43
+#define LNX_sendto            44
+#define LNX_recvfrom          45
+#define LNX_sendmsg           46
+#define LNX_recvmsg           47
+#define LNX_shutdown          48
+#define LNX_bind              49
+#define LNX_listen            50
+#define LNX_getsockname       51
+#define LNX_getpeername       52
+#define LNX_socketpair        53
+#define LNX_setsockopt        54
+#define LNX_getsockopt        55
 #define LNX_clone             56
 #define LNX_fork              57
+#define LNX_vfork             58
+#define LNX_execve            59
 #define LNX_exit              60
 #define LNX_wait4             61
 #define LNX_kill              62
 #define LNX_uname             63
 #define LNX_fcntl             72
+#define LNX_fsync             74
+#define LNX_fdatasync         75
+#define LNX_truncate          76
+#define LNX_ftruncate         77
 #define LNX_getcwd            79
+#define LNX_chdir             80
+#define LNX_fchdir            81
+#define LNX_rename            82
+#define LNX_mkdir             83
+#define LNX_rmdir             84
+#define LNX_unlink            87
+#define LNX_symlink           88
 #define LNX_readlink          89
+#define LNX_chmod             90
+#define LNX_fchmod            91
+#define LNX_chown             92
+#define LNX_fchown            93
+#define LNX_lchown            94
 #define LNX_gettimeofday      96
 #define LNX_getrusage         98
 #define LNX_sysinfo           99
@@ -86,8 +122,16 @@ struct fry_process;
 #define LNX_inotify_add_watch 254
 #define LNX_inotify_rm_watch  255
 #define LNX_openat            257
+#define LNX_mkdirat           258
+#define LNX_unlinkat          263
 #define LNX_newfstatat        262
+#define LNX_renameat          264
+#define LNX_renameat2         316
+#define LNX_symlinkat         266
+#define LNX_fchmodat          268
+#define LNX_ppoll             271
 #define LNX_set_robust_list   273
+#define LNX_utimensat         280
 #define LNX_get_robust_list   274
 #define LNX_epoll_pwait       281
 #define LNX_signalfd          282
@@ -95,14 +139,19 @@ struct fry_process;
 #define LNX_eventfd           284
 #define LNX_timerfd_settime   286
 #define LNX_timerfd_gettime   287
+#define LNX_accept4           288
 #define LNX_signalfd4         289
 #define LNX_eventfd2          290
 #define LNX_epoll_create1     291
 #define LNX_inotify_init1     294
+#define LNX_recvmmsg          299
 #define LNX_prlimit64         302
+#define LNX_sendmmsg          307
+#define LNX_execveat          322
 #define LNX_getrandom         318
 #define LNX_rseq              334
 #define LNX_clone3            435
+#define LNX_epoll_pwait2      441
 #define LNX_close_range       436
 
 /* ---- arch_prctl subfunctions ---- */
@@ -120,6 +169,10 @@ struct fry_process;
 #define LNX_MAP_FIXED       0x10
 #define LNX_MAP_ANONYMOUS   0x20
 #define LNX_MAP_NORESERVE   0x4000
+
+#define LNX_MREMAP_MAYMOVE   0x1
+#define LNX_MREMAP_FIXED     0x2
+#define LNX_MREMAP_DONTUNMAP 0x4
 
 /* ---- Linux clone/clone3 flags used by Tater Bridge ---- */
 #define LNX_CLONE_VM              0x00000100ULL
@@ -147,6 +200,21 @@ struct fry_process;
 #define LNX_O_DIRECTORY  0x10000u
 #define LNX_O_CLOEXEC    0x80000u
 
+/* ---- Linux socket-family constants used by the translator ---- */
+/* socket()/accept4() type flags (same numeric values as O_NONBLOCK/O_CLOEXEC) */
+#define LNX_SOCK_NONBLOCK  0x800u
+#define LNX_SOCK_CLOEXEC   0x80000u
+#define LNX_SOCK_TYPE_MASK 0xFFu
+
+#define LNX_AF_UNSPEC  0
+#define LNX_AF_UNIX    1
+#define LNX_AF_INET    2
+#define LNX_AF_INET6   10
+#define LNX_AF_NETLINK 16
+
+#define LNX_SOL_SOCKET 1
+#define LNX_SOL_TCP    6
+
 #define LNX_S_IFMT   00170000u
 #define LNX_S_IFDIR  0040000u
 #define LNX_S_IFCHR  0020000u
@@ -169,11 +237,16 @@ struct fry_process;
  * Returns 0 on success; negative errno on failure. brk_out receives the
  * initial program break (page-aligned end of the highest PT_LOAD).
  */
+struct lx_img_seg;
 int elf_load_linux(const char *path,
                    const char *const *argv, int argc,
                    const char *const *envp, int envc,
                    uint64_t *cr3_out, uint64_t *entry_out,
-                   uint64_t *rsp_out, uint64_t *brk_out);
+                   uint64_t *rsp_out, uint64_t *brk_out,
+                   struct lx_img_seg *img_segs_out, uint8_t *img_nsegs_out,
+                   uint64_t reuse_src_cr3,
+                   const struct lx_img_seg *reuse_src_segs,
+                   uint8_t reuse_src_nsegs);
 
 /* Create + enqueue a Linux process. Returns pid (>0) or negative errno. */
 int process_launch_linux(const char *path,

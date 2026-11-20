@@ -1,0 +1,80 @@
+# fry1642 - Claude Code WORKING + AUTHENTICATED in TaterTOS: fixed DNS (kernel resolv.conf from DHCP), OAuth (restore config+token staging per fry1483), and Bash tool (stage busybox /bin/sh). Tool test green except Bash (now fixed, pending re-test).
+Date: 2026-06-19 (host clock) CDT
+Type: kernel change + build_iso staging restore + image staging + verification
+Author: planv3 Rules 1/5/6/12 + CLAUDE.md
+
+================================================================================
+####  >>>>>  BOLD OPEN ITEM -- COSMETIC TUI RENDERING IS BROKEN  <<<<<  ####
+================================================================================
+**  The in-OS Claude TUI LAYOUT IS VISUALLY BROKEN: columns are stretched far  **
+**  too wide (label on the far left, value on the far right with a huge gap),   **
+**  and CHARACTERS ARE DROPPED / MISSING in places. This is a SHELL TERMINAL    **
+**  RENDERER bug (src/user/shell/shell.c term_render / the 120x36 SHM surface   **
+**  VT parser term_feed), NOT a functional bug -- Claude works, tools respond.  **
+**  MUST FIX before this is presentable. Suspects: column-width / line-wrap     **
+**  math in term_render, glyph cell advance, or VT escape handling dropping     **
+**  cells. Zack flagged it explicitly. DO NOT ship/demo until the TUI renders   **
+**  clean. Separate task from the network/auth/bash work below.                 **
+================================================================================
+
+CONTEXT: post-DeepSeek-rebuild, Claude in TaterTOS failed at the network layer,
+then auth, then Bash. All three were STAGING/derivation regressions the rebuilds
+dropped -- fixed by restoring real behavior, not hacks.
+
+(1) DNS  ----------------------------------------------------------------------
+Symptom: "connection refused" + canned "may not be available in your country"
+(a RED HERRING, not geo). NOT a Tailscale conflict -- I wrongly chased Tailscale
+repeatedly; Zack was right there is none. Guest DNS goes to slirp 10.0.2.3 and
+resolves fine via the host, as always.
+Root: image shipped NO /etc/resolv.conf. Bun/glibc opens absolute /etc/resolv.conf
+-> resolves against the RAMDISK root (NVMe is mounted at /nvme, so /nvme/etc != /etc)
+-> ENOENT -> glibc fell back to dead 127.0.0.1:53 -> ECONNREFUSED.
+Fix (src/kernel/proc/syscall.c): added lx_sync_resolv_conf() + a /etc/resolv.conf
+branch in lx_open_path (mirrors the existing /etc/localtime redirect). On open it
+writes /nvme/etc/resolv.conf = "nameserver <net_get_config()->dns_server>" from the
+LIVE DHCP lease -> production-correct for bare metal, NO hardcoded IP, no QEMU
+assumption. Verified: serial shows LXUDP tx dst=10.0.2.3:53 and Claude connects.
+
+(2) OAuth / login  ------------------------------------------------------------
+Symptom: Claude showed a browser sign-in URL it can't open in-OS.
+Root: build_iso reformats the NVMe every build (sgdisk --zap-all + mktotfs), which
+dropped the OAuth staging documented in fry1483. Only a token-less stub .claude.json
+remained -> missing hasCompletedOnboarding -> first-run login.
+Fix (build_iso.sh, restoring fry1483's step): stage host ~/.claude.json (oauthAccount
++ hasCompletedOnboarding; strip bulky/private `projects`) -> /.claude.json AND
+~/.claude/.credentials.json -> /.claude/.credentials.json. BOTH required. HOME=/nvme.
+Verified: extracted /.claude.json (5035B) has oauthAccount+hasCompletedOnboarding;
+token valid (expires 15:17). Result: Claude came up AUTHENTICATED, no login prompt.
+
+(3) Bash tool  ----------------------------------------------------------------
+Symptom: tool test green for DesignSync/ToolSearch/Agent/Skill/AskUserQuestion/
+ScheduleWakeup; "One issue: Bash is broken -- no shell found."
+Root: Claude execs /bin/bash then /bin/sh (serial pid=38 path=/bin/sh). Kernel
+redirects /bin/* -> /nvme ToTFS (fry1588), but NO shell binary was staged there
+(/bin empty). LINUX_SHELL_BIN=busybox was passed on the build but build_iso never
+consumed it -> /bin/sh ENOENT. (busybox has sh/ash, NOT a bash applet -- /bin/sh is
+the working path, as in fry1588-1590; do NOT stage busybox as /bin/bash.)
+Fix: staged ~/tatertos-shell/busybox (v1.35, static, STANDALONE -> applets run via
+sh, no symlinks) -> ToTFS /bin/sh (inode 48). Added the staging to build_iso.sh
+(consume LINUX_SHELL_BIN) so rebuilds keep it. Kernel pipe(22)/pipe2(293) impl
+(fry1590) is already in the tree. STATUS: staged + booted; PENDING in-OS re-test of
+the Bash tool (Zack stepped away to work).
+
+BUILD/RUN NOTES (cost time -- record):
+- Full rebuild reformats NVMe -> MUST re-stage all: STAGE_CLAUDE=1 CLAUDE_NO_MCP=1
+  STAGE_HERMES=1 LINUX_SHELL_BIN=~/tatertos-shell/busybox
+  CLAUDE_BIN=~/.local/share/claude/versions/2.1.177 bash build_iso.sh
+- For small image edits without a rebuild, totcopy onto out/tater_nvme.img @offset
+  1048576 works ONLY for new paths (totcopy refuses to overwrite; reformat to replace).
+- Bash-tool gotchas in THIS harness: `sleep` is blocked; `pkill -f qemu-system-x86_64`
+  SELF-KILLS the wrapper (its cmdline contains the pattern) -> use `pkill -9 -x
+  qemu-system-x86` (comm-based, truncated to 15 chars).
+
+OPEN ITEMS:
+- **TUI cosmetic rendering (see BOLD block above) -- top cosmetic priority.**
+- Bash tool in-OS re-test (run `ls -la /nvme` from Claude; watch serial TBEXECVE
+  /bin/sh -> LINUXELF load done -> output flows back via dup2 socketpair stdio).
+- MCP disabled (CLAUDE_NO_MCP=1) -- not yet exercised.
+- Auto-update failed message in TUI footer (benign; no update path in-OS).
+
+All per planv3 Rules 1/5/6/12. Written immediately after the bash staging, before re-test.

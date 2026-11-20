@@ -1,0 +1,37 @@
+fry1768 — revert compat-layer edits + fix the NATIVE mmap path — 2026-06-26
+==========================================================================
+WHAT: Reverted the fry1764 compatibility-layer changes (hermes is 100% native —
+no compat layer, ever) and implemented the real fix in the native VMM path.
+Build is the separate next step (fry1769).
+
+REVERTS (back to baseline):
+  1. src/kernel/proc/linux_compat.h — removed the LNX_MAP_POPULATE define.
+  2. src/kernel/proc/syscall.c — restored the original LNX_mmap `sparse_reserve`
+     block (the >= 64 MiB gate). The Linux-compat path is untouched again.
+
+NATIVE FIX (src/kernel/proc/syscall.c, vm_map_anon_private_region ~2994):
+  - Removed the eager vm_commit_private_pages() call for non-RESERVE anon-private
+    maps and the matching vm_release_private_pages() error path.
+  - The region is now recorded with committed=0 and the REAL prot. NO physical
+    pages are backed at map time.
+  - First touch of each page traps to the native #PF handler -> lx_try_demand_page
+    commits ONE zero page with the region's prot (lx_map_one zero-fills). Only
+    pages actually touched get backed.
+  - RESERVE maps (prot==0, the native MEM_RESERVE-style address reservation) are
+    unchanged — same committed=0 representation.
+
+WHY SAFE (all native, read-verified):
+  - committed=0 anon-private is ALREADY a supported, exercised state: the native
+    RESERVE path and the demand handler/unmap paths handle it today.
+  - lx_try_demand_page (irqdesc.c:530) fires for ANY user #PF, not gated to a
+    compat layer; it requires kind==ANON_PRIVATE && prot!=0 && not-present -> our
+    new region qualifies.
+  - user_buf_accessible (syscall.c:1361) demand-faults lazy pages before kernel
+    writes into a user buffer, so read()/recv() into fresh anon memory still work.
+  - Demand-fault BATCHING is NOT touched (fry1600 futex-hang landmine avoided);
+    single-page commit baseline preserved.
+
+EXPECTED: churn VA 0x1000003a1000 "VM COMMIT OK" (eager) count -> 0; only the
+handful of touched pages fault in per cycle. Import report unchanged (all OK).
+
+NEXT (fry1769): make kernel; verify BUILD_EXIT=0 + fresh mtime.

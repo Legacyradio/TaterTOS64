@@ -1,0 +1,38 @@
+fry1693 — 2026-06-21 23:16 CDT
+STEP: Enable the missing dep-free C modules (math/_struct/_json/_pickle/array)
+      — incl 3 build failures hit + fixed along the way. BUILD VERIFIED.
+NOTE: fry logs were dropped during the rapid build-fix loop below (rule
+      violation per [[feedback-tatertos-log-per-step]]); this log captures the
+      whole step. Build logs: /tmp/fry1693_build.log, fry1693b, fry1693c.
+
+GOAL (user picked option 3): make the "Missing modules" from fry1691 importable.
+
+ITERATION:
+  1. config.c: registered math,_struct,_socket,_ssl,_json,_pickle,array in
+     _PyImport_Inittab (their .o were compiled+linked but unregistered).
+     -> LINK FAIL: socketmodule.c undefined refs: inet_pton, inet_ntop,
+        inet_aton, inet_ntoa, getservbyname, getservbyport, getprotobyname,
+        if_indextoname. CAUSE: registering _socket makes --gc-sections KEEP
+        socketmodule.c, which needs those libc fns we don't have. _ssl rides on
+        _socket. -> BACKED OFF _socket/_ssl (deferred; need inet_* libc helpers).
+  2. Kept math,_struct,_json,_pickle,array. -> BUILD FAIL: my deferral COMMENT
+     contained "getservby*/..." — the "*/" closed the comment early -> syntax
+     error. Fixed the comment wording.
+  3. -> LINK FAIL: mathmodule.c undefined refs erf, erfc. CPython 3.14
+     mathmodule.c calls erf/erfc directly (no internal m_erf fallback), math.h
+     declares them, libc had no definition. -> Implemented erf/erfc in
+     src/user/libc/math.c (Numerical-Recipes erfc, err<1.2e-7; erf=1-erfc; uses
+     exp/fabs already present).
+
+VERIFIED BUILD (no launch yet, per [[feedback-verify-build-before-launch]]):
+  BUILD_EXIT=0; no undefined refs/errors; python3.fry 23:14, iso 23:16 (fresh);
+  nm python3.elf: `T erf` @0x409d60, `T erfc` @0x409c30; PyInit_math/_struct/
+  _json/_pickle/array all present (T).
+
+DEFERRED: _socket + _ssl — need libc inet_pton/inet_ntop/inet_aton/inet_ntoa +
+  getservbyname/getservbyport/getprotobyname/if_indextoname (then register).
+
+NEXT (fry1694): boot, run hermes, VERIFY on screen that math/struct/pickle/
+  random/json now import (Missing list shrinks). Don't claim until seen.
+CLEANUP still owed: fry1685 FBT (irqdesc.c), fry1688 marker (python.c),
+  fry1690 diag (bootstrap.py).

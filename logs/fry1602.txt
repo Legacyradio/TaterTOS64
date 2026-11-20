@@ -1,0 +1,26 @@
+# fry1602 - VERIFY(fry1601): BASELINE RESTORED — the FREEZE IS GONE. Claude loads from NVMe, RUNS, mouse stays ALIVE (user: "its slow but seems to be having a connection issue"). The "connection issue" was MY launch omission (no NIC), not an OS bug.
+Date: 2026-06-16 ~21:55 (host clock) CDT
+Type: verify (fry1601 build, -smp 1) — SUCCESS on the freeze + launch-config fix
+
+RESULT:
+- The fry1583 single-page baseline (no batch, no lock) on -smp 1 LOADS claude past the NVMe load WITHOUT the
+  loader-futex hard-hang that killed fry1598/fry1599. Mouse alive. Slow page-in = EXPECTED (fry1583 tradeoff).
+  => CONFIRMS the fry1592 demand-BATCH was the regression that hard-hung the loader (even on 1 CPU). Reverting it
+  restored the known-good interactive state. The user's instinct ("worked before we added stuff") was correct.
+- CONNECTION ISSUE root cause: serial showed `E1000: not found (scanned 7 PCI devs)` + `NET:NONIC`. My relaunch
+  commands had dropped the NIC. The working fry runs use: -smp 1 + `-netdev user,id=n0 -device e1000,netdev=n0`
+  (SLIRP: DHCP 10.0.2.15 / gw 10.0.2.2 / DNS 10.0.2.3). NOT an OS regression — a launch-arg omission by me.
+
+ACTION: relaunched SAME baseline ISO + the e1000 NIC (no rebuild needed; the e1000 driver + DHCP/DNS/TLS are in
+  the OS). Expect: claude loads -> DHCP -> DNS -> TLS to api.anthropic.com -> interactive prompt -> typed prompt
+  -> streamed response = full fry1583 end-to-end.
+
+STATE OF THE TREE (clean known-good base):
+  KEEP: network-teardown panic fix, /proc/self/stat, sched dynamic-tgid, pipe()/pipe2(), /nvme redirect, busybox
+        staging (last 3 DORMANT without SHELL env).
+  REMOVED: fry1592 demand-batch, fry1597 lx_map_one lock.
+  FOLLOW-UP PHASES (on top of this verified base, ONE at a time): (1) a CORRECT page-in speedup (IRQ-disabled
+  locked batch, or 2MB hugepages for the big JSC regions) to fix slowness without the hang; (2) re-add the Bash
+  tool (SHELL env) and finish subprocess stdio. Plus pre-push cleanup: strip TB* beacons, decide Grok refcount,
+  re-verify MCP ON, strip OAuth.
+All per planv3 Rules 1/5/6/12. Written immediately on the verify.

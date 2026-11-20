@@ -1,0 +1,122 @@
+fry1797 — NIC restored + TLS instrumentation built & staged; AWAITING BOOT — 2026-08-09
+==========================================================================
+WHAT: Restored the missing network device to the launch line and added bounded
+kprint-only TLS instrumentation to answer one yes/no question: is a spawned
+thread's %fs genuinely distinct from its parent's? Built and staged. NOT BOOTED.
+NO LOGIC WAS CHANGED — every edit is a diagnostic print except the launch line.
+
+=== 1. THE NETWORK FIX (launch_debug.sh) ===
+Added the device that was never there:
+    -netdev user,id=n0 -device e1000,netdev=n0
+launch_debug.sh:7. This restores the fry1650 known-good invocation. fry1794 and
+fry1795 both booted with ZERO network hardware; it never surfaced because hermes
+dies on the threading abort before it needs the network.
+
+DELIBERATELY NOT CHANGED: -smp is still unset (1 CPU). The documented Claude
+launch used -smp 4, but the open blocker is a THREADING bug and changing core
+count now would confound comparison against fry1795. SMP is its own experiment.
+
+Kernel-side networking was re-verified present in fry1796 and is compiled in:
+  e1000 RX descriptor fully zeroed   src/drivers/net/e1000.c:386-391
+  SYS_GETTIME = rtc epoch + uptime   src/kernel/proc/syscall.c:8579-8583
+  /etc/resolv.conf -> live DHCP lease src/kernel/proc/syscall.c:4152-4201
+
+=== 2. THE INSTRUMENTATION (diagnostic only) ===
+Global budget `int g_tlsdbg_budget = 96;` (process.c) caps TOTAL TLSDBG lines so
+a ~1.2M-tick agent import cannot drown the serial log. Every site decrements it.
+All lines are greppable by the single prefix `TLSDBG`.
+
+  src/kernel/proc/process.c
+    process_build_thread_tls() early-out ->
+      "TLSDBG build tid=%u NO_PT_TLS early_out fs=0 has_tls=%u memsz=%lu"
+    process_build_thread_tls() success ->
+      "TLSDBG build tid=%u OK fs=%lx bbase=%lx alloc=%lu next=%lx"
+    process_create_user_thread() ->
+      "TLSDBG spawn path=NATIVE tid=%u parent=%u fs=%lx entry=%lx"
+    process_clone_linux_thread() ->
+      "TLSDBG spawn path=LINUX_CLONE tid=%u parent=%u fs=%lx(from clone arg) rip=%lx"
+
+  src/kernel/proc/syscall.c
+    SYS_GET_TLS_BASE -> "TLSDBG get tid=%u tgid=%u fs=%lx"
+    SYS_SET_TLS_BASE -> "TLSDBG set tid=%u old_fs=%lx new_fs=%lx"
+  (SYS_SET was added because a thread OVERWRITING its own %fs after the kernel
+   built one would silently undo fry1790 — that possibility was untested.)
+
+=== 3. STATIC FINDING THAT MOTIVATED THE path= TAG (hypothesis, NOT a conclusion) ===
+process.c:492 — process_clone_linux_thread does:
+      p->user_fs_base = tls;          /* verbatim from the clone3 arg */
+It NEVER calls process_build_thread_tls. So fry1790's per-thread variant-II TLS
+does not apply on that path AT ALL. If CPython's threads arrive via clone3
+(syscall.c:7773) rather than SYS_THREAD_CREATE (syscall.c:8850 ->
+process_create_user_thread), then fry1790 was never exercised for the thread
+that aborts — i.e. fry1790 is IRRELEVANT rather than ineffective.
+
+THIS IS EXPLICITLY NOT YET A CONCLUSION. fry1789 reached a wrong answer by
+exactly this kind of static reading and fry1790 was built on it and failed. The
+path=NATIVE / path=LINUX_CLONE tag exists to settle it BY OBSERVATION. Do not
+act on this paragraph until the serial says which tag tid 10 carries.
+
+=== 4. BUILD — VERIFIED BEFORE ANY CLAIM ===
+  make kernel      BUILD_EXIT=0, 0 errors
+  Warnings: all pre-existing categories (nested-comment in the resolv.conf
+  block, unused region_ok, maybe-uninitialized slots). NONE originate from this
+  step's edits.
+  Objects rebuilt: EXACTLY process.o + syscall.o — correct, since only those two
+  .c files changed and no header did. (First real exercise of the fry1796 dep
+  tracking on a normal edit; it behaved.)
+  kernel.elf  2026-08-09 22:04:42  2,618,984 bytes (relinked 22:05:18 by build_iso)
+
+  INSTRUMENTATION CONFIRMED PRESENT IN THE BINARY (not assumed):
+    strings kernel.elf | grep -c TLSDBG  ->  6   (all six format strings)
+  Checked because the ELF grew only +40 bytes vs fry1796, which looked too small
+  to trust on size alone.
+
+  bash build_iso.sh   ISO_EXIT=0
+  Staging confirmed from the build log:
+    Staging real claude binary ... versions/2.1.226  -> /RCLAUDE.LXE
+    python3.fry -> /apps/python3.fry (15,820,064 bytes, inode 33)
+    Python stdlib + site-packages staged
+    Hermes Agent (669 .py files) staged
+    "Done. Shell commands: python3, hermes"
+    NO "WARNING" and NO "NOT staged" lines anywhere in the log.
+
+  STAGING NOTE (memory correction): no env vars are needed anymore. build_iso.sh
+  now defaults STAGE_CLAUDE=1 (build_iso.sh:449) and auto-resolves CLAUDE_BIN
+  from ~/.local/bin/claude; stage_hermes.sh defaults STAGE_HERMES=1 and
+  HERMES_SYSROOT=$ROOT_DIR/sysroot. The old documented
+  "STAGE_CLAUDE=1 ... CLAUDE_BIN=.../2.1.177 bash build_iso.sh" line is stale —
+  a bare `bash build_iso.sh` stages everything, and CLAUDE_BIN now resolves to
+  2.1.226, not 2.1.177.
+
+  ARTIFACT ORDERING VERIFIED (the fry1796 staleness trap, closed):
+    newest object       22:04:42  syscall.o
+    kernel.elf          22:05:18
+    out/tater_nvme.img  22:07:47
+    out/tatertos64v3.iso 22:07:48   <- NEWEST, carries this kernel
+  No VM was running before or after; nothing was launched this step.
+
+=== 5. WHAT TO DO NEXT (Zack drives; this is a keypress, nothing to "drive") ===
+  ./launch_debug.sh        (now has the NIC)
+  then type:  hermes
+Read serial to the END. Do not kill the Shell — cmd_hermes -> pump_child_io
+(shell.c:866) blocks for the whole agent run BY DESIGN; "unresponsive" is
+expected, not a hang.
+
+TWO INDEPENDENT QUESTIONS GET ANSWERED IN ONE RUN:
+  A) NETWORK: does DHCP/DNS come up now that a NIC exists?
+  B) TLS: grep the serial for TLSDBG. The decisive comparison is the fs= value
+     on the main thread vs tid 10 (the thread that aborts):
+       - different fs values  -> %fs IS distinct, the tstate collision is NOT a
+         TLS-isolation problem and fry1789/fry1790's whole premise is dead.
+       - same/zero fs values  -> threads share TLS; then path= says whether that
+         is because the clone path bypassed process_build_thread_tls entirely.
+       - a "TLSDBG set" line after a "TLSDBG build" for the same tid -> userspace
+         overwrote the kernel's block.
+
+EXPECTED FAILURE STILL STANDS (unchanged, nothing here fixes it):
+  Fatal Python error: _PyThreadState_Attach: non-NULL old thread state
+  USER FAULT: pid=9 tid=10 rip=0x4e5c79 cr2=0x27
+The point of this step is to make that failure EXPLAIN ITSELF, not to fix it.
+No fix will be written until the serial answers A and B.
+
+STATE: built, staged, verified, NOT BOOTED. No runtime claim is made.

@@ -1,0 +1,28 @@
+fry1745 — 2026-06-22 06:39 CDT
+STEP 3c (native ext): first hermes run after the native link — the native builtin
+       LOADED; failure was a missing pure-Python dep. Staged it, rebuilt, rebooted.
+
+RUNTIME RESULT (fry1744 image, Zack ran hermes):
+  - Error on screen: ModuleNotFoundError: No module named 'typing_extensions'.
+  - DIAGNOSIS (good news): pydantic_core/__init__.py runs `from ._pydantic_core
+    import ...` (the NATIVE builtin) FIRST at line 8 — that SUCCEEDED. The failure is
+    later (core_schema.py imports typing_extensions, a 3rd-party pure-Python dep that
+    wasn't staged). => the natively-built Rust extension _pydantic_core IMPORTS at
+    runtime. Only a Python-level dependency was missing.
+  - (Serial /tmp/fry1744_serial.log had no NATIVEEXT line — hermes' import error
+    surfaced on the GUI before the bootstrap probe's stderr flush; relying on Zack's
+    on-screen read + the import-order logic above.)
+
+FIX:
+  - Staged /usr/lib/python3.14/site-packages/typing_extensions.py (4317 lines) ->
+    sysroot/usr/local/lib/python3.14/site-packages/typing_extensions.py. It is the
+    ONLY 3rd-party pure-Python dep of pydantic_core (rest are stdlib: sys, warnings,
+    typing, re, collections, datetime, decimal).
+  - build_iso.sh ISO_EXIT=0, out/tatertos64v3.iso 06:39:06.
+  - Rebooted (pkill self-interrupt exit144 was cosmetic; VM relaunched cleanly):
+    selftest 106 passed/0 failed, GUI up.
+
+STATE: native _pydantic_core + wrapper + typing_extensions all in the booted image.
+  The native extension already proved it imports; this run should complete the chain.
+NEXT: Zack runs hermes again -> expect `import pydantic_core` to fully succeed ->
+  NATIVEEXT pydantic_core: OK (v2.46.4). Read serial/screen. -> fry1746 (verify).

@@ -1,0 +1,88 @@
+fry1452 — Control audit after user pause: are we really close, and what
+is the next honest blocker? No code change in this step.
+Date: 2026-06-13. Author: Codex.
+========================================================================
+
+WHY THIS LOG EXISTS
+------------------------------------------------------------------------
+Zack paused implementation because the next step started to feel like it
+was being inferred from only the latest log. This note re-anchors the
+Claude Code port status from the long fry1309..fry1451 chain.
+
+AUDIT VERDICT
+------------------------------------------------------------------------
+Claude's claim that the port was "stupid close" was true for the
+original milestone: running the real Claude Code binary, authenticating,
+reaching api.anthropic.com, getting a model response, and printing the
+stream-json result from inside TaterTOS.
+
+Evidence:
+  - fry1447: real claude 2.1.172 launched from NVMe ToTFS, authenticated
+    with OAuth, resolved DNS, completed TLS to api.anthropic.com,
+    dispatched to claude-sonnet-4-6, printed init through result, exit 0.
+  - fry1448: same result path passed under -smp 4. This satisfied the
+    old done bar: auth, model round-trip, and four-core stability.
+
+The current goal is no longer just "can claude answer a prompt." Zack's
+post-fry1448 goal is "claude in TaterTOS should do everything a normal
+Claude Code instance can do." That is a larger parity goal.
+
+CURRENT TRUE STATUS
+------------------------------------------------------------------------
+Done:
+  - real 248 MB Claude Code binary runs from /nvme/RCLAUDE.LXE;
+  - Bun/JSC runtime gets through startup;
+  - DNS, TCP, TLS, API path, stream-json output path are proven;
+  - -smp 4 pass is proven;
+  - transcript JSONL writes under /nvme/.claude/projects are now proven
+    by fry1450 after the fry1449 rename/ftruncate/mkdir-errno tier.
+
+Not done:
+  - OAuth refresh filesystem semantics are incomplete. Staged JSON auth
+    works as a bridge, but refresh locks/mtime/atomic rename still need
+    real semantics later.
+  - normal Claude Code tool/subprocess behavior is not done. fry1450
+    shows posix_spawn failures:
+      MCP server agent-bus -> ENOSYS posix_spawn
+      countFilesRoundedRg -> ENOSYS posix_spawn 'rg'
+    Kernel census behind those failures:
+      LINUXSYS: unimplemented nr=58 (vfork)
+
+IMPORTANT CORRECTION
+------------------------------------------------------------------------
+Do not treat vfork(58) as needed for the old prompt-mode milestone. It is
+not. Prompt mode already worked in fry1447/fry1448.
+
+Do treat vfork/posix_spawn as the next frontier for the new parity goal:
+Claude Code tools, shell helpers, MCP helper processes, and rg-style
+workspace scanning.
+
+IMPLEMENTATION CAUTION
+------------------------------------------------------------------------
+The source audit shows clone3 thread support exists, but execve is not
+currently implemented in the Linux syscall translator. So a real
+posix_spawn path is probably not "just vfork"; it likely requires a
+vfork/fork child path plus execve/execveat support, or a deliberate
+spawn shortcut that launches a new Linux process from the requested path
+without pretending full fork semantics exist.
+
+Next engineering step should be an exec/spawn design cut, not blind
+patching:
+  1. Instrument or inspect the vfork/posix_spawn path enough to confirm
+     whether execve(59) follows immediately after vfork once vfork stops
+     returning ENOSYS.
+  2. Implement the narrowest honest process-spawn path that supports
+     Claude Code's helper launches, preserving existing clone3 thread
+     behavior.
+  3. Verify with a boot that the posix_spawn errors disappear or move to
+     the next named syscall.
+
+BOTTOM LINE
+------------------------------------------------------------------------
+The logs support both statements:
+  - "We are very close" was true for real Claude Code prompt execution.
+  - "There is still work" is true for normal Claude Code parity.
+
+The next honest blocker is subprocess/tool spawning, not networking,
+not TCP receive, not epoll, and not basic Claude prompt execution.
+========================================================================

@@ -1,0 +1,32 @@
+fry1738 — 2026-06-21 21:25 CDT
+STEP 2d (native std phase): define the pthread ABI type batch in unix/tatertos from
+       src/include/pthread.h + sched.h (byte-for-byte). Error count 105 -> 70.
+
+CHANGES (rust/forks/libc/src/unix/tatertos/mod.rs):
+  - Added EXACT pthread layouts from pthread.h:
+      pthread_attr_t {stacksize,stackaddr,guardsize,detachstate,inheritsched,
+        schedpolicy,schedparam:sched_param,scope}
+      pthread_mutex_t{u32}, pthread_mutexattr_t{int}, pthread_cond_t{u32},
+      pthread_condattr_t{int}, pthread_rwlock_t{mutex,cond,readers,writer},
+      pthread_rwlockattr_t{int}, pthread_once_t{u32}, pthread_barrier_t{...},
+      pthread_barrierattr_t{int}, pthread_spinlock_t=c_int, sched_param{int}.
+  - Static initializers all-zero (PTHREAD_MUTEX_INITIALIZER/COND/ONCE) + the
+    CREATE_*/MUTEX_*/PROCESS_* consts, exactly per pthread.h.
+
+RESULT: build-std type errors 105 -> 70 (pthread cluster cleared). All native.
+
+REMAINING MISSING TYPES (17 clusters, each maps to a src/include header):
+  sigset_t<-signal.h ; sockaddr/addrinfo<-sys/socket.h+netdb.h ; sockaddr_in<-
+  netinet/in.h ; termios/speed_t/cc_t/tcflag_t<-termios.h ; dirent<-dirent.h ;
+  tm<-time.h ; passwd<-pwd.h ; (group)<-grp.h ; fd_set<-sys/select.h ; sem_t<-
+  semaphore.h ; rlim_t/rlimit<-sys/resource.h ; lconv<-locale.h ; Dl_info<-dlfcn.h ;
+  wchar_t (re-add — NOT in prelude this config) ; pid_t/uid_t/gid_t ("in this scope"
+  inside new/common/posix — investigate whether they need defining in the tatertos
+  module or re-exporting; do NOT blindly dup -> risk E0659 ambiguity like c_char did).
+  Plus 4x E0573 + value/fn errors (E0425) that will surface after the types resolve.
+
+ASSESSMENT: steady, measurable, 100% native progress (PAL unsupported -> 105 -> 70).
+  Mechanism fully proven. Still the weeks-scale Option-B grind; ~17 type clusters +
+  std unix-PAL tatertos arms + pydantic_core relink remain.
+NEXT: source + add the network/terminal/dirent/tm/passwd/select/sem/resource/locale/
+  dlfcn type cluster from headers; rebuild; measure. -> fry1739.

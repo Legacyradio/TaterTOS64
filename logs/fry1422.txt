@@ -1,0 +1,113 @@
+fry1422 — Tater Bridge / Claude Code: -smp 2 retry boot HUNG at guest
+uptime 75.5s — and the hang diagnosed to an SMP scheduler race:
+context_switch() saves the outgoing task's context AFTER g_sched_lock
+is released, so a second CPU can wake+run a thread whose saved_rsp is
+stale while the first CPU is still on that stack.
+Date: 2026-06-11 ~6:35 PM CDT. Author: Claude (Fable 5).
+Follows fry1421 (-smp 2, TLS completed, API responses received, window
+expired before claude's reply printed).
+========================================================================
+
+CONFIG
+====
+Same image as fry1421 (no rebuild). KVM, -m 6G, q35, -cpu host, -smp 2,
+e1000/slirp, NVMe with RCLAUDE.LXE, serial -> /tmp/s.log, 1800s window.
+Launched 18:21 CDT.
+
+WHAT HAPPENED
+====
+- Boot normal. claude launched, DNS resolved, three TCP connects to
+  api.anthropic.com:443 (fd17/18/19, 160.79.104.10) — same shape as
+  fry1421.
+- TLS in progress on the traced thread: 10x sendto (nr=44), 6x recvfrom
+  (nr=45) observed — ClientHello out, server flight in. Mid-handshake,
+  NOT yet at Finished.
+- At guest uptime now=75571 ms (~85s wall) serial output STOPPED
+  MID-STREAM. Last line ever printed:
+    TBSCHED futex-timeout pid=4 tgid=3 key=80036fbff800e8c8
+            bitset=ffffffff now=75571 wake_time=75571
+  i.e. a futex timeout firing inside sched_tick (timer ISR), then
+  nothing. Trace countdown frozen at [26]; pending 10s futex waits
+  (rel_ms=10000) never expired; guest 'now' never advanced again.
+- Confirmed hard freeze: serial byte count constant for 8+ minutes
+  (watched 150s actively). Host QEMU CPU ~10% — consistent with a
+  spinlock deadlock/wedge under KVM pause-loop-exiting (PLE deschedules
+  pause-spinning vCPUs, so a guest spin deadlock looks near-idle from
+  the host). Killed at 18:34. Raw serial preserved at
+  /tmp/s_fry1422_smp2_hang.log (363,132 bytes).
+
+CONTRAST WITH fry1421
+====
+Same image, same -smp 2: fry1421 ran the full 900s window, completed
+TLS, received a 12,332-byte API response, event loop healthy to the
+end. fry1422 froze at 75s mid-handshake. Same code, divergent outcome
+=> timing-dependent SMP race, not a deterministic regression.
+
+ROOT CAUSE (from source, kernel/proc/sched.c)
+====
+The scheduler publishes a task as wakeable BEFORE its context is saved:
+
+1. Block path: sched_block_futex() (and sched_block_poll/sched_sleep)
+   sets p->state = PROC_WAITING + wait key under g_sched_lock, then
+   UNLOCKS and returns. The thread then reaches sched_tick() to switch
+   away. Its kernel context (saved_rsp) is NOT yet saved — that happens
+   only inside context_switch().
+2. Switch path: sched_tick() picks `next` and sets current[cpu] under
+   g_sched_lock, then RELEASES the lock, and only afterwards runs
+   context_switch(cur, next) — which is what finally writes
+   cur->saved_rsp (sched.c:929; save at sched.c:288ff).
+3. Race: between (1)'s unlock and (2)'s save, another CPU's
+   sched_futex_wake / sched_tick timeout pass sees the thread WAITING,
+   wakes it (wake_runnable_locked), picks it, and context_switch loads
+   its STALE saved_rsp from a previous block — while the first CPU is
+   still executing on that thread's real kernel stack and is about to
+   overwrite saved_rsp. Two CPUs on one kernel stack -> frame
+   corruption -> wedge with IRQs off -> timer dead -> 'now' frozen ->
+   every timed wait sleeps forever. Matches every observable.
+
+   On -smp 1 the window is closed by cli (irq_save_disable spans the
+   whole block+switch sequence on the only CPU), which is why ~1400
+   single-core boots never hit it. This is exactly the class of bug the
+   multicore directive (fry1421, recorded policy) was meant to surface.
+
+   Note fry1419/1420's -smp 1 TLS starvation plus this -smp 2 race
+   means NEITHER config was sound: single-core starved a TLS thread to
+   death; multicore exposes the unsaved-context race. The race is the
+   real bug; fix it, stay multicore.
+
+EOI/timer exonerated: LAPIC timer is periodic mode (lapic_timer.c),
+EOI is sent as chip->ack BEFORE the handler (irqdesc.c:781-783), so a
+missing EOI is not the freeze mechanism. kprint_serial_only locking is
+consistent (g_sched_lock -> kprint_lock only, no inversion).
+
+FIX DIRECTION (fry1423)
+====
+Linux-style "on_cpu" gate, minimal form:
+- Add volatile on_cpu flag to struct fry_process. A task's on_cpu stays
+  1 from the moment it is picked (under g_sched_lock) until
+  context_switch has finished saving its outgoing context (cleared in
+  the switch asm immediately after the rsp store, before loading the
+  new rsp — x86 TSO orders the two stores).
+- sched_tick must never switch to a candidate with on_cpu==1 (another
+  CPU still owns its stack); rotate/skip it for this tick — it is
+  eligible 1ms later.
+- to->saved_rsp must be loaded into a register BEFORE clearing
+  from->on_cpu (after the clear, the old stack can be stolen
+  immediately; no memory operand may reference it).
+- Init: boot contexts and whichever task is currently running get
+  on_cpu=1; fresh tasks 0.
+
+NEXT
+====
+fry1423: implement the on_cpu gate, rebuild, boot -smp 2, 1800s window.
+Then re-attempt the e2e claude reply. -smp 4 pass still required before
+this arc is called done (fry1421 policy). Watch: if freezes persist
+after the gate, next suspects are wake_runnable_locked queue selection
+and the rq residency of `cur` during rotation.
+
+WATCHLIST (carried)
+====
+- ioctl FIONREAD (-ENOTTY) probes — tolerated.
+- nr=83 (-EIO): did not recur in 1421/1422.
+- Beacon volume is the dominant serial load; strip before release.
+- tgid layout under -smp 2: tgid=3, loop thread pid=9; LXDNS pins by pid.

@@ -1,0 +1,54 @@
+fry1527 - RESEARCH: why the prompt still didn't render after fry1526 - Claude writes UI to fd 12 (stdout dup)
+Date: 2026-06-15 14:36:17 CDT
+
+Type: INVESTIGATION / DIAGNOSIS. No code changed in this step.
+Follows fry1526 (output routing fd1/2 -> outbuf + totfs load-time fix). Load time was
+fixed there, but the trust prompt still did not paint. fry1526 RESULT 3 guessed
+"node stuck/spinning in init." This step determines the real cause.
+
+Method: read /tmp/fry1526_serial.log (process structure, stdout-write traces, fd0
+read context) + src/kernel/proc/syscall.c lx_write_fd.
+
+Findings:
+
+1) Process structure (this run): Claude is pid=14 tgid=14 (parent=13, the Shell).
+   Threads 15-21 are clones in tgid 14 (node worker pool); pids 22/23 are later
+   clones, also tgid 14. So the Shell pumps pid 14 and Claude IS pid 14 -> routing
+   target is correct; not a wrong-pid problem.
+
+2) Claude DID render - to the WRONG fd. Serial:
+     line 5885: TBSTDOUT pid=14 fd=12 len=637
+     line 5900: TBF12 pid=14 nr=1 write a3=27d rc=27d   (0x27d = 637 bytes)
+   Claude/Bun dup'd its stdout onto fd 12 and writes its UI there, NOT fd 1/2.
+   (Consistent with the prior-session note "Bun's stdout dup (fd 12)".)
+
+3) Why fd 12 output vanished: src/kernel/proc/syscall.c lx_write_fd
+     - My fry1526 routing only matches (fd == 1 || fd == 2).
+     - fd 12 is FD_STDIO and falls through to the FD_STDIO branch (lines 4873-4879):
+         if (kind == FD_STDIO) {
+             int realfd = stdio_fd_from_ptr(...);
+             if (realfd == 1 || realfd == 2) { kprint_write(src, len); return len; }
+         }
+       So fd 12 (realfd 1) -> kprint_write -> kernel fb console. Under the GUI the
+       compositor owns the framebuffer, so that output is effectively discarded
+       (desktop stays clean, nothing reaches the Shell outbuf -> nothing renders).
+
+4) Correction to fry1526 RESULT 3: node is NOT stalled. The 637-byte prompt write
+   SUCCEEDED (to fd 12); node then sat in its normal idle event loop waiting for
+   input (the ~15k lines of TBFUTEX churn = the idle/heartbeat loop, having read fd0
+   once for setup). The window showed "loading" only because the UI bytes went to
+   fd12 -> kprint -> void instead of the Shell. The earlier "stuck in init" reading
+   is retracted.
+
+Conclusion / fix to implement next (its own fry on completion):
+   Extend the GUI-child output routing to cover stdout/stderr DUPS, not just fd 1/2.
+   In lx_write_fd, for a GUI child (gui_process_running() && !process_name_is_gui),
+   route to the process outbuf in BOTH:
+     - the (fd == 1 || fd == 2) branch, and
+     - the FD_STDIO branch when realfd == 1 || realfd == 2 (catches fd 12).
+   Plan: factor a helper lx_write_outbuf() (block-until-space ring write, already
+   written inline in fry1526) + lx_is_gui_child(), and call from both sites.
+   Expectation: Claude's fd-12 UI reaches the Shell outbuf -> pump -> C1 parser ->
+   window, and with the load now fast, verification is quick.
+
+No code changed. No build. No hashes (Rule 16).

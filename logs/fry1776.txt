@@ -1,0 +1,17 @@
+fry1776 — rebuild ISO with PMM hot-page-cache kernel — 2026-06-26
+==========================================================================
+WHAT: Staged + rebuilt the ISO after the fry1775 kernel build.
+
+PRE-STEP: QEMU confirmed dead via bracket-trick `pgrep -f "[q]emu-system-x86_64"`
+(it was already down from the fry1772 hang-kill).
+
+CMD: bash build_iso.sh
+RESULT: ISO_EXIT=0. out/tatertos64v3.iso 164825088 bytes, mtime 14:33:53 (fresh).
+Live-app fallback verification complete.
+
+NEXT (fry1777): boot, Zack types `hermes`. VERIFY TO COMPLETION (no mid-boot
+snapshot — fry1767 lesson): wait for the SUMMARY / hermes_cli.main line, confirm
+report all-OK + NO hang, and gauge boot->report speed vs the eager baseline. The
+churn-VA eager VM COMMIT OK count will still be high (still eager) — that's
+expected; the win is the per-page free/alloc going O(1) (cache) instead of O(n)
+buddy coalesce/split.

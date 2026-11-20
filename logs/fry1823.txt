@@ -1,0 +1,31 @@
+fry1823 — BUILD CHECK: kernel shebang object compiles clean — 2026-09-26
+==========================================================================
+WHAT: Compile-and-verdict step for the fry1822 edit. Logged as its own file
+because a compile with a verdict IS a step — this is the exact omission Zack
+caught earlier today (fry1820), and he restated it mid-session: "make sure you
+log EVERY step". No source changed here.
+
+=== COMMAND ===
+  export PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+  rm -f src/kernel/proc/process.o
+  make src/kernel/proc/process.o
+
+=== RESULT ===
+  KERNEL_OBJ_EXIT=0
+  Output filtered for "process.c" + error|warning: NOTHING. The new
+  shebang_parse() and the process_launch_args() rewrite compiled with no
+  diagnostics of their own.
+  src/kernel/proc/process.o  26,272 bytes  2026-09-26 22:36
+
+=== WHY THE OBJECT WAS DELETED FIRST ===
+Forced recompilation rather than trusting make to notice. The main Makefile has
+had -MMD since fry1796 so this should be unnecessary — but
+[[reference_tatertos_makefile_no_header_deps]] records a full day lost to 651
+stale objects producing a deterministic-garbage kernel, and an explicit rm costs
+one second. Paranoia here is cheap and has already paid once.
+
+=== WHAT IS NOT CLAIMED ===
+Compiles is not links, and links is not works. The kernel has not been linked or
+booted with this change. Shebang resolution is UNVERIFIED — nothing has executed
+a "#!" file. Two of the three pieces the feature needs are not written yet
+(shell PATH lookup, /usr/bin/env), so `hermes` still cannot work.

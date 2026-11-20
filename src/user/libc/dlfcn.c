@@ -11,6 +11,7 @@
 
 #include "libc.h"
 #include <stdint.h>
+#include <dlfcn.h>
 
 /* -----------------------------------------------------------------------
  * dlerror state
@@ -71,4 +72,28 @@ char *dlerror(void) {
     const char *msg = g_dlerror_msg;
     g_dlerror_msg = 0;
     return (char *)msg;
+}
+
+/* -----------------------------------------------------------------------
+ * dladdr / dladdr1 — symbol lookup from address (stubs)
+ * TaterTOS has no dynamic symbol table. Return 0 (failure).
+ * CPython uses these for traceback symbol resolution — gracefully
+ * degrades to raw addresses when they fail.
+ * ----------------------------------------------------------------------- */
+
+int dladdr(const void *addr, Dl_info *info) {
+    (void)addr;
+    if (info) {
+        info->dli_fname = NULL;
+        info->dli_fbase = NULL;
+        info->dli_sname = NULL;
+        info->dli_saddr = NULL;
+    }
+    return 0;
+}
+
+int dladdr1(const void *addr, Dl_info *info, void **extra_info, int flags) {
+    (void)flags;
+    (void)extra_info;
+    return dladdr(addr, info);
 }

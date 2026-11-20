@@ -1,0 +1,19 @@
+fry1516 - honor routed stdin on fd0 even when it is FD_STDIO
+
+Root cause:
+- The shell was getting fd0 represented as FD_STDIO in the process table.
+- SYS_READ handled fd0 in a special branch only when no redirect override was
+  present, so compositor-routed bytes sitting in shared->inbuf never got
+  drained for that shell.
+- That matched the symptom exactly: typing `help` and pressing Enter did not
+  echo or execute because gets_bounded() was waiting forever on fd0.
+
+Change:
+- src/kernel/proc/syscall.c now treats fd0 as compositor-owned input first in
+  both the native and Linux read paths, before any FD_STDIO special casing.
+- The fd0 branch drains shared->inbuf first and only falls back to raw PS/2
+  input when no GUI-owned bytes are pending.
+
+Why:
+- The GUI must be able to feed the focused shell through stdin, regardless of
+  whether the process table calls fd0 plain stdin or FD_STDIO.

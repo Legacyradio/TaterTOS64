@@ -1,0 +1,41 @@
+fry1405 — Tater Bridge / Claude Code: boot #9 — syscall surface CLEAR.
+Date: 2026-06-11 ~12:20 PM CDT. Author: Claude (Fable 5). Follows fry1404.
+========================================================================
+
+WHAT
+====
+Boot #9 (KVM -smp 1, e1000/slirp, claude 2.1.172) with fry1403's fixes:
+LNX_unlink/unlinkat wired, ramdisk_entry.name 32->64, RAMDISK_MAXFILES
+256->512, CA-bundle staging perm fix (rm -f + chmod 644).
+
+RESULTS
+====
+- Crash count: 0 — FOURTH consecutive clean full-window boot since the
+  fry1401 madvise fix. The numCalleeLocals=0 bug stays dead.
+- /etc/ssl/certs/ca-certificates.crt OPENS in-OS (fd=14, then fd=15 —
+  read twice by Bun's TLS init). The fry1403 ramdisk name-truncation +
+  file-cap diagnosis was correct.
+- unlink: nr=87 GONE from the ENOSYS inventory (claude's config tmp-file
+  replace path now completes).
+- Remaining ENOSYS in the ENTIRE boot: nr=332 statx x1 (glibc falls back
+  to newfstatat on -ENOSYS — by design, no action needed).
+- Resolver socket created (LXSOCK pid=4 AF_INET DGRAM|NONBLOCK|CLOEXEC).
+  No TCP socket yet and no claude stdout: consistent with claude stopping
+  at AUTH (the launch env has no Anthropic credentials — fry1404).
+
+WHY THIS STEP MATTERS
+====
+The kernel-side runway is now CLEAR: every syscall claude asks for is
+served (or has a correct fallback). The remaining gate to a real API
+reply is auth material in the image — Zack's decision (asked, pending):
+stage host ~/.claude/.credentials.json + .claude.json into the image
+HOME, or provide ANTHROPIC_API_KEY in the launch env.
+
+NEXT (fry1406)
+====
+Boot #10 with fry1404's main.c (JSC_useJIT=0 bisect leftover removed —
+full JIT for the first time since fry1395). Confirm stability with JIT
+tiers active (the madvise bug corrupted JIT-visible data; a clean JIT
+boot is the final regression check). Then: diagnostics strip
+(TBBFSRC/TBBFP/TBZSCAN in irqdesc.c, seg-sample in linux_elf.c) and the
+fry1388 512MB stack-cap revert to 64MB, per handoff.

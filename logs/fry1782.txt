@@ -1,0 +1,28 @@
+fry1782 — native _ssl runtime fixes: `import ssl` works (36/36) — 2026-06-26
+==========================================================================
+WHAT: Got the fry1781 native _ssl module to actually IMPORT under ssl.py. Three
+runtime bugs fixed across two crash-boots; result VERIFIED ON SCREEN (shot1784):
+the bootstrap now reports Stdlib 36/36 (was 35/36) — _ssl no longer missing.
+
+CRASH 1 (serial /tmp/fry1782_serial.log): ssl.py:415 building the Purpose enum ->
+"TypeError: Value after * must be an iterable, not NoneType". Cause: _ASN1Object
+.__new__ does `*_txt2obj(oid)`; my txt2obj returned None.
+  FIX: txt2obj returns the 4-tuple (nid, shortname, longname, oid) — echo the
+  text as the oid (BearSSL has no OID registry; only a stable comparable oid is
+  needed). nid2obj likewise returns (nid,"","","").
+
+CRASH 2 (serial /tmp/fry1783_serial.log): ssl.py:422 `class SSLContext(_SSLContext)`
+-> "TypeError: type '_ssl._SSLContext' is not an acceptable base type". Cause: the
+type lacked Py_TPFLAGS_BASETYPE.
+  FIX: tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE on PySSLContext_Type.
+
+ALSO added (so ssl.py's _IntEnum/_IntFlag._convert_ blocks populate, not error):
+the OP_* (Options), SSL_ERROR_* (SSLErrorNumber), ALERT_DESCRIPTION_*
+(AlertDescription) constant sets, using standard OpenSSL values.
+
+VERIFIED (shot1784, read on screen): bootstrap SUMMARY all [OK], Stdlib
+[36/36 available], Hermes core [OK]. `import ssl` + full ssl.py init succeed.
+This proves the module LOADS; a live TLS handshake is still downstream.
+
+NEXT (fry1783): make bare `hermes` launch the real agent CLI (production
+behavior), not the dev diagnostic.

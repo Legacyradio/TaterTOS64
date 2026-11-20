@@ -7,11 +7,13 @@
 #include <stdint.h>
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Public POSIX headers */
 #include <time.h>
 #include <sys/time.h>
+#include <wchar.h>
 
 /* Private TaterTOS ABI */
 #include "libc.h"
@@ -173,6 +175,16 @@ int clock_gettime(clockid_t clk_id, struct timespec *ts) {
     return 0;
 }
 
+int clock_getres(clockid_t clk_id, struct timespec *res) {
+    /* TaterTOS timer resolution: 1 nanosecond (kernel uses HPET/NX-timer).
+     * Report 1ns for all clock IDs. */
+    if (res) {
+        res->tv_sec = 0;
+        res->tv_nsec = 1;
+    }
+    return 0;
+}
+
 double difftime(time_t time1, time_t time0) {
     return (double)(time1 - time0);
 }
@@ -280,6 +292,80 @@ size_t strftime(char *s, size_t maxsize, const char *format, const struct tm *tm
 
     s[pos] = '\0';
     return pos;
+}
+
+/* fry1814: real wcsftime(). This was a gap stub (gap_stubs.c:169) that wrote an
+ * empty string and returned 0. CPython's pyconfig.h:1637 defines HAVE_WCSFTIME,
+ * and Modules/timemodule.c:766-768 then routes time.strftime() through
+ * wcsftime — so EVERY Python timestamp string produced anywhere in TaterTOS
+ * came out empty. Visible as hermes log lines beginning with a bare ",248":
+ * the ",%03d" millisecond tail with nothing in front of it. See logs/fry1812
+ * and fry1813 for how it was found.
+ * The narrow strftime above is correct and complete, so this converts the wide
+ * format to UTF-8, delegates to it, and converts the result back. mbrtowc and
+ * wcrtomb (string_ext.c) are real UTF-8 codecs, so non-ASCII format strings
+ * round-trip properly instead of being masked to 7 bits.
+ * POSIX: returns the number of wide characters written, excluding the
+ * terminating null. If the result will not fit in maxsize, returns 0 and the
+ * contents of s are indeterminate. */
+size_t wcsftime(wchar_t *s, size_t maxsize, const wchar_t *format,
+                const struct tm *tm) {
+    size_t fmt_len, nfmt_cap, nout_cap, i, produced, wpos, npos;
+    char *nfmt;
+    char *nout;
+    mbstate_t st;
+
+    if (!s || maxsize == 0 || !format || !tm) return 0;
+
+    /* Wide format -> UTF-8. Worst case is 4 bytes per wide character. */
+    fmt_len = wcslen(format);
+    nfmt_cap = fmt_len * 4u + 1u;
+    nfmt = (char *)malloc(nfmt_cap);
+    if (!nfmt) return 0;
+
+    memset(&st, 0, sizeof(st));
+    npos = 0;
+    for (i = 0; i < fmt_len; i++) {
+        char mb[8];
+        size_t n = wcrtomb(mb, format[i], &st);
+        if (n == (size_t)-1 || npos + n >= nfmt_cap) { free(nfmt); return 0; }
+        memcpy(nfmt + npos, mb, n);
+        npos += n;
+    }
+    nfmt[npos] = '\0';
+
+    /* Every wide character the caller can accept needs at most 4 UTF-8 bytes. */
+    nout_cap = maxsize * 4u + 1u;
+    nout = (char *)malloc(nout_cap);
+    if (!nout) { free(nfmt); return 0; }
+
+    produced = strftime(nout, nout_cap, nfmt, tm);
+    free(nfmt);
+    if (produced == 0) {
+        /* An empty format legitimately yields an empty string; anything else
+         * means strftime could not produce a result, which POSIX reports as 0. */
+        free(nout);
+        if (fmt_len == 0) s[0] = (wchar_t)0;
+        return 0;
+    }
+
+    /* UTF-8 -> wide, bounded by maxsize with room kept for the terminator. */
+    memset(&st, 0, sizeof(st));
+    npos = 0;
+    wpos = 0;
+    while (npos < produced) {
+        wchar_t wc;
+        size_t n = mbrtowc(&wc, nout + npos, produced - npos, &st);
+        if (n == (size_t)-1 || n == (size_t)-2) { free(nout); return 0; }
+        if (n == 0) break;   /* embedded null: stop, as strftime would */
+        if (wpos + 1 >= maxsize) { free(nout); return 0; }  /* will not fit */
+        s[wpos++] = wc;
+        npos += n;
+    }
+    free(nout);
+
+    s[wpos] = (wchar_t)0;
+    return wpos;
 }
 
 char *asctime(const struct tm *tm) {

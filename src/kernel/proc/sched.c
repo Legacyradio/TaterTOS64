@@ -35,7 +35,11 @@ struct percpu_data {
 
 #define MAX_CPUS 64
 #define MSR_FS_BASE 0xC0000100u
-#define TB_TRACE_CLAUDE_TGID 3u
+/* fry1568: was hardcoded 3u (= some other process, NOT claude) which made every
+ * sched-side trace (TBCLK census, TBSCHED wakes) track the wrong tgid. Use the
+ * dynamic claude tgid set in syscall.c (extern in process.h) so these actually
+ * track claude (tgid=14). */
+#define TB_TRACE_CLAUDE_TGID g_tb_trace_claude_tgid
 
 static struct percpu_data percpu[MAX_CPUS];
 static volatile uint32_t g_sched_ready;
@@ -63,6 +67,16 @@ static uint8_t g_first_context_switch_seen;
 static uint8_t g_first_user_switch_seen;
 static uint32_t g_tb_futex_timeout_logs;
 static uint32_t g_tb_futex_wake_miss_logs;
+static uint32_t g_tb_oncpu_defer_logs;
+static uint32_t g_tb_requeue_logs;
+/* fry1424 TBCLK clock-freeze tracer: per-CPU LAPIC tick counter. The 1422/
+ * 1423 freezes left the LAPIC timer alive (per-vCPU host accrual) while
+ * now_ms() stopped — heartbeat proves which: ticks rising + frozen hpet +
+ * cfg bit0=0 => counter halted (stray MMIO write); cfg bit0=1 + frozen,
+ * per-CPU DIVERGENT hpet => HPET page lost UC, cached reads; frozen and
+ * identical => QEMU-side/deeper. Strip with the other beacons. */
+static volatile uint64_t g_tbclk_ticks[MAX_CPUS];
+static uint32_t g_tb_lost_wake_logs;
 
 extern char __kernel_stack_top;
 
@@ -245,6 +259,8 @@ static void fpu_enable_cpu(void) {
     __asm__ volatile("mov %0, %%cr4" : : "r"(cr4) : "memory");
     __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0xDu), "c"(0u));
     (void)b; (void)d;
+    /* fry1395: AVX-masked bisect (0x3) did NOT change the numLocals=0 crash —
+     * vector save/restore EXONERATED. Restored to full x87+SSE+AVX. */
     uint64_t mask = ((uint64_t)a & 0x7ULL) | 0x1ULL; /* x87 + SSE + AVX, as supported */
     __asm__ volatile("xsetbv" : : "a"((uint32_t)mask), "d"(0u), "c"(0u));
     g_xcr0_mask = mask;
@@ -289,6 +305,16 @@ static void context_switch(struct fry_process *from, struct fry_process *to) {
      * (Doing it after the swap would run in the wrong task's frame.) */
     fpu_save(from);
     fpu_restore(to);
+    /* fry1423 SMP context-save publish protocol:
+     *   1. save outgoing rsp        (mov %%rsp, (from_rsp_ptr))
+     *   2. clear from->on_cpu      — PUBLISH: context fully saved. x86 TSO
+     *      guarantees other CPUs see the rsp store before the clear.
+     *   3. load the new rsp from a REGISTER (to->saved_rsp was read into a
+     *      register before step 2). After step 2 another CPU may immediately
+     *      resume `from` on its old stack, so nothing here may reference
+     *      that stack again — no memory operands after the clear. IRQs are
+     *      off across the switch, so no interrupt frame lands on the old
+     *      stack in the one-instruction gap either. */
     __asm__ volatile(
         "pushfq\n"
         "push %%rax\n"
@@ -306,8 +332,9 @@ static void context_switch(struct fry_process *from, struct fry_process *to) {
         "push %%r13\n"
         "push %%r14\n"
         "push %%r15\n"
-        "mov %%rsp, %0\n"
-        "mov %1, %%rsp\n"
+        "mov %%rsp, (%0)\n"
+        "movb $0, (%1)\n"
+        "mov %2, %%rsp\n"
         "pop %%r15\n"
         "pop %%r14\n"
         "pop %%r13\n"
@@ -325,8 +352,8 @@ static void context_switch(struct fry_process *from, struct fry_process *to) {
         "pop %%rax\n"
         "popfq\n"
         "ret\n"
-        : "=m"(from->saved_rsp)
-        : "m"(to->saved_rsp)
+        :
+        : "r"(&from->saved_rsp), "r"(&from->on_cpu), "r"(to->saved_rsp)
         : "memory");
 }
 
@@ -347,6 +374,7 @@ static void init_boot_context(uint32_t cpu, uint64_t stack_top) {
     *(uint32_t *)(boot->fpu_area + 24) = 0x1f80u; /* MXCSR default (exceptions masked) */
     boot->state = PROC_RUNNING;
     boot->cpu = (uint8_t)cpu;
+    boot->on_cpu = 1;  /* fry1423: this context IS running on this CPU now */
     boot->is_kernel = 1;
     boot->cr3 = vmm_get_kernel_pml4_phys();
     boot->kernel_stack_top = stack_top;
@@ -776,6 +804,79 @@ uint32_t sched_wake_futex(uint64_t key, uint32_t max_wake,
     return woke;
 }
 
+/*
+ * fry1506: race-free pid-wait (wait4) primitives. See sched.h. The OLD path had
+ * a lost-wakeup race — process_wait4 checked the child's ZOMBIE/DEAD state with
+ * NO lock, then blocked on an INFINITE wait, while proc_free marked the child
+ * DEAD + woke waiters also with NO lock (g_sched_lock is private to sched.c so
+ * process.c could not synchronize). On -smp the child's exit could land between
+ * the waiter's check and its block -> the wake hit no waiter and was lost ->
+ * claude's main thread (reaping an rg/sh subprocess after a kill->ESRCH) hung
+ * forever -> whole-process deadlock (fry1500-1505). Putting BOTH sides under
+ * g_sched_lock makes the exit either visible to the arm (reap, no block) or land
+ * after the arm (wake hits the PROC_WAITING waiter).
+ */
+int sched_pidwait_arm(uint32_t caller_pid, uint32_t target_pid) {
+    uint64_t irqf = irq_save_disable();
+    spin_lock(&g_sched_lock);
+    int reapable = 1;   /* default: target gone/not-found -> don't block, re-loop */
+    for (uint32_t i = 0; i < PROC_MAX; i++) {
+        if (procs[i].pid == target_pid && procs[i].state != PROC_UNUSED) {
+            reapable = (procs[i].state == PROC_ZOMBIE ||
+                        procs[i].state == PROC_DEAD) ? 1 : 0;
+            break;
+        }
+    }
+    if (!reapable) {
+        struct fry_process *p = remove_from_runqueue(caller_pid);
+        if (!p) {
+            for (uint32_t i = 0; i < PROC_MAX; i++) {
+                if (procs[i].pid == caller_pid &&
+                    (procs[i].state == PROC_RUNNING ||
+                     procs[i].state == PROC_WAITING)) { p = &procs[i]; break; }
+            }
+        }
+        if (p) {
+            p->state = PROC_WAITING;
+            p->wait_pid = target_pid;
+            p->wait_tid = 0;
+            p->wait_futex_key = 0;
+            p->wait_futex_bitset = 0;
+            p->wait_result = 0;
+            p->wake_time_ms = UINT64_MAX;
+        } else {
+            reapable = 1;   /* could not arm -> re-loop rather than sleep untracked */
+        }
+    }
+    spin_unlock(&g_sched_lock);
+    irq_restore(irqf);
+    return reapable;
+}
+
+void sched_pidwait_exit(uint32_t target_pid) {
+    uint64_t irqf = irq_save_disable();
+    spin_lock(&g_sched_lock);
+    uint32_t count = smp_cpu_count();
+    uint32_t bsp = smp_bsp_index();
+    if (count == 0) count = 1;
+    if (bsp >= count) bsp = 0;
+    for (uint32_t i = 0; i < PROC_MAX; i++) {
+        if (procs[i].pid == target_pid &&
+            procs[i].state != PROC_UNUSED &&
+            procs[i].state != PROC_DEAD) {
+            procs[i].state = PROC_DEAD;
+        }
+    }
+    for (uint32_t w = 0; w < PROC_MAX; w++) {
+        if (procs[w].state == PROC_WAITING && procs[w].wait_pid == target_pid) {
+            procs[w].wait_pid = 0;
+            wake_runnable_locked(&procs[w], count, bsp, 0);
+        }
+    }
+    spin_unlock(&g_sched_lock);
+    irq_restore(irqf);
+}
+
 uint32_t sched_requeue_futex(uint64_t key_from, uint64_t key_to,
                              uint32_t max_requeue) {
     uint64_t irqf = irq_save_disable();
@@ -804,6 +905,72 @@ void sched_tick(void) {
     uint32_t cpu = cpu_index();
     uint32_t bsp = smp_bsp_index();
     struct runqueue *q = &rq[cpu];
+    /* fry1424 TBCLK heartbeat — BEFORE any early return so it always fires.
+     * Every 5000 ticks (~5s at 1kHz) per CPU. fry1425: + tgid-3 thread
+     * census (run/wait/zombie/dead counts) so "claude went silent" resolves
+     * to threads-exited vs threads-stuck; + TBLOST overdue-sleeper detector
+     * (WAITING with a timed wake >5s past due while now advances == the
+     * sleeper-wake path lost it — the smoking gun for a lost-wakeup bug). */
+    g_tbclk_ticks[cpu]++;
+    /* fry1811: gate the whole TBCLK/TBMAIN/TBLOST heartbeat on the tracer being
+     * ENABLED. Without this guard, setting TB_TRACE_CLAUDE_TGID to 0 does not
+     * disable the census — it INVERTS it: the filter below skips a process
+     * unless its pid/tgid equals the traced tgid, so a tgid of 0 matches every
+     * UNUSED proc-table slot (pid 0) and the census prints for all of them.
+     * Measured: 42,804 TBMAIN lines during a single boot. Disable means
+     * disable. */
+    if (TB_TRACE_CLAUDE_TGID && (g_tbclk_ticks[cpu] % 5000ULL) == 0) {
+        uint64_t hb_now = now_ms();
+        uint32_t t3run = 0, t3wait = 0, t3zomb = 0, t3dead = 0;
+        for (uint32_t i = 0; i < PROC_MAX; i++) {
+            if (procs[i].tgid != TB_TRACE_CLAUDE_TGID &&
+                procs[i].pid != TB_TRACE_CLAUDE_TGID) continue;
+            switch (procs[i].state) {
+            case PROC_RUNNING: t3run++; break;
+            case PROC_WAITING: t3wait++; break;
+            case PROC_ZOMBIE:  t3zomb++; break;
+            case PROC_DEAD:    t3dead++; break;
+            default: break;
+            }
+            /* fry1568: per-thread line for the GROUP LEADER (pid==tgid = the JS
+             * main/event-loop thread). state=RUNNING+oncpu persistently => the
+             * main thread is busy-spinning in userspace (the freeze); WAITING =>
+             * blocked (futex_key/wake_time say where). Pins spin-vs-blocked for
+             * the exact thread that stops polling stdin. REMOVE once fixed. */
+            if (procs[i].pid == procs[i].tgid) {
+                uint32_t lcpu = procs[i].cpu;
+                kprint_serial_only("TBMAIN pid=%u tgid=%u state=%u cpu=%u oncpu=%d futex_key=%lx poll=%u wake=%llu rip=%lx\n",
+                                   procs[i].pid, procs[i].tgid,
+                                   (unsigned)procs[i].state, lcpu,
+                                   (lcpu < MAX_CPUS && current[lcpu] == &procs[i]) ? 1 : 0,
+                                   (unsigned long)procs[i].wait_futex_key,
+                                   (unsigned)procs[i].wait_poll,
+                                   (unsigned long long)procs[i].wake_time_ms,
+                                   (unsigned long)procs[i].user_rip);
+            }
+            if (procs[i].state == PROC_WAITING &&
+                procs[i].wait_pid == 0 &&
+                procs[i].wake_time_ms != UINT64_MAX &&
+                procs[i].wake_time_ms + 5000 < hb_now &&
+                g_tb_lost_wake_logs < 32) {
+                g_tb_lost_wake_logs++;
+                kprint_serial_only("TBLOST pid=%u tgid=%u wake_time=%llu now=%llu overdue_ms=%llu futex_key=%lx poll=%u\n",
+                                   procs[i].pid, procs[i].tgid,
+                                   (unsigned long long)procs[i].wake_time_ms,
+                                   (unsigned long long)hb_now,
+                                   (unsigned long long)(hb_now - procs[i].wake_time_ms),
+                                   (unsigned long)procs[i].wait_futex_key,
+                                   procs[i].wait_poll);
+            }
+        }
+        kprint_serial_only("TBCLK cpu=%u ticks=%llu hpet=%llu cfg=%llx now=%llu t3=%u/%u/%u/%u rwzd\n",
+                           cpu,
+                           (unsigned long long)g_tbclk_ticks[cpu],
+                           (unsigned long long)hpet_read_counter(),
+                           (unsigned long long)hpet_read_config(),
+                           (unsigned long long)hb_now,
+                           t3run, t3wait, t3zomb, t3dead);
+    }
     if (!q->head) {
         /* Empty runqueue. If the current task blocked itself (PROC_WAITING,
          * e.g. a futex/poll wait), it must NOT keep running — make this CPU's
@@ -861,6 +1028,42 @@ void sched_tick(void) {
         }
     }
 
+    /* fry1575: self-heal a STRANDED RUNNING thread. Scheduler invariant: a
+     * PROC_RUNNING thread must be current[its cpu] OR present on some runqueue.
+     * The claude main/event-loop thread (pid==tgid) has been observed
+     * PROC_RUNNING but NEITHER current NOR enqueued (fry1574: state=1, oncpu=0,
+     * never caught running) -> never scheduled -> event loop frozen -> stdin
+     * never read -> typing dead. Until the exact drop path is pinned, restore
+     * the invariant: if the main thread is RUNNING, not mid-context-save, not
+     * current on its cpu, and not on any runqueue, push it back so it runs
+     * again. Scoped to the traced main thread to bound cost; the rq scan only
+     * runs in the suspicious RUNNING-not-current case. Logged (TBREQUEUE). */
+    if (g_tb_trace_claude_tgid) {
+        for (uint32_t i = 0; i < PROC_MAX; i++) {
+            if (procs[i].pid != g_tb_trace_claude_tgid ||
+                procs[i].tgid != g_tb_trace_claude_tgid) continue;
+            if (procs[i].state != PROC_RUNNING || procs[i].on_cpu) break;
+            uint32_t mcpu = procs[i].cpu;
+            if (mcpu >= count) { procs[i].cpu = (uint8_t)bsp; mcpu = bsp; }
+            if (mcpu < MAX_CPUS && current[mcpu] == &procs[i]) break;
+            int on_rq = 0;
+            for (uint32_t c = 0; c < count && c < MAX_CPUS && !on_rq; c++) {
+                for (struct fry_process *t = rq[c].head; t; t = t->next) {
+                    if (t == &procs[i]) { on_rq = 1; break; }
+                }
+            }
+            if (!on_rq) {
+                if (g_tb_requeue_logs < 80) {
+                    g_tb_requeue_logs++;
+                    kprint_serial_only("TBREQUEUE pid=%u tgid=%u orphaned RUNNING (not current, not on rq) -> re-enqueue rq[%u]\n",
+                                       procs[i].pid, procs[i].tgid, mcpu);
+                }
+                rq_push(&rq[mcpu], &procs[i]);
+            }
+            break;
+        }
+    }
+
     struct fry_process *cur = current[cpu];
     if (cur && cur->state == PROC_RUNNING) {
         rq_push(q, rq_pop(q));
@@ -871,6 +1074,32 @@ void sched_tick(void) {
     }
 
     struct fry_process *next = q->head;
+    /* fry1423 SMP context-save gate: never switch to a task whose on_cpu is
+     * still set — its previous CPU has not finished saving its context
+     * (saved_rsp is stale, that CPU is still ON its kernel stack; running it
+     * here is the fry1422 freeze). Rotate busy candidates to the back; they
+     * become eligible the moment their old CPU's context_switch publishes
+     * the save (sub-microsecond), i.e. by the next tick at the latest. */
+    if (next && next != cur && next->on_cpu) {
+        uint32_t scan = q->count;
+        while (scan-- > 0 && q->head && q->head != cur && q->head->on_cpu) {
+            rq_push(q, rq_pop(q));
+        }
+        next = q->head;
+        if (next && next != cur && next->on_cpu) {
+            if (g_tb_oncpu_defer_logs < 40) {
+                g_tb_oncpu_defer_logs++;
+                kprint_serial_only("TBSCHED oncpu-defer cpu=%u pid=%u tgid=%u\n",
+                                   cpu, next->pid, next->tgid);
+            }
+            if (cur && cur->state == PROC_RUNNING) {
+                spin_unlock(&g_sched_lock);
+                irq_restore(irqf);
+                return;
+            }
+            next = 0;  /* nothing safely runnable — take the idle fallback */
+        }
+    }
     if (!next || next == cur) {
         /* No other runnable task queued. If the current task is still
          * RUNNING, just keep running it. But if it blocked itself
@@ -893,10 +1122,16 @@ void sched_tick(void) {
         idle->state = PROC_RUNNING;
         idle->cpu = (uint8_t)cpu;
         rq_push(q, idle);
-        next = q->head;
+        /* This CPU's idle task can never be mid-save on another CPU, so it
+         * is always a safe pick (also covers the gate's nothing-runnable
+         * fallthrough, where q->head may still be an on_cpu-busy task). */
+        next = idle;
     }
 
     current[cpu] = next;
+    /* fry1423: claim next's stack before dropping the lock — no other CPU
+     * may pick it until our context_switch publishes its next save. */
+    next->on_cpu = 1;
     struct tss64 *tss = smp_get_tss(cpu);
     if (tss) {
         tss_set_rsp0_local(tss, next->kernel_stack_top);

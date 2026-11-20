@@ -1,0 +1,30 @@
+fry1658 - native Python startup libc fixes
+Timestamp: 2026-06-19 15:45:57 CDT
+
+What changed:
+- Added _SC_CLK_TCK handling to src/user/libc/posix.c sysconf().
+- Changed src/include/netdb.h so h_errno is declared extern instead of
+  defining storage in the public header.
+- Added the single h_errno definition to src/user/libc/netdb.c.
+
+Why:
+- Headed QEMU with explicit diagnostic logs showed `hermes` now launches
+  /nvme/apps/python3.fry, proving the fry1656 path fix worked.
+- Python then failed during core import startup with:
+  RuntimeError: cannot read ticks_per_second
+- CPython's _Py_GetTicksPerSecond() calls sysconf(_SC_CLK_TCK) when
+  HAVE_SYSCONF and _SC_CLK_TCK are available. TaterTOS defined _SC_CLK_TCK
+  but sysconf() returned -1 for it, which CPython treats as fatal.
+- Rebuilding python3.fry then exposed duplicate h_errno storage because
+  netdb.h defined `int h_errno;` in every including translation unit.
+
+Verification:
+- Rebuilt src/user/libc/posix.o through the main Makefile; passed with only
+  the existing libc.h comment warning.
+- Rebuilt src/user/libc/netdb.o through the main Makefile; passed with only
+  the existing libc.h comment warning.
+- Forced rebuild of CPython socketmodule.o against the corrected netdb.h:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make -B -f Python3.mk /home/legacyindieradio/TaterTOS64/external/Python-3.14.5/build-tatertos/Modules/socketmodule.o
+- Rebuilt and packed native Python:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make -f Python3.mk python3
+- Result: python3.elf linked and python3.fry was produced successfully.

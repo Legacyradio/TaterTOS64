@@ -1,0 +1,81 @@
+fry1822 — KERNEL: "#!" interpreter support added to process_launch_args
+          — 2026-09-26
+==========================================================================
+WHAT: Piece 1 of 3 toward `hermes` being an ordinary file on PATH instead of a
+hardcoded shell builtin. Code edited; log written BEFORE the build per planv3
+rule 5/6. Not built at time of writing.
+
+=== WHY THIS EXISTS — ZACK'S QUESTION ===
+Zack asked: "shouldnt typing hermes just call hermes like on any other os?"
+Correct, and it does not. Established by reading the code, not by assumption:
+  src/user/shell/shell.c:1052-1077 dispatches by a hardcoded strcmp chain —
+      help ls cd cat pwd ps kill mkdir rm df ifconfig ping acpi
+      python3 hermes claude reboot shutdown exit
+  and everything else falls through to:
+      /* try to spawn external binary */
+      if (fry_spawn(argv[0]) < 0) printf("shell: %s: command not found\n", ...)
+THREE things are missing that a normal shell has, and cmd_hermes exists to
+paper over all three at once:
+  1. NO ARGV, NO ENV. fry_spawn() takes ONLY a path (fry.h:225). The variant
+     that carries arguments and environment, fry_spawn_args() (fry.h:226), is
+     what cmd_hermes uses — the generic fallback does not call it. So anything
+     launched by the fallback gets no arguments and no environment at all.
+  2. NO PATH SEARCH. fry_spawn(argv[0]) receives the literal typed string. A
+     PATH does exist, but only as a string inside native_python_env handed TO
+     Python (shell.c:812); the shell itself never reads it.
+  3. NO SHEBANG. /nvme/opt/hermes-agent/hermes is a Python script whose first
+     line is "#!/usr/bin/env python3". Nothing in elf.c, process.c or shell.c
+     looked for "#!" — grepped, zero hits. The loader was static-ELF-only.
+(A fourth, related gap: the tokenizer splits on spaces with no quote handling,
+shell.c:548-565. That is why `hermes -z "a sentence"` cannot work and why the
+in-OS test commands have to be written space-free. Separate step.)
+
+=== WHY THE KERNEL AND NOT THE SHELL ===
+Shebang handling could have been bolted into the shell in fewer lines. It
+belongs in the loader: put it there and EVERY spawn gets it — the GUI launching
+an app, one program spawning another, posix_spawn from CPython — not only
+things typed at a prompt. Doing it in the shell would have been the shortcut,
+and it would have had to be written a second time the moment anything else
+needed to run a script.
+
+=== CHANGE — src/kernel/proc/process.c ===
+1. static int shebang_parse(path, interp, interp_sz, iarg, iarg_sz)
+   Opens the file with the same vfs_open/vfs_read/vfs_close idiom elf.c uses
+   (elf.c:185-194), reads the first 256 bytes, and requires line[0]=='#' &&
+   line[1]=='!'.
+   Parses an interpreter path, then AT MOST ONE optional argument taken as the
+   whole trimmed remainder of the line — which is how POSIX and Linux both
+   define it. The remainder is deliberately NOT tokenised: "#!/usr/bin/env
+   python3" must yield argument "python3", and splitting further would be wrong.
+   Returns 1 = shebang parsed, 0 = not a script, negative = read failure.
+   A too-short file, a too-long interpreter path, or "#!" with nothing after it
+   all report 0 (not a script) so the normal ELF path produces the real error
+   rather than this helper inventing one.
+2. process_launch_args() calls it before elf_load_fry() and, on a hit, rewrites:
+       path = interp
+       argv = [interp, (iarg), <original script path>, original argv[1..]]
+   The buffers are locals of process_launch_args and stay live until
+   setup_process_args() copies them into the new process, which happens later in
+   the same function — checked, not assumed.
+   Emits "PROC: shebang <script> -> <interp>" so the resolution is visible on
+   serial instead of being invisible magic.
+3. EXACTLY ONE LEVEL is followed, matching Linux: a script whose interpreter is
+   itself a script is an error, not a recursion. Stated in the comment so nobody
+   "improves" it into an unbounded loop later.
+
+=== WHAT THIS DOES NOT YET ACHIEVE ===
+Typing `hermes` STILL will not work after this change alone. The chain needs all
+three pieces:
+    shell PATH lookup  ->  kernel shebang (THIS STEP)  ->  /usr/bin/env
+      ->  PATH lookup  ->  python3
+Piece 2 (shell: PATH search + fry_spawn_args with real argv/env) and piece 3
+(/usr/bin/env as a real .fry binary) follow in their own steps. Nothing is
+claimed to work until all three are in and booted.
+
+=== BUILD NOTE ===
+This edits process.c only — a .c file, no header — so the fry1793 mixed-layout
+hazard does not apply and the main Makefile's -MMD tracking (since fry1796)
+covers it. Editor/clangd errors on this file (fry_limits.h not found,
+FRY_PROC_MAX undeclared) are host-toolchain noise; clangd lacks -Isrc/include.
+FRY_PATH_MAX and FRY_ARGV_MAX are already used elsewhere in process.c
+(lines 649, 697) so both are in scope in the real build.

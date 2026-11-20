@@ -1,0 +1,38 @@
+fry1747 — 2026-06-22 06:57 CDT
+STEP 4 (native deps): httptools 0.7.1 built NATIVELY for x86_64-tatertos + linked into
+       python3.fry. Establishes the C-EXTENSION static-link pattern (C analog of the
+       pydantic_core Rust pattern). Both native-ext patterns now proven.
+
+PROCESS (reusable for every C ext):
+  1. pip download --no-binary :all: <pkg>==<ver> (match the venv version) -> rust/pyext-src.
+  2. Extract; Cython pkgs ship the pre-generated .c (no cythonize needed here).
+  3. Compile .c against CPython 3.14 headers with the cross-gcc
+     (tools/host/bin/x86_64-elf-gcc) + CPYTHON-style CFLAGS (Include/, internal/,
+     mimalloc/; freestanding).
+  4. ar rcs lib<pkg>.a  (use /usr/bin/x86_64-elf-ar).
+  5. config.c: extern PyInit_*; + inittab {"pkg.sub.mod", PyInit_*} (DOTTED names).
+  6. Python3.mk: add the .a to PYEXT_LIBS (appended to the python3 link).
+  7. relink; nm python3.elf confirms PyInit_*; stage the pure-Python wrapper.
+
+HTTPTOOLS specifics:
+  - Modules: httptools.parser.parser (parser.c + vendor/llhttp/src/{api,http,llhttp}.c,
+    -Ivendor/llhttp/include) and httptools.parser.url_parser (url_parser.c +
+    vendor/http-parser/http_parser.c). Both compiled RC=0.
+  - libhttptools.a (600KB) -> rust/pyext-src/build-httptools/. Exports PyInit_parser +
+    PyInit_url_parser.
+  - config.c: externs + dotted inittab entries added. Python3.mk: HTTPTOOLS_LIB +
+    PYEXT_LIBS var (extensible for the rest of the queue).
+  - relink LINK_EXIT=0, 0 undefined; python3.elf has both inits; python3.fry 06:56:43.
+  - .py wrapper already staged (httptools/__init__.py, parser/{errors,protocol}.py...).
+
+QUEUE STATUS (native ext builds): DONE = pydantic_core(Rust), httptools(C).
+  NEXT tractable C (sdists already downloaded): charset_normalizer 3.4.7, websockets
+  15.0.1. Then watchfiles 1.1.1 (Rust, needs inotify SYS_INOTIFY_* — have it). Then
+  _yaml/_ruamel_yaml (need libyaml port), cryptography 46.0.7 (Rust + OpenSSL backend),
+  psutil 7.2.2 (/proc), Pillow 12.2.0 (zlib/jpeg/png). Hard items have real native
+  sub-deps — each its own sub-port.
+
+STATE: pydantic_core + httptools native+linked. ISO not rebuilt yet (batching a few
+  more exts before one ISO/boot/verify cycle).
+NEXT: build charset_normalizer + websockets natively; add to PYEXT_LIBS + inittab;
+  then ISO + boot + verify all native exts import. -> fry1748.

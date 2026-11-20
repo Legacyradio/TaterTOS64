@@ -1,0 +1,34 @@
+# fry1660 - native Hermes launcher env fix
+Timestamp: 2026-06-19 23:18:57 CDT
+
+What changed:
+- Removed `/nvme/opt/hermes-agent` from the native Python launcher env in
+  `src/user/shell/shell.c`.
+- Also trimmed that path out of `PATH` so the launcher only exposes the real
+  executable locations and the staged Python stdlib/site-packages.
+
+Why:
+- The headed/serial QEMU boot was dying inside CPython startup before
+  `encodings` loaded, with:
+  `OSError: [Errno 38] ... '/nvme/opt/hermes-agent'`
+- That made the Hermes bootstrap fail before the script body could run. The
+  package directory is already reached by executing
+  `/nvme/opt/hermes-agent/tatertos_bootstrap.py` or `/nvme/opt/hermes-agent/hermes`,
+  so keeping it in `PYTHONPATH` was unnecessary and was the bad path being
+  probed during Python import bootstrap.
+
+Commands:
+- `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make shell`
+- `PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh`
+- `cp /usr/share/edk2/x64/OVMF_VARS.4m.fd /tmp/fry1661_cache_kvm_OVMF_VARS.fd`
+- `timeout 240s qemu-system-x86_64 -m 4G -machine q35 -cpu max -smp 4 -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd -drive if=pflash,format=raw,file=/tmp/fry1661_cache_kvm_OVMF_VARS.fd -cdrom /home/legacyindieradio/TaterTOS64/out/tatertos64v3.iso -drive file=/home/legacyindieradio/TaterTOS64/out/tater_nvme.img,if=none,id=nvm,format=raw -device nvme,serial=deadbeef,drive=nvm -serial file:/tmp/fry1661_qemu_serial.log -display none -no-reboot`
+
+Verification:
+- `make shell` rebuilt `shell.tot` cleanly.
+- `build_iso.sh` completed and produced a refreshed ISO/NVMe image with the
+  staged Hermes tree.
+- The fresh QEMU boot reached the GUI stage and no longer hit the earlier
+  Python `encodings` crash in the serial path I watched.
+- The live serial log is at `/tmp/fry1661_qemu_serial.log`.
+- Hermes itself still needs an interactive shell invocation to finish the end
+  to end smoke test.

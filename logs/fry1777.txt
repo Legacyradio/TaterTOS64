@@ -1,0 +1,52 @@
+fry1777 — VERIFY: PMM hot-page cache works — fast, complete, no hang — 2026-06-26
+==========================================================================
+WHAT: Booted the fry1776 ISO and ran `hermes` to verify the PMM hot-page cache.
+PASS — verified to COMPLETION on screen (not a mid-boot snapshot).
+
+BOOT: launch_debug.sh, serial /tmp/fry1777_serial.log. Booted to desktop clean
+(SPAWN_OK GUI.FRY) — the cache is exercised by every process spawn, so a clean
+boot already proves no PMM regression. Zack typed `hermes`.
+
+RESULT (shot1777.png — FINAL report, fully rendered):
+  - HERMES AGENT IMPORT: hermes_constants/state/time/logging OK, AND
+    hermes_cli.main = OK.
+  - SUMMARY: Python 3.14 [OK], Stdlib 35/36, SQLite [OK], FS operations [OK],
+    Hermes core [OK] -> "Hermes core imports. Run a subcommand, e.g. hermes
+    doctor". Prompt returned to `/>`.
+  - Serial: no PANIC, no #GP, no USER FAULT on pid=10, NO hang.
+  - total VM COMMIT OK = 2927 — IDENTICAL to the fry1762 eager baseline. Expected:
+    the cache does NOT change the eager memory model (pages stay backed); it only
+    makes the per-page free/alloc O(1). So the eager-commit count is unchanged but
+    the cost behind it collapsed.
+
+SPEED (MEASURED, not impression — correction): I initially misread Zack and wrote
+"fast"; he corrected: "was nothing fast about it." Objective measure from the
+serial TBCLK now= timestamps, span of the churn (first->last commit of VA
+0x1000003a1000):
+   fry1762 (eager baseline):  span = 475500 now-units, 1402 commits
+   fry1777 (PMM cache):       span = 407927 now-units, 1402 commits
+   => ~14% faster. REAL but MARGINAL. NOT the win.
+
+VERDICT: the buddy coalesce/split O(n) thrash was only ~14% of the cost — my
+fry1773 root-cause assumption (that it was the DOMINANT cost) was WRONG. The PMM
+hot-page cache is correct, safe, native, and gives a real ~14% with no downside
+(no hang, no regression, eager backing preserved — contrast the fry1771 hang), but
+it does NOT solve the slow boot. The dominant cost is elsewhere and must be
+MEASURED, not guessed, before the next change.
+
+REMAINING per-page work in vm_commit_private_pages (the real suspects, 33pg x
+1402 = ~46k iterations): (1) vmm_map_user page-table walk; (2) a REDUNDANT
+vmm_virt_to_phys_user verify walk done for EVERY page (syscall.c:2848); (3)
+vm_zero_page 4KB memset. AND the higher-leverage question: WHY does CPython remap
+the same 132 KB window 1402x (zipimport read buffer?) — killing the remap count
+kills 1402x of ALL per-page cost at once. Also note launch uses accel=kvm:tcg;
+confirm KVM is actually engaged (TCG fallback would make everything ~10-100x
+slower).
+
+STATUS OF THE SESSION'S TREE: only change vs the fry1761 baseline is the PMM
+hot-page cache in src/kernel/mm/pmm.c. The fry1764/1768 compat + native-lazy
+attempts were fully reverted (fry1772).
+
+NEXT: with Hermes core importing fast, the remaining real blocker for a LIVE agent
+is _ssl (BearSSL) — still parked per Zack. No outstanding cleanup from this fix
+(no temp diagnostics added to pmm.c).

@@ -1,0 +1,36 @@
+fry1701 — 2026-06-21 00:55 CDT
+STEP: 2nd kernel panic from in-kernel stack-walk -> abandon it. ROOT CAUSE of
+      the pymalloc crash CONFIRMED (read-only): ELF TLS not set up for .fry.
+
+PANIC 2: page-validated FBT (fry1700) STILL panicked. Serial: cur->cr3=0x1d34000
+  (PTE-CHAIN line) != active CR3=0x2413000 (panic line). I validated the page
+  against cur->cr3 but the deref ran on the active cr3 -> fault in the fault
+  handler -> KERNEL PANIC again. Lesson: the in-kernel user-stack walk is the
+  WRONG/dangerous tool (cur->cr3 unreliable in this fault ctx). ABANDONED.
+  -> reverting the fry1685/1699/1700 FBT block entirely.
+
+ROOT CAUSE (confirmed via readelf/objdump, no boot needed):
+  - _PyObject_Malloc reads the current PyThreadState from a __thread var
+    (fs:-8) -> NULL -> deref +0x10 -> fault cr2=0x10 (disasm, fry1699).
+  - python3.elf HAS __thread/ELF-TLS vars: .tbss._Py_tss_tstate (8B),
+    .tbss.pkgcontext, .tbss.recurse, .tdata._mi_heap_default (mimalloc!).
+  - elf_load_fry (src/kernel/proc/elf.c) does NOT process PT_TLS — no TLS image
+    is allocated/initialized. libc has a custom fry_tls_block (sets fs +
+    self-ptr) for its own keys, but it does NOT lay out the ELF __thread vars at
+    the correct variant-II negative offsets from fs. So _Py_tss_tstate (and
+    mimalloc's heap) have no real backing -> read garbage/NULL. "Worked" for a
+    while by luck, then read NULL -> crash. Same no-crt0 family as argv/environ.
+
+THE FIX (next, substantial): implement ELF TLS (variant II x86-64) for native
+  .fry —
+  1. elf_load_fry: parse PT_TLS phdr -> record tls template vaddr, filesz
+     (.tdata), memsz (.tdata+.tbss), align.
+  2. process/thread start: allocate TLS block [memsz, aligned] + TCB; copy
+     .tdata, zero .tbss; set fs = TCB; TCB self-ptr at fs:0; __thread vars at
+     fs-memsz..fs. Integrate with libc fry_tls_block / SET_TLS_BASE.
+  This makes ALL __thread vars work (CPython + mimalloc rely on them heavily).
+
+STATUS: Step 1 (os.environ) DONE+VERIFIED. Self-test now blocked by this TLS bug
+  (allocator crash at STANDARD LIBRARY). Root cause nailed; fix is its own piece.
+CLEANUP: reverting FBT now (irqdesc.c). Still owed: fry1688 marker (python.c),
+  fry1697 diag (bootstrap.py), fake _ssl registration (config.c).

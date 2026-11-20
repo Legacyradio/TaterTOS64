@@ -1,0 +1,12 @@
+fry1775 — build kernel with the PMM hot-page cache — 2026-06-26
+==========================================================================
+WHAT: Built the kernel after the fry1774 pmm.c changes.
+
+CMD: make kernel
+RESULT: KBUILD_EXIT=0. kernel.elf (2618888 bytes) + src/kernel/mm/pmm.o (12888
+bytes), both mtime 14:31:18 (verified fresh). No errors, no NEW warnings (grep for
+error/pmm/pcache/implicit/undefined came back empty). The new statics + helpers
+compiled and linked clean.
+
+NEXT (fry1776): confirm QEMU dead (bracket-trick), bash build_iso.sh, verify
+EXIT=0 + fresh ISO mtime.

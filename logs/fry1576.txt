@@ -1,0 +1,26 @@
+# fry1576 - BUILD: clean rebuild with the fry1575 scheduler orphan self-heal (+ CLAUDE_NO_MCP=1)
+Date: 2026-06-16 04:40 CDT
+Type: build (Rule 12)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+WHY: build the image with the sched_tick self-heal (re-enqueue an orphaned RUNNING main thread, fry1575) to test if
+restoring the scheduler invariant unfreezes input.
+
+COMMAND
+  make clean
+  STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.177 \
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+  (backgrounded -> /tmp/build_1576.log; QEMU killed first)
+
+RESULT: EXIT 0 (clean)
+- src/kernel/proc/sched.c compiled, NO errors (clangd fry_limits.h/FRY_PROC_MAX diagnostics are LSP-only).
+- sched.o rebuilt (25000 bytes); kernel relinked. ISO/NVMe fresh.
+- Beacons/fix in image: TBFD0, TBEPW, TBMAIN, TBSPIN (diagnostics) + the fry1575 TBREQUEUE self-heal.
+
+NEXT (fry1577): headed verify -> type into the UI.
+  PASS = typing STAYS LIVE (echoes, Enter submits, Claude responds), TBREQUEUE fires at the freeze point = orphan
+         confirmed + healed.
+  PARTIAL = TBREQUEUE fires but input still stutters -> heal works but something else (re-verify cadence/another strand).
+  NO TBREQUEUE + still frozen -> not an orphan; redirect (kernel-mode spin while current -> kernel-RIP catch).
+
+All per planv3 Rules 1/5/6/12. Written immediately on build completion, before relaunch.

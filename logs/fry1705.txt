@@ -1,0 +1,26 @@
+fry1705 — 2026-06-21 08:30 CDT
+STEP: Honest checkpoint. Build is DONE + STAGED. NOT verified on hardware.
+
+STATE (no spin):
+  - ELF-TLS (variant II) implemented kernel-side: elf.h (proto + ERR_TLS_ALLOC),
+    elf.c (PT_TLS parse + region setup at FRY_TLS_REGION_BASE 0x7FFF80000000),
+    process.c (tls_base -> p->user_fs_base on both .fry launch paths). See fry1702/1703.
+  - make kernel EXIT=0, kernel.elf relinked 08:18 (+4144B), TLS refs present in elf.o.
+  - build_iso.sh EXIT=0, ISO restaged 08:19:36 (after kernel 08:19:09). python3.fry
+    NOT relinked — kernel-only change, existing python3.fry already has the fry1697
+    os.environ fix.
+  - NOT BOOTED. NOT VERIFIED. Do not claim the TLS fix works until hermes runs to the
+    END on serial (per verify-before-claiming-success).
+
+RUN PROCEDURE (simple — no "driving"): boot the VM (launch_debug.sh), at the shell
+  type `hermes` (shell.c:845 cmd_hermes -> spawns python3.fry), watch serial +
+  screen. EXPECT: allocator no longer crashes at _PyObject_Malloc (fs:-8 now backed);
+  self-test proceeds past the malloc point. If it still faults, capture serial.
+
+PROCESS NOTE (own it): I overcomplicated the run step (proposed QEMU-monitor sendkey
+  to "drive" hermes). That was wrong — Zack types it at the keyboard, always has.
+  Earlier I also used fish syntax (env said fish; harness evals bash) -> two empty
+  exit codes before I switched. Engineering is sound; the noise was in how I framed
+  the run/verify step.
+
+NEXT: boot, run hermes, read serial to END -> fry1706 with the ACTUAL end state.

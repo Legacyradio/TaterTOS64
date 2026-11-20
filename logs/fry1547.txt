@@ -1,0 +1,54 @@
+# fry1547 - DIAGNOSIS: TUI "can't type" is NOT an OS input-delivery bug. Keystrokes reach Claude's stdin inbuf fine; Claude's main thread is wedged in an MCP-spawn + /proc/self/stat openat storm and never returns to read stdin.
+Date: 2026-06-15 22:55 CDT
+Type: research/diagnosis (live serial on the running fry1546 VM; no code change this step)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+---------------------------------------------------------------------------------
+WHY (Rule 6)
+---------------------------------------------------------------------------------
+After the panic fix (fry1544-1546) the OS survives teardown, but the user still can't type into the Claude TUI. Grok (fry1543) treated this as an input-DELIVERY problem and kept editing shell.c forwarding. This step pins where the input actually stops, from the live serial, before touching anything.
+
+---------------------------------------------------------------------------------
+EVIDENCE (live /tmp/serial.log, fry1546 run, VM still alive)
+---------------------------------------------------------------------------------
+1) OS DELIVERS EVERY KEYSTROKE TO CLAUDE. SYS_PROC_INPUT beacons:
+   TBPROCIN req=14 -> pid=14 name=/nvme/RCLAUDE.LXE len=1 nw=1 b0=68/65/65/65/6c/6c/6c/6c/6f  ("hello")
+   ... b0=0d (Enter) ... later b0=37/37/38/39/30 ("7789 0") b0=0d
+   - 126 deliveries to pid=14, ALL nw=1 (buffered OK), ZERO nw=0 -> the inbuf is never full -> delivery is not the bottleneck and the ring is not backing up.
+   => Kernel input path (compositor -> Shell pass-through -> fry_proc_input -> SYS_PROC_INPUT -> pid=14 inbuf) WORKS in the main UI. This is the thing fry1540-1543 chased and it is effectively fine now.
+
+2) THE READ PATH EXISTS AND IS CORRECT:
+   - read(0)/lx_read(0) drains shared->inbuf (syscall.c:4674, 8026).
+   - poll_check_fd(fd=0) returns POLLIN when inbuf non-empty for a GUI child (syscall.c:919-922).
+   - SYS_PROC_INPUT wakes poll waiters after buffering (syscall.c:8594 sched_wake_poll_waiters).
+   - fd 0 IS registered in Bun's epoll set: LXEPCTL epfd=5 op=3(MOD) fd=0 events=0x40000011 (EPOLLIN|EPOLLONESHOT). Bun treats stdin as a TTY (TBIOCTL fd=0 cmd=0x802c542a = TCGETS).
+
+3) BUT CLAUDE NEVER CONSUMES IT:
+   - No read(fd=0) anywhere in the trace. The only TBREAD are fd=15 (timerfd, 8-byte ticks).
+   - epoll DID work at startup: LXEPRDY fired 32x for fd=15(timerfd)/16(eventfd)/17,18(pipes) around serial lines 9.8k-10.2k. (LXEPRDY rate-limits after the first 32, so later epoll activity is under-logged.) fd=0 was never among the reported-ready fds.
+   - The hot thread pid=15 (tgid=14) is a 100 ms futex-timeout spin (nr=202, rc=-110 ETIMEDOUT, 5455 samples) that just reads timerfd fd=15 each tick.
+   - The MAIN thread pid=14 is in an openat/futex/stat storm, NOT idle-waiting on stdin.
+
+4) WHAT THE MAIN THREAD IS ACTUALLY DOING (the wedge):
+   - TBFAIL openat dirfd=-100 path="/proc/self/stat" rc=-2 (ENOENT) -- REPEATED. TaterTOS /proc has no self/stat.
+   - TBOPEN/TBFAIL on /nvme/.cache/claude-cli-nodejs/-/mcp-logs-agent-bus/2026-06-16T03-36-20-782Z.jsonl  -> Claude is initializing the agent-bus MCP server and writing its MCP logs.
+   - A spawned subprocess pid=41 (tgid=41) loading /usr/lib/glibc-hwcaps/.../librt.so.1 (fail) then /usr/lib/librt.so.1 -> an MCP-server child process being launched.
+
+---------------------------------------------------------------------------------
+ROOT CAUSE (input)
+---------------------------------------------------------------------------------
+The staged ~/.claude.json (build_iso.sh:189 copies $HOME/.claude.json into the image) carries the user's real MCP servers: agent-bus, hermes, mnemosyne, playwright, edge-tts. None can run inside TaterTOS (no node/python runtimes for them staged, missing libs, missing /proc/self/stat). On startup Claude tries to spawn/connect them; the spawns fail and it appears to retry / churn (openat storm incl. repeated failed /proc/self/stat reads, MCP log writes, child process librt loads). The main thread is busy in this churn and does not return to the event-loop state that reads fd 0, so the buffered keystrokes are never consumed. The TUI renders (it got that far) but does not react.
+
+This is an APP-STATE / linuxulator-completeness problem (MCP spawn + /proc), NOT the OS keyboard path. Editing shell.c forwarding further (the fry1543 approach) cannot fix it — the bytes already arrive.
+
+---------------------------------------------------------------------------------
+NEXT (each its own fry log) - proposed experiments, pick before editing
+---------------------------------------------------------------------------------
+A) Stop Claude wedging on MCP: stage a MINIMAL .claude.json with NO mcpServers (or disable MCP at launch) so the app goes straight to the interactive loop. Decisive test of the hypothesis. Requires a rebuild (config is baked into the NVMe image).
+B) Add /proc/self/stat (and the /proc/self bits Bun/Claude reads) to the kernel procfs so the stat reads stop failing. Likely needed regardless.
+Recommended: do A first (fastest signal: if typing then works, MCP churn was the wedge), then B for robustness.
+
+Also still open/separate:
+- Grok's tcp_conn refcount accept-path regression (nc->refs=1 vs revert; keep the !active guard).
+
+All per planv3 Rules 1/5/6/12. Written immediately on completion of this diagnosis step, before any further change.

@@ -1,0 +1,30 @@
+fry1694 — 2026-06-21 23:27 CDT
+STEP: Add+register binascii and _random (fixes base64, random). BUILD VERIFIED.
+
+CONTEXT: fry1693 run cut Missing 7->4 (math/struct/pickle/json now import,
+  SQLite OK). Remaining 4 with their REAL deps (seen on screen):
+    base64 -> No module named 'binascii'   (not _struct as I guessed)
+    random -> No module named '_random'     (not math; math works now)
+    socket -> _socket   (deferred, needs inet_* libc)
+    ssl    -> _ssl      (deferred, rides on _socket)
+
+UNLIKE math/_struct (compiled-but-unregistered), binascii.o and
+  _randommodule.o were NOT BUILT (absent from Python3.mk module list). So:
+  - Python3.mk CPYTHON_MODULES_SRCS: added Modules/binascii.c +
+    Modules/_randommodule.c.
+  - config.c: extern + inittab entries for binascii, _random.
+
+VERIFIED BUILD (no launch until verified, [[feedback-verify-build-before-launch]]):
+  BUILD_EXIT=0; no undefined refs/errors; python3.fry 23:26, iso 23:27 (fresh);
+  nm python3.elf: PyInit_binascii, PyInit__random present (T).
+
+ALSO SEEN (minor, non-fatal, now visible because sys.stderr works):
+  - hashlib warnings: shake_128/shake_256 "unsupported hash type" (needs _sha3,
+    not built) — cosmetic.
+  - AttributeError: module 'sys' has no attribute 'abiflags' (something in
+    sysconfig/site path reads sys.abiflags) — non-fatal, bootstrap continued.
+
+NEXT (fry1695): boot, run hermes, VERIFY base64+random now import (Missing -> 2:
+  only socket/ssl). Then socket/ssl = the inet_* libc work (own step).
+CLEANUP still owed: fry1685 FBT (irqdesc.c), fry1688 marker (python.c),
+  fry1690 diag (bootstrap.py).

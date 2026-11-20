@@ -1,0 +1,116 @@
+fry1809 — dist-info metadata staged; PackageNotFoundError CLEARED; hermes -z runs silent — 2026-08-11
+==========================================================================
+WHAT: Fixed the fry1808 follow-on blocker (missing package metadata), proved the
+GUI stdout path is healthy, and found the one-shot (non-TUI) invocation. hermes
+now imports EVERYTHING with zero errors. It still produces no visible output.
+Root cause of the silence is NOT plumbing — narrowed to a config/credentials gap
+(see OPEN). No C source changed this step; staging only.
+
+=== ZACK'S CORRECTION THAT REDIRECTED THIS STEP ===
+He pointed out the screen only ever shows "HERMESSTDOUT-OK" and that we HAD real
+hermes output working earlier (the bootstrap self-test printed hermes_constants
+OK etc.). Correct on both counts. HERMESSTDOUT-OK is the SHELL's own fd1 marker,
+not agent output. That reframed the question from "is stdout broken?" to "why is
+this particular program silent?".
+
+=== CONTROL TEST — THE stdout PATH IS FINE (do not re-investigate) ===
+  /> python3 -c print("XYZZY123")
+  HERMESSTDOUT-OK
+  XYZZY123                       <-- rendered on the GUI, verified by screenshot
+Python stdout reaches the GUI correctly. Two hypotheses KILLED by evidence:
+  - Block buffering: DEAD. shell.c:818 already sets PYTHONUNBUFFERED=1.
+  - Not-a-tty: DEAD. posix.c:574-576 isatty() returns TRUE for fd 0,1,2.
+=> Because isatty() is true, `hermes` with no args takes the INTERACTIVE path
+   into prompt_toolkit, which takes the terminal to raw mode / alternate screen
+   and paints with escape sequences. The shell's VT parser (term_render, the
+   120x36 SHM surface) does not render that — the long-standing known-broken TUI
+   item. Ctrl+C returned the prompt, proving the process was ALIVE AND WAITING,
+   not crashed. So bare `hermes` is not the way to prove the agent works.
+
+=== THE NON-TUI PATH (this is how to test the agent from now on) ===
+hermes_cli/main.py:12558 defines `-z` / `--oneshot` (a VALUE flag), dispatched at
+:12777 to hermes_cli/oneshot.py run_oneshot(prompt, model, provider, toolsets) —
+"Execute a single prompt and print only the final content block." Plain stdout,
+no prompt_toolkit, no raw mode. Usage: `hermes -z <prompt>`.
+⚠ The shell tokenizer splits on SPACES ONLY (shell.c:553-559, no quote support),
+so the prompt must be a SINGLE WORD: `hermes -z hello` works, a quoted sentence
+does not.
+
+=== BLOCKER FIXED THIS STEP — MISSING PACKAGE METADATA ===
+SYMPTOM (fry1808 serial :10837-10866):
+  prompt_toolkit/__init__.py:32  __version__ = metadata.version("prompt_toolkit")
+  importlib.metadata.PackageNotFoundError: No package metadata was found for
+  prompt_toolkit
+ROOT CAUSE: site-packages was populated by copying package DIRECTORIES without
+their `*.dist-info` metadata directories. The sysroot had 222 packages but only
+TWO .dist-info dirs (pyyaml, typing_extensions). importlib.metadata needs
+.dist-info to answer metadata.version().
+WHY IT APPEARED ONLY NOW: prompt_toolkit/__init__.py reaches line 32 only after
+lines 27/29 succeed — and line 29 was dying on pyexpat until fry1808. Same
+one-blocker-at-a-time chain, not a regression.
+SOURCE OF TRUTH FOUND: the packages came from
+  /home/legacyindieradio/hermes-agent/venv/lib/python3.11/site-packages
+which HAS all the metadata (211 .dist-info dirs). NOT ~/.local or /usr/lib —
+prompt_toolkit does not exist in either of those.
+FIX: copied all missing .dist-info dirs from that venv into
+  sysroot/usr/local/lib/python3.14/site-packages
+  copied 209; sysroot now has 211 (was 2).
+  prompt_toolkit-3.0.52.dist-info verified present, METADATA Name/Version correct.
+Rebuilt ISO (ISO_EXIT=0, no WARNING / NOT staged).
+
+⚠ FOLLOW-UP OWED: this was done by hand. stage_hermes.sh does NOT copy
+.dist-info, so the next person who rebuilds the sysroot from the venv will
+reintroduce this. The copy step belongs IN the staging script.
+
+=== RESULT AFTER THE FIX (serial logs/fry1809_serial.log, -smp 4) ===
+  Boot: selftest 106/0, DHCP:OK, SHELL up ~11s.
+  `hermes -z hello` -> HERMESMAIN, process runs.
+  NO PackageNotFoundError. NO Traceback. NO ModuleNotFoundError. NO USER FAULT.
+  NO Fatal Python error. 2872 serial lines.
+  Reaches the same two BENIGN warnings as fry1808 and continues past them:
+    urllib3 NotOpenSSLWarning (BearSSL 0.6 vs OpenSSL 1.1.1+)
+    requests RequestsDependencyWarning (no chardet / charset_normalizer)
+  Ran >10 minutes. NO OUTPUT PRINTED, no prompt returned.
+=> The entire Python import chain is now clean. Every import blocker from
+   fry1784 onward is resolved. What remains is runtime behaviour, not imports.
+
+=== OPEN — MOST LIKELY CAUSE OF THE SILENCE (found, NOT yet tested) ===
+The agent's user config/credentials directory is NOT staged onto the image.
+  Host has BOTH:
+    ~/hermes-agent/.env                    <-- IS staged (present in sysroot)
+    ~/.hermes/{auth.json, auth.lock, config.yaml, cache, bin, cron, ...}
+                                           <-- NOT staged anywhere
+  hermes reads user config from $HOME/.hermes; in TaterTOS HOME=/nvme
+  (shell.c native_python_env), so it would look for /nvme/.hermes/ — which does
+  not exist on the image.
+An agent with no provider auth would plausibly hang on network retries or sit
+waiting rather than print. THIS IS A HYPOTHESIS — it has NOT been tested and no
+credential was staged this step. Deliberately stopping here rather than guessing
+further, and note staging real API credentials into an image is Zack's call, not
+mine to make unilaterally.
+
+=== NEXT (fry1810) — CHEAPEST ORDER ===
+ 1. Determine WHERE it is stuck before adding anything: run
+      hermes -z hello   and watch for network activity on the serial (E1000_TX /
+      NET_POLL lines) — that separates "hanging on an API call" from "hanging
+      before it ever tries".
+ 2. If it never transmits: config/auth is the blocker -> decide with Zack what
+    (if anything) gets staged into /nvme/.hermes.
+ 3. If it transmits and stalls: TLS/BearSSL or DNS against the provider, which is
+    a different investigation (network itself is proven — DHCP:OK every boot).
+ 4. Independently: move the .dist-info copy into stage_hermes.sh.
+
+=== SESSION SCOREBOARD ===
+  TLS / _PyThreadState_Attach ......... CLOSED (fry1801, 1 + 4 vCPU)
+  Network / missing -netdev ........... CLOSED (fry1797/1798)
+  Stale objects, main Makefile ........ CLOSED (fry1796)
+  asyncio ValueError + NameError ...... CLOSED (fry1806/1807)
+  Python3.mk header deps .............. CLOSED (fry1805/1806)
+  Python3.mk sqlite prereq bug ........ CLOSED (fry1806)
+  pyexpat ............................. CLOSED (fry1808)
+  package metadata (.dist-info) ....... CLOSED (this step)
+  ALL IMPORT BLOCKERS ................. CLOSED
+  hermes producing output ............. OPEN — config/auth suspected
+  TUI rendering (bare `hermes`) ....... OPEN, known, use -z meanwhile
+  .dist-info staging in script ........ OWED
+  🔴 603 uncommitted files, 2026-06-08 . OPEN

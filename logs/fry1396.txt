@@ -1,0 +1,87 @@
+fry1396 — Tater Bridge / Claude Code: the numCalleeLocals=0 crash is a
+DETERMINISTIC LOGIC bug, definitively NOT memory corruption, NOT the streaming
+loader, NOT a data/bytecode-cache region. Version bisect (2.1.170 vs 2.1.172)
+proves the crash FOLLOWS THE CODE: rip/ret shift by exactly +0x800 (the code
+moved) while the same logical function, same numLocals=0, same heap CodeBlock
+address, byte-identical neighbor fields reproduce. A specific JS function's
+UnlinkedCodeBlock is generated/linked with numCalleeLocals=0 in our environment.
+Timestamp: 2026-06-10 (long marathon session). Author: Claude (working as
+Opus 4.8 after a model-flag forced a downgrade mid-session; began as Fable 5).
+CLAUDE_BIN tested = 2.1.170 AND 2.1.172. -smp 1 KVM. HEAD = 733c2f1a + session.
+
+THE KEYSTONE EVIDENCE (version bisect, this log)
+  2.1.170: TBBFDUMP rip=0x3F4CFB6 cb=0x6FBFEF0F4AA0/4B80 numLocals=0 ret=0x3F6817C
+  2.1.172: TBBFDUMP rip=0x3F4D7B6 cb=0x6FBFEF0F4B80    numLocals=0 ret=0x3F6897C
+  rip delta = +0x800, ret delta = +0x800 (code relocated between builds), BUT
+  cb (heap), numLocals=0, cb+0=0100140001001600, cb+8=...1C0088, cb+10=030100
+  are IDENTICAL. The SAME logical function fails in both binaries. A corrupt
+  page at a fixed FILE offset cannot do this (different bytes per version) ->
+  loader/data corruption RULED OUT. It is a logic/environment bug that a
+  specific function's bytecode-gen/link hits, deterministically, every boot.
+
+COMPLETE RULED-OUT SPACE (each by an explicit experiment this session)
+  - Post-construction memory corruption: NO vm op touches the source page (0
+    TBVMTOUCH/demand-refault), NO alias anywhere (full user page-table walk =
+    none), NO kernel write (0 CPL0 #DB). fry1390-1392.
+  - Cross-thread reg corruption in GC roots: fixed (per-thread callee-saved
+    frame slots) — crash unchanged. fry1391.
+  - GC concurrency: JSC_useConcurrentGC=0 -> crash identical.
+  - Generational GC: JSC_useGenerationalGC=0 -> identical.
+  - Concurrent JIT: JSC_useConcurrentJIT=0 -> identical.
+  - DFG/FTL JIT: useDFGJIT/useFTLJIT=0 -> identical (baseline can't be turned
+    off; Bun forces useJIT=true).
+  - AVX/vector state across preemption: XCR0 masked to x87+SSE (0x3) -> identical
+    -> vector save/restore EXONERATED.
+  - Main-thread stack-scan bound: /proc/self/maps + RLIMIT_STACK both widened
+    8MB->64MB -> identical (WTF softLimit 0x7FFFFFB02F80 never changed; it uses
+    a different origin). Still correct fixes; kept.
+  - read()/recv() into lazy buffers returning EFAULT: fixed (demand-fault in
+    user_buf_accessible) -> crash unchanged. Still a correct fix; kept.
+  - Bun self-locate (readlink /proc/self/fd/N, /proc/self/exe): fixed -> crash
+    unchanged. The pread64(fd=0,256KB)=EBADF is a stdin probe (Bun runs 8000+
+    lines past it) = RED HERRING, not the bundle read.
+  - Crash-time module load: NONE. At the fault the file ops are only event-loop
+    housekeeping (/proc/self/statm memory poll, read fd=9 len=8 eventfd wakeup,
+    36-byte status reads). The empty CodeBlock was built MUCH earlier and is
+    only now ENTERED by an event-loop callback firing (right after socket()
+    init). So the bug is at GENERATION time, invisible at crash time.
+
+WHERE THIS LEAVES IT (the actual frontier)
+  A specific JS function (same one across versions; invoked from an event-loop
+  callback shortly after networking init where socket()=-ENOSYS) has its
+  UnlinkedCodeBlock numCalleeLocals=0. The CodeBlock copy at 0x4C84[CF]308
+  (mov 0x14(%r8),%edx; and; mov %edx,0x14(%rdi)) faithfully copies that 0; the
+  JIT prologue then computes a 0-size frame and walks the stack off. Since
+  loader/data is exonerated, the UnlinkedCodeBlock is GENERATED empty: either
+  (a) parsed from a source whose (start,end) length our env yields as 0, (b) a
+  builtin whose generation short-circuits, or (c) the function is ENTERED while
+  its CodeBlock is still an un-filled stub (a tiering/linking ordering our env
+  breaks). socket()=-ENOSYS likely schedules the error-path callback that is
+  this function.
+
+NEXT (fry1397)
+  1. CHEAP + also forward progress: stub socket()/connect() to return a valid
+     (non-functional) fd instead of -ENOSYS. If the crash MOVES/vanishes, the
+     socket-error callback IS the empty function -> chase that path; and we
+     advance toward real networking regardless.
+  2. Catch GENERATION: watch the UnlinkedCodeBlock's numCalleeLocals being
+     written (BytecodeGenerator) for the failing function — it drifts, so trap
+     generically (e.g., break on the writer of [unlinked+0x14] for the cage
+     region, or log every UnlinkedFunctionExecutable source (start,end,len)
+     that yields 0 locals). Determine parsed-empty vs stub-entered.
+  3. If stub-entered: find the missing compile-before-enter guard (our JIT
+     entry / OSR / tiering path).
+
+FIXES SHIPPED THIS SESSION (all correct; KEEP — do not revert)
+  - epoll_pwait maxevents clamp (was -EINVAL on >64 -> main loop never parked).
+  - per-thread callee-saved frame slots (replaces racy per-CPU gs:24..56).
+  - clone3 frame depth via lx_syscall_frame()/LX_SYSFRAME_*.
+  - user_buf_accessible demand-faults lazy pages (read/recv into fresh mmap).
+  - readlink /proc/self/fd/N -> fd_paths[N].
+  - /proc/self/maps [stack] + RLIMIT_STACK report the true 64MB stack window.
+
+DIAGNOSTIC LEFT IN TREE (strip when done): TBWATCH*/TBALIAS*/TBWINFAULT/
+  TBVMTOUCH window, TBFAIL/TBOPEN/TBREAD traces, dual DR arm, CPL0 #DB branch,
+  XCR0 is RESTORED to 0x7. Revert fry1388 512MB stack cap to 64MB at the end.
+  CLAUDE staged = 2.1.172 currently (was 2.1.170); both reproduce identically.
+  BUILD/RUN unchanged (KVM -smp 1; grep -a; one QEMU at a time = NVMe lock).

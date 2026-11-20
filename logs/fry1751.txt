@@ -1,0 +1,23 @@
+fry1751 — 2026-06-22 (retro-filled for log continuity)
+STEP: First boot test of the 5-native-extension image (pydantic_core/httptools/
+      watchfiles/Pillow linked) — uncovered the /tmp + agent-staging failures that
+      drove fry1752–1756.
+
+WHAT HAPPENED:
+  - Rebuilt ISO with all 5 native ext pkgs (python3.fry 14.6MB), booted launch_debug.sh.
+    selftest 106/0, GUI.FRY spawned.
+  - Typed `hermes`. Serial showed: HERMESMAIN ran python3 with
+    /nvme/opt/hermes-agent/tatertos_bootstrap.py -> "[Errno 2] No such file or directory".
+    The agent bootstrap was NOT on the NVMe image.
+  - Diagnosis chain (-> fry1752/1753): stage_hermes.sh DID try to stage opt/hermes-agent
+    to the NVMe (totcopy) but every copy silently failed (2>/dev/null||true). Manual
+    totcopy -> "alloc_inode: no free inodes". ROOT CAUSE: ToTFS ran out of INODES (not
+    bytes) — 8GB disk, but fixed 16384 inodes + single-block inode bitmap (32768 cap) vs
+    ~35k staged files (site-packages 28,759 + agent 3,402). Zack: don't trim packages
+    (non-production); fix the FS to scale — no hardcoded constraints.
+  - (Also note: the site-packages count was inflated by an over-broad venv rsync —
+    lark_oapi alone = 10,103 files — but the fix is to scale the FS, not trim.)
+
+OUTCOME: led directly to the ToTFS inode-scaling work (fry1752 mktotfs+kernel, fry1753
+  totcopy) which made the agent stage (4159 files) and unblocked everything after.
+STATE: superseded by fry1752+. Logged here only to keep the 1750–1757 sequence intact.

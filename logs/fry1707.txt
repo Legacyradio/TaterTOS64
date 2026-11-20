@@ -1,0 +1,47 @@
+fry1707 — 2026-06-21 08:42 CDT
+STEP: Booted launch_debug.sh, Zack typed `hermes`, read serial to END. ACTUAL end
+      state below. NOT claiming fixed.
+
+RUN: OS booted clean (selftest 106/0, smoketest 15/0, GUI up). Zack typed hermes ->
+  shell spawned /nvme/apps/python3.fry as pid=10. Serial line 112:
+    HERMESMAIN argc=2 /nvme/opt/hermes-agent/tatertos_bootstrap.py
+  => got PAST _start + argv + environ (fry1697 stage). Then a FLOOD of
+  "VM COMMIT OK pid=10" (hundreds of pages, ticks ~25000 -> ~105000) => the
+  allocator path executed heavily (big progress vs original immediate crash).
+
+FAULT (serial 506-511):
+  !EXC vec=0E err=0x4 RIP=0x6B5C0F CR2=0x10 CR3=0x2414000
+  rax=0 rbx=0x906108 rdx=0xA70550 rsi=0xB0 rdi=0 ...
+  USER FAULT pid=10 tid=10 rip=0x6b5c0f cr2=0x10
+  Then python3 exited -> shell returned to prompt ("dropped back to prompt").
+
+DISASM (python3.elf, nm: 0x6b5bf0 T _PyObject_Malloc):
+  6b5bfb mov $-8,%rax            ; _Py_tss_tstate @ tpoff = -8
+  6b5c02 mov %fs:0x0,%rdx        ; tp loaded from fs:0  -> did NOT fault
+  6b5c0b mov (%rdx,%rax),%rax    ; *(tp-8) = _Py_tss_tstate -> did NOT fault, =0
+  6b5c0f mov 0x10(%rax),%rax     ; deref NULL+0x10 -> FAULT cr2=0x10
+  6b5c13 mov 0x29d8(%rax),%rdx   ; (would read interp obmalloc state)
+
+INTERPRETATION (provable from the fault, not guess):
+  - fs:0 read SUCCEEDED and returned a non-zero, mapped pointer (else *(rdx-8)
+    would fault at 0xfff...ff8, not give cr2=0x10). => %fs base programmed AND a
+    valid thread-pointer/self-value present at fs:0. TLS REGION IS LAID OUT.
+  - *(tp-8) SUCCEEDED and returned 0 (mapped, zeroed .tbss slot). => _Py_tss_tstate
+    slot exists but holds NULL: CPython's current PyThreadState was never written
+    to (or is read from a different block than) this thread's TLS slot.
+  => The PT_TLS layout fix WORKS (region mapped, fs:0 valid, slot readable). The
+     REMAINING bug is that _Py_tss_tstate == NULL at this _PyObject_Malloc call.
+
+OPEN QUESTIONS for fry1708 (investigate, no guessing):
+  1. Two-instruction TLS access (load tp from fs:0, then tp-8) => requires fs:0 ==
+     tp (self-pointer). My elf.c: does it write the self-ptr at fs:0, or did libc?
+     Reconcile with handoff claim "no self-ptr at fs:0".
+  2. Does libc REPROGRAM %fs (arch_prctl/SET_TLS/wrfsbase) after _start, to its own
+     fry_tls_block? If CPython wrote _Py_tss_tstate under MY %fs but reads under a
+     libc-reprogrammed %fs (or vice-versa), the slot mismatches -> reads NULL.
+  3. Compare original pre-fix crash (fry1699/1700): same RIP/cr2 but how far did it
+     get? If it crashed immediately vs now-deep, confirms staged progress.
+
+NEXT: read elf.c TLS layout (self-ptr?), libc fs-base handling, original crash logs
+  -> fry1708. Do NOT rebuild/change anything until the NULL-tstate mechanism is
+  pinned down.

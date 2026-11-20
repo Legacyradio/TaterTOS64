@@ -50,8 +50,24 @@ int main(int argc, char **argv) {
     uint64_t bits_per_bmp_blk = (uint64_t)TOTFS_BLOCK_SIZE * 8ULL;
     uint32_t bitmap_blocks = (uint32_t)((total_blocks + bits_per_bmp_blk - 1) / bits_per_bmp_blk);
     if (bitmap_blocks < 1) bitmap_blocks = 1;
-    uint32_t inode_table_blk = TOTFS_BLOCK_BITMAP_BLK + bitmap_blocks;
-    uint32_t data_start_blk  = inode_table_blk + TOTFS_INODE_TABLE_BLKS;
+
+    /* Inode count SCALES with the partition (~1 inode per 32KB = /8 blocks), with a
+     * floor for tiny disks. Bitmap + table sized to match — NO compile-time cap, so
+     * the inode space grows with the drive (was fixed 16384 = ran out at ~32k files). */
+    uint64_t total_inodes = total_blocks / 8ULL;
+    if (total_inodes < TOTFS_MAX_INODES) total_inodes = TOTFS_MAX_INODES;
+    uint32_t inode_bitmap_blocks = (uint32_t)((total_inodes + bits_per_bmp_blk - 1) / bits_per_bmp_blk);
+    if (inode_bitmap_blocks < 1) inode_bitmap_blocks = 1;
+    uint64_t inodes_per_tbl_blk  = TOTFS_BLOCK_SIZE / TOTFS_INODE_SIZE;
+    uint32_t inode_table_blks    = (uint32_t)((total_inodes + inodes_per_tbl_blk - 1) / inodes_per_tbl_blk);
+
+    /* Layout: SB(0) | inode bitmap(N) | block bitmap(M) | inode table | data.
+     * The inode bitmap is now multi-block, so block bitmap + table shift after it.
+     * The kernel reads all positions from the superblock. */
+    uint32_t inode_bitmap_blk = TOTFS_INODE_BITMAP_BLK;            /* block 1 */
+    uint32_t block_bitmap_blk = inode_bitmap_blk + inode_bitmap_blocks;
+    uint32_t inode_table_blk  = block_bitmap_blk + bitmap_blocks;
+    uint32_t data_start_blk   = inode_table_blk + inode_table_blks;
 
     FILE *f = fopen(image_path, "r+b");
     if (!f) {
@@ -67,16 +83,15 @@ int main(int argc, char **argv) {
     sb.block_size         = TOTFS_BLOCK_SIZE;
     sb.log2_block_size    = TOTFS_LOG2_BLOCK;
     sb.total_blocks       = total_blocks;
-    sb.total_inodes       = TOTFS_MAX_INODES;
-    /* Metadata uses blocks 0..66 + 1 data block for root dir = 68 */
+    sb.total_inodes       = total_inodes;
     sb.free_blocks        = total_blocks - (data_start_blk + 1);
-    sb.free_inodes        = TOTFS_MAX_INODES - 2;  /* inodes 0 and 1 used */
-    sb.inode_bitmap_start = TOTFS_INODE_BITMAP_BLK;
-    sb.inode_bitmap_blocks = 1;
-    sb.block_bitmap_start = TOTFS_BLOCK_BITMAP_BLK;
+    sb.free_inodes        = total_inodes - 2;  /* inodes 0 and 1 used */
+    sb.inode_bitmap_start = inode_bitmap_blk;
+    sb.inode_bitmap_blocks = inode_bitmap_blocks;
+    sb.block_bitmap_start = block_bitmap_blk;
     sb.block_bitmap_blocks = bitmap_blocks;
     sb.inode_table_start  = inode_table_blk;
-    sb.inode_table_blocks = TOTFS_INODE_TABLE_BLKS;
+    sb.inode_table_blocks = inode_table_blks;
     sb.data_start         = data_start_blk;
     sb.root_inode         = TOTFS_ROOT_INODE;
     sb.inode_size         = TOTFS_INODE_SIZE;
@@ -93,29 +108,33 @@ int main(int argc, char **argv) {
     memset(inode_bitmap, 0, sizeof(inode_bitmap));
     set_bit(inode_bitmap, 0);   /* inode 0 reserved */
     set_bit(inode_bitmap, 1);   /* inode 1 = root dir */
-    write_block(f, part_offset, TOTFS_INODE_BITMAP_BLK, inode_bitmap, TOTFS_BLOCK_SIZE);
+    write_block(f, part_offset, inode_bitmap_blk, inode_bitmap, TOTFS_BLOCK_SIZE);
+    /* Remaining inode-bitmap blocks are all-free (zeroed). */
+    memset(inode_bitmap, 0, sizeof(inode_bitmap));
+    for (uint32_t i = 1; i < inode_bitmap_blocks; i++)
+        write_block(f, part_offset, inode_bitmap_blk + i, inode_bitmap, TOTFS_BLOCK_SIZE);
 
     /* ── Block Bitmap (may span multiple blocks) ─────────────────────── */
     uint8_t block_bitmap[TOTFS_BLOCK_SIZE];
-    memset(block_bitmap, 0, sizeof(block_bitmap));
-    /* Mark metadata blocks 0..data_start_blk (incl. root dir block) used.
-     * data_start_blk is small (< first bitmap block), so all bits land here. */
-    for (uint32_t i = 0; i <= data_start_blk; i++) {
-        set_bit(block_bitmap, i);
-    }
-    write_block(f, part_offset, TOTFS_BLOCK_BITMAP_BLK, block_bitmap, TOTFS_BLOCK_SIZE);
-    /* Remaining bitmap blocks are entirely free (zeroed). */
-    {
-        uint8_t zero_bmp[TOTFS_BLOCK_SIZE];
-        memset(zero_bmp, 0, sizeof(zero_bmp));
-        for (uint32_t i = 1; i < bitmap_blocks; i++) {
-            write_block(f, part_offset, TOTFS_BLOCK_BITMAP_BLK + i, zero_bmp, TOTFS_BLOCK_SIZE);
+    /* Mark metadata blocks 0..data_start_blk (incl. root dir block) used. With a
+     * large (scaled) inode table, data_start_blk can exceed one bitmap block, so
+     * mark across ALL block-bitmap blocks — no single-block assumption. */
+    for (uint32_t bb = 0; bb < bitmap_blocks; bb++) {
+        memset(block_bitmap, 0, sizeof(block_bitmap));
+        uint64_t base = (uint64_t)bb * bits_per_bmp_blk;  /* first block# this bmp blk covers */
+        if (base <= (uint64_t)data_start_blk) {
+            uint64_t end  = (uint64_t)data_start_blk;
+            uint64_t last = base + bits_per_bmp_blk - 1;
+            if (end > last) end = last;
+            for (uint64_t b = base; b <= end; b++)
+                set_bit(block_bitmap, (uint32_t)(b - base));
         }
+        write_block(f, part_offset, block_bitmap_blk + bb, block_bitmap, TOTFS_BLOCK_SIZE);
     }
 
-    /* ── Inode Table (zero entire thing first) ───────────────────────── */
+    /* ── Inode Table (zero entire thing first; size scales with total_inodes) ── */
     memset(blk, 0, sizeof(blk));
-    for (uint32_t i = 0; i < TOTFS_INODE_TABLE_BLKS; i++) {
+    for (uint32_t i = 0; i < inode_table_blks; i++) {
         write_block(f, part_offset, inode_table_blk + i, blk, TOTFS_BLOCK_SIZE);
     }
 

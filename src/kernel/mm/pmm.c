@@ -59,6 +59,17 @@ static uint64_t early_pool_next;
 static uint8_t pmm_max_order;
 static spinlock_t g_pmm_lock = {0};
 
+/* fry1774: hot-page LIFO cache in front of the buddy allocator. Single-page
+ * (order-0) frees park here instead of coalescing; pmm_alloc_page() pops from
+ * here first. This bypasses the O(n) buddy coalesce/split thrash on mmap/munmap
+ * churn (fry1773). Cached pages stay physically backed (no demand-paging) and
+ * keep meta=used(0), so threading/futex memory is never lazy. Bounded so it can
+ * never starve large contiguous allocs (flushed back on alloc failure).
+ * All access is under g_pmm_lock. */
+#define PMM_PCACHE_MAX 512u
+static uint64_t pmm_pcache[PMM_PCACHE_MAX];
+static uint32_t pmm_pcache_count;
+
 static uint64_t align_up(uint64_t v, uint64_t a) {
     return (v + a - 1) & ~(a - 1);
 }
@@ -297,6 +308,24 @@ static void free_block(uint64_t start_page, uint8_t order) {
     insert_free_block(start_page, order);
 }
 
+/* fry1774: return every page parked in the hot-page cache to the buddy
+ * allocator via the real free_block() (with coalescing). Caller MUST hold
+ * g_pmm_lock. Used on alloc failure so the cache can never cause a false OOM
+ * or block a large contiguous allocation. */
+static void pmm_pcache_flush_locked(void) {
+    while (pmm_pcache_count > 0) {
+        uint64_t phys = pmm_pcache[--pmm_pcache_count];
+        uint64_t start_page = phys / PAGE_SIZE;
+        if (start_page >= pmm_total_pages) {
+            continue;
+        }
+        uint8_t meta = pmm_page_meta[start_page];
+        if (meta_is_used(meta)) {
+            free_block(start_page, meta_order(meta));
+        }
+    }
+}
+
 static void release_block(uint64_t start_page, uint8_t order) {
     set_block_meta(start_page, order, meta_make_used(order));
     free_block(start_page, order);
@@ -447,6 +476,19 @@ static uint64_t alloc_pages_range_locked(uint64_t count, uint64_t min_phys, uint
     }
 
     return 0;
+}
+
+/* fry1774: buddy alloc with hot-page-cache flush-retry. If the buddy cannot
+ * satisfy the request, return all cached pages to the buddy (coalescing) and
+ * retry once. Guarantees the cache never causes a false OOM or blocks a large
+ * contiguous / address-constrained allocation. Caller MUST hold g_pmm_lock. */
+static uint64_t alloc_pages_range_flush_locked(uint64_t count, uint64_t min_phys, uint64_t max_phys) {
+    uint64_t phys = alloc_pages_range_locked(count, min_phys, max_phys);
+    if (!phys && pmm_pcache_count > 0) {
+        pmm_pcache_flush_locked();
+        phys = alloc_pages_range_locked(count, min_phys, max_phys);
+    }
+    return phys;
 }
 
 static void reserve_early_pool(void) {
@@ -668,7 +710,15 @@ void pmm_debug_dump_state(const char *tag, uint64_t order) {
 
 uint64_t pmm_alloc_page(void) {
     uint64_t irqf = spin_lock_irqsave(&g_pmm_lock);
-    uint64_t phys = alloc_pages_range_locked(1, PAGE_SIZE, UINT64_MAX);
+    uint64_t phys;
+    /* fry1774: serve from the hot-page cache first (O(1), no buddy split). A
+     * cached frame already carries meta=used(0) and is counted in
+     * pmm_used_pages, so just hand it back. */
+    if (pmm_pcache_count > 0) {
+        phys = pmm_pcache[--pmm_pcache_count];
+    } else {
+        phys = alloc_pages_range_locked(1, PAGE_SIZE, UINT64_MAX);
+    }
     spin_unlock_irqrestore(&g_pmm_lock, irqf);
     return phys;
 }
@@ -686,14 +736,14 @@ uint64_t pmm_alloc_early_low(void) {
     }
 
     uint64_t irqf = spin_lock_irqsave(&g_pmm_lock);
-    uint64_t phys = alloc_pages_range_locked(1, EARLY_POOL_MIN, pool_limit);
+    uint64_t phys = alloc_pages_range_flush_locked(1, EARLY_POOL_MIN, pool_limit);
     spin_unlock_irqrestore(&g_pmm_lock, irqf);
     return phys;
 }
 
 uint64_t pmm_alloc_page_below(uint64_t max_phys) {
     uint64_t irqf = spin_lock_irqsave(&g_pmm_lock);
-    uint64_t phys = alloc_pages_range_locked(1, PAGE_SIZE, max_phys);
+    uint64_t phys = alloc_pages_range_flush_locked(1, PAGE_SIZE, max_phys);
     spin_unlock_irqrestore(&g_pmm_lock, irqf);
     return phys;
 }
@@ -703,7 +753,7 @@ uint64_t pmm_alloc_pages(uint64_t count) {
         return 0;
     }
     uint64_t irqf = spin_lock_irqsave(&g_pmm_lock);
-    uint64_t phys = alloc_pages_range_locked(count, PAGE_SIZE, UINT64_MAX);
+    uint64_t phys = alloc_pages_range_flush_locked(count, PAGE_SIZE, UINT64_MAX);
     spin_unlock_irqrestore(&g_pmm_lock, irqf);
     return phys;
 }
@@ -713,7 +763,7 @@ uint64_t pmm_alloc_pages_range(uint64_t count, uint64_t min_phys, uint64_t max_p
         return 0;
     }
     uint64_t irqf = spin_lock_irqsave(&g_pmm_lock);
-    uint64_t phys = alloc_pages_range_locked(count, min_phys, max_phys);
+    uint64_t phys = alloc_pages_range_flush_locked(count, min_phys, max_phys);
     spin_unlock_irqrestore(&g_pmm_lock, irqf);
     return phys;
 }
@@ -723,7 +773,7 @@ uint64_t pmm_alloc_pages_below(uint64_t count, uint64_t max_phys) {
         return 0;
     }
     uint64_t irqf = spin_lock_irqsave(&g_pmm_lock);
-    uint64_t phys = alloc_pages_range_locked(count, PAGE_SIZE, max_phys);
+    uint64_t phys = alloc_pages_range_flush_locked(count, PAGE_SIZE, max_phys);
     spin_unlock_irqrestore(&g_pmm_lock, irqf);
     return phys;
 }
@@ -743,6 +793,17 @@ void pmm_free_pages(uint64_t phys, uint64_t count) {
 
     uint8_t meta = pmm_page_meta[start_page];
     if (!meta_is_used(meta)) {
+        spin_unlock_irqrestore(&g_pmm_lock, irqf);
+        return;
+    }
+
+    /* fry1774: park a single (order-0) page in the hot-page cache instead of
+     * coalescing it back into the buddy. Bypasses the O(n) remove_free_block
+     * walk on the mmap/munmap churn. Meta stays used(0) and pmm_used_pages is
+     * unchanged — the page is held by the cache, not free to the buddy.
+     * Multi-page (order>0) blocks always go straight to the buddy. */
+    if (meta_order(meta) == 0 && pmm_pcache_count < PMM_PCACHE_MAX) {
+        pmm_pcache[pmm_pcache_count++] = phys;
         spin_unlock_irqrestore(&g_pmm_lock, irqf);
         return;
     }

@@ -1,0 +1,62 @@
+fry1794 — clean kernel rebuild: the 0x40350e fault is GONE, hermes running — 2026-08-07
+==========================================================================
+WHAT: Acted on the fry1793 root cause. Wiped every kernel object and rebuilt so
+the whole kernel is compiled against ONE struct layout. NO SOURCE WAS EDITED.
+The fry1792 fry_tls_get fault does not reproduce; `hermes` now runs past it.
+
+SCOPE OF THE WIPE (narrowed from a full `make clean`, deliberately):
+  Audited every TU that includes process.h (directly or via sched.h):
+    selftest.c, fs/tbridgefs.c, drivers/storage/nvme.c, proc/sched.h,
+    proc/process.c, acpi/ec.c, proc/linux_elf.c, drivers/timer/lapic_timer.c,
+    irq/irqdesc.c, main.c, acpi/extended.c, proc/syscall.c, acpi/events.c,
+    proc/sched.c
+  ALL are kernel objects. NO userspace TU includes it (the only src/user hit is
+  libwebp's own unrelated thread_utils.c). So rebuilding kernel objects is
+  provably sufficient; BearSSL/QuickJS/OpenH264/Opus/AK (841 third-party files)
+  cannot see struct fry_process and were correctly left alone.
+    find src/kernel src/drivers src/boot -name '*.o' -delete   -> 86 removed
+    rm -f kernel.elf; make kernel
+
+BUILD VERIFIED BEFORE LAUNCH (per the standing rule):
+  BUILD_EXIT=0
+  kernel.elf  2026-08-07 14:37:46  (relinked 14:38:06 by build_iso)
+  ISO_EXIT=0
+  out/tatertos64v3.iso 2026-08-07 14:40:11  (newer than kernel, newer than all objs)
+  Only pre-existing warnings (unused statics, nested-comment, hda unused fns).
+  No errors, none new.
+  Old VM (stale kernel, pid 288803) killed and CONFIRMED dead before relaunch.
+
+BOOT (serial /tmp/fry1794_serial.log):
+  selftest: 106 passed, 0 failed
+  SPAWN_OK path=/system/GUI.FRY pid=7 parent=2
+  SPAWN_OK path=/apps/SHELL.TOT pid=8 parent=7
+  (:61 SPAWN_FAIL path=hhermes rc=-101 — Zack typo'd "hhermes", harmless)
+
+RESULT — THE FIX HOLDS (:82):
+  HERMESMAIN argc=2 /nvme/opt/hermes-agent/hermes
+  ...and NO !EXC, NO USER FAULT follows it.
+  The 0x40350e / CR2=0x20 / rax=8 fault that deterministically killed pid 9
+  (hermes) and pid 10 (python3 -c) on the stale kernel is GONE.
+  => fry1793's stale-object root cause is CONFIRMED by experiment. The bug was
+     never in fry1790's logic; it was mixed struct layouts across objects.
+
+SHELL "UNRESPONSIVE" IS EXPECTED, NOT A HANG: cmd_hermes -> pump_child_io(pid)
+(shell.c:866) blocks pumping the child's I/O until the child exits. The Shell is
+tied up for the whole agent run by design. Do not kill it.
+
+STATE AT LOG TIME: import in progress, ~685,000 ticks, climbing, no crash.
+fry1788 needed ~7.7M ticks to complete the full agent import on the SAME
+python3.fry (unchanged since 06-26 17:32), so this is ~9% in. The slowness is
+the known eager-commit demand-paging crawl, not a stall. Outcome watch armed on
+the serial (fault / Fatal Python / traceback / agent output).
+
+NOT YET ANSWERED: whether fry1790's per-thread TLS actually clears the fry1788
+`_PyThreadState_Attach: non-NULL old thread state` abort. That question only
+becomes testable once the import completes and the agent spawns its first
+thread. STILL UNVERIFIED — do not claim it works until the serial says so.
+
+FOLLOW-UP OWED (own step, NOT yet approved): the Makefile compile rule is a bare
+`%.o: %.c` (Makefile:269) with no -MMD/-MP and no header prerequisites. Editing
+ANY header rebuilds nothing. Until that is fixed this class of silent, deniable
+regression recurs on every header edit, and it is a strong suspect for past
+"impossible" regressions on this project.

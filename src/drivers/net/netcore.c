@@ -335,13 +335,14 @@ static void ip_process(const uint8_t *pkt, uint16_t len) {
     uint16_t payload_len = total_len - ihl;
 
     {
-        static int ip_trace_count;
-        if (protocol == IP_PROTO_TCP && ip_trace_count < 5) {
-            kprint_serial_only("IP_RX: proto=%u src=%u.%u.%u.%u len=%u\n",
-                protocol,
-                (src_ip>>24)&0xFF, (src_ip>>16)&0xFF,
-                (src_ip>>8)&0xFF, src_ip&0xFF, payload_len);
-            ip_trace_count++;
+        /* fry1432 layer-diff beacon: uncapped TCP-forward count. The old
+         * 5-print cap went dark exactly when the stall window opened. */
+        static uint32_t tb_ip_tcp_fwd;
+        if (protocol == IP_PROTO_TCP) {
+            tb_ip_tcp_fwd++;
+            if ((tb_ip_tcp_fwd & 0x7) == 0)
+                kprint_serial_only("TBIP tcp_fwd=%u len=%u\n",
+                                   tb_ip_tcp_fwd, payload_len);
         }
     }
 
@@ -666,6 +667,7 @@ struct tcp_conn {
     uint32_t ack_num;       /* expected next byte from remote */
     uint8_t  state;
     uint8_t  active;
+    uint32_t refs;          /* ownership refcount: fry_socket(s) holding this conn. Only last owner performs real close. */
     int8_t   listen_parent; /* index of listen socket that spawned this, -1 if client */
     uint8_t  accepted;      /* 1 if accept() has returned this connection */
 
@@ -677,6 +679,15 @@ struct tcp_conn {
     /* Retransmit state */
     uint32_t last_ack_sent;
     uint32_t retransmit_timer;
+
+    /* fry1431 receive-path accounting (diagnostic; cheap, keep accurate) */
+    uint32_t dbg_in_segs;     /* data segments accepted in order */
+    uint32_t dbg_in_bytes;    /* payload bytes buffered */
+    uint32_t dbg_drop_ooo;    /* segments rejected by the sequence check */
+    uint32_t dbg_trimmed;     /* overlapping retransmits salvaged by trimming */
+    uint32_t dbg_frames;      /* fry1432: ALL segments matched to this conn,
+                                 any flags/state — diff vs dbg_in_segs names
+                                 the layer where data dies */
 };
 
 static struct tcp_conn tcp_conns[TCP_MAX_CONNECTIONS];
@@ -704,7 +715,33 @@ static int tcp_send_segment(struct tcp_conn *c, uint8_t flags,
     n_put32(pkt + 8, c->ack_num);         /* ack number */
     pkt[12] = (uint8_t)((tcp_hdr_len / 4) << 4); /* data offset */
     pkt[13] = flags;
-    n_put16(pkt + 14, 65535);             /* window size — max for TCP without scaling */
+    {
+        /* fry1431: advertise REAL free receive-ring space (capped at the
+         * no-scaling max), not a hardcoded 65535 — inviting more data than
+         * the ring can hold guarantees drops under burst. Ring keeps one
+         * slot open to distinguish full from empty. */
+        uint32_t used = (c->rx_head >= c->rx_tail)
+                      ? (c->rx_head - c->rx_tail)
+                      : (TCP_RX_BUF_SIZE - c->rx_tail + c->rx_head);
+        uint32_t free_space = (TCP_RX_BUF_SIZE - 1) - used;
+        n_put16(pkt + 14, free_space > 65535 ? 65535 : (uint16_t)free_space);
+        {
+            /* fry1432: what we tell the sender. If our ACKs stop, carry a
+             * stale ack number, or advertise a starved window, slirp stops
+             * sending and the stall is OURS — this line is the proof either
+             * way. Conn index guarded: RST replies use a static scratch dummy. */
+            static uint32_t tb_tx_count;
+            tb_tx_count++;
+            if (tb_tx_count <= 64 || (tb_tx_count & 0x1F) == 0) {
+                int ci = (c >= tcp_conns && c < tcp_conns + TCP_MAX_CONNECTIONS)
+                       ? (int)(c - tcp_conns) : -1;
+                kprint_serial_only("TBTCP tx n=%u conn=%d flags=0x%x ack=%u win=%u dlen=%u\n",
+                                   tb_tx_count, ci, flags, c->ack_num,
+                                   free_space > 65535 ? 65535 : free_space,
+                                   data_len);
+            }
+        }
+    }
     n_put16(pkt + 16, 0);                 /* checksum placeholder */
     n_put16(pkt + 18, 0);                 /* urgent pointer */
 
@@ -750,6 +787,7 @@ tcp_conn_t tcp_connect(uint32_t dst_ip, uint16_t dst_port) {
     c->seq_num = tcp_isn();
     c->state = TCP_SYN_SENT;
     c->active = 1;
+    c->refs = 1;  /* initial owner is the creating socket */
     c->listen_parent = -1;
     c->accepted = 1; /* client connections are always "accepted" */
 
@@ -775,6 +813,7 @@ tcp_conn_t tcp_connect(uint32_t dst_ip, uint16_t dst_port) {
     kprint("NET: TCP connect timeout\n");
     c->active = 0;
     c->state = TCP_CLOSED;
+    c->refs = 0;
     return -1;
 }
 
@@ -820,33 +859,54 @@ int tcp_recv(tcp_conn_t conn, uint8_t *buf, uint32_t max_len) {
     return (int)to_read;
 }
 
-void tcp_close(tcp_conn_t conn) {
+static inline void tcp_conn_retain(tcp_conn_t conn) {
     if (conn < 0 || conn >= TCP_MAX_CONNECTIONS) return;
     struct tcp_conn *c = &tcp_conns[conn];
-    if (c->state == TCP_ESTABLISHED) {
-        tcp_send_segment(c, TCP_FIN | TCP_ACK, 0, 0);
-        c->seq_num++;
-        c->state = TCP_FIN_WAIT_1;
-    } else {
-        c->state = TCP_CLOSED;
-        c->active = 0;
+    if (c->active) c->refs++;
+}
+
+static inline void tcp_conn_release(tcp_conn_t conn) {
+    if (conn < 0 || conn >= TCP_MAX_CONNECTIONS) return;
+    struct tcp_conn *c = &tcp_conns[conn];
+    if (!c->active) return;
+    if (c->refs > 0) c->refs--;
+    if (c->refs == 0) {
+        if (c->state == TCP_ESTABLISHED) {
+            tcp_send_segment(c, TCP_FIN | TCP_ACK, 0, 0);
+            c->seq_num++;
+            c->state = TCP_FIN_WAIT_1;
+        } else {
+            c->state = TCP_CLOSED;
+            c->active = 0;
+        }
     }
+}
+
+void tcp_close(tcp_conn_t conn) {
+    /* Public "this socket no longer owns this handle" — delegates to refcounted release.
+     * WHY: centralizes lifetime so bulk teardown from proc_free cannot double-close or UAF
+     * a tcp_conn that still has other owners or is in inconsistent state. */
+    tcp_conn_release(conn);
 }
 
 int tcp_is_connected(tcp_conn_t conn) {
     if (conn < 0 || conn >= TCP_MAX_CONNECTIONS) return 0;
-    return tcp_conns[conn].state == TCP_ESTABLISHED;
+    struct tcp_conn *c = &tcp_conns[conn];
+    if (!c->active || c->refs == 0) return 0;
+    return c->state == TCP_ESTABLISHED;
 }
 
 int tcp_get_state(tcp_conn_t conn) {
     if (conn < 0 || conn >= TCP_MAX_CONNECTIONS) return TCP_CLOSED;
-    if (!tcp_conns[conn].active) return TCP_CLOSED;
-    return tcp_conns[conn].state;
+    struct tcp_conn *c = &tcp_conns[conn];
+    if (!c->active || c->refs == 0) return TCP_CLOSED;
+    return c->state;
 }
 
 uint32_t tcp_rx_available(tcp_conn_t conn) {
     if (conn < 0 || conn >= TCP_MAX_CONNECTIONS) return 0;
     struct tcp_conn *c = &tcp_conns[conn];
+    if (!c->active || c->refs == 0) return 0;
     if (c->rx_head >= c->rx_tail)
         return c->rx_head - c->rx_tail;
     return TCP_RX_BUF_SIZE - c->rx_tail + c->rx_head;
@@ -864,6 +924,7 @@ tcp_conn_t tcp_listen(uint16_t port) {
     c->local_port = port;
     c->state = TCP_LISTEN;
     c->active = 1;
+    c->refs = 1;  /* initial owner is the creating listen socket */
     c->listen_parent = -1;
     c->accepted = 1; /* listen socket itself is "accepted" */
 
@@ -954,9 +1015,20 @@ static void tcp_process(uint32_t src_ip, const uint8_t *data, uint16_t len) {
             return;
         }
 
-        /* Send RST for unexpected segments */
+        /* Send RST for unexpected segments.
+         * fry1544: this scratch conn MUST be static, NOT on the stack.
+         * sizeof(struct tcp_conn) is ~1 MB (rx_buf[TCP_RX_BUF_SIZE] = 1 MB),
+         * and tcp_process() runs in the e1000 RX path on the kernel stack
+         * (256 KB) / IST stacks (16 KB). A 1 MB on-stack dummy + n_zero() ran
+         * off the bottom of the stack into the unmapped gap below __kernel_end
+         * and raised an unhandled kernel #PF (CR2 in that gap, RIP in
+         * tcp_process) -> reset, every time a late/unmatched inbound segment
+         * arrived for a just-closed conn (i.e. during socket teardown). Moving
+         * it to BSS removes the overflow. tcp_send_segment() copies every field
+         * it needs into its local pkt[] before any TX and the RX path is not
+         * reentrant here, so a single shared scratch is safe. */
         if (!(flags & TCP_RST)) {
-            struct tcp_conn dummy;
+            static struct tcp_conn dummy;
             n_zero(&dummy, sizeof(dummy));
             dummy.remote_ip = src_ip;
             dummy.remote_port = src_port;
@@ -968,7 +1040,11 @@ static void tcp_process(uint32_t src_ip, const uint8_t *data, uint16_t len) {
         return;
     }
 
+    c->dbg_frames++;
+
     if (flags & TCP_RST) {
+        kprint_serial_only("TBTCP RST conn=%d state=%u frames=%u\n",
+                           (int)(c - tcp_conns), c->state, c->dbg_frames);
         c->state = TCP_CLOSED;
         c->active = 0;
         return;
@@ -994,24 +1070,46 @@ static void tcp_process(uint32_t src_ip, const uint8_t *data, uint16_t len) {
         break;
 
     case TCP_ESTABLISHED: {
-        static int tcp_data_trace;
-        if (payload_len > 0 && tcp_data_trace < 3) {
-            kprint_serial_only("TCP_RX: conn=%d len=%u rxhead=%u rxtail=%u\n",
-                (int)(c - tcp_conns), payload_len, c->rx_head, c->rx_tail);
-            tcp_data_trace++;
-        }
         /* Buffer any payload data FIRST, even if FIN is also set */
         if (payload_len > 0) {
-            /* Validate sequence number — only accept in-order data.
-             * Out-of-order or duplicate segments corrupt the stream
-             * (no reorder buffer), so drop them and let TCP retry. */
-            if (seq != c->ack_num) {
-                /* Always send duplicate ACK — triggers fast retransmit
-                 * after 3 dup ACKs (RFC 5681). Without this, we'd wait
-                 * for the sender's retransmit timeout (~1s). */
+            /* Sequence handling. Three cases (RFC 793 §3.9, seq-safe
+             * signed-delta arithmetic for wraparound):
+             *   delta == 0: exactly in order — accept.
+             *   delta < 0 && seq+len > ack_num: RETRANSMIT OVERLAPPING new
+             *     data (e.g. after a partial accept, or a lost ACK) — TRIM
+             *     the already-received prefix and accept the remainder.
+             *     The old exact-match check dropped these forever: once any
+             *     segment was partially consumed, every retransmission of
+             *     it kept its original seq, kept failing seq!=ack_num, and
+             *     the stream wedged permanently (fry1430 stall class).
+             *   otherwise (pure duplicate or future/out-of-order): dup-ACK
+             *     and drop — triggers fast retransmit (RFC 5681). */
+            int32_t delta = (int32_t)(seq - c->ack_num);
+            if (delta < 0 && delta + (int32_t)payload_len > 0) {
+                uint32_t trim = (uint32_t)(-delta);
+                payload += trim;
+                payload_len = (uint16_t)(payload_len - trim);
+                seq = c->ack_num;
+                c->dbg_trimmed++;
+                kprint_serial_only("TBTCP trim conn=%d trim=%u keep=%u\n",
+                                   (int)(c - tcp_conns), trim, payload_len);
+            } else if (delta != 0) {
+                c->dbg_drop_ooo++;
+                kprint_serial_only("TBTCP drop conn=%d delta=%d len=%u acked=%u drops=%u\n",
+                                   (int)(c - tcp_conns), delta, payload_len,
+                                   c->ack_num, c->dbg_drop_ooo);
                 tcp_send_segment(c, TCP_ACK, 0, 0);
                 break;
             }
+            c->dbg_in_segs++;
+            c->dbg_in_bytes += payload_len;
+            /* fry1432: print EVERY accepted segment. The fry1431 sampling
+             * ((segs & 0xF) == 1) printed at seg 1 then went dark until 17,
+             * so "segs=1" only proved 1..16 segments — it overstated the
+             * stall evidence. Uncapped output is the point of this boot. */
+            kprint_serial_only("TBTCP rx conn=%d segs=%u bytes=%u len=%u\n",
+                               (int)(c - tcp_conns), c->dbg_in_segs,
+                               c->dbg_in_bytes, payload_len);
             uint16_t buffered = 0;
             for (uint16_t i = 0; i < payload_len; i++) {
                 uint32_t next = (c->rx_head + 1) % TCP_RX_BUF_SIZE;
@@ -1356,6 +1454,21 @@ void netcore_attach_e1000(void) {
 static uint32_t net_poll_count;
 void net_poll(void) {
     net_poll_count++;
+    /* fry1432: quiescence dump — after the stall, beacons go silent and the
+     * final per-conn truth is trapped in the structs. Dump the live table
+     * every 4096 polls so the post-stall serial log still carries it. */
+    if ((net_poll_count & 0xFFF) == 0) {
+        for (int i = 0; i < TCP_MAX_CONNECTIONS; i++) {
+            struct tcp_conn *c = &tcp_conns[i];
+            if (!c->active) continue;
+            kprint_serial_only("TBDUMP conn=%d st=%u frames=%u segs=%u bytes=%u ooo=%u trims=%u unread=%u\n",
+                               i, c->state, c->dbg_frames, c->dbg_in_segs,
+                               c->dbg_in_bytes, c->dbg_drop_ooo, c->dbg_trimmed,
+                               (c->rx_head >= c->rx_tail)
+                                 ? (c->rx_head - c->rx_tail)
+                                 : (TCP_RX_BUF_SIZE - c->rx_tail + c->rx_head));
+        }
+    }
     if (i219_is_ready()) {
         i219_rx_poll(0);
         return;

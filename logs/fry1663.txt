@@ -1,0 +1,29 @@
+fry1663 - Corrected headed QEMU launch for Hermes interactive test
+Timestamp: 2026-06-19 23:53:25 CDT
+
+Context:
+- The previous headed QEMU run used `timeout 240s`, which was wrong for an
+  interactive headed VM. That wrapper killed QEMU with SIGTERM before Shell
+  and Hermes could be tested properly.
+
+Corrected command:
+- setsid -f qemu-system-x86_64 -m 4G -machine q35 -cpu max -smp 4 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=/tmp/fry1664_cache_kvm_OVMF_VARS.fd \
+    -cdrom /home/legacyindieradio/TaterTOS64/out/tatertos64v3.iso \
+    -drive file=/home/legacyindieradio/TaterTOS64/out/tater_nvme.img,if=none,id=nvm,format=raw \
+    -device nvme,serial=deadbeef,drive=nvm \
+    -serial file:/tmp/fry1664_qemu_serial.log \
+    -display gtk -no-reboot
+
+Result:
+- PASS: persistent headed QEMU process is running as PID 2625306.
+- Serial log: /tmp/fry1664_qemu_serial.log
+- Boot reached the protected GUI path:
+    SPAWN_OK path=/system/GUI.FRY pid=11 parent=5
+- No timeout wrapper is present for this VM.
+
+Next:
+- Open Shell from the visible GUI, then run `hermes`.
+- Watch /tmp/fry1664_qemu_serial.log for Shell spawn, Python startup, and the
+  next Hermes runtime blocker.

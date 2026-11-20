@@ -1,0 +1,38 @@
+fry1771 — verify boot of the native lazy-mmap fix: CHURN GONE but HANGS — 2026-06-26
+==========================================================================
+WHAT: Booted the fry1770 ISO to verify the native vm_map_anon_private_region
+demand-paging change. Result: the eager churn is ELIMINATED, but the change
+introduced a HANG. Regression. Must revert.
+
+BOOTS:
+  - Boot A (/tmp/fry1771_serial.log): Zack shut the VM down before typing `hermes`
+    (QEMU cursor-grab annoyance, a fluke — launcher NOT to be changed per Zack).
+    0 commits because python never ran -> NOT a test.
+  - Boot B (/tmp/fry1771b_serial.log): Zack typed `hermes`. Sat ~20 min with no
+    progress.
+
+EVIDENCE (boot B):
+  - churn VA 0x1000003a1000 eager "VM COMMIT OK" = 0; TOTAL VM COMMIT OK = 0.
+    => the eager-commit churn is GONE (the fix's intended effect worked).
+  - Serial only growing with kernel heartbeat (TBCLK ticks 845k->860k+, scheduler
+    alive, pid=3 running). NO python (pid=10) syscall progress at all. Repeated
+    "TBPROCIN req=10 ... b0=0d" = Zack mashing Enter, no echo = python blocked.
+  - shot1771b.png: report sailed through STANDARD LIBRARY, FS, SQLite, NETWORK,
+    pydantic_core OK, hermes_constants/state/time/logging OK — then STUCK with the
+    cursor sitting right BEFORE the `hermes_cli.main` line. Never reaches SUMMARY.
+
+ROOT CAUSE: `import hermes_cli.main` pulls in asyncio/threading, which uses
+FUTEXES. The fry1600 note (syscall.c:3825) explicitly warns demand-paging
+"hard-hung the loader's futex coordination." Making ALL native anon-private maps
+lazy leaves threading/futex words unbacked (zero) -> the coordination wait never
+satisfies -> hang. Blanket-lazy reintroduced a KNOWN landmine.
+
+ARCHITECTURE NOTE (Zack's pushback, verified): the compat-layer edits WERE
+reverted (LNX_MAP_POPULATE gone, LNX_mmap baseline) — only the native VMM change
+was live. BUT the native change relied on lx_try_demand_page, an `lx_`-prefixed
+handler built for the JSC/gigacage compat case. Native memory should not depend on
+that. The approach is wrong: blanket-lazy is unsafe for memory threading needs
+eagerly backed.
+
+NEXT (fry1772): revert the native change to the known-good (eager) baseline;
+rebuild kernel + ISO so the system boots again.

@@ -1,0 +1,49 @@
+fry1409 — Tater Bridge / Claude Code: AUTH ABOARD — claude loads Zack's
+OAuth session in-OS; DNS exchange is the new frontier.
+Date: 2026-06-11 ~12:40 PM CDT. Author: Claude (Fable 5). Follows fry1408.
+========================================================================
+
+WHAT
+====
+Zack's explicit go-ahead: stage his Claude Code OAuth session into the
+image (his words: using the .json is the point — REAL claude, REAL login,
+no API key middleman; he will strip creds before any push/redistribution).
+- build_iso.sh prepare_linux_etc: copies $HOME/.claude.json +
+  $HOME/.claude/.credentials.json -> image ::/.claude.json +
+  ::/.claude/.credentials.json (HOME=/ in the TBRIDGE env).
+- efi_loader.c ramdisk filter += ".json".
+- Verified in image (mdir): .claude.json 32607B, .credentials.json 466B.
+- Host token: claudeAiOauth, scopes incl. user:inference, expires
+  2026-06-11 19:49 CDT (7.4h window at staging time).
+
+BOOT RESULTS (KVM -smp 1, e1000/slirp, 2.1.172, full JIT)
+====
+- /.claude.json opened (x2) and /.claude/.credentials.json opened (x3):
+  CLAUDE AUTHENTICATES IN-OS. First time the real binary has its real
+  login inside TaterTOS.
+- Crash count: 0 — SEVENTH consecutive clean boot.
+- DNS attempted: resolver thread created its AF_INET DGRAM socket TWICE
+  (classic glibc 3s-timeout retry), then no TCP socket, no SYS_CONNECT —
+  the UDP DNS EXCHANGE IS NOT COMPLETING. claude idles afterward
+  (event-loop heartbeats), no stdout.
+- Also noted: epoll_ctl rc=-EEXIST once (Bun re-adding an fd; Linux apps
+  normally fall back to EPOLL_CTL_MOD — benign unless it recurs; watch).
+
+WHY THE PACKET DEATH IS INVISIBLE
+====
+nr=42/44/45/46/47/271 (connect/sendto/recvfrom/sendmsg/recvmsg/ppoll) are
+NOT in tb_trace_selected_syscall, and the native SYS_SENDTO UDP branch +
+sock_udp_rx have no beacons. The DHCP exchange at boot proves the e1000 +
+slirp UDP path works at the NIC level; the failure is somewhere between
+the Linux syscall translation and the UDP rx delivery/wakeup.
+
+NEXT (fry1410)
+====
+Visibility pass, then re-boot:
+1. tb_trace_selected_syscall += connect/sendto/recvfrom/sendmsg/recvmsg/
+   ppoll (ret+rc tracing for the claude tgid).
+2. Beacons: SYS_SENDTO/SYS_SEND UDP branch ("LXUDP tx dst=ip:port len rc")
+   and sock_udp_rx ("LXUDP rx dst_port len matched=") to see whether the
+   query leaves and whether the reply arrives/matches a socket.
+3. Boot, locate the dead hop (tx not sent / reply not arriving / reply
+   arriving but port-match failing / poll not waking), fix it.

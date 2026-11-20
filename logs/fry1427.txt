@@ -1,0 +1,82 @@
+fry1427 — Tater Bridge / Claude Code: OUTPUT MACHINERY PROVEN WORKING +
+FIRST EVER claude TEXT ON SERIAL. Real ioctl dispatch landed (blanket
+-ENOTTY stub retired). Beacons show Bun dups stdout->fd12/stderr->fd13
+fine and successfully wrote a 157-byte stderr warning straight through
+dup -> FD_STDIO -> kprint_write -> serial:
+  "Warning: no stdin data received in 3s, proceeding without it..."
+So the reply's absence is NOT an output-path bug: claude -p gets its
+API responses, exits 0, and simply never produces a result. fry1428
+adds --debug so claude narrates its own request lifecycle to stderr.
+Date: 2026-06-12. Author: Claude (Fable 5).
+========================================================================
+
+LANDED THIS STEP (in tree)
+====
+1. REAL LNX_ioctl dispatch (syscall.c) — production directive from
+   Zack: no shortcuts, no "tolerated" stubs. Validity by fd;
+   FIOCLEX/FIONCLEX really toggle cloexec; FIONBIO really toggles
+   O_NONBLOCK (copyin of *argp); FIONREAD answers real readable bytes
+   (TCP tcp_rx_available, UDP next-datagram len, AF_UNIX pair + pipes
+   pipe_data_avail, eventfd 8-if-armed, files size-pos via vfs_seek);
+   TTY queries (TCGETS/TCGETS2/TCSETS*/TIOCGWINSZ/TIOCGPGRP/...)
+   honestly -ENOTTY until a termios device exists — matches Linux for
+   non-tty fds (host strace confirms claude gets ENOTTY there too on
+   redirects and works fine).
+2. Evidence beacons: TBDUP (stdio dup events), TBSTDOUT (tgid-3 writes
+   bound for stdout/stderr/FD_STDIO, cap 400), TBIOCTL (stdio probes).
+
+BOOT RESULTS (-smp 2)
+====
+- TBDUP: fcntl(1,F_DUPFD_CLOEXEC)->12, fcntl(2,...)->13. Dups WORK
+  (consistent with fry1426 post-mortem: they always did).
+- TBIOCTL: TCGETS2 (0x802c542a) probed on fds 0/1/2 — same as host.
+- TBSTDOUT: exactly ONE output write the whole run: pid=3 fd=13
+  (stderr dup) len=157 — the stdin warning, VISIBLE ON SERIAL. The
+  output stack works END TO END. Thirty boots of silence were real
+  silence: claude wasn't printing, except this warning (which the old
+  blanket-ENOTTY ioctl may have suppressed differently — note the
+  warning APPEARED in the same boot the real ioctl landed).
+- Network: API responses received again (recvfrom 0x2fff=12,287B,
+  2x 0xc26, 0xc24, 0x483, 0x3b5). Control-plane traffic healthy.
+- TBEXIT group code=0 again, census 0/0/0/8, NO result text written
+  (TBSTDOUT count stayed 1).
+
+READING
+====
+claude -p: gets responses, waits 3s on stdin (poll for fd 0 claims
+always-POLLIN — a half-truth; see correctness list), warns, proceeds,
+runs ~60s, exits 0 with an EMPTY result and no error. With stderr now
+proven visible, --debug will name the reason directly.
+
+CORRECTNESS WORK LIST (stub inventory, from grep + this arc; Zack's
+production directive: each is correct-per-Linux or an open bug)
+====
+- [FIXED fry1427] LNX_ioctl blanket -ENOTTY.
+- fd 0 poll readiness: always FRY_POLLIN with no input model — claims
+  readable with nothing to read (caused the 3s stdin stall). Correct:
+  EOF semantics (POLLHUP/read()=0) for a closed-stdin launch, or a
+  real console stdin.
+- SYS_DUP (native, syscall.c ~8017): refuses oldfd<3 "for now" —
+  stdio dup must work (Linux dup(1) is legal). Linux-personality
+  paths are fixed; the native path still has the refusal.
+- mremap: "No shrinking for now" -> EINVAL on shrink (Linux allows).
+- mremap path ~7526: comment "I'll just support 1 page or hack it" —
+  AUDIT this one properly.
+- clone: "Only CLONE_THREAD for now" — fork() unsupported. Fine for
+  claude -p today; not fine for production POSIX.
+- TCP listen poll readiness (~888): "simplified check" scans ALL
+  conns for ESTABLISHED/SYN_RECV — false-readable for multi-listener
+  setups.
+- signalfd: never readable (commented honestly) — pending-signal
+  tracking needed.
+- TBREAD/TBOPEN/TBFAIL/TBSTDOUT/TBIOCTL/TBDUP/TBCLK/TBEXIT/TBLOST +
+  LX*/TB* beacons: ALL stripped before release (standing).
+
+NEXT (fry1428)
+====
+argv now {"claude","--debug","-p","say hello from TaterTOS in 10
+words"} (argc 4). Expect claude's own debug narration on serial via
+stderr; it will name why the result is empty (auth? cert? request
+never sent? empty completion?). CA-store staging in build_iso.sh
+stays queued — likely next after --debug names the failing request.
+Raw serial: /tmp/s_fry1427.log.

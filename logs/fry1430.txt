@@ -1,0 +1,59 @@
+fry1430 — Tater Bridge / Claude Code: DIVERGENCE WINDOW CAPTURED. The
+guest's post-warning behavior: full TLS handshakes on all three
+connections + the gating requests SENT (the exact fry1421 success
+shape), one 3,110-byte response chunk read — then 2,500 syscalls of
+pure event-loop idle (1357 clock_gettime + 996 epoll_pwait2), zero
+socket(), zero further reads. Host in the same window: sends the same
+request, then OPENS MORE CONNECTIONS and proceeds to session init.
+The guest is waiting for response data that never finishes arriving.
+Date: 2026-06-12. Author: Claude (Fable 5).
+========================================================================
+
+EVIDENCE
+====
+- TBFULL window (3000 syscalls armed at the stdin-warning write):
+  sendto sequence on fds 17/18/19 = 3x 517B + finish/request pairs
+  (0x40+0x3cf, 0x40+0x23f, 0x40+0xa9) — TLS complete, requests out.
+  Then idle: clock_gettime/epoll_pwait2 dominate; NO socket(), NO
+  further recvfrom after one rc=0xc26 (3,110B) read on fd 19.
+- Host lean reference (env-matched, strace): warning@15306,
+  init@69521; within ~650 lines of the warning it sends a 476B
+  request on a kept-alive conn and opens new v6+v4 connection pairs.
+- Netlink/DNS: guest run total = ONE RTM_GETADDR dump + ONE :53
+  lookup; the host's additional lookups never happen in guest —
+  consistent with claude stuck awaiting the first gating response,
+  never reaching the code that resolves/opens more connections.
+- CAUTION RECORDED: the old TCP_RX beacon caps at 3 lines GLOBALLY
+  (static counter) — "only 3 packets arrived" was a beacon artifact,
+  not evidence. NET_POLL showed frames arriving throughout. Capped
+  beacons keep generating false conclusions (this arc's recurring
+  trap): fry1431 counters are UNCAPPED cumulative per-conn.
+
+RECEIVE-PATH FINDINGS (by inspection, netcore.c)
+====
+1. Exact-match sequence check (`seq != ack_num` -> drop): NO overlap
+   trimming. Any retransmitted segment that overlaps already-ACKed
+   data (lost ACK, partial accept) keeps its original seq and is
+   dropped FOREVER -> permanent stream wedge. Classic, and matches
+   the every-run mid-response stall.
+2. Advertised window hardcoded 65535 regardless of ring occupancy.
+   Ring is 1MB so partial-accept is unlikely at these sizes, but the
+   advert is dishonest and invites burst drops under load.
+
+LANDED (fry1431, in tree)
+====
+- RFC 793 overlap trimming: signed seq-delta; retransmits overlapping
+  new data get their already-received prefix trimmed and the
+  remainder ACCEPTED (TBTCP trim beacon). Pure duplicates/future
+  segments still dup-ACK (TBTCP drop beacon, uncapped count).
+- Honest window advert: real ring free space, capped at 65535.
+- Per-conn uncapped counters: dbg_in_segs/in_bytes/drop_ooo/trimmed,
+  TBTCP rx line every 16th segment. Old capped TCP_RX beacon REMOVED.
+
+NEXT
+====
+fry1431 boot: TBTCP drop/trim lines name the stall mechanism if it's
+TCP; if responses now COMPLETE, expect stream-json init + result on
+serial (output path already proven). CA staging still queued behind
+this. Raw serial: /tmp/s_fry1430.log; host references:
+/tmp/host_lean.txt (env-matched), /tmp/host_full.txt.

@@ -1,0 +1,60 @@
+fry1530 - RESEARCH: why rename(nr=82) returns -5 and corrupts .claude.json; correct-fix design
+Date: 2026-06-15 14:56:59 CDT
+
+Type: INVESTIGATION / DIAGNOSIS. No code changed.
+Goal: find why Claude's atomic config write (write tmp, rename tmp -> .claude.json)
+fails with -5 (fry1522/fry1528), corrupting /nvme/.claude.json, and design a correct
+totfs rename.
+
+Path of the call:
+  LNX_rename (syscall.c:6718) -> SYS_RENAMEAT -> vfs_rename (vfs.c:1114) ->
+  totfs_rename_vfs (totfs.c:917). So rename IS implemented (fry1449), not missing.
+
+Bug 1 - fails when destination exists (THE -5):
+  totfs_rename_vfs line 925 calls totfs_create_vfs(new_path). totfs_create_vfs
+  returns -1 if the target already exists ("Check if already exists" ->
+  totfs_dir_lookup == 0 -> return -1). Claude renames .claude.json.tmp.NNN ->
+  .claude.json, and .claude.json ALREADY EXISTS, so create fails -> rename returns
+  -1 -> mapped to -EIO (-5). Claude's atomic write then fails and falls back to a
+  lossy/partial path that truncates the file -> "JSON Parse error: Unexpected EOF".
+
+Bug 2 - block double-reference / free-after-share (latent corruption even when dest
+  does NOT exist):
+  totfs_rename_vfs creates a NEW inode for new_path, copies old_inode's extents into
+  it (lines 933-938), then totfs_unlink_vfs(old_path) (line 940). totfs_unlink_vfs
+  "Read target inode to free its blocks" - it FREES old's data blocks. But the new
+  inode's extents point at those same blocks -> new now references freed blocks ->
+  corruption / later double-allocation. The copy-extents-then-unlink approach is
+  fundamentally unsafe.
+
+Correct-fix design (move the directory entry, keep the inode - no block copy/free):
+  Primitives available: totfs_dir_lookup (152), totfs_add_dirent (618), and the
+  dirent-removal logic embedded in totfs_unlink_vfs (~796).
+  New totfs_rename_vfs:
+    1. resolve old_path -> old_inum (else -1).
+    2. split new_path -> (new_parent, new_base); resolve new_parent dir.
+    3. if new_path exists: totfs_unlink_vfs(new_path)  [POSIX overwrite; frees the
+       old destination's blocks + removes its dirent].
+    4. totfs_add_dirent(new_parent_inum, old_inum, new_base, ...) -> point the new
+       name at the EXISTING inode (no new inode, no extent copy).
+    5. remove ONLY the old_path directory entry, WITHOUT freeing old_inum's blocks
+       (the inode now lives under new_path). Need a "remove dirent only" helper -
+       factor it out of totfs_unlink_vfs (which currently also frees blocks/inode),
+       or add a flag to skip the free.
+  This is atomic-write-correct and avoids the block-sharing free bug.
+
+Also required to clear the CURRENT bad state:
+  The existing /nvme/.claude.json is already truncated. After fixing rename, either
+  let Claude's menu "2. Reset with default configuration" rewrite it (now that
+  rename works), or delete the corrupt file so Claude regenerates a default.
+
+C2 (color) - separate item to plan with this:
+  shell.c term_rows is a CHAR-ONLY grid; term_render draws each row via
+  gfx_draw_text(fg=0xD0D0D0, bg=0x101010). SGR ([m) is currently parsed-and-ignored
+  (term_csi_dispatch case 'm': break). To add color: store per-cell fg/bg (parallel
+  arrays), parse SGR params (30-37/90-97 fg, 40-47/100-107 bg, 38/48;2;r;g;b and
+  ;5;n, 0 reset, 1 bold, 7 inverse), and render per-run with the cell colors. The
+  "4mu" underline-leak seen in fry1529 was at a torn exit frame; re-check once SGR
+  is handled to confirm it was transitional, not a parser desync.
+
+No code changed. No build. No hashes (Rule 16).

@@ -1,0 +1,29 @@
+# fry1639 - BUILD with the recovered fry1583 shell.c + reconstructed fry_spawn_linux_args. Headed boot launched for verification.
+Date: 2026-06-19 ~00:30 CDT
+Type: code-fix (libc) + build (Rule 12) + headed launch
+Author: planv3 Rules 1/5/6/12 + CLAUDE.md
+
+WHAT WAS DONE (on top of fry1638's shell.c restore)
+- Compile of the restored shell.c failed: undefined reference to fry_spawn_linux_args (the linuxulator spawn
+  wrapper the `claude` command calls). The fry.h decl (227) + kernel handler (SYS_SPAWN_LINUX_ARGS=145,
+  syscall.c:9490) BOTH survived; only the 1-line libc wrapper was lost with shell.c.
+- src/user/libc/libc.c: re-added fry_spawn_linux_args right after its sibling fry_spawn_args — identical body,
+  routed through SYS_SPAWN_LINUX_ARGS instead of SYS_SPAWN_ARGS. Reconstruction patterned on the sibling, not
+  invented (decl + syscall number + kernel handler already existed).
+- make shell: LINKS CLEAN now (shell.tot = 151,024 B = the sophisticated shell; the reverted stub was 137 KB).
+- Full build: STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 STAGE_HERMES=1 LINUX_SHELL_BIN=.../busybox CLAUDE_BIN=.../2.1.177
+  bash build_iso.sh -> BUILD_EXIT 0. ISO+NVMe fresh @00:18. Staged SHELL.TOT strings confirm the claude cmd:
+  "/nvme/RCLAUDE.LXE", "claude: loading /nvme/RCLAUDE.LXE...".
+- init.c GUI launch (fry1635) still in place; python3/hermes port still staged (Phase B will re-add the shell cmds).
+
+HEADED LAUNCH (for Zack to drive — mouse can't be host-automated; relative PS/2):
+  setsid -f env DISPLAY=:0 qemu ... -smp 4 -netdev user/-device e1000 -vga std -display gtk
+  -serial file:/tmp/fry_play2_serial.log ; nvme=out/tater_nvme.img iso=out/tatertos64v3.iso VARS=/tmp/VARS_play2.fd
+  QEMU pid 1377248 up; booting (TATER EFI: start).
+
+VERIFY TARGET (fry1640 = result): open Shell -> text should be WHITE (own SHM-surface term_render, not gui.c's
+  green fallback) -> type `claude` -> ECHOES -> "claude: loading /nvme/RCLAUDE.LXE..." -> Claude TUI. Watch serial
+  for SPAWN_LINUX_OK path=/nvme/RCLAUDE.LXE. NOTE: a FULL prompt may still hit the known unfixed network-teardown
+  triple-fault (fry1583 open blocker) — launching + TUI + typing is the Phase A success bar.
+
+All per planv3 Rules 1/5/6/12. Written immediately on the build, before Zack's verify.

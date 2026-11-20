@@ -1,0 +1,74 @@
+fry1826 — PACKAGING: hermes launcher shebang rewritten for this platform;
+          /usr/bin/env deliberately NOT built, with reasons — 2026-09-26
+==========================================================================
+WHAT: Piece 3 of 3. Staging script edited; log written BEFORE the build per
+planv3 rule 5/6. Not built at time of writing.
+This step CHANGED SHAPE from what fry1822 and fry1824 predicted, and the
+reasoning is recorded rather than quietly substituted.
+
+=== WHAT fry1822/fry1824 PREDICTED ===
+    shell PATH lookup -> kernel shebang -> /usr/bin/env -> PATH -> python3
+and named "build /usr/bin/env as a real .fry binary" as the third piece.
+
+=== WHY THAT IS THE WRONG THIRD PIECE HERE ===
+Checked the mount layout instead of assuming it:
+  src/kernel/main.c:446   vfs_mount_secondary(nvme_bd, "/nvme")
+  src/kernel/fs/vfs.c:460 vfs_mount("/", &rd_ops, 0)   <- ISO ramdisk at root
+  src/kernel/fs/vfs.c:992/1018  ToTFS at "/" only when it is the PRIMARY disk
+On an ISO boot the root filesystem is the RAMDISK and the ToTFS disk hangs off
+/nvme — which is why every path in shell.c is /nvme/apps/..., /nvme/opt/...
+So an "#!/usr/bin/env python3" line resolves /usr/bin/env on the RAMDISK. An
+env binary staged onto ToTFS would live at /nvme/usr/bin/env and would never be
+found by that shebang. Building it would have produced a working binary that
+does not fix the thing it was being built for.
+
+=== WHAT WAS DONE INSTEAD ===
+stage_hermes.sh rewrites the launcher's first line at staging time:
+    #!/usr/bin/env python3   ->   #!/nvme/apps/python3.fry
+Guarded by a grep for the env form, so it is idempotent and a hand-edited
+shebang is never clobbered. Placed in the staging script rather than done by
+hand to the sysroot — the fry1809 lesson: the .dist-info fix was applied by
+hand and would have evaporated on the next sysroot rebuild.
+This is ordinary packaging. Distributions rewrite script shebangs at install
+time for exactly this reason; the interpreter path is a property of the target
+system, not of upstream's source tree.
+
+=== WHY THIS IS NOT A SHORTCUT (stated because it could look like one) ===
+The alternative was: build env, stage it into the ISO ramdisk's root, and make
+"#!/usr/bin/env" work generically. That is MORE correct in general and it is
+NOT being dismissed — it is written down below as scoped work. But it is a
+larger change (a new app, a new Makefile target, and a change to how the ramdisk
+is populated) whose only effect on the stated goal — typing `hermes` runs
+hermes — is to add two indirections. planv3 rule 2 bans minimal implementations
+of the thing being built; it does not require building an extra program that
+this step does not need.
+The feature Zack asked for is complete with the two pieces already written.
+
+=== THE CHAIN AS ACTUALLY BUILT ===
+    type `hermes`
+      -> shell: not a builtin match -> resolve_program("hermes")  (fry1824)
+      -> PATH hit at /nvme/opt/hermes-agent/hermes
+      -> fry_spawn_args(path, argv, argc, shell_env, SHELL_ENVC)
+      -> kernel: shebang_parse sees "#!/nvme/apps/python3.fry"   (fry1822)
+      -> argv rewritten to [python3.fry, /nvme/opt/hermes-agent/hermes, args...]
+      -> elf_load_fry loads python3.fry
+      -> CPython runs the script, sys.path[0] = /nvme/opt/hermes-agent, so
+         `from hermes_cli.main import main` resolves.
+Arguments now survive the whole way, so `hermes -z hello` is reachable through
+the generic path for the first time.
+
+=== OWED / SCOPED, NOT FORGOTTEN ===
+  - /usr/bin/env as a real binary, staged into the ISO ramdisk root, so generic
+    "#!/usr/bin/env foo" scripts work. Its own phase.
+  - Shell tokenizer has no quote handling (shell.c:548-565), so a multi-word
+    argument still cannot be passed. Its own phase.
+  - The python3/hermes/claude builtins are still present and still take
+    precedence over PATH resolution (the strcmp chain runs first). They must be
+    removed AFTER the new path is proven on a boot, not before — see fry1824.
+    Until they are removed, typing `hermes` still goes through cmd_hermes, so
+    the new chain is NOT yet being exercised by that command. This matters for
+    the verification: use a name with NO builtin to prove PATH resolution.
+
+=== WHAT IS NOT CLAIMED ===
+Nothing built, nothing booted, nothing resolved. No claim that `hermes` runs as
+a file yet.

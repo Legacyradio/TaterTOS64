@@ -1,0 +1,78 @@
+fry1484 - FIX the rg/Grep-spawn ENFILE: raise FRY_SOCK_MAX 16->64
+(data-justified by fry1483). VERIFIED at the resource level: zero
+socketpair exhaustion, socket high-water 17/64. The fix UNBLOCKS claude
+into the next blocker (an epoll_pwait2/timerfd busy-spin) — same pattern
+as ENFILE revealing EBADF. Not a regression.
+Date: 2026-06-13. Author: Claude (Opus 4.8).
+Serials archived: logs/serial_fry1484c.log, logs/serial_fry1484d.log.
+========================================================================
+
+THE FIX
+------------------------------------------------------------------------
+src/include/fry_limits.h: FRY_SOCK_MAX 16 -> 64.
+src/kernel/selftest.c:122: st_check FRY_SOCK_MAX expected 16 -> 64 (stale
+  assertion; st_check kernel_panics on mismatch -> would have panicked a
+  NORMAL boot. Prompt-only/claude boots skip selftest, so it didn't bite
+  the runs, but it had to be corrected).
+Justification (fry1483 census data): socketpair (nr=53) returned -ENFILE
+at sock=15/16 while pipes sat 12/128; sockets are the limit, reclaim is
+clean (drains to 0) = genuine need, 16 slots = only 8 concurrent pairs.
+Observed peak need 17 sockets. SAFE: g_sockets is a BSS global, not on
+the kernel stack (unlike fd_paths/FRY_FD_MAX).
+
+BUILD GOTCHA (cost me a wasted run — DOCUMENT)
+------------------------------------------------------------------------
+The Makefile has NO header-dependency tracking (no -MMD/.d files).
+Editing fry_limits.h and running `make` RELINKED kernel.elf from STALE
+syscall.o/process.o (still FRY_SOCK_MAX=16). First verify run (s_fry1484*
+stale) showed beacons "/16" + an exhaust -> invalid. Fix: force-recompile
+after any header edit — `find src/kernel -name '*.c' -exec touch {} +`
+then make. Confirmed: .o mtimes must postdate the header edit. After the
+real recompile the beacons read "/64".
+
+VERIFICATION (correctly-compiled 64-slot kernel)
+------------------------------------------------------------------------
+- Beacon denominator: /64 (rebuild confirmed live).
+- SPCEN exhaust events: 0 (was 1 at /16). ENFILE ELIMINATED.
+- Socket high-water: 17/64 -> claude genuinely wanted >16 (vindicates the
+  fry1483 diagnosis exactly), with ample headroom.
+=> The socket-pool ENFILE is FIXED.
+
+NEXT BLOCKER REVEALED (epoll_pwait2/timerfd busy-spin)
+------------------------------------------------------------------------
+Two consecutive 64-slot end-to-end runs (c fresh image, d reused image)
+hung BEFORE session init. Tail = pid 14 spinning:
+  LXDNS pid=14 nr=441 (epoll_pwait2) rc=1   <- 1 fd reported ready
+  LXDNS pid=14 nr=0   (read) a3=8 rc=8       <- drains 8B timerfd/eventfd
+  ...forever.
+Confounds RULED OUT:
+  - OAuth: token had 33-67 min left at run time (checked expiresAt). Not
+    expiry.
+  - Network: DHCP OK, TCP connect 443 OK, claudeai-mcp "Fetched servers"
+    COMPLETED in all 3 runs (incl. the hung ones). Not the mcp fetch.
+  - 64 structurally: every FRY_SOCK_MAX use is a plain `< FRY_SOCK_MAX`
+    loop bound (scales); no 16-width mask/buffer. The only behavioral
+    delta vs 16 is that socketpair no longer fails -> claude proceeds
+    further.
+INTERPRETATION: at 16, socketpair ENFILE forced claude onto a degraded
+path that happened to complete; at 64 it gets all its pairs and enters a
+fuller path that hits a kernel epoll_pwait2/timerfd readiness bug ->
+epoll keeps reporting the timerfd ready, the 8-byte read drains it, epoll
+immediately re-reports ready -> infinite poll, never blocks, never
+advances to init. This is the SAME "fix N reveals N+1" pattern as
+ENFILE->EBADF. The socket fix STANDS.
+
+OPEN (for the next logs, code-level — NO claude run needed to study)
+------------------------------------------------------------------------
+fry1485: epoll_pwait2 (syscall.c:6340, LNX_epoll_pwait2=441) + timerfd
+  readiness — find why a drained timerfd stays "ready" (level-triggered
+  readiness not cleared on read, or pwait2 ignoring the relative timeout
+  / returning immediately). Likely a level vs edge / readiness-recompute
+  bug in the epoll path for timerfd.
+fry1486: EBADF on the first rg spawn (socketpair-stdio inheritance into
+  the vfork child; continue fry1474).
+Possible: reconsider 64 -> 32 (peak need only 17) IF a smaller BSS
+  footprint is ever wanted; not required, 64 is safe.
+
+COORDINATION: 2400+ uncommitted lines in syscall.c/process.c + now
+fry_limits.h/selftest.c. Codex co-edits the proc subsystem — serialize.

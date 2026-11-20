@@ -1,0 +1,70 @@
+fry1828 — BUILD: kernel shebang + shell PATH exec + shebang rewrite all built
+          and staged. Verified by READING THE IMAGE BACK. EXIT=0 — 2026-09-26
+==========================================================================
+WHAT: Build step for fry1822 (kernel), fry1824/1827 (shell) and fry1826
+(packaging). No source changed here. Verification method chosen deliberately in
+light of fry1827: mtimes AND image contents were read back, not inferred from
+an exit code.
+
+=== COMMANDS ===
+  export PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+  make                 # default target — the one that actually builds the shell
+  bash build_iso.sh
+
+=== RESULTS ===
+  MAKE_EXIT=0, no errors, no undefined references.
+  ISO_EXIT=0.
+  kernel.elf   2,619,072   2026-09-26 22:41
+  shell.tot      170,128   2026-09-26 22:41   (was 170,104 — CHANGED)
+  gui.fry        169,176   2026-09-26 22:41
+  tater_nvme.img           2026-09-26 22:43
+  tatertos64v3.iso         2026-09-26 22:43
+ISO and disk image are the newest files. No stale-artifact boot.
+
+=== STAGING VERIFIED BY READING THE IMAGE, NOT BY TRUSTING THE SCRIPT ===
+  tools/totcopy out/tater_nvme.img 1048576 --get /opt/hermes-agent/hermes <tmp>
+  head -1  ->  #!/nvme/apps/python3.fry
+The rewrite from fry1826 is present ON THE IMAGE, not merely in the sysroot.
+  tools/totcopy ... --list /apps
+    SHELL.TOT    170,128   == local shell.tot exactly
+    python3.fry  16,036,800
+So the booted shell will be the one with resolve_program() in it. This check
+exists because fry1827 proved an exit code alone can be a lie.
+
+=== NOTE ON build_iso.sh OUTPUT ===
+Filtering its log for "error" matches dozens of totcopy mkdir lines for
+site-packages directories that are literally NAMED "errors"
+(.../slack_sdk/errors, .../mistralai/client/errors, and so on). Those are
+normal staging lines, not failures. Recorded so the next reader does not chase
+them — and as a reminder that a grep for "error" over a build log is a blunt
+instrument.
+
+=== THE THREE CHANGES NOW IN THE ARTIFACTS ===
+  1. kernel: shebang_parse() + argv rewrite in process_launch_args (fry1822)
+  2. shell: resolve_program() PATH search + fry_spawn_args with real argv and
+     shell_env, replacing the argument-less fry_spawn fallback (fry1824),
+     plus the missing fry_limits.h include (fry1827)
+  3. packaging: hermes launcher shebang -> #!/nvme/apps/python3.fry (fry1826)
+
+=== WHAT IS NOT CLAIMED ===
+NOT BOOTED. Nothing verified. PATH resolution has resolved nothing, no shebang
+has been parsed at runtime, no external program has been spawned through the
+new path.
+⚠ CARRIED FORWARD FROM fry1826, and it governs the next step: the
+python3/hermes/claude BUILTINS ARE STILL PRESENT and the strcmp chain runs
+BEFORE the fallback. So typing `hermes` still goes through cmd_hermes and does
+NOT exercise any of this. To prove the new chain, use a command with NO builtin.
+
+=== NEXT (fry1829) — VERIFICATION BOOT, CRITERIA FIXED IN ADVANCE ===
+  A. PATH + argv, no builtin involved:
+       `uptime`        -> must run (resolves /nvme/apps/uptime.fry via PATH)
+       `ps`  is a builtin, so it proves nothing — do not use it.
+  B. Shebang, the actual target:
+       `hermes -z hello`
+       serial must show: PROC: shebang /nvme/opt/hermes-agent/hermes ->
+                         /nvme/apps/python3.fry
+       That line is emitted by the kernel and is the direct evidence. Absent =
+       the chain did not run, whatever else appears on screen.
+  C. A bad name still fails cleanly:
+       `notacommand`   -> "shell: notacommand: command not found"
+  D. The five fry1819 libc criteria, still unmeasured from fry1821.

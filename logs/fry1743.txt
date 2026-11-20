@@ -1,0 +1,38 @@
+fry1743 — 2026-06-22 06:28 CDT
+STEP 3 (native ext): pydantic_core 2.46.4 BUILT NATIVELY for x86_64-tatertos against
+       our OWN Rust std + libc, and LINKED into python3.fry. Link clean, 0 undefined.
+
+BUILD (rust/pydantic_core-2.46.4):
+  - .cargo/config.toml rewritten for the native target: build-std=[core,alloc,std,
+    panic_abort] + json-target-spec + target=x86_64-tatertos.json. (linux-gnu config
+    saved to .cargo/config.toml.linux-bak.)
+  - PYO3_CONFIG_FILE=rust/pyo3_tatertos.cfg (CPython 3.14, shared=false).
+  - getrandom CRATE v0.3 has no tatertos OS arm -> used its x86 RDRAND hardware-RNG
+    backend (rustflags --cfg getrandom_backend="rdrand"); QEMU supports RDRAND. (std's
+    OWN randomness still routes to SYS_GETRANDOM(85).)
+  - pyo3 0.28 + serde + serde_json + jiter + the whole dep tree COMPILED for tatertos.
+  - cargo build --release -> target/x86_64-tatertos/release/lib_pydantic_core.a (14MB),
+    exports `T PyInit__pydantic_core`. Finished in ~1m33s. ZERO Linux/linux-gnu.
+
+LINK into python3.fry:
+  - Python3.mk:193 PDC_LIB repointed: linux-gnu .a (DEAD) -> x86_64-tatertos .a.
+  - Link gap after --gc-sections was only TWO libc symbols (fork/execvp/strnlen were
+    GC-dropped as dead code): `getrandom` and `errno_location`. Added thin POSIX
+    wrappers to src/user/libc/rust_compat.c:
+      getrandom(buf,len,flags) -> fry_getrandom -> SYS_GETRANDOM(85), errno on fail
+      errno_location() -> __errno_location()
+    Recompiled rust_compat.o (UFLAGS, EXIT=0).
+  - make -f Python3.mk python3: LINK_EXIT=0, ZERO undefined references. frypack ->
+    python3.fry 06:27:50. nm python3.elf: `T PyInit__pydantic_core` present.
+
+SIGNIFICANCE: the FIRST native Rust C-extension (Rust->cdylib-style staticlib) is
+  linked into our freestanding in-OS CPython, built entirely with the TaterTOS Rust
+  toolchain (x86_64-tatertos target + forked std + forked libc). No subsystem, no
+  linux-gnu. The earlier rejected shortcut is fully replaced.
+
+STATE: python3.fry contains native _pydantic_core. NOT yet runtime-verified.
+NEXT: (1) confirm Modules/config.c inittab registers {"_pydantic_core",
+  PyInit__pydantic_core}; (2) STAGE the pure-Python pydantic_core wrapper package at
+  /usr/local/lib/python3.14/ (its `from ._pydantic_core import *` was the fry1732
+  ModuleNotFoundError cause); (3) build_iso; (4) boot launch_debug.sh; (5) Zack runs
+  hermes; read serial for `NATIVEEXT pydantic_core: OK (v2.46.4)`. -> fry1744.

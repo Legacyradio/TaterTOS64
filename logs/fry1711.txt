@@ -1,0 +1,18 @@
+fry1711 — 2026-06-21 08:53 CDT
+STEP: Built the ISO with the TLS-fixed kernel + relinked python3.fry. EXIT=0.
+
+VERIFY (verify-build-before-launch):
+  - ./build_iso.sh EXIT=0 (full log /tmp/fry1711_iso_build.log).
+  - build_iso re-linked kernel.elf from my fixed src/kernel/proc/elf.o (elf.o built
+    08:50 with the self-ptr fix); kernel.elf now 08:52:15.
+  - stage_hermes (STAGE_HERMES defaults to 1) re-staged the NEW python3.fry:
+    "python3.fry -> /apps/python3.fry ... 7678208 bytes" via totcopy into the nvme
+    ToTFS (out/tater_nvme.img). So /nvme/apps/python3.fry = the relinked binary.
+  - Mtime ordering correct (newest last):
+      kernel.elf       08:52:15
+      python3.fry      08:51:33  (source staged into nvme)
+      out/tater_nvme.img 08:52:39  (carries new python3.fry)
+      out/tatertos64v3.iso 08:52:41  (built last, after kernel + nvme)
+
+NEXT: shut the OLD VM (fry1707 bg, still running OLD ISO — avoid double-launch),
+  then boot the NEW ISO, Zack types hermes, read serial to END -> fry1712.

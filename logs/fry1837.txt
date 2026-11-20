@@ -1,0 +1,8 @@
+fry1837 - HERMES DIAGNOSIS STEP C2: GUI input via QEMU HMP monitor WORKS - Shell opened with no human click (2026-11-17 14:07:34 CST)
+WHY: Brief Step C needs the Shell open; memory/fry1830/fry1831 say "mouse can't be injected, a human must click". fry1830 only tried HOST pointer warp (xdotool) on a GTK window.
+WHAT / HOW: with the headless boot (fry1836) used the HMP monitor socket: screendump (-> ppm -> png) to see the desktop; 'mouse_move dx dy' (relative PS/2 events) and 'mouse_button 1'/'mouse_button 0'.
+  Helper: ~/tatertos-test-20261117/mon.py. Cursor started (640,406); moved right 584 and up/down; y deltas are NOT 1:1 (sent -56, cursor went -224; ~4x on y) so I steered by screenshots.
+WHERE: ~/tatertos-test-20261117/{mon.py,s1..s4.png}; serial ~/tatertos-test-20261117/serial.log.
+RESULT: VERIFIED: cursor moved onto the Shell icon (s3.png), clicked; serial shows "SPAWN_OK path=/apps/SHELL.TOT pid=12 parent=9" and s4.png shows the Shell window. My two click pairs opened TWO shells (pid 11 and 12) - harmless, test boot only.
+  This overturns the "mouse injection is impossible" note ONLY for the monitor path and headless QEMU; the host-pointer-warp conclusion of fry1830 is not contradicted. No host mouse/keyboard was touched (no GTK window).
+NEXT: fry1838 = type tests via monitor 'sendkey' (keyboard), starting with fry1831 test A (uptime) and B, one log per test.

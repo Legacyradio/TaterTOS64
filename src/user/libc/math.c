@@ -614,3 +614,21 @@ int isfinite_d(double x) {
 long double exp10l(long double x) {
     return (long double)exp10((double)x);
 }
+
+/* fry1693: erf/erfc. CPython 3.14 mathmodule.c calls these directly (no internal
+ * fallback) and math.h declares them, but libc had no definitions, so enabling
+ * the `math` module failed to link. Numerical-Recipes erfc (fractional error
+ * < 1.2e-7); erf = 1 - erfc. Uses exp/fabs already defined above. */
+double erfc(double x) {
+    double z = fabs(x);
+    double t = 1.0 / (1.0 + 0.5 * z);
+    double ans = t * exp(-z * z - 1.26551223 +
+        t * (1.00002368 + t * (0.37409196 + t * (0.09678418 +
+        t * (-0.18628806 + t * (0.27886807 + t * (-1.13520398 +
+        t * (1.48851587 + t * (-0.82215223 + t * 0.17087277)))))))));
+    return (x >= 0.0) ? ans : (2.0 - ans);
+}
+
+double erf(double x) {
+    return 1.0 - erfc(x);
+}

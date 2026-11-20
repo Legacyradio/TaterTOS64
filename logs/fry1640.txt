@@ -1,0 +1,37 @@
+# fry1640 - VERIFY (Zack-driven headed): RECOVERED shell WORKS. claude launches + takes keyboard input. Remaining gap = DNS egress (host uses Tailscale MagicDNS).
+Date: 2026-06-19 ~00:40 CDT
+Type: verification (headed, Zack at the keyboard) + network diagnosis
+Author: planv3 Rules 1/5/6/12 + CLAUDE.md
+
+RESULT = PHASE A PASS (the fry1583 shell is restored and functional)
+Serial /tmp/fry_play2_serial.log:
+- DHCP:E1000 -> E1000_TX -> DHCP:OK  (guest got a lease)
+- SPAWN via the recovered `claude` cmd: pid=13 name=/nvme/RCLAUDE.LXE  (real Claude launched through
+  fry_spawn_linux_args -> SYS_SPAWN_LINUX_ARGS=145; the reconstructed libc wrapper works)
+- TBPROCIN -> pid=13 RCLAUDE.LXE bytes 68 65 79 20 74 68 65 72 65 = "hey there" + 0d  (Zack typed a prompt
+  straight into Claude's TUI; keyboard end-to-end into the linuxulator app)
+- Claude alive: pids 13-23 doing TBFUTEX wait/wake cycles (healthy event loop, NOT the fry1561 infinite-park);
+  LXDNS pid=23 = Claude attempting name resolution.
+- Zack confirms: "pretty sure it would work fine except no network right now."
+
+NETWORK DIAGNOSIS (the only remaining gap; environmental, not the OS)
+- Host /etc/resolv.conf = Tailscale MagicDNS: nameserver 100.100.100.100 + fd7a:115c:a1e0::53.
+- QEMU `-netdev user` hands the guest DNS 10.0.2.3 (slirp proxy) which forwards to the host's resolvers =
+  100.100.100.100. slirp forwarding to the Tailscale resolver is the classic silently-failing case ->
+  guest resolves nothing -> looks like "no network."
+- Host itself HAS egress: curl https://api.anthropic.com -> HTTP 405 (expected), DNS resolves. So the path out
+  exists; only the guest's DNS hop is broken.
+- TaterTOS uses the DHCP-provided DNS (netcore.c:592 g_net.dns_server=dns). Claude (Bun) resolves via its own
+  /nvme/.../resolv.conf through the linuxulator socket layer.
+
+FIX OPTIONS (next, if Zack wants egress working) — NOT yet applied:
+  (a) Point the guest at a public resolver slirp can NAT: stage /nvme/etc/resolv.conf = 8.8.8.8 (and/or have
+      TaterTOS DNS target 8.8.8.8 directly) so queries NAT guest->host->8.8.8.8 instead of the Tailscale proxy.
+  (b) QEMU-side: feed slirp a working upstream, or run a tap/bridge instead of user-net.
+  Decide with Zack; this is a separate task from the (now-complete) shell recovery.
+
+STILL OPEN (unchanged, pre-existing): full-prompt network-teardown triple-fault (fry1583 blocker) — not retested
+here since DNS blocks the request first. SMOKETEST USER FAULT rip=0x0 at boot (init proceeds; unrelated).
+Phase B still pending: re-add python3/hermes shell cmds onto the recovered shell (stub versions in backups/).
+
+VM left running (pid 1377248) for Zack. All per planv3 Rules 1/5/6/12.

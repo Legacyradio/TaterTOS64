@@ -1,0 +1,48 @@
+fry1449 — Parity trivial tier: rename family + ftruncate + mkdir errno
+fidelity. First step of the "everything a normal Claude Code instance
+can do" directive (Zack, 2026-06-12). All three unblock claude's
+atomic-write and transcript machinery, whose lossy fallbacks were
+visible in the fry1445/1447 debug narration.
+Date: 2026-06-12 08:0x CDT. Author: Claude (Fable 5).
+========================================================================
+
+CHANGES (rule 6 whys)
+------------------------------------------------------------------------
+src/kernel/proc/linux_compat.h — defines: truncate(76), ftruncate(77),
+rename(82), renameat(264), renameat2(316).
+
+src/kernel/proc/syscall.c dispatch:
+- rename -> SYS_RENAMEAT(AT_FDCWD, old, AT_FDCWD, new); renameat ->
+  passthrough; renameat2 -> same when flags==0, else -EINVAL
+  (RENAME_NOREPLACE etc. unsupported — honest EINVAL, not silent
+  ignore). WHY: claude's atomic writes end in rename(tmp, final);
+  ENOSYS forced the "fallback to non-atomic write" path seen in its
+  own debug log. Native SYS_RENAMEAT (case 117) already does the work
+  via vfs_rename/totfs_rename_vfs.
+- ftruncate -> native SYS_FTRUNCATE (case 89; FD_FILE + FD_MEMFD).
+- SYS_MKDIRAT: before vfs_mkdir, stat the PARENT — missing parent now
+  returns -ENOENT (recursive mkdir's signal to create ancestors),
+  non-dir parent returns -ENOTDIR. WHY: the blanket -EIO made claude's
+  mkdir-recursive abort instead of recursing — the exact transcript
+  failure "EIO mkdir /nvme/.claude/projects/-" (fry1447/1448).
+  Mount-root parents verified statable (fry1443's EEXIST on /nvme came
+  from the existing vfs_stat(path) check).
+
+LNX_truncate defined but NOT dispatched (unhit in any census; add via
+open+vfs_truncate if a future boot shows it).
+
+EXPECTED EFFECT next boot: transcript writes succeed (TBWRDATA shows
+.jsonl appends under /nvme/.claude/projects/), atomic config writes
+stop falling back, rename/ftruncate vanish from the LINUXSYS census.
+Then the frontier is vfork(58)/subprocess — the tools blocker.
+
+TEST COMMANDS (rule 10): rebuild per rule 12 with STAGE_CLAUDE=1
+CLAUDE_BIN=$HOME/.local/share/claude/versions/2.1.172; boot as fry1432
+(-smp 4 now standard), serial to /tmp/s_fry1450.log. Verdict greps:
+  grep -a '"result"' /tmp/s_fry1450.log
+  grep -a "LINUXSYS: unimplemented" /tmp/s_fry1450.log
+  grep -a "TBWRDATA" /tmp/s_fry1450.log | grep -a "projects\|jsonl"
+  grep -a "Transcript write failed" /tmp/s_fry1450.log   # expect none
+
+STATUS: edits complete; build/boot/verdict is the fry1450 step.
+========================================================================

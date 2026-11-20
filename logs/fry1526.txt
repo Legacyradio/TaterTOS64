@@ -1,0 +1,69 @@
+fry1526 - Output routing (fd1/2 -> outbuf) + pump full-drain + totfs read batching
+Date: 2026-06-15 14:30:15 CDT
+
+Type: CODE CHANGE + HEADED GUI VERIFICATION.
+Follows fry1525 (C1 parser built; blocked because child stdout went to the fb
+console, not the Shell outbuf) and the user's E (master-pump output half) + the
+load-time directive ("10-min load is unusable on a customer front").
+
+Why (Rule 6):
+  1) fry1525 root cause: lx_write_fd routed a Linux child's fd1/2 to kprint_write
+     (kernel framebuffer console), so the Shell pump drained an empty outbuf and the
+     C1 parser had no bytes. Need child stdout/stderr -> outbuf for GUI children.
+  2) Load time: the 250MB eager-load took ~10 min. Root cause (this session):
+     totfs_read_block read sectors ONE PER NVMe COMMAND, and totfs_read_file_data
+     read ONE BLOCK at a time -> ~512k single-sector commands for the load. The
+     bd->read interface already takes a sector count and nvme_io_rw splits/pipelines
+     by mdts with PRP lists (build_prp walks per-page, so multi-page buffers are
+     safe), so the per-sector/per-block loops were pure latency.
+
+Changes:
+  src/kernel/proc/syscall.c (lx_write_fd, fd1/2 branch ~line 4845)
+    - GUI child (gui_process_running() && !process_name_is_gui(cur->name)): write
+      fd1/2 bytes into shared->outbuf (block-until-space, no drops) so the owning
+      GUI Shell pump (SYS_PROC_OUTPUT) renders them. Non-GUI keeps kprint_write
+      (validated serial/stream-json harness untouched).
+  src/user/shell/shell.c (pump_child_io)
+    - Drain the child outbuf FULLY each tick (while fry_proc_output()>0) instead of
+      one 256-byte slice, so a TUI repaint isn't throttled to 16KB/s.
+  src/kernel/fs/totfs.c
+    - totfs_read_block: one multi-sector bd->read of sectors_per_block (was a
+      per-sector loop).
+    - totfs_read_file_data: fast path reads the longest physically-contiguous run
+      directly into the caller buffer in ONE multi-block bd->read; partial head/tail
+      blocks keep the temp-buffer slow path.
+
+Build (Rule 12, clean): BUILD_EXIT=0, no errors. totfs.o, syscall.o, shell.o all
+  compiled. SHELL.TOT 150448; RCLAUDE.LXE 250480336 staged. Log /tmp/fry1526_build.log.
+
+Headed GUI run (INIT.FRY -> GUI.FRY): /tmp/fry1526_serial.log; screenshots
+  fry1526_render.png, fry1526_render2.png. User opened Shell + typed "claude".
+
+RESULT 1 - LOAD TIME: FIXED (big win).
+  LINUXELF "load start" (serial line 94) -> "load done" (line 142): ~48 lines, vs
+  ~1080 lines last run (start 119 -> done 1176). The 250MB load now completes in
+  seconds instead of ~10 minutes. totfs batching removed the per-sector bottleneck.
+  (This makes a complex async-spawn wrapper unnecessary - fixing the root cause beat
+  backgrounding a slow load.)
+
+RESULT 2 - fd0 fix: STILL HOLDS. TBEXIT group count = 0; Claude stays alive.
+
+RESULT 3 - OUTPUT ROUTING: working, but RENDER STILL NOT ACHIEVED.
+  - The desktop AROUND the Shell window is now CLEAN (no fb-console garble), whereas
+    pre-routing runs (fry1520c) spilled garble onto the desktop. => child fd1/2 is no
+    longer hitting kprint_write; routing to outbuf is in effect.
+  - BUT the Shell window still shows "claude: loading..."; the trust prompt never
+    painted. Node is alive and very busy (serial grew to ~15k lines of TBFUTEX
+    churn) yet read fd0 only ONCE (-> 1 byte) and emitted only early init escapes
+    (e.g. [?1004h, which the parser correctly swallows -> no visible change). It is
+    NOT progressing to write its visible UI.
+  => New, distinct blocker: node is stuck/spinning in early init and never paints
+     the prompt. This is downstream of routing (routing is fine) - likely a
+     libuv/event-loop spin or a terminal-handshake wait on fd0, not the parser and
+     not the write path. Needs its own diagnosis (compare event-loop / fd readiness;
+     check whether node waits on an fd0 query reply we don't generate).
+
+Net: load-time SOLVED and routing SOLVED; render blocked by a node-progress issue to
+  investigate next. C1 parser remains unverified end-to-end until node paints.
+
+No commit. No hashes (Rule 16). VM left running (pid in /tmp/fry1526_serial.log run).

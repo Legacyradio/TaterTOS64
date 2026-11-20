@@ -1,0 +1,14 @@
+fry1514 - restore keyboard input to raw shell windows
+
+Root cause:
+- The restored Phase 7 GUI forwarded every keyboard event as a TaterWin TW_MSG_KEY_EVENT structure.
+- That is correct for real TaterWin apps with a shared-memory surface, but the shell is a raw text/stdin process when launched inside the compositor.
+- The shell therefore received binary TaterWin event packets instead of ASCII bytes on stdin, so typed commands did not work.
+
+Change:
+- src/user/gui/gui.c now routes keyboard events by window type:
+  - TaterWin SHM windows still receive rich TW_MSG_KEY_EVENT packets.
+  - Raw text windows receive printable/enter/delete keypresses as stdin bytes through SYS_PROC_INPUT.
+
+Why:
+- The desktop shell must accept normal keyboard input so the user can type commands such as `claude`.

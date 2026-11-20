@@ -1,0 +1,68 @@
+fry1434 — Linuxulator epoll/eventfd VISIBILITY WIDENING. The fry1433
+stall is a busy-spin on ONE eternally-ready NON-socket fd that the old
+beacons could not see (LXEPCTL and LXEPRDY were both FD_SOCKET-
+filtered). This step makes the stuck fd's identity, kind, and readiness
+source unmissable in one boot. Diagnostic prints only; zero semantic
+changes.
+Date: 2026-06-12 03:15 CDT. Author: Claude (Fable 5).
+========================================================================
+
+WHY (rule 6)
+------------------------------------------------------------------------
+fry1433 proved: 1,037 consecutive epoll_pwait2 returns of the same one
+ready event, never consumed; LXEPRDY (unconditional for sockets) printed
+only 10 times, so the event source is not a socket. Two eventfd-style
+fds showed writes (6x8B to fd 16, 6x8B to fd 7) against a single 8-byte
+read (fd 15) in the stall window — a never-drained eventfd counter is
+the prime suspect for permanent POLLIN (poll_check_fd FD_EVENTFD branch
+reports POLLIN while counter>0). But the stuck fd's registration and
+readiness were both invisible: socket-only filters, and the TBFULL
+syscall budget exhausted mid-stall.
+
+CHANGES — all in src/kernel/proc/syscall.c
+------------------------------------------------------------------------
+1. lx_eventfd_create_fd: "LXEVFD new fd= init= sem= pid=" — maps fd
+   numbers to eventfds at creation (fd numbers get reused; fry1433
+   showed netlink fd 19 reborn as a TCP socket).
+2. eventfd read path: "LXEVFD rd fd= val= left= pid=" on success,
+   "LXEVFD rd fd= EAGAIN pid=" on empty — shows who drains and who
+   races.
+3. eventfd write path: "LXEVFD wr fd= val= counter= pid=" — counter
+   value after each signal; a monotonically growing counter with no rd
+   lines = the smoking gun.
+4. LXEPCTL: FD_SOCKET filter removed, kind added:
+   "LXEPCTL epfd= op= fd= kind= events=". Every registration visible.
+5. LXEPRDY: FD_SOCKET filter removed; prints kind and, for eventfds,
+   the live counter: "LXEPRDY n= fd= kind= revents= (asked) evctr=".
+   Rate-limited (first 32 events, then every 256th) so the 1,000-spin
+   stall documents itself without flooding serial.
+
+FD kind decoder for the next log (src/kernel/proc/process.h):
+   1=FILE 2=PIPE_RD 3=PIPE_WR 4=SOCKET 5=EPOLL 6=EVENTFD 7=DIR
+   8=TIMERFD 9=SIGNALFD 10=INOTIFY 11=MEMFD 12=STDIO 13=NETLINK
+
+WHAT fry1435 (next boot) WILL SETTLE
+------------------------------------------------------------------------
+The post-stall LXEPRDY lines name the stuck fd, its kind, and (if
+eventfd) its counter. Then:
+  - kind=6 with evctr>0 and no matching LXEVFD rd -> find why the owner
+    thread never reads (wrong loop? blocked thread? Bun expects
+    edge-triggered EPOLLET semantics our level-triggered epoll ignores?)
+  - kind=8 -> timerfd expirations never cleared.
+  - kind=2 -> pipe residue.
+Note the EPOLLET angle: claude is Bun-based; if the wakeup fd is
+registered with EPOLLET, real Linux reports it ONCE per counter change,
+and Bun may legitimately not re-read it — our level-triggered epoll
+would then spin exactly as observed. LXEPCTL's events= field now shows
+bit 31 (0x80000000) if EPOLLET is requested; check it FIRST.
+
+TEST COMMANDS (rule 10)
+------------------------------------------------------------------------
+Rebuild (rule 12) + boot identical to fry1432's commands, serial to
+/tmp/s_fry1435.log. Verdict greps:
+  grep -a "LXEVFD new\|LXEPCTL" /tmp/s_fry1435.log | head -30
+  grep -a "LXEPRDY" /tmp/s_fry1435.log | tail -15
+  grep -a "LXEVFD" /tmp/s_fry1435.log | tail -25
+
+STATUS: edits complete; build/boot/verdict is the fry1435 step.
+========================================================================

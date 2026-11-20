@@ -1,0 +1,138 @@
+fry1796 — Makefile header dependency tracking LANDED and VERIFIED BY EXPERIMENT — 2026-08-09
+==========================================================================
+WHAT: Made the -MMD/-MP header-dependency fix actually take effect, and proved
+it works. This closes the "still owed" item from fry1794/fry1795 — the build
+defect that root-caused the phantom TLS bug chain fry1792-1795.
+NO SOURCE FILES WERE EDITED. Makefile only (and it was already written).
+
+STARTING STATE (inherited, unbuilt):
+  The Makefile already contained the fix, edited 2026-08-07 16:40:34, but it had
+  NEVER been compiled once:
+    Makefile:29   DEPFLAGS = -MMD -MP   (added to CFLAGS/UFLAGS/UCXXFLAGS)
+    Makefile:292  DEPFILES := $(shell find src -name '*.d' \
+                              -exec sh -c '[ -f "${1%.d}.o" ] || ...' ...)
+    Makefile:293  -include $(DEPFILES)
+  Evidence it never ran: 0 (zero) .d files existed anywhere under src/.
+  No fry1796 log existed. Kernel objects on disk were the fry1794 clean set.
+
+WHY A PLAIN `make kernel` WOULD HAVE BEEN A NO-OP (the trap avoided):
+  make does NOT track changes to CFLAGS. Every object was already up to date, so
+  `make kernel` would have recompiled NOTHING, generated NO .d files, and the
+  fix would have sat inert while looking landed. .d sidecars only appear for
+  objects that actually compile. The kernel objects therefore HAD to be wiped
+  once for the dep tracking to exist at all.
+
+SCOPE OF THE WIPE (identical to fry1794's audited scope, kernel objects only):
+    find src/kernel src/drivers src/boot -name '*.o' -delete   -> 86 removed
+    rm -f kernel.elf; make kernel
+  Justification unchanged from fry1794: no userspace TU includes process.h, so
+  BearSSL/QuickJS/OpenH264/Opus/AK (841 third-party files) are provably out of
+  scope and were left alone.
+
+BUILD 1 — VERIFIED BEFORE ANY CLAIM (per the standing rule):
+  BUILD_EXIT=0
+  kernel.elf  2026-08-09 21:55:50  2,618,944 bytes
+    (byte SIZE identical to the 2026-08-07 14:38 known-good build; noted as a
+     signal only — the old elf was deleted, so this is NOT a proof of identity)
+  errors: 0
+  warnings: 16, ALL pre-existing categories already documented in fry1794 —
+    5x '/*' within comment, 7x unused static function, 1x unused variable,
+    1x unused parameter, 1x maybe-uninitialized 'slots',
+    1x array-bounds 'char[256]'. NONE new.
+
+DEP FILE COVERAGE (audited, complete):
+  86 kernel objects, 81 .d files, 0 orphan .d (no .d lacks a sibling .o).
+  The 5 objects with no .d are ALL NASM sources, correctly excluded:
+    src/boot/efi_entry.o     <- efi_entry.asm
+    src/boot/efi_boot.o      <- efi_boot.asm
+    src/boot/stack_switch.o  <- stack_switch.asm
+    src/boot/idt_stubs.o     <- idt_stubs.asm
+    src/drivers/smp/trampoline.o <- trampoline.asm
+  .asm has no C headers, so -MMD emits nothing for them. Coverage of C objects
+  is 81/81 = 100%. This is complete, not a gap.
+
+ACCEPTANCE TEST — THE FIX PROVABLY WORKS (this is the load-bearing result):
+  Reproduced the exact fry1790 scenario that caused the bug:
+    touch src/kernel/proc/process.h
+    make -n kernel   ->  13 objects scheduled for recompile
+  BEFORE the fix that same edit rebuilt 2 objects (process.o, elf.o) and silently
+  relinked 11 stale ones. The 13 are:
+    drivers/storage/nvme.o      drivers/timer/lapic_timer.o
+    kernel/acpi/ec.o            kernel/acpi/events.o
+    kernel/acpi/extended.o      kernel/fs/tbridgefs.o
+    kernel/irq/irqdesc.o        kernel/main.o
+    kernel/proc/linux_elf.o     kernel/proc/process.o
+    kernel/proc/sched.o         kernel/proc/syscall.o
+    kernel/selftest.o
+  INDEPENDENT CONFIRMATION: this set is EXACTLY the 13 TUs fry1794 identified by
+  hand-audit as including process.h (directly or via sched.h) — same list, same
+  count. The automated tracking reproduces the manual audit with no misses.
+  Critically it includes syscall.o and sched.o, the two objects whose staleness
+  produced the phantom user_fs_base=8 fault. That class of failure can no longer
+  happen silently.
+  13 .d files reference proc/process.h, matching the rebuild set exactly.
+
+BUILD 2 — tree returned to consistent state after the touch:
+  make kernel   BUILD_EXIT=0, errors 0
+  kernel.elf  2026-08-09 21:56:41  2,618,944 bytes
+  `make -n kernel` now schedules 0 objects => fully up to date, no pending work.
+
+CLEAN RULE NOTE (checked, no change needed): Makefile:465 `clean:` does not
+delete .d files. This is SAFE by construction — the DEPFILES find at Makefile:292
+only includes a .d when a sibling .o exists, so orphaned .d files are excluded
+automatically and cannot wedge or poison a build.
+
+STATE AT LOG TIME / SCOPE WARNING:
+  kernel.elf (2026-08-09 21:56) is NEWER than out/tatertos64v3.iso
+  (2026-08-07 14:40). THE ISO IS STALE relative to kernel.elf. Since no source
+  changed, the ISO's kernel is expected to be functionally equivalent, but the
+  ISO has NOT been restaged this step and MUST NOT be treated as carrying this
+  build. Step fry1797 rebuilds and restages it anyway.
+  No VM was launched this step. Nothing was booted. No runtime claim is made.
+
+NETWORK AUDIT DONE THIS STEP (no changes made, findings only):
+  Verified all three documented networking fixes are PRESENT in the working tree:
+   1. e1000 RX descriptor fully zeroed  src/drivers/net/e1000.c:386-391
+      (addr/length/checksum/status/errors/special) — the QEMU-11 `errors=0xaf`
+      garbage that dropped every received frame.
+   2. SYS_GETTIME returns rtc_boot_epoch_sec()*1000 + uptime_ms
+      src/kernel/proc/syscall.c:8579-8583 — fixes BearSSL BR_ERR_X509_EXPIRED(54).
+   3. /etc/resolv.conf intercept -> lx_sync_resolv_conf() writes
+      /nvme/etc/resolv.conf from the live DHCP lease
+      src/kernel/proc/syscall.c:4152-4201.
+  All three are compiled into this kernel.
+
+  🔴 THE ACTUAL NETWORK GAP — launch_debug.sh HAS NO NIC AT ALL.
+  launch_debug.sh (2026-06-16, the ONLY launch script in the repo) contains no
+  -netdev and no -device e1000. `grep -rl netdev --include=*.sh .` returns
+  NOTHING. => fry1794 AND fry1795 both booted with ZERO network hardware. It
+  never surfaced because hermes dies on the threading abort before it needs the
+  network. Last known-good networked invocation is fry1650:
+      -netdev user,id=n0 -device e1000,netdev=n0
+  This is a launch-line defect, NOT a code defect. Fix belongs to fry1797.
+
+  ALSO: launch_debug.sh sets no -smp, so it boots 1 CPU; the documented working
+  Claude launch used -smp 4. Deliberately NOT changed — the open blocker is a
+  THREADING bug (_PyThreadState_Attach on tid=10) and changing core count now
+  would confound comparison against fry1795. SMP is its own experiment later.
+
+OPEN BLOCKER (unchanged from fry1795, nothing here addresses it):
+  Fatal Python error: _PyThreadState_Attach: non-NULL old thread state
+  USER FAULT: pid=9 tid=10 rip=0x4e5c79 cr2=0x27
+  fry1790's per-thread ELF TLS did NOT clear it. fry1789's static diagnosis is
+  contradicted by experiment — do not build on it as settled.
+
+NEXT (fry1797, approved in principle, not yet executed):
+  1. Add `-netdev user,id=n0 -device e1000,netdev=n0` to launch_debug.sh.
+  2. kprint instrumentation ONLY (no logic changes):
+     - process_build_thread_tls() (process.c:393): tid + assigned user_fs_base +
+       whether the "no PT_TLS -> user_fs_base=0" early-out was taken.
+     - SYS_GET_TLS_BASE (syscall.c:8544): tid + returned value, first N per tid.
+     - Determine whether tid 10 arrived via fry_thread_create or
+       process_clone_linux_thread (process.c:472) — the clone path sets
+       user_fs_base from the clone arg, a different mechanism entirely.
+  3. Check stage_hermes.sh requirements BEFORE building — build_iso.sh:500
+     sources it, and build_iso.sh reformats the NVMe every build, dropping
+     staged credentials.
+  4. Rebuild + restage ISO, verify mtimes, THEN Zack boots and types `hermes`.
+  Goal: prove yes/no whether tid 10's %fs is genuinely distinct from tid 9's.

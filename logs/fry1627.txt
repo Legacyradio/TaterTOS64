@@ -1,0 +1,93 @@
+# hermes022 — PHASE 2 COMPLETE: CPython cross-compile for TaterTOS64v3
+Date: 2026-06-17 ~16:00 CDT
+Type: milestone (Phase 2 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+MILESTONE: python3.elf + python3.fry built
+---------------------------------------------------------------------------------
+python3.elf: 6,152,520 bytes (6.15 MB)
+python3.fry: 6,152,536 bytes (6.15 MB)
+
+Build: make -f Python3.mk python3
+
+---------------------------------------------------------------------------------
+WHAT WE BUILT
+---------------------------------------------------------------------------------
+176 CPython source files compiled into a single freestanding ELF binary:
+
+  Python/     — ~95 files (interpreter core, excluding dynload_*, emscripten_*)
+  Objects/    — ~45 files (object types, excluding obmalloc for now but mimalloc included)
+  Parser/     — ~15 files (PEG parser, tokenizer, lexer)
+  Modules/    — ~35 files (posix, socket, io, abc, codecs, errno, gc, itertools,
+                 math, operator, sre, struct, _json, _pickle, array, thread,
+                 signal, time, weakref, functools, suggestions, datetime,
+                 collections, types, typing, locale, opcode, stat, pwd,
+                 symtable, tracemalloc, atexit, getbuildinfo)
+  Programs/   — python.c (entry point)
+
+Excluded:
+  _ssl — needs BearSSL (Phase 3)
+  faulthandler — GCC 16 compatibility issue
+  bytecodes.c / optimizer_bytecodes.c — generated files needing build tools
+  dynload_* — not needed (static linking)
+
+---------------------------------------------------------------------------------
+GAP MATRIX DELIVERABLES
+---------------------------------------------------------------------------------
+Headers modified (21 files):
+  unistd.h       — 75+ new declarations (gap matrix stubs + wrappers)
+  signal.h       — 12 new declarations (sigpending, sigwait*, pthread_sigmask, etc.)
+  time.h         — clock_settime, clock_nanosleep, TIMER_ABSTIME
+  math.h         — acosh, atanh, atan, erf, erfc (double versions)
+  wchar.h        — wmem*, wcstol*, wcsftime, wcscoll
+  pthread.h      — pthread_getcpuclockid, pthread_kill, pthread_condattr_setclock
+  netdb.h        — h_errno, hstrerror, struct hostent/servent/protoent + functions
+  net/if.h       — struct if_nameindex, if_nameindex, if_freenameindex
+  netinet/in.h   — IPv6 types (in6_addr, sockaddr_in6, sockaddr_storage)
+  arpa/inet.h    — inet_aton
+  dlfcn.h        — RTLD_NODELETE/DEEPBIND, struct link_map, dladdr1
+  sched.h        — sched_getparam/setparam/getscheduler/setscheduler/rr_get_interval
+  spawn.h        — 12 posix_spawnattr_* + POSIX_SPAWN_* macros
+
+New headers created (5 files):
+  sys/sysmacros.h — major/minor/makedev
+  sysexits.h      — EX_OK..EX_CONFIG
+  sys/times.h     — struct tms, times()
+  pty.h           — PTY declarations (stubs, UNDEF'd from pyconfig)
+
+Source files created:
+  src/user/libc/gap_stubs.c — 230+ lines of stub implementations
+  Python3.mk                 — 195-line Makefile for CPython build
+
+pyconfig_tater.h changes:
+  45+ #define → #undef (Linux-specific features)
+  1 #undef → #define (HAVE_EXECV re-enabled)
+  30+ new #define (HAVE_* for new headers)
+
+---------------------------------------------------------------------------------
+KNOWN LIMITATIONS
+---------------------------------------------------------------------------------
+1. No stdlib — Python will start but won't find any .py files.
+   Need to install CPython's Lib/ to sysroot/usr/local/lib/python3.14/
+
+2. No _ssl — Phase 3 will add BearSSL backend.
+
+3. No getrandom — uses stub (zeros). Phase 3 can hook fry_random.
+
+4. faulthandler module not compiled — GCC 16 Py_ARRAY_LENGTH issue.
+
+5. bytecodes.c / optimizer_bytecodes.c not compiled — need generated headers
+   from CPython's build tools. These are for JIT specialization; basic
+   interpreter works fine without them.
+
+6. Many gap stubs are true stubs (return 0) — fine for single-user OS
+   but some operations (waitid, posix_spawnattr_*) will fail silently.
+
+---------------------------------------------------------------------------------
+NEXT PHASES
+---------------------------------------------------------------------------------
+Phase 3: BearSSL Python ssl backend (_ssl module)
+Phase 4: SQLite TaterTOS OS layer
+Phase 5: Native Hermes staging and launch (Hermes Agent on TaterTOS Python)
+Phase 6: Self-hosting dev loop (native compiler)

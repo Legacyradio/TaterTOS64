@@ -1,0 +1,81 @@
+# hermes023 — PHASE 3: _ssl stub module + OpenSSL shim foundation
+Date: 2026-06-17 ~16:28 CDT
+Type: build phase (Phase 3 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Add SSL support to TaterTOS CPython build. CPython's _ssl.c requires the
+full OpenSSL API (400+ types, 200+ functions). TaterTOS uses BearSSL
+(bearssl_ssl.h — 432 BearSSL functions).
+
+---------------------------------------------------------------------------------
+APPROACH
+---------------------------------------------------------------------------------
+Two-track approach:
+
+1. STUB _ssl MODULE (immediate):
+   Created src/user/apps/python_stubs/_ssl_stub.c — a minimal module that
+   returns ImportError: "No module named '_ssl' — TaterTOS64 SSL not yet implemented"
+   This allows the Python binary to link and `import ssl` to fail gracefully.
+
+2. OPENSSL SHIM FOUNDATION (for future real implementation):
+   Created src/user/apps/openssl/ with 11 OpenSSL header stubs and a stub
+   implementation file (openssl_stubs.c). These provide the type definitions
+   and function declarations that _ssl.c needs.
+
+   Headers: openssl/ssl.h, x509.h, x509v3.h, evp.h, bio.h, err.h, rand.h,
+            rsa.h, crypto.h, pem.h, dh.h
+
+   Stub types: SSL, SSL_CTX, SSL_SESSION, SSL_METHOD, BIO, X509, X509_STORE,
+              X509_STORE_CTX, EVP_PKEY, GENERAL_NAME, ASN1_OBJECT, etc.
+
+   Stub functions: ~80 SSL_* functions, ~20 BIO_* functions, ERR_*, RAND_*,
+                   PEM_*, EVP_* — all return NULL/0/error.
+
+   Constants: SSL3/TLS version numbers, error codes, verify flags.
+
+---------------------------------------------------------------------------------
+WHY NOT FULL _ssl.c COMPILATION
+---------------------------------------------------------------------------------
+_ssl.c uses OpenSSL types with struct members (GENERAL_NAME->type,
+X509_NAME->entries, etc.) that require full OpenSSL struct definitions.
+Opaque typedefs (which work for most CPython modules) don't suffice here.
+
+Two options for real SSL support:
+  A. Cross-compile OpenSSL for TaterTOS (most practical — full API surface)
+  B. Write BearSSL wrapper with proper OpenSSL struct layouts (months of work)
+
+The stub approach gives us a working Python binary with clean SSL error
+messages. Real SSL can be added later by compiling OpenSSL for TaterTOS.
+
+---------------------------------------------------------------------------------
+ARTIFACTS
+---------------------------------------------------------------------------------
+Created:
+  src/user/apps/openssl/openssl/ (11 header files)
+  src/user/apps/openssl/openssl_stubs.c (250+ lines)
+  src/user/apps/python_stubs/_ssl_stub.c (simple ImportError stub)
+
+Modified:
+  Python3.mk — added openssl include paths, openssl_stubs.o link,
+              _ssl_stub compile rule, -Wno-implicit-function-declaration
+
+pyconfig.h:
+  HAVE_OPENSSL = 1 (enabled so config.c references PyInit__ssl)
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+Build: make -f Python3.mk python3
+Result: python3.elf 6,152,520 bytes — ZERO undefined references
+        _ssl module compiles and links as stub
+
+`import _ssl` at runtime → ImportError with friendly message
+`import ssl` at runtime → ImportError (depends on _ssl)
+
+---------------------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------------------
+Phase 4: SQLite TaterTOS OS layer

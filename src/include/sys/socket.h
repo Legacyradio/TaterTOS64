@@ -61,6 +61,7 @@ struct sockaddr {
 #define SO_RCVBUF     8
 #define SO_ERROR      4
 #define SO_TYPE       3
+#define SOMAXCONN     128
 
 #define MSG_DONTWAIT  0x40
 #define MSG_NOSIGNAL  0x4000

@@ -1,0 +1,44 @@
+fry1479 - rg ENFILE chase, attempt 3 (pipes) + diagnostic beacon. Bumping
+FRY_PIPE_MAX 128->256 BROKE early boot; reverted to 128. Added a TBSPAIR
+pool-pressure beacon to settle leak-vs-genuine-need before any re-bump.
+Date: 2026-06-13. Author: Claude (Opus 4.8).
+========================================================================
+
+BACKGROUND
+------------------------------------------------------------------------
+rg's child spawn fails with "ENFILE: file table overflow, posix_spawn
+'rg'" (Bun). The ENFILE count is INVARIANT at 2 across:
+- FRY_SOCK_MAX 16 -> 128 (fry1477): no change.
+- FRY_FD_MAX  64 -> 256 (fry1478): booted fine, no change to ENFILE.
+So neither the socket pool nor the per-process fd table is the limit.
+Remaining socketpair-path pool not yet touched: PIPES (each AF_UNIX
+socketpair = 2 g_pipes).
+
+ATTEMPT (reverted)
+------------------------------------------------------------------------
+FRY_PIPE_MAX 128 -> 256. RESULT: kernel HALTS at early boot (serial stops
+right after "DHCP:OK"/kernel-entry "K", ~1 KB, QEMU exits 0). fry1478 with
+the same FD_MAX=256 booted fully, so the pipe bump is what broke boot
+(g_pipes[] is only +528KB at 4KB/pipe, so likely a BSS/layout boundary,
+not raw size — NOT chased). Reverted FRY_PIPE_MAX -> 128 to restore boot.
+
+KEPT: TBSPAIR beacon in the LNX_socketpair handler (syscall.c) logging
+pipes_used/FRY_PIPE_MAX and socks_used/FRY_SOCK_MAX at every socketpair
+call (cap 60). This measures whether pipes actually starve at the rg
+spawn, and whether usage climbs monotonically (LEAK) vs plateaus (genuine
+need) — the right diagnostic before bumping pools blindly again.
+
+HYPOTHESIS TO TEST (fry1479b boot, pipes=128 + beacon)
+------------------------------------------------------------------------
+A socketpair/pipe LEAK is more likely than a real need for >128 pipes:
+claude shouldn't need 128 live pipes. Suspects: claude not closing rg's
+stdio socketpair on each failed spawn retry, OR an unbalanced pipe
+reader/writer refcount in my fry1474 vfork socket-copy (copy bumps
+writers[tcp]/readers[listen]; close must decrement symmetrically across
+exec-cloexec + exit). If TBSPAIR shows pipes climbing 2-by-2 per rg
+attempt and never dropping -> leak -> fix the decrement/close path, not
+the pool size.
+
+STATE: tree boots again (pipes=128). FRY_SOCK_MAX=128 and FRY_FD_MAX=256
+remain (defensible headroom, harmless; neither fixed rg alone). NEXT =
+read TBSPAIR from the fry1479b boot.

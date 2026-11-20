@@ -41,8 +41,10 @@ void heap_init(void) {
     early_debug_puts("K_HEAP_ENTER\n");
     pmm_debug_dump_state("PMM_AT_HEAP", 8);
 
-    // Try to allocate an initial contiguous heap region
-    uint64_t sizes[] = {256, 128, 64, 32, 16, 8, 4, 2, 1};
+    // Try to allocate an initial contiguous heap region (largest first, graceful
+    // fallback). Up to 16 MB (4096 pages) so dynamic ToTFS block bitmaps for large
+    // drives fit (a 16 MB bitmap maps ~512 GB); 1 MB was too small for a consumer OS.
+    uint64_t sizes[] = {4096, 2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1};
     uint64_t pages = 0;
     for (uint64_t i = 0; i < sizeof(sizes)/sizeof(sizes[0]); i++) {
         uint64_t phys = pmm_alloc_pages(sizes[i]);

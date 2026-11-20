@@ -1,0 +1,31 @@
+fry1753 — 2026-06-22 13:35 CDT
+STEP 5b (ToTFS): fix the THIRD ToTFS implementation — tools/totcopy.c (host staging
+       tool) — which was the actual inode-cap blocker. fry1752 fixed kernel+formatter
+       but staging still capped at inode 32767.
+
+WHY fry1752 wasn't enough:
+  - After fry1752, build_iso reformatted with 262,144 inodes (mktotfs correct) BUT the
+    rebuild STILL stopped at inode 32767 ("test_import.py (inode 32767)") then
+    "Staging Hermes Agent" -> 0 copies again. opt/hermes-agent still absent.
+  - Cause: ToTFS has THREE implementations. tools/totcopy.c (the host tool that stages
+    files into the NVMe image) has its OWN inode allocator with the same single-block
+    cap — I'd only fixed the kernel driver + the formatter.
+
+FIX (tools/totcopy.c — mirrors its already-multi-block g_block_bmp):
+  - g_inode_bmp: static uint8_t[4096] -> heap `uint8_t *`, + g_inode_bmp_blocks.
+  - load: calloc g_inode_bmp to sb.inode_bitmap_blocks*4096 and read ALL those blocks
+    (was a single read_block of inode_bitmap_start).
+  - alloc_inode(): removed the `&& i < TOTFS_BLOCK_SIZE*8` cap; scans full
+    g_sb.total_inodes.
+  - flush_metadata(): write back ALL g_inode_bmp_blocks (was a single write_block).
+  - Compiles clean (gcc, stdlib.h present). build_iso.sh:375 recompiles it.
+
+NOW all 3 ToTFS impls handle the multi-block inode bitmap:
+  1. tools/mktotfs.c  — formats with scaled inodes + multi-block inode bitmap (fry1752)
+  2. src/kernel/fs/totfs.c — mounts/allocs/frees over multi-block inode bitmap (fry1752)
+  3. tools/totcopy.c  — stages files over multi-block inode bitmap (THIS fry)
+
+STATE: totcopy fixed + compiled. Kernel already rebuilt (fry1752).
+NEXT: re-run build_iso.sh -> reformat NVMe (262k inodes) + restage. VERIFY: opt/
+  hermes-agent copies > 0 + tatertos_bootstrap present + inode numbers exceed 32767 +
+  no "no free inodes". Then boot + run hermes -> read serial. -> fry1754.

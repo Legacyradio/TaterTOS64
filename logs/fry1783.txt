@@ -1,0 +1,18 @@
+fry1783 — production hermes launcher: bare `hermes` = full agent CLI — 2026-06-26
+==========================================================================
+WHAT: Fixed a product/UX bug Zack flagged: typing `hermes` must launch the FULL
+agent CLI like a real install, not the dev diagnostic. (As a shipped product,
+`hermes` showing a test report would generate instant bug reports.)
+
+CHANGE: src/user/shell/shell.c, cmd_hermes(). Was: bare `hermes` ->
+tatertos_bootstrap.py (the diagnostic); `hermes <args>` -> the real CLI. Now: ALL
+invocations -> /nvme/opt/hermes-agent/hermes (hermes_cli.main:main), args passed
+through. The bootstrap diagnostic is retired (it was a dev scaffold). Help text
+updated to "Launch the Hermes agent CLI".
+
+BUILD: make shell (links shell.elf + totpack -> shell.tot 0x0002), EXIT=0,
+shell.tot @ 16:40:27. Restaged via build_iso (stage_hermes copies shell.tot ->
+/apps/SHELL.TOT).
+
+NEXT (fry1784): boot, run `hermes`, observe the real CLI's first real failure
+(debug-after, per Zack).

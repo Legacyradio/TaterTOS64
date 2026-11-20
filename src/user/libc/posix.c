@@ -31,9 +31,12 @@
 #include <sys/mlock.h>
 #include <sched.h>
 #include <poll.h>
+#include <sys/select.h>
 #include <signal.h>
 #include <unistd.h>
+#include <dirent.h>
 #include <fcntl.h>
+#include <sys/ioctl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,6 +59,21 @@ static long posix_error(long rc) {
 static int posix_error_int(long rc) {
     return (int)posix_error(rc);
 }
+
+struct _DIR {
+    char path[FRY_PATH_MAX];
+    unsigned char *buf;
+    size_t len;
+    size_t pos;
+    struct dirent ent;
+};
+
+struct fry_readdir_ex_hdr {
+    uint16_t rec_len;
+    uint16_t name_len;
+    uint32_t attr;
+    uint64_t size;
+};
 
 static void posix_stat_from_fry(struct stat *st, const struct fry_stat *fst) {
     memset(st, 0, sizeof(*st));
@@ -112,6 +130,106 @@ off_t lseek(int fd, off_t offset, int whence) {
     return (off_t)posix_error(fry_lseek(fd, (int64_t)offset, whence));
 }
 
+/* fry1817: the positional I/O family, for real. All four were gap stubs
+ * (gap_stubs.c:220-223) that CAST THE OFFSET AWAY and forwarded to the
+ * sequential call:
+ *     ssize_t pread(int fd, void *b, size_t c, off_t off)
+ *     { (void)off; return read(fd,b,c); }
+ * So every positional read or write landed at the file's CURRENT position
+ * instead of the requested one, and returned a success count for it. That is
+ * silent data corruption for any random-access file, and CPython is configured
+ * to use these: pyconfig.h:982/985/1055/1058 define HAVE_PREAD, HAVE_PREADV,
+ * HAVE_PWRITE and HAVE_PWRITEV. SQLite's unix VFS reads and writes its database
+ * pages through exactly this family.
+ * There is no SYS_PREAD/SYS_PWRITE in the native ABI (checked against
+ * src/include/tatertos/syscall.h), so these are implemented the way a libc
+ * without those syscalls does it: save the current offset, seek, transfer,
+ * restore. The transfer's errno is preserved across the restoring seek so the
+ * caller sees the real failure.
+ * KNOWN LIMITATION, stated rather than hidden: seek+transfer+seek is NOT atomic
+ * with respect to other threads sharing the same file description, which real
+ * pread/pwrite are. Making it atomic requires SYS_PREAD/SYS_PWRITE in the
+ * kernel — scoped as its own phase, not faked here. */
+static ssize_t pio_prologue(int fd, off_t offset, off_t *saved_pos) {
+    if (offset < 0) { errno = EINVAL; return -1; }
+    *saved_pos = lseek(fd, 0, SEEK_CUR);
+    if (*saved_pos == (off_t)-1) return -1;
+    if (lseek(fd, offset, SEEK_SET) == (off_t)-1) return -1;
+    return 0;
+}
+
+static ssize_t pio_epilogue(int fd, off_t saved_pos, ssize_t n) {
+    int saved_errno = errno;
+    if (lseek(fd, saved_pos, SEEK_SET) == (off_t)-1) {
+        /* The transfer may have succeeded, but the file position is now wrong
+         * and the caller has no way to learn that. Report the failure. */
+        return -1;
+    }
+    if (n < 0) errno = saved_errno;
+    return n;
+}
+
+ssize_t pread(int fd, void *buf, size_t count, off_t offset) {
+    off_t pos;
+    if (pio_prologue(fd, offset, &pos) < 0) return -1;
+    return pio_epilogue(fd, pos, read(fd, buf, count));
+}
+
+ssize_t pwrite(int fd, const void *buf, size_t count, off_t offset) {
+    off_t pos;
+    if (pio_prologue(fd, offset, &pos) < 0) return -1;
+    return pio_epilogue(fd, pos, write(fd, buf, count));
+}
+
+ssize_t preadv(int fd, const struct iovec *iov, int iovcnt, off_t offset) {
+    off_t pos;
+    if (pio_prologue(fd, offset, &pos) < 0) return -1;
+    return pio_epilogue(fd, pos, readv(fd, iov, iovcnt));
+}
+
+ssize_t pwritev(int fd, const struct iovec *iov, int iovcnt, off_t offset) {
+    off_t pos;
+    if (pio_prologue(fd, offset, &pos) < 0) return -1;
+    return pio_epilogue(fd, pos, writev(fd, iov, iovcnt));
+}
+
+/* fry1815: real ftruncate()/truncate(). Both were gap stubs (gap_stubs.c:98 and
+ * :105) that did nothing and returned 0 — they REPORTED SUCCESS, which is the
+ * most dangerous shape a stub can have: every caller believed the file had been
+ * resized. SQLite uses ftruncate to size the database and to truncate journals,
+ * and /.hermes/state.db has sat at 0 bytes on the image since 2026-08-11
+ * (logs/fry1812.txt FINDING 2, logs/fry1813.txt DEFECT 2).
+ * Nothing new was needed underneath: the whole path already existed and was
+ * real — SYS_FTRUNCATE = 89 (src/include/tatertos/syscall.h:143), the kernel
+ * handler (src/kernel/proc/syscall.c:10770) covering FD_FILE via vfs_truncate()
+ * and FD_MEMFD via memfd_truncate(), the VFS op (vfs.h:68) and the ToTFS
+ * implementation totfs_truncate_vfs (wired at vfs.c:990/1016, committed in
+ * cf5777f2). Only the POSIX wrapper was missing, so the syscall was never
+ * issued. */
+int ftruncate(int fd, off_t length) {
+    if (length < 0) { errno = EINVAL; return -1; }
+    return posix_error_int(fry_ftruncate(fd, (uint64_t)length));
+}
+
+/* There is no path-based truncate syscall in the native ABI, so this is done
+ * the way a libc without one does it: open, ftruncate, close. The open errno is
+ * preserved across close() so the caller sees the real failure. */
+int truncate(const char *path, off_t length) {
+    int fd, rc, saved;
+
+    if (!path) { errno = EINVAL; return -1; }
+    if (length < 0) { errno = EINVAL; return -1; }
+
+    fd = open(path, O_WRONLY);
+    if (fd < 0) return -1;
+
+    rc = ftruncate(fd, length);
+    saved = errno;
+    close(fd);
+    if (rc < 0) errno = saved;
+    return rc;
+}
+
 int fcntl(int fd, int cmd, ...) {
     va_list ap;
     va_start(ap, cmd);
@@ -121,16 +239,107 @@ int fcntl(int fd, int cmd, ...) {
 }
 
 int ioctl(int fd, unsigned long request, ...) {
+    /* fry1672: There is NO SYS_IOCTL in the native ABI. The previous wrapper
+     * funnelled every ioctl() into fry_ioctl() -> raw syscall 11, which is
+     * SYS_REBOOT -> calling ioctl() rebooted the machine (CPython's
+     * ioctl(fd, FIOCLEX) during startup is what wedged `hermes`). Handle the
+     * requests upstream code actually uses by translating to existing
+     * mechanisms; never issue a raw ioctl syscall. */
     va_list ap;
     va_start(ap, request);
-    long arg = va_arg(ap, long);
+    void *argp = va_arg(ap, void *);
     va_end(ap);
-    return posix_error_int(fry_ioctl(fd, (uint32_t)request, arg));
+
+    switch (request) {
+    case FIOCLEX:   /* set close-on-exec */
+        return fcntl(fd, F_SETFD, FD_CLOEXEC);
+    case FIONCLEX:  /* clear close-on-exec */
+        return fcntl(fd, F_SETFD, 0);
+    case FIONBIO: { /* toggle non-blocking from *(int*)argp */
+        int fl = fcntl(fd, F_GETFL, 0);
+        if (fl < 0) return -1;
+        int on = argp ? *(int *)argp : 0;
+        fl = on ? (fl | O_NONBLOCK) : (fl & ~O_NONBLOCK);
+        return fcntl(fd, F_SETFL, fl);
+    }
+    case TIOCGWINSZ: { /* report a sane default size for tty fds */
+        if (!isatty(fd) || !argp) { errno = ENOTTY; return -1; }
+        struct winsize *ws = (struct winsize *)argp;
+        ws->ws_row = 24; ws->ws_col = 80;
+        ws->ws_xpixel = 0; ws->ws_ypixel = 0;
+        return 0;
+    }
+    default:
+        errno = ENOTTY;
+        return -1;
+    }
 }
 
 int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
     uint64_t t = (timeout < 0) ? (uint64_t)-1 : (uint64_t)timeout;
     return posix_error_int(fry_poll((struct fry_pollfd *)fds, (uint32_t)nfds, t));
+}
+
+/* fry1759: POSIX select() implemented over poll() (the kernel's poll-block
+ * primitive). CPython's selectmodule.c calls select() unconditionally, and the
+ * `selectors`/`asyncio` stack reaches it via select.select. Bits ready for more
+ * than one set are counted once per set (glibc semantics). */
+int select(int nfds, fd_set *readfds, fd_set *writefds,
+           fd_set *exceptfds, struct timeval *timeout) {
+    if (nfds < 0 || nfds > FD_SETSIZE) { errno = EINVAL; return -1; }
+
+    struct pollfd pfds[FD_SETSIZE];
+    int slot[FD_SETSIZE];
+    int npfds = 0;
+
+    for (int fd = 0; fd < nfds; fd++) {
+        short ev = 0;
+        if (readfds   && FD_ISSET(fd, readfds))   ev |= POLLIN;
+        if (writefds  && FD_ISSET(fd, writefds))  ev |= POLLOUT;
+        if (exceptfds && FD_ISSET(fd, exceptfds)) ev |= POLLPRI;
+        if (ev) {
+            pfds[npfds].fd = fd;
+            pfds[npfds].events = ev;
+            pfds[npfds].revents = 0;
+            slot[npfds] = fd;
+            npfds++;
+        }
+    }
+
+    int ms = -1;
+    if (timeout)
+        ms = (int)(timeout->tv_sec * 1000 + timeout->tv_usec / 1000);
+
+    int r = poll(pfds, (nfds_t)npfds, ms);
+    if (r < 0) return -1;
+
+    if (readfds)   FD_ZERO(readfds);
+    if (writefds)  FD_ZERO(writefds);
+    if (exceptfds) FD_ZERO(exceptfds);
+
+    int count = 0;
+    for (int i = 0; i < npfds; i++) {
+        short re = pfds[i].revents;
+        int fd = slot[i];
+        if (readfds   && (re & (POLLIN  | POLLHUP | POLLERR))) { FD_SET(fd, readfds);   count++; }
+        if (writefds  && (re & (POLLOUT | POLLERR)))           { FD_SET(fd, writefds);  count++; }
+        if (exceptfds && (re &  POLLPRI))                      { FD_SET(fd, exceptfds); count++; }
+    }
+    return count;
+}
+
+int pselect(int nfds, fd_set *readfds, fd_set *writefds,
+            fd_set *exceptfds, const struct timespec *timeout,
+            const sigset_t *sigmask) {
+    (void)sigmask; /* TaterTOS does not deliver signals during the poll-block */
+    struct timeval tv;
+    struct timeval *tvp = NULL;
+    if (timeout) {
+        tv.tv_sec  = timeout->tv_sec;
+        tv.tv_usec = timeout->tv_nsec / 1000;
+        tvp = &tv;
+    }
+    return select(nfds, readfds, writefds, exceptfds, tvp);
 }
 
 int epoll_create(int size) {
@@ -264,6 +473,18 @@ int stat(const char *path, struct stat *st) {
 }
 
 int fstat(int fd, struct stat *st) {
+    /* fry1691: the kernel SYS_FSTAT only stats regular files (fd>=3) and returns
+     * EBADF for the stdio fds 0/1/2. CPython's _io.FileIO treats EBADF on a std
+     * fd as fatal and leaves sys.stdout/stderr/stdin = None -> print() is a
+     * silent no-op and every traceback vanishes. The stdio fds are character
+     * devices (console/GUI tty); report them as such so the streams initialize. */
+    if (fd >= 0 && fd <= 2) {
+        memset(st, 0, sizeof(*st));
+        st->st_mode = (mode_t)(S_IFCHR | 0666);
+        st->st_nlink = 1;
+        st->st_blksize = 4096;
+        return 0;
+    }
     struct fry_stat fst;
     long rc = fry_fstat(fd, &fst);
     if (rc < 0) return posix_error_int(rc);
@@ -454,6 +675,109 @@ int isatty(int fd) {
     return (fd >= 0 && fd <= 2);
 }
 
+/* fry1816: real getentropy(). This was a gap stub (gap_stubs.c:131) that
+ * ZERO-FILLED the caller's buffer and returned 0 for success:
+ *     int getentropy(void *b, size_t l)
+ *     { if(b&&l){for(size_t i=0;i<l;i++)((unsigned char*)b)[i]=0;} return 0; }
+ * external/Python-3.14.5/pyconfig.h:493 defines HAVE_GETENTROPY while line 592
+ * leaves HAVE_GETRANDOM undefined, so CPython's entropy comes through THIS
+ * function and nothing else. Every os.urandom(), secrets token, uuid4(), hash
+ * seed and TLS random in the OS was therefore a run of zero bytes that the
+ * caller believed was random.
+ * A real entropy source already existed and was reachable: SYS_GETRANDOM = 85
+ * (src/include/tatertos/syscall.h:137), the kernel handler
+ * (src/kernel/proc/syscall.c:10658) and fry_getrandom() (libc.c:788). Only the
+ * Rust path used it (rust_compat.c:89); the C path did not.
+ * POSIX: getentropy() fills exactly len bytes or fails; len > 256 is EIO. It
+ * returns 0 or -1, never a short count, so a partial fill is looped. */
+int getentropy(void *buf, size_t len) {
+    unsigned char *p = (unsigned char *)buf;
+    size_t got = 0;
+
+    if (!buf && len) { errno = EFAULT; return -1; }
+    if (len > 256) { errno = EIO; return -1; }
+
+    while (got < len) {
+        long rc = fry_getrandom(p + got, (unsigned long)(len - got), 0u);
+        if (rc < 0) { errno = (int)(-rc); return -1; }
+        if (rc == 0) { errno = EIO; return -1; }  /* no progress: do not spin */
+        got += (size_t)rc;
+    }
+    return 0;
+}
+
+/* fry1818: real nanosleep()/clock_nanosleep(). nanosleep was a gap stub
+ * (gap_stubs.c:247) that did nothing and FAILED:
+ *     int nanosleep(const struct timespec *req, struct timespec *rem)
+ *     { (void)req;(void)rem; errno=ENOSYS; return -1; }
+ * and clock_nanosleep (gap_stubs.c:228) delegated straight to it, so both
+ * always failed. Meanwhile SYS_NANOSLEEP = 87 exists
+ * (src/include/tatertos/syscall.h:139), the kernel implements it
+ * (src/kernel/proc/syscall.c, case 87: validates the request, converts to
+ * milliseconds, sched_sleep + sched_yield, writes a zero remainder) and
+ * fry_nanosleep() has been sitting in libc.c:796 unused by anything.
+ * Everything that backs off, retries or waits a bounded time goes through this:
+ * SQLite's busy handler, threading waits, retry loops with jitter — including
+ * hermes_state.SessionDB's _WRITE_RETRY_MIN_S/_MAX_S jitter. A sleep primitive
+ * that returns ENOSYS turns a polite retry loop into either a hard failure or
+ * a hot spin, depending on how the caller handles it. */
+int nanosleep(const struct timespec *req, struct timespec *rem) {
+    struct fry_timespec freq, frem;
+    long rc;
+
+    if (!req) { errno = EFAULT; return -1; }
+    if (req->tv_sec < 0 || req->tv_nsec < 0 || req->tv_nsec >= 1000000000L) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    freq.tv_sec  = (int64_t)req->tv_sec;
+    freq.tv_nsec = (int64_t)req->tv_nsec;
+    frem.tv_sec  = 0;
+    frem.tv_nsec = 0;
+
+    rc = fry_nanosleep(&freq, &frem);
+    if (rem) {
+        rem->tv_sec  = (time_t)frem.tv_sec;
+        rem->tv_nsec = (long)frem.tv_nsec;
+    }
+    if (rc < 0) { errno = (int)(-rc); return -1; }
+    return 0;
+}
+
+/* clock_nanosleep() returns its error directly rather than via errno, per
+ * POSIX. TIMER_ABSTIME is honoured by converting the absolute deadline into a
+ * relative interval against the same clock; a deadline already in the past
+ * returns success immediately, as POSIX requires. */
+int clock_nanosleep(clockid_t clock_id, int flags,
+                    const struct timespec *req, struct timespec *rem) {
+    struct timespec rel;
+
+    if (!req) return EFAULT;
+    if (req->tv_sec < 0 || req->tv_nsec < 0 || req->tv_nsec >= 1000000000L)
+        return EINVAL;
+
+    if (flags & TIMER_ABSTIME) {
+        struct timespec now;
+        if (clock_gettime(clock_id, &now) != 0) return errno;
+
+        rel.tv_sec  = req->tv_sec  - now.tv_sec;
+        rel.tv_nsec = req->tv_nsec - now.tv_nsec;
+        if (rel.tv_nsec < 0) {
+            rel.tv_nsec += 1000000000L;
+            rel.tv_sec  -= 1;
+        }
+        /* Deadline already passed: nothing to wait for. POSIX also specifies
+         * that rem is NOT written in the absolute case. */
+        if (rel.tv_sec < 0) return 0;
+        if (nanosleep(&rel, NULL) != 0) return errno;
+        return 0;
+    }
+
+    if (nanosleep(req, rem) != 0) return errno;
+    return 0;
+}
+
 int usleep(unsigned int usec) {
     fry_sleep(usec / 1000);
     return 0;
@@ -464,9 +788,25 @@ unsigned int sleep(unsigned int seconds) {
     return 0;
 }
 
+int pause(void) {
+    /* POSIX pause(): suspend until a signal is delivered.
+     * TaterTOS doesn't deliver async signals, so this blocks forever.
+     * Used by CPython's PyThread_hang_thread() during finalization. */
+    while (1) {
+        fry_sleep(0);
+    }
+    return -1;  /* unreachable */
+}
+
 long sysconf(int name) {
-    if (name == 30) return 4096; /* _SC_PAGESIZE */
-    if (name == 84) return 1;    /* _SC_NPROCESSORS_ONLN */
+    if (name == _SC_CLK_TCK) return 100;
+    if (name == _SC_PAGESIZE) return 4096;
+    if (name == _SC_NPROCESSORS_ONLN) return 1;
+    /* fry1806: max iovec count for a single sendmsg/writev. 1024 matches Linux
+     * IOV_MAX; asyncio uses it to cap how many buffers it batches per sendmsg
+     * (selector_events.py). Reporting a real value rather than -1 keeps the
+     * batching path enabled instead of silently degrading to send(). */
+    if (name == _SC_IOV_MAX) return 1024;
     return -1;
 }
 
@@ -625,6 +965,145 @@ char *realpath(const char *path, char *resolved_path) {
     }
     memcpy(result, normalized, out + 1);
     return result;
+}
+
+DIR *opendir(const char *path) {
+    if (!path || !*path) {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    struct stat st;
+    if (stat(path, &st) != 0)
+        return NULL;
+    if (!S_ISDIR(st.st_mode)) {
+        errno = ENOTDIR;
+        return NULL;
+    }
+
+    struct _DIR *dir = (struct _DIR *)calloc(1, sizeof(*dir));
+    if (!dir) {
+        errno = ENOMEM;
+        return NULL;
+    }
+
+    size_t cap = 128u * 1024u;
+    dir->buf = (unsigned char *)malloc(cap);
+    if (!dir->buf) {
+        free(dir);
+        errno = ENOMEM;
+        return NULL;
+    }
+
+    strncpy(dir->path, path, sizeof(dir->path) - 1);
+    long n = fry_readdir_ex(path, dir->buf, cap);
+    if (n < 0) {
+        int err = (int)-n;
+        free(dir->buf);
+        free(dir);
+        errno = err;
+        return NULL;
+    }
+
+    dir->len = (size_t)n;
+    dir->pos = 0;
+    return (DIR *)dir;
+}
+
+DIR *fdopendir(int fd) {
+    (void)fd;
+    errno = ENOSYS;
+    return NULL;
+}
+
+struct dirent *readdir(DIR *dirp) {
+    struct _DIR *dir = (struct _DIR *)dirp;
+    if (!dir) {
+        errno = EBADF;
+        return NULL;
+    }
+
+    while (dir->pos + sizeof(struct fry_readdir_ex_hdr) <= dir->len) {
+        struct fry_readdir_ex_hdr *h =
+            (struct fry_readdir_ex_hdr *)(void *)(dir->buf + dir->pos);
+        if (h->rec_len < sizeof(*h) || dir->pos + h->rec_len > dir->len) {
+            errno = EIO;
+            return NULL;
+        }
+
+        const char *name = (const char *)(h + 1);
+        dir->pos += h->rec_len;
+        if (h->name_len == 0)
+            continue;
+
+        memset(&dir->ent, 0, sizeof(dir->ent));
+        dir->ent.d_ino = (ino_t)dir->pos;
+        dir->ent.d_off = (off_t)dir->pos;
+        dir->ent.d_reclen = (unsigned short)sizeof(dir->ent);
+        dir->ent.d_type = (h->attr & 0x10u) ? DT_DIR : DT_REG;
+
+        size_t copy_len = h->name_len;
+        if (copy_len >= sizeof(dir->ent.d_name))
+            copy_len = sizeof(dir->ent.d_name) - 1;
+        memcpy(dir->ent.d_name, name, copy_len);
+        dir->ent.d_name[copy_len] = '\0';
+        return &dir->ent;
+    }
+
+    errno = 0;
+    return NULL;
+}
+
+int readdir_r(DIR *dirp, struct dirent *entry, struct dirent **result) {
+    if (!entry || !result)
+        return EINVAL;
+    struct dirent *next = readdir(dirp);
+    if (!next) {
+        *result = NULL;
+        return errno;
+    }
+    memcpy(entry, next, sizeof(*entry));
+    *result = entry;
+    return 0;
+}
+
+int closedir(DIR *dirp) {
+    struct _DIR *dir = (struct _DIR *)dirp;
+    if (!dir) {
+        errno = EBADF;
+        return -1;
+    }
+    free(dir->buf);
+    free(dir);
+    return 0;
+}
+
+void rewinddir(DIR *dirp) {
+    struct _DIR *dir = (struct _DIR *)dirp;
+    if (dir)
+        dir->pos = 0;
+}
+
+long telldir(DIR *dirp) {
+    struct _DIR *dir = (struct _DIR *)dirp;
+    if (!dir) {
+        errno = EBADF;
+        return -1;
+    }
+    return (long)dir->pos;
+}
+
+void seekdir(DIR *dirp, long loc) {
+    struct _DIR *dir = (struct _DIR *)dirp;
+    if (!dir || loc < 0 || (size_t)loc > dir->len)
+        return;
+    dir->pos = (size_t)loc;
+}
+
+int dirfd(DIR *dirp) {
+    (void)dirp;
+    errno = ENOSYS;
+    return -1;
 }
 
 int shutdown(int fd, int how) {

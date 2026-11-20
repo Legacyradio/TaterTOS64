@@ -1,0 +1,43 @@
+fry1455 - Auth decision: use current host Claude JSON for now; do not make
+OAuth refresh semantics the next blocker.
+Date: 2026-06-13. Author: Codex.
+========================================================================
+
+DECISION
+========================================================================
+Use the current working host Claude auth JSON as the short-term bridge:
+
+  host ~/.claude.json
+  host ~/.claude/.credentials.json
+
+build_iso.sh already stages these into the TaterTOS NVMe image as:
+
+  /nvme/.claude.json
+  /nvme/.claude/.credentials.json
+
+Do not paste token contents into logs.
+
+
+WHY
+========================================================================
+The user's priority is to get the system running and continue kernel parity,
+not to stop on full OAuth refresh semantics right now.
+
+The fry1453/fry1454 boot proved the current kernel frontier is still
+subprocess/tool spawning:
+
+  posix_spawn -> vfork(58) -> execve(59)
+
+OAuth refresh still has filesystem semantics problems (lock timestamp /
+rename / backend write behavior), but that is a separate polish/parity item.
+It should not block vfork/subprocess work unless every useful Claude test is
+blocked by auth.
+
+
+OPERATIONAL RULE
+========================================================================
+Before a Claude boot that needs live API auth, re-stage the current host JSON
+by rebuilding/staging the image. If a boot returns 401, treat that as auth
+state first, not as proof of a network/TCP failure.
+
+Next kernel target remains vfork(58) / posix_spawn support.

@@ -1,0 +1,34 @@
+# fry1594 - VERIFY: demand-paging batching WORKS (faults thousands -> ~64) but input still not consumed. The now-dominant blocker = the SAME futex/condvar livelock from fry1579. Honest status + decision point.
+Date: 2026-06-16 ~16:40 (host clock) CDT
+Type: verify (fry1593 build) + status
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+RESULT
+- Demand-paging FIX (fry1592) WORKS: TBDPF n only reached 0x40 (~64 total faults) this run vs 0x4000+ (thousands)
+  before -> ~100x fewer #PF. That bottleneck is GONE.
+- BUT read(fd0) still = 1 (input still not consumed). TBSPIN: 511 logged (~130k actual), 480 at context_switch+0x81
+  (0xffffffff80066621) -> the main thread is RAPIDLY context-switching (yielding), CPU-bound, not blocked.
+- The driver: pid=14 FUTEX_WAITs (nr=202) on 6fbfee01e950 / 6fbfee01e954 with an INCREMENTING sequence
+  (expected=23,24,25,26 ...) and mutex 6fbff94341d0 (val=2), timeout=0 (infinite). It is woken (seq advances) and
+  re-waits on the next value -> a CONDVAR wait loop whose predicate never lets it exit to run the event loop / read
+  stdin. THIS IS THE fry1579 livelock, now the dominant blocker once demand-paging stopped masking it.
+- pid=15 (GC/coordinator) is by far the busiest (3418 sched events). The main thread appears to be waiting on a
+  worker/GC condition that never satisfies for it.
+
+WHERE THIS LEAVES IT (honest)
+WINS this session, real + verified: (1) network-teardown KERNEL PANIC fixed (fry1544-1546). (2) /proc/self/stat
+(fry1551). (3) DEMAND-PAGING BATCHING (fry1592) -> ~100x fewer faults, the "slow page-in freeze" root removed.
+(4) SHELL TOOLING: busybox staged + /nvme tool-path redirect + pipe()/pipe2() -> Claude FINDS, LOADS, and RUNS
+/bin/sh (got from exit-127 -> running); a couple more subprocess syscalls would finish command output.
+OPEN, HARD: the main-thread futex/condvar livelock (fry1579) is the remaining input-consumption blocker. It is
+intermittent (worked fully once, fry1583). I have cornered it precisely but NOT solved it across ~10 attempts; it is
+a deep JS-runtime(Bun/JSC)-vs-custom-kernel concurrency bug.
+
+NEXT OPTIONS (for Zack to steer):
+ A) Keep grinding the futex livelock: instrument the condvar (6fbfee01e950/954) — who signals it, what predicate the
+    main thread re-checks, why it never satisfies; suspect the GC/worker coordination (pid=15). Deep, uncertain.
+ B) Bank the wins (panic + demand-paging + shell progress) and rest; resume the livelock fresh.
+The demand-paging + shell fixes are KEEPERS regardless. Beacons TB* still in tree (remove before push); revisit
+Grok's tcp_conn refcount; re-verify with MCP on; strip OAuth before any push.
+
+All per planv3 Rules 1/5/6/12. Written immediately on the verify.

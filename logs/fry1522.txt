@@ -1,0 +1,76 @@
+fry1522 - CONFIRMED exit reason: GUI Shell "claude" renders trust prompt, exits on EOF stdin (keyboard unwired)
+Date: 2026-06-15 12:31:02 CDT
+
+Type: DIAGNOSTIC / CONFIRMATION ONLY. No code changed. Supersedes the inference in fry1521.
+
+Purpose:
+  Per user direction: confirm the exit reason BEFORE building. fry1521 inferred
+  "Claude bailed at the isatty/ENOTTY + missing /dev/tty check." That inference is
+  WRONG. This log records the confirmed cause from the same fry1520c run, using the
+  full serial trace and the QEMU debug log (user expressly authorized the QEMU log
+  for this confirmation, satisfying planv3 Rule 11's "unless expressly stated"
+  exception).
+
+Evidence sources:
+  /tmp/fry1520c_desktop_serial.log   (OS serial)
+  /tmp/fry1520c_qemu_debug.log       (QEMU -d guest_errors; user-authorized)
+
+Finding 1 - No hardware fault:
+  /tmp/fry1520c_qemu_debug.log is EMPTY (0 lines). No triple fault, no CPU
+  exception, no bad MMIO. Claude exited cleanly at the OS level.
+
+Finding 2 - Claude rendered the FULL interactive trust prompt, and its output bytes
+            are CLEAN (not garbled):
+  Serial ~line 5210+ shows correct VT column-positioning escapes and text:
+    "Accessing workspace: /"
+    "Quick safety check: Is this a project you created or one you trust? ..."
+    "Claude Code'll be able to read, edit, and execute files here."
+    "Security guide"
+    "❯ 1. Yes, I trust this folder"
+    "  2. No, exit"
+    "Enter to confirm · Esc to cancel"
+  Escapes such as \x1b[2G \x1b[8G \x1b[12G are valid cursor-to-column ops.
+  => The on-screen transposition garble ("SINGPACE", "ICKAFETYSST?UR", etc.) is a
+     SEPARATE fb-console render/concurrency bug. Claude is NOT emitting bad bytes.
+  Also seen: "TBFULL armed at stderr warning (pid=14 len=1064)" - a 1064-byte
+  stderr write (likely a node/Ink warning) earlier in startup.
+
+Finding 3 - The exit is downstream of INPUT, not the TTY identity check:
+  Exit trace (serial ~line 14565):
+    TBREAD pread64 fd=11 len=256 off=0 -> 37
+    TBIOCTL pid=14 fd=0 cmd=402c542b      <- TCSETS2 (_IOW('T',0x2b,termios2),44B)
+    TBIOCTL pid=14 fd=0 cmd=402c542b
+    TBIOCTL pid=14 fd=1 cmd=402c542b
+    TBIOCTL pid=14 fd=2 cmd=402c542b
+    TBEXIT group pid=14 tgid=14 code=129
+  The TCSETS2 on fds 0/1/2 immediately before exit is the standard
+  terminal-restore-on-exit cleanup. Claude reached the prompt, waited for a
+  keypress, and stdin (fd0) returned EOF because the keyboard is not wired to the
+  child's stdin. The interactive prompt cannot read input -> Claude restores
+  terminal modes and exits 129 (128+1 = SIGHUP/hangup convention, consistent with a
+  stdin that EOFs being treated as a terminal hangup).
+  Earlier thread exit also seen: TBEXIT thread pid=25 tgid=14 code=0 (worker).
+
+Confirmed root cause:
+  Interactivity is blocked by MISSING READABLE STDIN, not by the isatty/ENOTTY or
+  missing-/dev/tty failures. Claude pressed past those far enough to fully render
+  the trust prompt. With fd0 at EOF (keyboard unwired), the prompt EOFs and Claude
+  exits.
+
+Correction to fry1521:
+  fry1521's "exited at the TTY check" claim is retracted. The ENOTTY (ioctl -25) and
+  /dev/tty ENOENT failures are real but were NOT the proximate exit cause. The
+  proximate cause is EOF on stdin at the interactive prompt.
+
+Implication for the build sequence (matches user's reordering):
+  - E (async spawn + master pump) is the prerequisite substrate: a synchronous
+    spawn blocks the Shell UI thread, so nothing can pump a master fd to feed stdin
+    or observe child output. Build E first.
+  - B (keyboard -> child stdin) is the actual gate to interactivity. Once stdin
+    delivers keypresses, the trust prompt can be answered.
+  - The fb transposition garble is tracked as a SEPARATE concurrency bug, not part
+    of the VT parser work (C).
+  - A (PTY identity: /dev/tty + termios ioctls) is still required for full
+    correctness but is not the immediate blocker to first interaction.
+
+No code changed. No rebuild. No hashes (Rule 16).

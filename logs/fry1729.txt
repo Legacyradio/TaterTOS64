@@ -1,0 +1,31 @@
+fry1729 — 2026-06-21 17:46 CDT
+STEP: PHASE 3 pivot — VALIDATED the path to native pydantic_core WITHOUT a from-
+      scratch Rust std port. Source acquired. Continuing into the build.
+
+KEY FINDINGS:
+  - pydantic 2.13.4 needs pydantic_core 2.46.4. NOT on crates.io (PyPI-only) and the
+    GitHub repo tops at v2.41.5, but PyPI HAS the 2.46.4 sdist -> downloaded +
+    extracted to rust/pydantic_core-2.46.4. (Also a ref install at ~/hermes-agent/
+    venv/.../pydantic_core-2.46.4 — Linux py3.11.) Crate `_pydantic_core`, PyO3 0.28
+    (feats: generate-import-lib[win-only], num-bigint, py-clone, smallvec), deps
+    serde/serde_json/jiter(python). edition 2024, rust-version 1.88.
+  - DECISIVE std test: built a std-using staticlib for stock x86_64-unknown-linux-gnu
+    (EXIT=0, 22MB w/ full prebuilt std). Its undefined-symbol surface = standard
+    POSIX (malloc/free/calloc, clock_gettime, open/close/fcntl, errno, getaddrinfo,
+    pthread, stat, ...) + a few glibc-isms (fstat64, __errno_location, getauxval,
+    dl_iterate_phdr, gnu_get_libc_version, __addtf3 softfloat from libgcc).
+  => TaterTOS libc already provides the POSIX surface (it runs CPython). So we can use
+     PREBUILT linux-gnu std and satisfy the rest from TaterTOS libc + small shims;
+     --gc-sections drops everything pydantic_core never calls. This AVOIDS porting
+     Rust std from scratch (TaterTOS is already Linux-syscall/libc compatible — it
+     runs RCLAUDE.LXE). NOT a shortcut: it's the native build leveraging the existing
+     Linux-compat ABI; output links into native python3.fry.
+
+PLAN (executing): PyO3 config file for our CPython 3.14 (static/builtin, suppress
+  link lines) -> build _pydantic_core (+ jiter/serde/serde_json/smallvec/num-bigint)
+  as a staticlib for x86_64-unknown-linux-gnu -> link into python3.fry, resolve the
+  POSIX/glibc symbol surface against TaterTOS libc (shim fstat64/__errno_location/
+  getauxval/etc.) -> register `_pydantic_core` builtin in config.c -> import pydantic.
+  Then cryptography (same pattern). Then stage agent/ + pure-py deps + entrypoint.
+
+NEXT: PyO3 config + first pydantic_core staticlib build, iterate on errors. -> fry1730.

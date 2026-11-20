@@ -1,0 +1,28 @@
+# fry1572 - CODE (diagnostic): TBSPIN live-RIP sampler in the LAPIC timer IRQ handler — capture the actual userspace instruction the claude main thread is busy-spinning on.
+Date: 2026-06-16 03:35 CDT
+Type: code change (src/drivers/timer/lapic_timer.c, 2 hunks; diagnostic, read-only)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+WHY (Rule 6)
+- fry1571 confirmed pid=14 is PROC_RUNNING ~98% = userspace spin, but user_rip is stale (frozen at the post-last-syscall
+  return addr) so it does not name the spin loop. The only way to get the LIVE spin PC is from the timer IRQ frame when
+  the timer interrupts the main thread mid-spin.
+
+CHANGE (src/drivers/timer/lapic_timer.c)
+1. + #include "../../kernel/proc/process.h"  (for proc_current() + extern g_tb_trace_claude_tgid + struct fry_process).
+2. In lapic_timer_handler, before sched_tick(): if the IRQ frame is userspace ((ctx[18] & 3)==3) and the current task
+   is the claude main thread (proc_current()->tgid == g_tb_trace_claude_tgid && pid==tgid), emit via early_serial:
+     TBSPIN rip=<ctx[17]>
+   Throttled 1/1024. Uses early_serial_puts/puthex64 (already used in this file, like irqdesc.c). Read-only; no change
+   to scheduling. REMOVE once fixed.
+   Frame layout authority: irqdesc.c:496 ([17]=RIP, [18]=CS).
+
+EXPECTED READ (next run): grep TBSPIN after the freeze -> a tight cluster of RIPs = the spin loop. Resolve those RIPs:
+  - against RCLAUDE.LXE (objdump -d / nm) if in the static image, OR
+  - note the region (0x6000_xxxx = mmap'd JIT/heap; 0x4xxxxxx = bun binary text) to identify what kind of code (JITed
+    JS vs bun/JSC native runtime). Then identify the lock/condition (WTF spin, GC barrier, worker-join) and fix the OS
+    primitive or worker-progress cause. Cross-check the 11 zombies (fry1571): is the spin a join/wait on an exited worker?
+
+NEXT: fry1573 build (CLAUDE_NO_MCP=1), fry1574 verify+read TBSPIN. Keep Claude fully networked.
+
+All per planv3 Rules 1/5/6/12. Written immediately on the code change, before the build.

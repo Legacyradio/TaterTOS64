@@ -1,0 +1,32 @@
+# fry1600 - DECISION + REVERT: subtract back to the EXACT fry1583 WORKING baseline (single-page demand paging, NO batch, NO lx_map_one lock). The fry1592 demand-BATCH is the regression; it freezes even on 1 CPU.
+Date: 2026-06-16 ~21:30 (host clock) CDT
+Type: code change (revert to known-good) (Rule 5/6)
+
+GROUND TRUTH from logs/fry1583.txt (the run that WORKED - "its actually working", full interactive convo):
+- fry1583 used SINGLE-PAGE demand paging. The 16-64 page BATCH is listed there as a PROPOSED future FIX, NOT
+  part of the working build. fry1583 had NO batch, NO lx_map_one lock, NO shell-tool env.
+- fry1583's "freeze" was NOT a hang: it was SLOW page-in (cr2 ADVANCES one page/fault -> progresses). Functional,
+  just slow. Input delivery+consumption worked; prompt -> streamed response on screen.
+
+WHY -smp 1 STILL FROZE (fry1599 hypothesis was incomplete):
+- This run (fry1598 ISO @ -smp 1) HARD-HUNG during the NVMe binary load, inside the loader's 3-thread futex
+  coordination (tgid=11 pids 11/12/13, TBREAD pread64 fd=11). TIMER STOPPED (no TBCLK after the futex storm) =>
+  hard hang with IRQs off, EARLIER than claude main even starts. fry1583 never froze here.
+- So the freeze is NOT (only) multi-CPU oversubscription. The batch (and/or my lock) regresses the load itself,
+  even on 1 CPU. The user's instinct stands: it worked before these were added.
+- Established earlier: the user's OWN frozen run (fry1596) had the BATCH but NOT my lock, and froze. => the BATCH
+  is the regression that predates my lock. My lock (fry1598) fixed a real PT-corruption race but did not fix the
+  freeze and adds 1-CPU nested-fault self-deadlock risk. Both come OUT to match fry1583.
+
+REVERT (this step):
+1. lx_try_demand_page(): remove the fry1592 BATCH block -> commit the single faulting page only (fry1583 behavior).
+2. lx_map_one(): remove the fry1597 self-lock + idempotent re-check -> back to the original alloc+map+zero.
+   (On 1 CPU there is no concurrent PT modification -> no race -> no lock needed; fry1583 proves it.)
+KEEP dormant + harmless (do NOT affect the load; inert without the SHELL env which is already OUT): pipe()/pipe2(),
+  /nvme path-redirect, busybox staging. KEEP: panic fix, /proc/self/stat, sched dynamic-tgid.
+
+NEXT (fry1601 build, fry1602 verify): rebuild, launch -smp 1 (match fry1583). EXPECT fry1583 state = interactive,
+  slow page-in, MOUSE ALIVE, typing lands. If GOOD: that is the restored known-good base. THEN re-add ONE thing at
+  a time (first: a CORRECT batch with IRQ-disabled locking, or 2MB hugepages) testing each, to regain speed without
+  the freeze; and re-add the Bash tool separately.
+All per planv3 Rules 1/5/6/12. Written immediately on the decision, before the edits.

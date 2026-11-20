@@ -1,0 +1,20 @@
+fry1731 — 2026-06-21 19:22 CDT (logged late — should have been written at the time)
+STEP: Wiring/integration after fry1730 pydantic_core link. Two self-inflicted
+      mistakes + the fixes. Honest record.
+
+CHANGES:
+  - Added NATIVE EXTENSIONS probe to sysroot/opt/hermes-agent/tatertos_bootstrap.py
+    (import pydantic_core -> OK/FAIL).
+  - MISTAKE 1: added src/user/libc/rust_compat.o to the MAIN Makefile LIBC_OBJ ->
+    EVERY native app (init/shell/gui) then linked rust_compat.o, whose getenv()
+    references `environ` (only CPython provides it) -> build_iso `make init` FAILED
+    "undefined reference to environ". FIX: reverted the Makefile edit; rust_compat.o
+    stays ONLY in Python3.mk LIBC_OBJ (python3.fry has environ). build_iso then
+    EXIT=0.
+  - MISTAKE 2: pkill self-match TWICE. `pkill -f 'tater_nvme.img'` (unbracketed)
+    matched its OWN argv -> killed my shell, exit 144, no relaunch (the recurring
+    feedback_pkill_self_match trap). FIX: bracket the PATTERN too: `[t]ater_nvme.img`
+    / `[q]emu-system`. Killed all qemu cleanly.
+
+STATE: ISO rebuilt clean (19:21). python3.fry (with pydantic_core builtin) staged.
+NEXT: clean single boot + hermes -> verify pydantic_core via serial. -> fry1732.

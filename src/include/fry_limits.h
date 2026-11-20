@@ -8,7 +8,15 @@
  * Userspace can query them but cannot raise them.
  */
 
-#define FRY_FD_MAX          64    /* max open file descriptors per process */
+#define FRY_FD_MAX          64    /* max open file descriptors per process.
+                                   * fry1479: 256 BROKE boot — claude ELF load
+                                   * halts. fd_paths[256][128]=32KB makes
+                                   * fry_process_shared ~40KB > KSTACK_SIZE
+                                   * (32KB); a stack-local shared struct during
+                                   * process setup overflows the kernel stack.
+                                   * Reverted to 64. To raise fd headroom
+                                   * safely, fd_paths must move OFF the stack
+                                   * (heap/indirect) first. */
 #define FRY_PROC_MAX       256    /* max simultaneous processes */
 #define FRY_VMREG_MAX     2048    /* max VM regions per process (fry1390: was 256.
                                    * Bun/JSC + glibc + bmalloc + JIT pages + thread
@@ -24,7 +32,11 @@
 #define FRY_PAGE_SIZE     4096    /* page size in bytes */
 
 /* Pipe limits */
-#define FRY_PIPE_MAX       128    /* max global kernel pipe objects */
+#define FRY_PIPE_MAX       128    /* max global kernel pipe objects. fry1479:
+                                   * 256 BROKE early boot (halt right after
+                                   * DHCP) — reverted to 128. Use the TBSPAIR
+                                   * beacon to learn if pipes actually starve
+                                   * (leak vs genuine need) before re-bumping. */
 #define FRY_PIPE_BUFSZ    4096    /* per-pipe ring buffer size */
 
 /* Process argument/environment limits */
@@ -36,7 +48,23 @@
 #define FRY_POLL_MAX        64    /* max fds in a single poll() call */
 
 /* Socket limits */
-#define FRY_SOCK_MAX        16    /* max global kernel socket objects */
+#define FRY_SOCK_MAX        64    /* max global kernel socket objects.
+                                   * 64 lets rg/Grep's later posix_spawn inherit
+                                   * AF_UNIX stdio sockets after Claude already
+                                   * has network/file-helper sockets live.
+                                   * fry1489 adds streamed-segment caching so
+                                   * RCLAUDE.LXE self-reexec can copy clean file
+                                   * bytes from RAM instead of re-streaming the
+                                   * 250MB image from disk.
+                                   * fry1482-1485: rg/Grep's posix_spawn fails at
+                                   * 16 (ENFILE socketpair + EBADF child-fd copy)
+                                   * because 16 slots = only 8 concurrent AF_UNIX
+                                   * pairs and claude needs ~17. The 32 bump alone
+                                   * exposed the large self-reexec loader stall;
+                                   * fry1490 raises to 64 after the cache made
+                                   * reexec complete, because child fd-copy can
+                                   * otherwise silently skip sockets and produce
+                                   * EBADF in posix_spawn('rg'). */
 #define FRY_SOCK_UDP_RXMAX   4    /* max queued UDP datagrams per socket */
 #define FRY_SOCK_UDP_PKTSZ 512    /* max UDP datagram payload in queue */
 

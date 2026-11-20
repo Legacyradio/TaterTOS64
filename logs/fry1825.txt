@@ -1,0 +1,32 @@
+fry1825 — BUILD CHECK: shell PATH/exec rewrite compiles clean — 2026-09-26
+==========================================================================
+WHAT: Compile-and-verdict step for the fry1824 edit. Its own file because a
+compile with a verdict is a step (fry1820; Zack restated it this session:
+"make sure you log EVERY step"). No source changed here.
+
+=== COMMAND ===
+  export PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+  make shell.tot
+
+=== RESULT ===
+  SHELL_EXIT=0
+  Output filtered for "shell.c" + error|warning: NOTHING.
+  resolve_program(), the SHELL_ENVC macro, the renamed shell_env[] and the
+  rewritten fallback all compiled with no diagnostics.
+
+=== WHAT THIS INCIDENTALLY CONFIRMS ===
+Everything resolve_program() leans on was already available in shell.c's
+include set and did not need a new header: strchr, strncmp, snprintf, strcmp,
+FRY_PATH_MAX, struct fry_stat and fry_stat(). A missing declaration would have
+surfaced here as an implicit-declaration error rather than at link time.
+Also confirms the rename is complete — a surviving reference to the old
+native_python_env identifier would have failed to compile. That is worth
+stating: the rename was mechanical, and a compile is the cheap proof that no
+call site was missed.
+
+=== WHAT IS NOT CLAIMED ===
+Compiles, nothing more. Not linked into an ISO, not booted. PATH resolution is
+UNVERIFIED — no name has been resolved, no external program spawned through the
+new path. `hermes` still cannot run: /usr/bin/env does not exist yet (piece 3).
+Editor/clangd errors on shell.c (libc.h not found, gfx_ctx_t unknown) are host-
+toolchain noise; clangd has no -Isrc/include.

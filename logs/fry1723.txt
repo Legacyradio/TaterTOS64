@@ -1,0 +1,43 @@
+fry1723 — 2026-06-21 14:13 CDT
+STEP: stdlib fix VERIFIED. Native CPython now runs the hermes bootstrap smoke test
+      END-TO-END to its SUMMARY. The zoneinfo/sysconfig/abiflags fix worked.
+
+KEY INSIGHT: bootstrap print() -> stdout = SCREEN; logging/tracebacks -> stderr =
+  SERIAL. So serial showed only hashlib stderr noise; the real report is on screen.
+  Captured the QEMU window (1250x963 @ +570+59; /tmp/hermes_summary.png).
+
+ON-SCREEN REPORT (read from screenshot):
+  SQLite: OK - (1,'TaterTOS')   Socket module: OK   Hostname: (none)
+  HERMES AGENT IMPORT:
+    hermes_constants  OK
+    hermes_state      OK
+    hermes_time       OK   <-- zoneinfo import now WORKS (fry1722 fix verified)
+    hermes_logging    OK
+    hermes            FAIL — No module named 'hermes'
+  SUMMARY:
+    Python 3.14:    [OK]
+    Stdlib modules: [35/36 available]
+    SQLite:         [OK]
+    FS operations:  [ ]   (the /tmp/tatertos_python_test.txt open FAILed: [Errno 2]
+                           ENOENT — /tmp dir missing/not writable on nvme)
+    Hermes core:    [FAIL]
+  Footer: "Full Hermes Agent requires additional dependencies ... pyproject.toml".
+
+INTERPRETATION: The native-CPython PORT is essentially DONE. CPython executes a full
+  Python program to completion: 35/36 stdlib, SQLite, all 4 hermes_* helper modules.
+  The hashlib sha384/sha512/blake2/sha3/shake "errors" are NON-fatal (hashlib catches
+  + continues) = missing hash C-modules (_sha3/_blake2/_hashlib not built in).
+  Remaining for FULL hermes = NOT systems work; it's packaging:
+    1. `hermes` top-level package + deps not staged (No module named 'hermes').
+       Bootstrap note: most deps pure-Python (copy from PyPI to sysroot/site-
+       packages); C-ext deps (pydantic-core, aiohttp, Pillow) need cross-compile.
+    2. /tmp missing on nvme -> FS test ENOENT. Fix: mkdir /tmp at boot or stage it.
+    3. (optional) build _sha3/_blake2/_hashlib for full hashlib.
+
+ARC THIS SESSION: _PyObject_Malloc crash -> TLS ABI (kernel PT_TLS+self-ptr+p_align,
+  libc tls_base@0, linker PT_TLS) -> dynamic 8GB ToTFS (also fixed claude) ->
+  stdlib (abiflags+sysconfigdata) -> CPython runs to completion. fry1701-1723.
+
+NEXT (Zack's call): (a) stage the hermes package + pure-Python deps + mkdir /tmp to
+  push toward the real agent running; (b) build the missing hash C-modules; or (c)
+  bank this milestone. -> fry1724.

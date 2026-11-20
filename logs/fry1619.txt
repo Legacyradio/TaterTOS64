@@ -1,0 +1,64 @@
+# hermes014 — PHASE 2 STEP 13: memrchr missing from TaterTOS string.h
+Date: 2026-06-17 ~15:20 CDT
+Type: compile fix (Phase 2 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Compile Objects/*.c directory. Four files (bytearrayobject.c, bytesobject.c,
+bytes_methods.c, unicodeobject.c) all failed on the same missing function.
+
+---------------------------------------------------------------------------------
+WHAT HAPPENED
+---------------------------------------------------------------------------------
+ERROR (all 4 files):
+  Objects/stringlib/fastsearch.h:127:13: error: implicit declaration of
+  function 'memrchr'; did you mean 'memchr'?
+
+---------------------------------------------------------------------------------
+ROOT CAUSE
+---------------------------------------------------------------------------------
+CPython's string search library (stringlib/fastsearch.h) uses memrchr() —
+a GNU extension that searches backwards through memory for a byte. It's
+used for reverse string searches (rfind, rindex, rpartition).
+
+TaterTOS string.h had memchr() (forward search) but not memrchr() (reverse
+search). The pyconfig.h had HAVE_MEMRCHR defined from the host Linux probe.
+
+memrchr is used by the fastsearch algorithm for:
+  - bytes.rfind()
+  - bytes.rindex()
+  - bytes.rpartition()
+  - str.rfind() / str.rindex() / str.rpartition()
+
+---------------------------------------------------------------------------------
+FIX
+---------------------------------------------------------------------------------
+1. src/include/string.h:
+   Added declaration: `void *memrchr(const void *s, int c, size_t n);`
+
+2. src/user/libc/string_ext.c:
+   Added implementation: iterates backwards from end of buffer,
+   returns pointer to last occurrence of byte c, or NULL if not found.
+
+WHY: memrchr is a standard GNU extension used by CPython's string search.
+The implementation is trivial — same as memchr but iterating backwards.
+This is a real function, not a stub. CPython uses it for reverse string
+operations which Hermes needs (rfind, rsplit, rpartition).
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+Re-ran all 4 affected files:
+  bytearrayobject.c — OK (compiled clean)
+  bytesobject.c     — OK (compiled clean)
+  bytes_methods.c   — OK (compiled clean)
+  unicodeobject.c   — FAIL (new error: wmemchr — see hermes015)
+
+3 of 4 files fixed. unicodeobject.c has a follow-on error (wmemchr).
+
+---------------------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------------------
+Fix wmemchr missing from wchar.h (unicodeobject.c).

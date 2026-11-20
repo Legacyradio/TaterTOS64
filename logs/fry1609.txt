@@ -1,0 +1,71 @@
+# hermes004 — PHASE 2 STEP 3: _POSIX_THREADS not defined in TaterTOS headers
+Date: 2026-06-17 ~14:41 CDT
+Type: compile fix (Phase 2 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Compile Python/pylifecycle.c (first core CPython source file that exercises
+the platform layer: threading, signals, filesystem, process lifecycle).
+
+---------------------------------------------------------------------------------
+WHAT HAPPENED
+---------------------------------------------------------------------------------
+Compile command:
+  x86_64-elf-gcc ... -DPy_BUILD_CORE -c Python/pylifecycle.c
+
+ERROR:
+  Include/internal/pycore_gil.h:14:4: error: #error You need either a
+  POSIX-compatible or a Windows system!
+  Include/internal/pycore_gil.h:53:5: error: unknown type name 'PyCOND_T'
+  Include/internal/pycore_gil.h:54:5: error: unknown type name 'PyMUTEX_T'
+
+---------------------------------------------------------------------------------
+ROOT CAUSE
+---------------------------------------------------------------------------------
+CPython's threading/GIL layer works through pycore_condvar.h, which checks
+for _POSIX_THREADS to decide whether to use pthread_cond_t/pthread_mutex_t
+as PyCOND_T/PyMUTEX_T. If _POSIX_THREADS is not defined, Py_HAVE_CONDVAR
+is never defined, and pycore_gil.h errors out.
+
+The detection chain:
+  pycore_pythread.h checks:
+    1. unistd.h for _POSIX_THREADS
+    2. pthread.h for _POSIX_THREADS
+    3. __hpux/_SC_THREADS fallback
+  If none define it, _USE_PTHREADS is not set, Py_HAVE_CONDVAR is not set.
+
+TaterTOS HAS a native pthread implementation (src/user/libc/pthread.c with
+pthread_create, pthread_mutex_lock/unlock, pthread_cond_wait/signal), but
+neither unistd.h nor pthread.h defines _POSIX_THREADS. This is a header
+omission — the implementation exists, the feature flag was just never set.
+
+---------------------------------------------------------------------------------
+FIX
+---------------------------------------------------------------------------------
+Added to pyconfig.h (pyconfig_tater.h):
+
+  #define _POSIX_THREADS 1
+  #define _POSIX_SEMAPHORES 1
+
+WHY: pyconfig.h is the standard place for platform feature detection in
+CPython. Autoconf normally detects this by probing unistd.h. Since TaterTOS
+headers don't declare it but the implementation exists, we declare it here.
+This is the correct fix — the alternative would be adding it to unistd.h,
+but pyconfig.h is more appropriate for a cross-compile configuration.
+
+Copied updated pyconfig_tater.h to pyconfig.h.
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+Re-ran pylifecycle.c compile. The Py_HAVE_CONDVAR / PyCOND_T / PyMUTEX_T
+errors are gone. New errors appeared (stack_t unknown — see hermes005).
+The fix resolved the threading detection issue.
+
+---------------------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------------------
+Fix stack_t not visible in pycore_faulthandler.h. stack_t is defined in
+bits/types/stack_t.h but signal.h doesn't include it.

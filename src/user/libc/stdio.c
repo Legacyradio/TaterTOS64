@@ -632,6 +632,11 @@ int putc(int c, FILE *stream) { return fputc(c, stream); }
 int getc_unlocked(FILE *stream) { return fgetc(stream); }
 int putc_unlocked(int c, FILE *stream) { return fputc(c, stream); }
 
+/* POSIX stdio locking — no-ops (TaterTOS FILE* ops are already thread-safe) */
+void flockfile(FILE *stream) { (void)stream; }
+void funlockfile(FILE *stream) { (void)stream; }
+int  ftrylockfile(FILE *stream) { (void)stream; return 0; }
+
 /* vfscanf/vsscanf stubs */
 int vfscanf(FILE *stream, const char *fmt, va_list ap) {
     (void)stream; (void)fmt; (void)ap; errno = ENOSYS; return EOF;

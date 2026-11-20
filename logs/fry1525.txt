@@ -1,0 +1,71 @@
+fry1525 - C1 VT/ANSI parser + winsize: built & verified; revealed output-routing blocker
+Date: 2026-06-15 14:23:27 CDT  (logged late - see note at end)
+
+Type: CODE CHANGE + HEADED GUI VERIFICATION.
+Follows fry1524 (fd0 blocking read fix - Claude stays alive, no EOF-129).
+Goal (user's step C): give the GUI Shell a real terminal so Claude's TUI renders.
+
+Why (Rule 6):
+  The Shell terminal (src/user/shell/shell.c) wrote child output byte-for-byte into
+  a char grid with NO escape handling: ESC/CSI bytes landed as literal characters
+  (garble) and absolute cursor positioning was ignored, so a full-screen TUI
+  cleared/blanked the window. Also TIOCGWINSZ reported 48x120 while the grid is
+  78x22, so Claude laid out off the visible area.
+
+Changes:
+  src/user/shell/shell.c
+    - Added a VT/ANSI parser term_feed(): CSI cursor moves (CUU/CUD/CUF/CUB, CUP,
+      CHA, VPA, save/restore), erase (ED/EL), ECH/ICH/DCH, alternate screen buffer
+      (?1049/?47), cursor show/hide (?25), DEC private-mode + OSC swallow, and a
+      DSR [6n cursor-position reply injected to the child via fry_proc_input.
+    - pump_child_io() now feeds child output through term_feed(); resets terminal
+      state (leaves alt screen, cursor visible) when the child exits.
+  src/kernel/proc/syscall.c
+    - TIOCGWINSZ (0x5413) now reports 22 rows x 78 cols (matching the grid) instead
+      of 48x120.
+
+Build (Rule 12, clean): make clean + build_iso.sh (STAGE_CLAUDE=1). BUILD_EXIT=0,
+  no errors. SHELL.TOT 145816 -> 150448 (parser). RCLAUDE.LXE 250480336 staged.
+  Log: /tmp/fry1525_build.log.
+
+Headed GUI run (protected INIT.FRY -> GUI.FRY path):
+  /tmp/fry1525_serial.log; screenshots fry1525_boot.png (fresh desktop, icons),
+  fry1525_shellopen.png, fry1525_prompt.png, fry1525_prompt2.png.
+  - Desktop booted to icons; the Shell was NOT auto-opened this run. Drove it via
+    xdotool, but QEMU uses a RELATIVE PS/2 mouse so absolute cursor moves do not map
+    into the guest (guest cursor stayed centered). User opened the Shell and typed
+    "claude" manually (as in prior runs).
+  - Synchronous 250MB eager-load took ~10 minutes (the known slow path).
+  - node ran as pid=16 (parent=13, the Shell); TBEXIT group count = 0 (fd0 fix from
+    fry1524 still holds - Claude did NOT exit). fd0 reads returned 1 and 11 bytes,
+    no EOF; the small reads were the parser's DSR replies being injected (parser
+    works). Claude wrote its UI: pid=16 nr=1 write rc=3a7 (935 bytes) + mode escapes
+    (?1004h, ?2031h).
+  - BUT the Shell window stayed on "claude: loading..." - the prompt never rendered.
+
+Root cause found (the real blocker for C):
+  src/kernel/proc/syscall.c lx_write_fd, fd 1/2 branch (~line 4845): a Linux child's
+  stdout/stderr WITHOUT a redirect override is sent to kprint_write() - the kernel
+  FRAMEBUFFER CONSOLE - NOT to the process outbuf that the Shell pump
+  (SYS_PROC_OUTPUT) drains. So Claude's 935-byte UI went to the fb console; the
+  Shell drained an EMPTY outbuf and the C1 parser had no bytes to render. The garble
+  seen in earlier runs (fry1520c) was the raw fb console, a layer SEPARATE from the
+  Shell window - not the Shell terminal at all.
+
+Correction to an earlier assumption:
+  fry1523/1524 noted "the master pump already exists." Half-right: the INPUT side
+  (keyboard -> inbuf -> child, completed by the fd0 fix) existed, but the OUTPUT side
+  was never connected - the child writes to the fb console, not the outbuf the pump
+  reads. Wiring child fd1/2 -> outbuf is the user's E "master pump" output half and
+  the genuine prerequisite for C, exactly as the user originally sequenced.
+
+State after this step: C1 parser is built and deployed but unverifiable until the
+  output is routed to the Shell. Fix scoped for fry1526 (output routing fd1/2 ->
+  outbuf for GUI children + pump full-drain) plus the load-time fix.
+
+No commit. No hashes (Rule 16).
+
+NOTE (process): this fry was written late. The C1 build+verify completed earlier in
+  the session but was not logged before proceeding to the fry1526 work, violating
+  Rule 5 (one fry per completed step, written when it completes). Acknowledged;
+  correcting going forward - fry1526 will be logged the moment its build+verify lands.

@@ -1,0 +1,49 @@
+# fry1560 - VERIFY: BREAKTHROUGH — typing now ECHOES in the Claude TUI. Claude reads stdin (6+2 byte reads of "hello"), epoll on epfd=5 sees fd0 ready, user confirmed "it actually showed".
+Date: 2026-06-16 00:55 CDT
+Type: verify (headed run, user typed "hello") — first run where input is consumed + visible
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+---------------------------------------------------------------------------------
+RESULT: INPUT WORKS (this run). User: "i typed hello ... and it actually showed holy shit".
+---------------------------------------------------------------------------------
+Serial evidence (/tmp/serial.log):
+- Claude read(fd=0) count = 4 (was stuck at 1 in every prior run). Crucially the reads returned MULTIPLE bytes:
+    TBREAD read fd=0 len=262144 -> 6   (consumed ~"hello\r")
+    TBREAD read fd=0 len=262144 -> 2
+  => Claude is actually CONSUMING stdin now, not just being handed it.
+- "hello" delivered + read: TBPROCIN b0=68 65 6c 6c 6f 0d 0d  (h e l l o Enter Enter).
+- TBFD0: chk=11,12 show inbuf=1 rawrev=1 -> epoll on epfd=5 saw fd0 READY with the keystroke buffered.
+- TBEPW: pid=14 epfd=5 polled 13x (the STDIN set IS being polled by the main thread) ; pid=22 epfd=14 75x (network thread).
+- VM ALIVE (panic fix holding).
+
+---------------------------------------------------------------------------------
+WHAT IS DIFFERENT vs the failing fry1556 run (IMPORTANT — must resolve)
+---------------------------------------------------------------------------------
+fry1556 (FAILED): same image EXCEPT this build (fry1559) ADDED the TBEPW beacon (fry1558) on top of TBFD0.
+Both TBFD0 and TBEPW are kprint_serial_only() calls that run on EVERY lx_epoll_wait_fd entry/iteration. Serial
+writes are slow; firing them on pid=22's 75 epfd=14 polls + every epoll pass adds latency that CHANGES SCHEDULING
+timing. Strong possibility this is a HEISENBUG: the diagnostic serial I/O slowed the busy network/worker threads
+enough that the main thread (pid=14) now gets CPU to poll epfd=5 while a keystroke is buffered -> reads it.
+
+=> Two possibilities, must distinguish before claiming a real fix:
+   (1) It genuinely works now (cumulative: panic fix + /proc/self/stat + the loop just needed the timing) and earlier
+       failures were the user typing outside the brief epfd=5 poll window; or
+   (2) HEISENBUG: the debug beacons' serial latency is what makes it work, and removing them brings the bug back.
+If (2), the real fix is to deliberately yield/slow the right thread or fix the scheduling so the main thread reliably
+reaches epfd=5 — i.e. a real scheduler/event-loop-fairness fix, NOT relying on debug spew. The recurring signal all
+along (main thread starved out of epfd=5 by busy network/worker threads) points at THREAD FAIRNESS / starvation.
+
+---------------------------------------------------------------------------------
+NEXT (own fry log each)
+---------------------------------------------------------------------------------
+1) Confirm END-TO-END now: user types a real prompt + Enter -> does it submit and Claude respond? (in progress)
+2) Confirm STABILITY: is typing reliably responsive, or intermittent?
+3) Resolve heisenbug question: rebuild with the beacons REMOVED; if input still works -> real fix; if it breaks ->
+   the timing/starvation is the root cause -> implement a proper scheduler fairness / yield fix so the main thread
+   reliably polls epfd=5 under network load (with Claude fully online).
+4) Then re-verify with MCP ON (drop CLAUDE_NO_MCP) for the shipping config.
+
+STATUS: panic FIXED+verified; /proc/self/stat added; INPUT NOW ECHOES (this build). Open: is it the beacons' timing
+(heisenbug) or a real fix — that is the immediate next thing to nail. TBFD0 + TBEPW beacons still in.
+
+All per planv3 Rules 1/5/6/12. Written immediately on this milestone, before extending the test.

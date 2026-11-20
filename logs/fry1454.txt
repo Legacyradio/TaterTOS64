@@ -1,0 +1,100 @@
+fry1454 - Selftest VM-region constant fixed; long q35 -smp 4 boot on FS22
+vars proves vfork remains the subprocess blocker.
+Date: 2026-06-13. Author: Codex.
+========================================================================
+
+SUMMARY
+========================================================================
+Corrected a stale selftest expectation and reran the Claude Code boot using
+the user's FS22 flash-drive OVMF vars file, q35 machine profile, -smp 4,
+and a long timeout.
+
+The boot reached Claude Code again. Networking and NVMe were good. The
+process exited with the known auth 401 state, and the subprocess frontier
+is now confirmed: posix_spawn still fails at unimplemented vfork(58).
+
+
+WHAT CHANGED
+========================================================================
+File changed:
+
+  src/kernel/selftest.c
+
+Fix:
+
+  - Updated the FRY_VMREG_MAX selftest expectation from 256 to 2048.
+
+Why:
+
+  src/include/fry_limits.h already documents FRY_VMREG_MAX = 2048 from the
+  earlier fry1390 VM-region expansion. The selftest still expected the old
+  256 value and panicked before Claude could boot:
+
+    SELFTEST FAIL: FRY_VMREG_MAX got=0x800 want=0x100
+
+
+QEMU COMMAND CORRECTION
+========================================================================
+The first retry used the user's FS22 vars file but missed the known-good
+q35 machine profile. That boot saw zero PCI devices, no e1000, no NVMe, and
+then hit the stale selftest panic.
+
+Corrected command:
+
+  timeout 1200s qemu-system-x86_64 \
+    -m 4G -machine q35,accel=kvm -cpu host -smp 4 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=/mnt/usb115/TaterTOS_claude_milestone_2026-06-12/OVMF_VARS_copy.fd \
+    -cdrom out/tatertos64v3.iso \
+    -drive file=out/tater_nvme.img,if=none,id=nvme0,format=raw \
+    -device nvme,drive=nvme0,serial=tatertos-nvme \
+    -netdev user,id=n0 -device e1000,netdev=n0 \
+    -display none \
+    -serial file:/mnt/usb115/TaterTOS_claude_milestone_2026-06-12/s_fry1453_q35.log
+
+
+VERIFICATION RESULT
+========================================================================
+Serial log:
+
+  /mnt/usb115/TaterTOS_claude_milestone_2026-06-12/s_fry1453_q35.log
+
+Observed:
+
+  - q35 exposed PCI correctly;
+  - e1000 initialized;
+  - DHCP succeeded;
+  - /nvme/RCLAUDE.LXE was present;
+  - real Claude Code launched;
+  - stream-json result was emitted;
+  - Claude exited with code 1 because auth still failed with 401.
+
+Expected known auth state also recurred:
+
+  - OAuth refresh lock compromised;
+  - OAuth refresh failed with status code 400;
+  - final result: Failed to authenticate. API Error: 401 Invalid
+    authentication credentials.
+
+Subprocess/tool frontier:
+
+  - vfork(58) is still unimplemented and still blocks posix_spawn;
+  - MCP agent-bus connection failed through ENOSYS/posix_spawn;
+  - rg file counting failed through ENOSYS/posix_spawn;
+  - execve/execveat did not fire in this run because vfork failed first.
+
+Remaining unimplemented syscalls observed in this boot:
+
+  - statx(332)
+  - copy_file_range(326)
+  - sendfile(40)
+  - vfork(58)
+  - inotify_init1(294)
+
+
+NEXT
+========================================================================
+The next kernel parity target is vfork/fork child creation sufficient for
+posix_spawn to reach execve. Auth refresh semantics remain a separate
+filesystem timestamp/rename/lock issue; keep using staged JSON auth for now
+while working kernel parity unless auth blocks every test.

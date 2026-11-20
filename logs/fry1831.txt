@@ -1,0 +1,136 @@
+fry1831 — HANDOFF: session close. Eight defects fixed and built, ZERO verified
+          on a boot. Read this first. — written 2026-09-28 (work done 2026-09-26)
+==========================================================================
+STATE: everything below is IN SOURCE AND IN THE ARTIFACTS. Nothing has been
+verified running. Zack closed the session before testing: "i didnt tets or
+anything further save what yoou got".
+
+=== READ THESE, IN THIS ORDER ===
+  fry1812  how the in-guest hermes logs were recovered off the disk image
+  fry1813  clock audit — the RTC is FINE; three defects found instead
+  fry1814-1818  the five libc fixes, one per file
+  fry1819  the libc build (EXIT=0, symbols verified relocated)
+  fry1820  retroactive log of two unlogged verification steps
+  fry1821  boot 1 — clean; clock theory confirmed on a 2nd data point
+  fry1822-1828  making `hermes` an ordinary file instead of a shell builtin
+  fry1827  ⚠ a CORRECTION — fry1825's "compiles clean" was false
+  fry1829-1830  two boots; mouse injection proven impossible on this setup
+
+=== WHAT IS DONE (source + artifacts, UNVERIFIED AT RUNTIME) ===
+FIVE libc defects, every one a stub that REPORTED SUCCESS while doing nothing,
+and every one with a real implementation already present in the kernel:
+  1. getentropy()   returned ZEROS + success. CPython's only entropy source
+                    (pyconfig.h:493 HAVE_GETENTROPY, :592 no HAVE_GETRANDOM).
+                    -> SYS_GETRANDOM 85.  🔴 SECURITY: every key/token/uuid ever
+                    generated in TaterTOS should be regenerated.
+  2. pread/pwrite/preadv/pwritev  DISCARDED the offset. SQLite reads its pages
+                    through these. -> seek/transfer/restore in posix.c.
+  3. nanosleep()    always ENOSYS while SYS_NANOSLEEP 87 + fry_nanosleep() sat
+                    unused. clock_nanosleep now honours TIMER_ABSTIME too.
+  4. ftruncate()/truncate()  did nothing, returned 0. Whole path already existed
+                    (SYS_FTRUNCATE 89 -> vfs_truncate -> totfs_truncate_vfs).
+  5. wcsftime()     wrote an empty string; CPython routes time.strftime()
+                    through it. The correct narrow strftime was in the same
+                    libc, never called.
+THREE changes making `hermes` an ordinary file:
+  6. kernel "#!" support — shebang_parse() + argv rewrite in
+     process_launch_args (process.c). One level, Linux semantics. Emits
+     "PROC: shebang <script> -> <interp>" on serial.
+  7. shell: resolve_program() PATH search + fry_spawn_args with real argv and
+     shell_env, replacing a fry_spawn() fallback that could pass NEITHER
+     arguments NOR environment. Plus the fry_limits.h include (fry1827).
+  8. packaging: hermes launcher shebang rewritten at staging time to
+     #!/nvme/apps/python3.fry (stage_hermes.sh). Verified present ON THE IMAGE.
+
+=== BUILD STATE — GOOD ===
+  MAKE_EXIT=0, PY_EXIT=0, ISO_EXIT=0, zero undefined references.
+  kernel.elf / shell.tot / gui.fry   2026-09-26 22:41
+  python3.fry  16,036,800            2026-09-26 21:12
+  out/tatertos64v3.iso, tater_nvme.img  2026-09-26 22:43   (newest — no stale boot)
+  Read back off the image: SHELL.TOT 170,128 == local; python3.fry byte-exact;
+  /opt/hermes-agent/hermes first line == "#!/nvme/apps/python3.fry".
+  Boots clean three times: DHCP:OK, selftest 106 passed / 0 failed, desktop up.
+
+=== 🔴 NOTHING IS VERIFIED — THE EXACT TESTS TO RUN ===
+Criteria were fixed IN ADVANCE (fry1819, fry1828) so results cannot be read
+generously afterwards. Shell tokenizer splits on SPACES ONLY, so these are
+deliberately space-free:
+  A. PATH + argv (no builtin exists for uptime, so it proves the new path):
+       uptime
+  B. clean failure:
+       notacommand        -> "shell: notacommand: command not found"
+  C. SHEBANG — the actual target. Use the FULL PATH: the `hermes` builtin still
+     shadows PATH, so typing plain `hermes` proves nothing:
+       /nvme/opt/hermes-agent/hermes -z hello
+     PASS = serial shows "PROC: shebang /nvme/opt/hermes-agent/hermes ->
+     /nvme/apps/python3.fry". Absent = the chain did not run, whatever the
+     screen shows.
+  D. entropy — run TWICE, must differ and be non-zero (was 32 zeros):
+       python3 -c import os;print(os.urandom(16).hex())
+  E. timestamps (was an empty line):
+       python3 -c import time;print(time.strftime("%Y-%m-%dT%H:%M:%S"))
+  F. sleep (~2.0):
+       python3 -c import time;t=time.time();time.sleep(2);print(round(time.time()-t,2))
+  G. ftruncate + positional I/O — non-zero, normally 8192:
+       python3 -c import sqlite3,os;c=sqlite3.connect("/nvme/t.db");c.execute("create+table+t(x)".replace("+",chr(32)));c.commit();print(os.path.getsize("/nvme/t.db"))
+  H. after any hermes run, re-read its own logs off the image — that is how
+     fry1812 found everything:
+       ./tools/totcopy out/tater_nvme.img 1048576 --get /.hermes/logs/agent.log <tmp>
+     PASS for E = those lines now start with a real date instead of ",248".
+     Also check /.hermes/state.db is no longer 0 bytes.
+
+=== ⚠ HOW TO RUN THEM — READ BEFORE AUTOMATING ===
+MOUSE INJECTION INTO THE GUEST IS IMPOSSIBLE on this setup (fry1830, proven by
+elimination). TaterTOS has PS/2 drivers and no USB HID driver; -device usb-tablet
+is ignored, and QEMU's relative mode takes motion from a real device, which a
+pointer warp is not. The guest cursor never left its initial (640,406).
+  - KEYBOARD injection WORKS: xdotool key/type via XTEST after
+    `xdotool windowactivate --sync $W` (no --window).
+  - A HUMAN must click the Shell dock icon once. Then everything else automates.
+  - fry1811's "I can launch the Shell AND type into it unattended" is WRONG for
+    the mouse half. Do not rely on it.
+  - If you attempt mouse injection anyway: it GRABS the host pointer. Verify with
+    xdotool getmouselocation and release with ctrl+alt+g. Zack works on this
+    machine and remotes into it; a stray grab hijacks his mouse.
+LAUNCH USED (launch_debug.sh has neither -smp nor a serial file):
+  DISPLAY=:0 qemu-system-x86_64 -m 4G -smp 4 -machine q35,accel=kvm:tcg -cpu host \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+    -drive file=./out/tater_nvme.img,if=none,id=nvm -device nvme,drive=nvm,serial=deadbeef \
+    -cdrom ./out/tatertos64v3.iso -netdev user,id=n0 -device e1000,netdev=n0 \
+    -serial file:/tmp/fryNNNN_qemu_serial.log -vga std -display gtk
+
+=== THE ORIGINAL QUESTION IS STILL OPEN ===
+The hermes runtime hang is NOT fixed and none of the eight is claimed to fix it.
+What fry1812 established and nobody knew before: the agent completes PLUGIN
+DISCOVERY — "37 found, 27 enabled" — so it is far past imports. Its own logs are
+on the disk image and are the best evidence source. Also still open from that
+step: `hashlib.scrypt` missing and `socket.NI_NUMERICHOST` missing, which
+silently disable 4 plugins.
+
+=== OWED, SCOPED, NOT FORGOTTEN ===
+  - POSIX file locking: kernel SYS_FCNTL handles only F_GETFL/F_SETFL/F_GETFD/
+    F_SETFD; F_SETLK/F_SETLKW/F_GETLK hit `default: return -EINVAL` while the
+    constants exist in fcntl.h. Its own phase.
+  - pread/pwrite are seek+transfer+seek = NOT atomic across threads. Real
+    atomicity needs SYS_PREAD/SYS_PWRITE in the ABI. Its own phase.
+  - Shell tokenizer has no quote handling (shell.c:548-565).
+  - /usr/bin/env as a real binary on the ISO ramdisk root, for generic
+    "#!/usr/bin/env foo" scripts.
+  - REMOVE the python3/hermes/claude builtins once the PATH path is proven.
+    Deliberately left in so a failure can be told apart from the new route.
+  - rust_compat.c:60 still answers Linux SYS_getrandom from a fixed-seed LCG.
+    Believed dead (linker GC), NOT proven.
+  - totcopy usage text omits --get and --mkdir.
+  - 🔴 603+ files uncommitted, last commit 733c2f1a 2026-06-08. Tonight added
+    ~8 more changed files and 20 log files on top of that.
+
+=== PROCESS NOTES FROM THIS SESSION (worth more than the code) ===
+  - Zack: "because a note says something doesnt make it true... ive had alot of
+    agents fuck this up." Correct. fry1812/1813 exist because I stopped
+    inheriting claims and read the image and the source directly.
+  - Two of my own claims were WRONG and are corrected in place, not quietly
+    fixed: fry1825 ("compiles clean" from a make target that did not exist) and
+    fry1829's usb-tablet diagnosis. Check the ARTIFACT MTIME, not the exit code.
+  - A grep for "error" over build_iso.sh output matches dozens of site-packages
+    directories literally named "errors". Not failures.

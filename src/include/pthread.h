@@ -30,6 +30,7 @@ typedef unsigned long pthread_t;
 typedef struct {
     size_t _stacksize;
     void  *_stackaddr;
+    size_t _guardsize;
     int    _detachstate;
     int    _inheritsched;
     int    _schedpolicy;
@@ -104,6 +105,7 @@ typedef volatile int pthread_spinlock_t;
 
 int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start_routine)(void *), void *arg);
 int pthread_join(pthread_t thread, void **retval);
+int pthread_kill(pthread_t thread, int sig);
 int pthread_detach(pthread_t thread);
 pthread_t pthread_self(void);
 int pthread_equal(pthread_t t1, pthread_t t2);
@@ -128,6 +130,9 @@ int pthread_cond_broadcast(pthread_cond_t *cond);
 
 int pthread_condattr_init(pthread_condattr_t *attr);
 int pthread_condattr_destroy(pthread_condattr_t *attr);
+int pthread_condattr_setclock(pthread_condattr_t *attr, clockid_t clock_id);
+int pthread_condattr_getclock(const pthread_condattr_t *attr, clockid_t *clock_id);
+int pthread_getcpuclockid(pthread_t thread, clockid_t *clock_id);
 
 int pthread_rwlock_init(pthread_rwlock_t *rwlock, const pthread_rwlockattr_t *attr);
 int pthread_rwlock_destroy(pthread_rwlock_t *rwlock);
@@ -149,6 +154,8 @@ int pthread_attr_getstacksize(const pthread_attr_t *attr, size_t *stacksize);
 int pthread_attr_getstack(const pthread_attr_t *attr, void **stackaddr, size_t *stacksize);
 int pthread_attr_setdetachstate(pthread_attr_t *attr, int detachstate);
 int pthread_attr_setscope(pthread_attr_t *attr, int scope);
+int pthread_attr_getguardsize(const pthread_attr_t *attr, size_t *guardsize);
+int pthread_attr_setguardsize(pthread_attr_t *attr, size_t guardsize);
 
 int pthread_setname_np(pthread_t thread, const char *name);
 int pthread_getname_np(pthread_t thread, char *name, size_t len);

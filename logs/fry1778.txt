@@ -1,0 +1,28 @@
+fry1778 — strip the per-mmap "VM COMMIT OK" serial diagnostic — 2026-06-26
+==========================================================================
+WHAT: Removed the per-mmap "VM COMMIT OK" serial print from vm_commit_private_pages
+(syscall.c ~2859). Build is next (fry1779).
+
+WHY (re-framed after Zack: stop chasing KVM/infra; it's the program crawling, and
+it never finishes the full hermes boot):
+  - Measured the fry1777 serial: 338378 bytes total; "VM COMMIT OK" = 2927 lines =
+    291287 bytes = 86% of ALL serial output. It fired on the FIRST page of every
+    mmap commit — i.e. on the program's HOTTEST path.
+  - Under KVM, every byte written to the emulated 16550 UART (port 0x3F8) is a
+    VM-EXIT. So every mmap the program made paid a burst of VM-exits just to emit
+    a debug line. This is OUR instrumentation taxing the program's memory ops —
+    not "another part of the system." A real candidate for the crawl.
+  - It is DIAGNOSTIC only (the comment said "log first page of each mmap commit
+    for debugging"). Removed outright.
+
+SCAN: checked syscall.c + irqdesc.c for other ungated hot-path serial prints. The
+only high-volume one was VM COMMIT OK. Remaining serial (TBCLK 195 / TBMAIN 195 /
+TBPROCIN 170, ~43 KB) is low-volume periodic heartbeat; the !REG dumps are
+fault/panic-only. So this single removal cuts serial volume ~86%.
+
+MEASUREMENT PLAN (honest, host wall-clock — no more impressions): rebuild, boot,
+Zack runs `hermes`. t0 = python pid=10's first serial event; poll screenshots and
+read them; t1 = host time when SUMMARY/"Hermes core [OK]" appears. Report the real
+seconds, and whether it now FINISHES.
+
+NEXT (fry1779): make kernel; verify BUILD_EXIT=0 + fresh mtime.

@@ -1,0 +1,78 @@
+fry1502 — 2026-06-14 12:42 CDT (17:42 UTC). Author: Claude (Opus 4.8).
+STEP TYPE: ROOT-CAUSE CHAIN PINNED (supersedes fry1501's timerfd framing). Pure analysis of
+existing serial fry1499 + source (NO rebuild, NO run, NO edit). Continues fry1500/1501.
+
+=== CORRECTION TO fry1501 ===
+fry1501 fingered pid14's timerfd-spin as the wedge and proposed instrumenting eventfd/HUP. That
+was DOWNSTREAM NOISE. pid14 (DNS worker) merely limps on longest; the e8c8 heartbeat (pid6) is
+also noise (fry1487). The ACTUAL deadlock is on the threadpool + main thread. Do NOT instrument
+the timerfd/eventfd/HUP path.
+
+=== THE REAL DEADLOCK (pinned from fry1499 thread-by-thread) ===
+Freeze order and final state of every claude thread (tgid=5):
+- pid 5  (MAIN): last line L16691 "TBTRACE ret pid=5 nr=62 kill rc=-3 (ESRCH)". Immediately
+  before, its futex wait on 6fbfee01d950 COMPLETED (L16685 wait-return rc=0). After the kill it
+  emits NOTHING — and crucially NO futex wait-begin. => it entered a NON-futex blocking syscall
+  with no entry beacon. The only such blockers are process_wait4 / process_thread_join (both
+  block via sched_block, wake_time=UINT64_MAX, no entry trace; TBWAIT4 prints only on RETURN).
+- pid 12,13,15 (libuv THREADPOOL workers): all stuck on the pool work-queue condvar
+  uaddr=62661cc, wait-begin expected=1 timeout=0 → wait-yield wake_time=18446744073709551615
+  (UINT64_MAX, INFINITE). Never woken again. (L17263 pid12, L17009 pid13, L16958 pid15.)
+- pid 11: last successfully cycled the 62661cc lock at L16617 (rc=1), then quiet.
+- pid 14 (DNS worker): limps to L28339 (timerfd/DNS reads), then quiet.
+- pid 6: benign 100ms e8c8/e880 heartbeat to EOF (23k lines). Proves the scheduler + beacons are
+  ALIVE (not budget-exhausted) — so the other threads are genuinely BLOCKED, not merely silent.
+
+CAUSAL CHAIN: pid5 (main) blocks in a no-timeout wait4/thread_join after kill→ESRCH and never
+returns → it stops posting work to / signalling the libuv threadpool condvar 62661cc → workers
+pid12/13/15 block there FOREVER (no timeout) → whole process frozen except pid6's heartbeat.
+The root is pid5's lost-wakeup block; the workers are a downstream consequence.
+
+=== WHY pid5's BLOCK NEVER WAKES (the bug) ===
+process_wait4 (process.c:1080) and process_thread_join (process.c:1031) both do:
+   scan for target; if ZOMBIE/DEAD -> reap+return; if nohang -> return 0;
+   set cur->wait_pid/wait_tid; cur->wake_time_ms = UINT64_MAX; sched_block(); sched_yield();
+sched_block (sched.c:564) sets state=PROC_WAITING. The waker process_wake_pid_waiters
+(process.c:1151) wakes procs with state==PROC_WAITING && wait_pid==pid. STATE MATCHES, so it is
+NOT a static state-mismatch. It is a MISSED-WAKEUP RACE, fatal because the block has NO TIMEOUT:
+  On -smp 4, between pid5's ZOMBIE/DEAD liveness check and sched_block setting PROC_WAITING, the
+  target child can exit on another core → proc_free→process_wake_pid_waiters runs while pid5 is
+  still PROC_RUNNING (not yet WAITING) → no match → wake lost → pid5 blocks on UINT64_MAX forever.
+  The loop would re-poll on wakeup, but no wakeup ever comes and there is no timeout to retry.
+Corroborating: kill→ESRCH at L16691 (claude signalling an already-gone child) + the ECHILD
+errors (L13819 "Ripgrep first use test threw ... ECHILD") confirm claude is in the child-
+management path here. This run is -smp 4 (race-prone). The fry1462 milestone was a simple sonnet
+round-trip that never exercised the rg/threadpool spawn+reap path at this concurrency.
+
+=== WHY TODAY REGRESSED vs fry1489 (sock=32, reached init, NO NIC) ===
+fry1489 had NO NIC → no network phase → claude never drove the threadpool/child path hard enough
+to hit the race, and reached init via the offline path. Today's runs have a NIC (sock=64, full
+worker set) → claude spawns rg + drives the threadpool concurrently → hits the missed-wakeup race
+on the wait4/join block. Codex's morning process.c/syscall.c edits are in this subsystem and must
+be checked for whether they widened the window, but the failure MODE (no-timeout block + lost
+wake on smp>1) is the structural bug to fix regardless.
+
+=== FIX DIRECTION (to implement next, pending one confirming instrumented run) ===
+PROPER fix (not a band-aid): close the missed-wakeup race in process_wait4 AND process_thread_join.
+Re-check the target's ZOMBIE/DEAD state AFTER transitioning to PROC_WAITING but BEFORE yielding,
+under the scheduler lock (or arm the wait, then recheck the condition, then block) so that an exit
+concurrent with arming cannot be lost. (Mirror the pattern sched_block_futex already uses:
+compare-then-block atomically under g_sched_lock.) A bounded re-poll timeout would also self-heal
+but is a band-aid over the real race — prefer the atomic arm+recheck.
+
+=== NEXT STEP (fry1503) — CONFIRM, then FIX ===
+1. INSTRUMENT (serial-only, claude-tgid-scoped, no behavior change):
+   - wait4: add an ENTRY beacon (currently only the return is logged at syscall.c:7321) so a
+     never-returning wait4 is visible: "TBWAIT4 ENTER pid=%u wpid=%d nohang=%d".
+   - process_thread_join: add an ENTRY beacon "TBTJOIN ENTER pid=%u tid=%u".
+   - log the kill target: at syscall.c LNX_kill, "TBKILL pid=%u target=%d sig=%d rc=%d".
+   These pin EXACTLY which syscall/target pid5 dies in (wait4 vs join, and on what pid).
+2. Clean rebuild (planv3 Rule 12) + KVM run w/ NIC, -smp 4, sock=64; capture serial.
+3. With the syscall+target confirmed, apply the atomic arm+recheck fix to that wait path and
+   re-run to a green "subtype":init/success.
+
+=== STATE / RULES ===
+- No source modified this step. No build. No run. FRY_SOCK_MAX still 64.
+- Codex co-edits syscall.c/process.c — SERIALIZE before the fry1503 edit (both touch these).
+- Makefile has no header-dep tracking: touch all kernel .c after any header edit.
+- Build = clean+verbose (planv3 Rule 12). Run template: HANDOFF_rg_fix_2026-06-13.md.

@@ -1,0 +1,32 @@
+fry1697 — 2026-06-21 (Step 1 of approved roadmap): fix empty os.environ.
+
+WHY: self-test dies on RuntimeError "Could not determine home directory"
+  (pathlib/__init__.py:1249) because os.environ is EMPTY. Confirmed root cause:
+  libc environ[] = {NULL} (gap_stubs.c), never populated (no crt0); CPython
+  convertenviron() (posixmodule.c:1753) builds os.environ from the `environ`
+  global. Kernel stores env (shared->envc/env_offsets/args_buf, process.c:888)
+  but only exposed it by-name (SYS_GETENV 63) — no enumerate-by-index.
+
+CHANGES (mirror the argv path):
+  - src/include/tatertos/syscall.h: SYS_GET_ENVC=146, SYS_GET_ENV=147 (146/147
+    were free; highest prior = 145).
+  - src/kernel/proc/syscall.c: handlers for both (GET_ENVC returns shared->envc;
+    GET_ENV copies env_offsets[idx] string from args_buf — mirror of GET_ARGV).
+  - src/user/libc/libc.c: fry_get_envc() / fry_get_env() wrappers.
+  - src/user/libc/gap_stubs.c: environ changed from fixed `char *environ[]={NULL}`
+    to reassignable `char **environ = fry_env_empty;` so main can fill it.
+  - external/Python-3.14.5/Programs/python.c main(): after the argv rebuild,
+    populate environ[] from fry_get_envc/fry_get_env BEFORE Py_BytesMain
+    (32 entries max, 512 bytes each; inline extern decls like the argv shim).
+  - sysroot/opt/hermes-agent/tatertos_bootstrap.py: fry1690 diag replaced with
+    fry1697 check -> os.write(2) ENV-HOME + ENV-COUNT.
+
+BUILD: kernel+libc changed -> make ; make -f Python3.mk python3 (relink, libc is
+  static in python3.fry) ; build_iso.sh. VERIFY BUILD_EXIT=0 + fresh artifacts +
+  no undefined refs BEFORE launch [[feedback-verify-build-before-launch]].
+
+VERIFY ON SCREEN/SERIAL (don't claim till seen): serial shows
+  ENV-HOME='/nvme', ENV-COUNT>0, and NO "Could not determine home directory".
+  Self-test should get further (FILESYSTEM TEST may then find HOME-based paths).
+CLEANUP still owed (separate step): fry1685 FBT (irqdesc.c), fry1688 marker
+  (python.c), fry1697 diag (bootstrap.py), fake _ssl registration (config.c).

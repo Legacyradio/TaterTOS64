@@ -1,0 +1,64 @@
+# hermes010 — PHASE 2 STEP 9: pthread_condattr_setclock/getclock missing
+Date: 2026-06-17 ~15:04 CDT
+Type: compile fix (Phase 2 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Compile Python/thread.c — CPython's threading abstraction layer. Uses
+pthread_create, pthread_mutex, pthread_cond, and condition variable
+clock attributes for timed waits.
+
+---------------------------------------------------------------------------------
+WHAT HAPPENED
+---------------------------------------------------------------------------------
+ERROR:
+  Python/thread_pthread.h:139:9: error: implicit declaration of function
+  'pthread_condattr_setclock'; did you mean 'pthread_condattr_destroy'?
+
+---------------------------------------------------------------------------------
+ROOT CAUSE
+---------------------------------------------------------------------------------
+CPython's thread_pthread.h uses pthread_condattr_setclock() to configure
+condition variables with CLOCK_MONOTONIC (for reliable timed waits not
+affected by system clock changes). TaterTOS's pthread_condattr_t struct
+already had a _clock field, and cond_init already reads it, but the
+setclock/getclock accessor functions were never implemented.
+
+The pyconfig.h had HAVE_PTHREAD_CONDATTR_SETCLOCK defined from the host
+probe, so CPython expected the function to exist.
+
+---------------------------------------------------------------------------------
+FIX
+---------------------------------------------------------------------------------
+1. src/include/pthread.h:
+   Added declarations:
+     int pthread_condattr_setclock(pthread_condattr_t *attr, clockid_t clock_id);
+     int pthread_condattr_getclock(const pthread_condattr_t *attr, clockid_t *clock_id);
+
+2. src/user/libc/pthread.c:
+   Added implementations:
+     pthread_condattr_setclock: sets attr->_clock = clock_id
+     pthread_condattr_getclock: reads attr->_clock into *clock_id
+
+WHY: The _clock field already existed in the struct and was already used
+by pthread_cond_init. These are just the missing accessor functions.
+The implementation is trivial — set/get the field. This enables CPython
+to use monotonic-clock condition variable waits, which is the correct
+behavior for a timer-based wait that shouldn't be affected by wall clock
+changes.
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+Re-ran thread.c compile:
+  x86_64-elf-gcc ... -DPy_BUILD_CORE -c Python/thread.c
+
+The pthread_condattr_setclock error is gone. New error: pause() not
+declared (see hermes011).
+
+---------------------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------------------
+Fix pause() missing from unistd.h.

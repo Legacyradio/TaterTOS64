@@ -1,0 +1,38 @@
+fry1470 - Diagnostic: dump parent fd table at vfork-copy time. FINDING:
+Bun uses SOCKETPAIRS (FD_SOCKET) for child stdio, and copy_vfork_fd_table
+SKIPS FD_SOCKET -> the child can't dup2 them (EBADF). Root of the residual
+spawn failure for BOTH rg and agent-bus.
+Date: 2026-06-13. Author: Claude (Opus 4.8).
+========================================================================
+
+WHY: fry1469 left dup2(20,1) EBADF (fd 20 absent in child), and the serial
+had NO pipe/pipe2/socketpair trace lines (those nrs aren't in the traced
+set), so the kind of fd 19/20 was unknown.
+
+CHANGE (instrumentation only): src/kernel/proc/process.c copy_vfork_fd_table
+- TBCOPYFD beacon: at copy time, dump every parent (src) fd with
+  fd_kind != FD_NONE (fd + kind). Cap 12 invocations.
+
+FINDING (serial /tmp/s_fry1470.log) — parent fd table at vfork:
+  fd 3,4,10,11 kind=1 FD_FILE
+  fd 12,13     kind=12 FD_STDIO (Bun's stdout/stderr dups)
+  fd 5,14      kind=5 FD_EPOLL
+  fd 6,8,9,15  kind=8 FD_TIMERFD
+  fd 7,16      kind=6 FD_EVENTFD
+  fd 17-24     kind=4 FD_SOCKET   <-- fd 19, fd 20 ARE SOCKETS
+  => Bun creates socketpairs for child stdio (fd 19 = agent-bus stdin,
+     fd 20 = rg stdout). copy_vfork_fd_table's chain copies pipe/stdio/
+     FD_FILE/dir and "else continue" — so FD_SOCKET (and FD_EPOLL/
+     FD_EVENTFD/FD_TIMERFD) are NOT copied to the vfork child. The child's
+     dup2(socket, stdio) then hits oldfd kind=FD_NONE -> EBADF.
+
+NOTE: also exposed an operational bug I hit twice — must KILL the prior
+QEMU before each boot or the new one fails -EBADF on the NVMe write lock.
+
+NEXT (fry1471 FIX): copy FD_SOCKET to the vfork child in
+copy_vfork_fd_table. Sockets carry state (struct fry_socket: tcp/listen
+handles, socketpair peer) and CANNOT be re-opened by path like FD_FILE,
+so this needs socket lifetime handling (shared ref or peer-aware dup)
+so closing the child's copy on exec/exit does not tear down the parent's
+end. Check fry_socket close/refcount model first; do it right (no
+double-close). This is the last identified blocker to rg running in-OS.

@@ -45,9 +45,11 @@ void ps2_ctrl_init(void) {
     wait_output_full();
     uint8_t cfg = inb(0x60);
 
-    // Enable IRQ1 and enable set-1 translation for keyboard scancodes.
+    // Enable IRQ1, keep the keyboard port clock enabled, and enable set-1
+    // translation for keyboard scancodes.
     cfg |= 0x01;
-    cfg |= (1 << 4);
+    cfg &= (uint8_t)~(1 << 4);
+    cfg |= (1 << 6);
 
     // Write config
     wait_input_clear();

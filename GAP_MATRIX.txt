@@ -1,0 +1,186 @@
+================================================================================
+  GAP MATRIX: CPython 3.14.5 vs TaterTOS64v3 Native ABI
+  Generated: 2026-06-17
+  Source: Python-3.14.5/Modules/posixmodule.c, socketmodule.c, _ssl.c
+          vs src/user/libc/ + src/include/
+================================================================================
+
+SUMMARY
+-------
+posixmodule.c:  143 POSIX functions used
+                100 found in TaterTOS native libc (70%)
+                 43 missing (30%)
+                  35 can be stubbed (return 0 or -ENOSYS)
+                   1 to disable in pyconfig.h (fork)
+                   7 need simple implementation (wrap existing syscalls)
+
+socketmodule.c:  41 functions used
+                 34 found in TaterTOS native libc (83%)
+                  7 missing (all stubs or trivial)
+
+_ssl.c:          27 OpenSSL API functions used
+                  ALL must be replaced with BearSSL equivalents
+                  (different API — full module replacement, not stubs)
+
+================================================================================
+POSIXMODULE.C — MISSING FUNCTIONS (43)
+================================================================================
+
+CATEGORY A: STUBS — Return 0 or -ENOSYS (35 functions)
+--------------------------------------------------------------------------------
+Function          Action                          Why
+--------          ------                          ---
+chown             return 0                        Single-user OS
+fchownat          return 0                        Single-user OS
+fchmodat          return 0                        Single-user OS
+chroot            return -ENOSYS                  Not needed for Hermes
+ctermid           return "/dev/tty"               No real terminal device
+getpgid           return getpid()                 Process groups not supported
+getpgrp           return getpid()                 Process groups not supported
+getsid            return getpid()                 Sessions not supported
+setpgid           return 0                        Process groups not supported
+setsid            return 0                        Sessions not supported
+setuid            return 0                        Single-user OS
+setgid            return 0                        Single-user OS
+seteuid           return 0                        Single-user OS
+setegid           return 0                        Single-user OS
+setgroups         return 0                        Single-user OS
+initgroups        return 0                        Single-user OS
+setns             return -ENOSYS                  Namespaces not supported
+unshare           return -ENOSYS                  Namespaces not supported
+getxattr          return -ENOSYS                  xattrs not supported on ToTFS
+setxattr          return -ENOSYS                  xattrs not supported
+listxattr         return -ENOSYS                  xattrs not supported
+removexattr       return -ENOSYS                  xattrs not supported
+fgetxattr         return -ENOSYS                  xattrs not supported
+fsetxattr         return -ENOSYS                  xattrs not supported
+flistxattr        return -ENOSYS                  xattrs not supported
+fremovexattr      return -ENOSYS                  xattrs not supported
+pathconf          return -1                       Path limits not configurable
+fpathconf         return -1                       Path limits not configurable
+posix_fadvise     return 0                        No-op hint, safe to ignore
+sync              return 0                        Or iterate fsync on open fds
+mknodat           return -ENOSYS                  Device nodes not needed
+linkat            return -ENOSYS                  Hard links not on ToTFS
+symlinkat         return -ENOSYS                  Symlinks not on ToTFS
+sched_getparam    return 0, prio=0                Cooperative scheduler
+sched_setscheduler return 0                       Cooperative scheduler
+
+CATEGORY B: DISABLE in pyconfig.h (1 function)
+--------------------------------------------------------------------------------
+fork              #undef HAVE_FORK                TaterTOS uses spawn, not fork.
+                                                  Hermes subprocess can use
+                                                  posix_spawn (already in libc).
+                                                  os.fork() returns OSError.
+
+CATEGORY C: SIMPLE IMPLEMENTATION — Wrap existing syscalls (7 functions)
+--------------------------------------------------------------------------------
+_exit             Implement as noreturn wrapper around SYS_EXIT
+                  (same as exit_compat in libc.c, but _exit semantics)
+fchdir            Need fd-based chdir. Check if SYS_CHDIR accepts fd.
+                  If not, add SYS_FCHDIR (trivial kernel addition) or
+                  resolve fd path then chdir.
+pwrite            Positional write. Options:
+                  (a) Add fry_pwrite using seek+write+restore
+                  (b) Add SYS_PWRITE syscall (trivial)
+scandir           Library function. Build on opendir/readdir.
+                  Pure C in libc, no kernel change.
+futimens          Wrap utimensat(fd, NULL, times, 0).
+                  utimensat already in posix.c.
+futimes           Convert timeval to timespec, call utimensat.
+posix_fallocate   If ftruncate extends the file, wrap ftruncate.
+                  Otherwise, write zeros. ftruncate exists.
+
+================================================================================
+SOCKETMODULE.C — MISSING FUNCTIONS (7)
+================================================================================
+gethostname       Implement using uname().nodename or hardcode "tatertos"
+gethostbyname     Already have in netdb.c? Verify. If not, wrap DNS_RESOLVE.
+gethostbyaddr     Stub: return NULL or reverse DNS (not needed for Hermes)
+inet_aton         Implement: parse dotted-quad string to in_addr_t
+getservbyname     Stub: return NULL. Hermes doesn't use service lookups.
+getservbyport     Stub: return NULL.
+sethostname       Stub: return -EPERM. Read-only hostname.
+
+NOTE: netdb.c exists in TaterTOS libc but content not yet audited.
+getaddrinfo may already be there. The 7 missing functions are likely
+trivial wrappers or stubs. Full audit of netdb.c needed in Phase 1 step 2.
+
+================================================================================
+_SSL.C — FULL MODULE REPLACEMENT (27 OpenSSL functions)
+================================================================================
+CPython's _ssl.c wraps OpenSSL. BearSSL has a completely different API.
+The entire _ssl.c must be replaced with a BearSSL-backed implementation.
+
+OpenSSL functions used by CPython _ssl.c:
+  SSL_CTX_new, SSL_CTX_free, SSL_new, SSL_free
+  SSL_connect, SSL_read, SSL_write, SSL_shutdown
+  SSL_get_error, SSL_set_fd
+  SSL_CTX_use_certificate, SSL_CTX_use_private_key
+  SSL_CTX_load_verify_locations, SSL_CTX_set_verify
+  SSL_CTX_set_default_verify_paths
+  SSL_get_peer_certificate, SSL_get_verify_result
+  SSL_CTX_set_cipher_list, SSL_CTX_set_options
+  TLS_client_method, TLS_server_method
+  X509_new, X509_free, X509_get_subject_name
+  ERR_get_error, ERR_error_string
+  RAND_bytes, RAND_status
+  BIO_new, BIO_free, BIO_read, BIO_write
+
+BearSSL equivalents (mapping):
+  br_ssl_client_context     -> SSL_CTX + SSL combined
+  br_ssl_engine             -> SSL_read/SSL_write layer
+  br_x509_minimal_context   -> certificate verification
+  br_ssl_client_init_*      -> TLS_client_method
+  br_ssl_engine_sendapp_buf -> SSL_write buffer
+  br_ssl_engine_recvapp_buf -> SSL_read buffer
+  br_ssl_engine_flush       -> SSL_write flush
+  br_x509_trust_anchor      -> X509 trust store
+
+This is Phase 3 work (~500-1000 lines of C). Not a stub — real implementation.
+
+================================================================================
+HEADERS NEEDED BY CPYTHON (audit of include tree)
+================================================================================
+ALREADY PRESENT in src/include/:
+  stdio.h, stdlib.h, string.h, unistd.h, fcntl.h, errno.h, math.h
+  time.h, sys/time.h, sys/stat.h, sys/socket.h, sys/mman.h, sys/ioctl.h
+  signal.h, sched.h, poll.h, pthread.h
+  netinet/in.h, netinet/tcp.h, netdb.h
+  wchar.h, locale.h, inttypes.h, malloc.h
+  elf.h, fry_fcntl.h, fry_socket.h, fry_limits.h
+  linux/futex.h, sys/prctl.h
+
+MISSING (need to create):
+  sys/wait.h      — for waitpid/wait4 (WEXITSTATUS etc.)
+  sys/utsname.h   — for uname (SYS_UNAME exists, struct utsname needed)
+  sys/resource.h  — for getrusage (SYS_GETRUSAGE exists, struct rusage needed)
+  sys/uio.h       — for readv/writev (already implemented, just header)
+  sys/statvfs.h   — for statvfs (already implemented, just header)
+  dirent.h        — for opendir/readdir (already implemented, struct dirent)
+  sys/types.h     — typedefs (pid_t, uid_t, gid_t, off_t, etc.)
+  termios.h       — terminal control (can stub)
+  pwd.h           — password database (stub: getpwuid returns root)
+  grp.h           — group database (stub: getgrgid returns root)
+  dlfcn.h         — dlfcn.c exists, verify header
+  utime.h         — for utime() (already in posix.c)
+  semaphore.h     — for sem_* (can stub or implement via futex)
+  sched.h         — exists but may need expansion
+
+================================================================================
+CONCLUSION
+================================================================================
+The gap is manageable:
+- 35 stubs (trivial, no kernel changes, ~2-3 lines each in posix.c)
+- 1 disable (pyconfig.h: #undef HAVE_FORK)
+- 7 simple implementations (wrap existing syscalls, ~10-20 lines each)
+- 7 socket stubs/implementations (trivial)
+- 27 OpenSSL→BearSSL mappings (Phase 3, ~500-1000 lines)
+- ~12 missing headers (struct definitions + typedefs, no kernel changes)
+
+No new kernel syscalls are strictly required. The 145 existing native
+syscalls cover CPython's needs. The work is in the libc/header layer
+and the _ssl.c replacement.
+
+Phase 1 audit is complete. Phase 2 can begin.
+================================================================================

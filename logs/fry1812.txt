@@ -1,0 +1,132 @@
+fry1812 — IN-GUEST HERMES LOGS RECOVERED FROM THE IMAGE; agent reaches plugin
+          discovery complete; state.db is 0 BYTES — 2026-09-26
+==========================================================================
+WHAT: Read-only investigation. No source changed, nothing built, nothing booted.
+Recovered hermes' OWN log files off out/tater_nvme.img — they have been sitting
+there since August and no previous step looked. They move the frontier
+substantially further than fry1808-1811 believed, and they surface three
+concrete OS-level gaps that the agent itself reported.
+
+Prompted by Zack (2026-09-26): "just note that because a note says something
+doesnt make it true to be fair ive had alot of agents fuck this up." Correct.
+Everything below was verified directly against the tree/image this step; where a
+claim is inherited from an earlier log it is labelled as such.
+
+=== METHOD: tools/totcopy ALREADY HAS --get (its usage text does not say so) ===
+  ./tools/totcopy out/tater_nvme.img 1048576 --list /.hermes/logs
+  ./tools/totcopy out/tater_nvme.img 1048576 --get /.hermes/logs/agent.log <host>
+totcopy.c:6 prints only <image> <off> <host_file> <dest> and --list, but main()
+dispatches --list, --get, --mkdir and copy (totcopy.c ~line 613+). --get walks
+the inode extents and writes the file out. A read of the image, no write.
+=> The usage string is wrong/incomplete. Fixing it is an owed one-liner, not
+   done this step (no unapproved edits).
+
+=== FINDING 1 — THE AGENT GETS MUCH FURTHER THAN ANY LOG RECORDS ===
+/.hermes/logs/agent.log (2092 B) ends with:
+    INFO hermes_cli.plugins: Plugin discovery complete: 37 found, 27 enabled
+Preceded by ~20 successful provider registrations (browser-use, browserbase,
+firecrawl, fal, krea, openai, openai-codex, xai, brave-free, ddgs, exa,
+parallel, searxng, tavily...).
+=> hermes is not stuck in imports and not stuck early in startup. It completes
+   PLUGIN DISCOVERY with 27 plugins enabled. fry1808-1811 all described this run
+   as "silent" and inferred nothing about depth, because stdout/stderr are sent
+   to devnull by oneshot (see FINDING 4) while `logging` writes to a FILE and was
+   never read.
+
+=== FINDING 2 — state.db IS 0 BYTES (the sharpest lead) ===
+/.hermes/ listing: state.db  size = 0.
+hermes_state.SessionDB opens SQLite at this path and initialises a schema. A
+0-byte file = the file was created by sqlite3.connect() and the database header
+was NEVER written, across every run since 2026-08-11.
+hermes_state.py:39-56 (verified in the STAGED copy) documents exactly the risk:
+    "SQLite's WAL mode requires shared-memory (mmap) coordination and fcntl
+     locking ... On those filesystems PRAGMA journal_mode=WAL raises
+     OperationalError('locking protocol') ... fall back to journal_mode=DELETE"
+The fallback is triggered by MATCHING EXCEPTION TEXT (_WAL_INCOMPAT_MARKERS).
+HYPOTHESIS, NOT YET TESTED: if TaterTOS's mmap/fcntl BLOCKS rather than raising,
+no marker is ever matched, the fallback never runs, and startup waits forever —
+with state.db left at 0 bytes, which is what the image shows.
+This is consistent with fry1810's untested candidate #1 (a lock), arrived at
+independently from a different artifact.
+
+=== FINDING 3 — THREE REAL OS GAPS, REPORTED BY THE AGENT ITSELF ===
+/.hermes/logs/errors.log (486 B), verbatim:
+  WARNING hermes_cli.plugins: Failed to load plugin 'basic':
+      module 'hashlib' has no attribute 'scrypt'
+  WARNING ... 'discord-platform': module 'socket' has no attribute 'NI_NUMERICHOST'
+  WARNING ... 'homeassistant-platform': module 'socket' has no attribute 'NI_NUMERICHOST'
+  WARNING ... 'teams-platform': module 'socket' has no attribute 'NI_NUMERICHOST'
+These are WARNINGS and are NOT the hang (the run continues past them to "27
+enabled"). They are nonetheless 4 plugins silently unavailable in-OS, and they
+are the first hermes-driven gap list this port has ever produced.
+
+=== FINDING 4 — `hermes -z` SENDS stdout AND stderr TO /dev/null BY DESIGN ===
+hermes_cli/oneshot.py:183 (STAGED copy; byte-identical to the host copy, checked
+with diff -q):
+    with redirect_stdout(devnull), redirect_stderr(devnull):
+        response = _run_agent(...)
+Only the final response is written, at the end, via the saved real_stdout
+(oneshot.py:222). Dispatch confirmed: main.py:12558 defines -z/--oneshot,
+main.py:12777-12783 calls run_oneshot.
+=> "runs silent" was partly BY DESIGN and was misread as a symptom in fry1809,
+   fry1810 and fry1811. It does NOT explain the >10-minute non-return (a
+   completed run would print), but it does invalidate any plan that waits for
+   the agent to print progress.
+=> It also means faulthandler still works through it: faulthandler writes to the
+   raw fd captured at registration, not to sys.stderr.
+
+=== FINDING 5 — TIMESTAMPS ARE MISSING FROM EVERY LOG LINE ===
+Every line in both log files begins with a bare milliseconds field, e.g.
+    ",248 WARNING hermes_cli.plugins: ..."
+logging's default asctime is strftime(datefmt, ...) + ",%03d" % msecs. The
+",%03d" tail is present and correct; the ENTIRE strftime portion is empty.
+=> strftime() (or its localtime input) returns an empty string in this port.
+UNTESTED, and flagged because it is the right SHAPE for a hang: if time
+functions are unreliable, any deadline/backoff/timeout computation built on them
+can wait effectively forever. Do NOT treat this as the cause — it is a lead to
+probe, nothing more.
+
+=== VERIFIED THIS STEP (not inherited) ===
+  - shell.c:811-831 native_python_env: PYTHONFAULTHANDLER=1 is present and is
+    scoped to shell-launched native Python only. HOME=/nvme, PYTHONHOME=
+    /nvme/usr/local, no -S flag. cmd_hermes (shell.c:854) spawns python3.fry
+    with argv /nvme/opt/hermes-agent/hermes. Native path, no Tater Bridge.
+  - Staged sysroot/opt/hermes-agent/hermes_cli/oneshot.py == host copy (diff -q).
+  - site.py IS staged and execsitecustomize() (site.py:650) imports
+    `sitecustomize`, swallowing only ImportError for that exact name. No
+    Py_NoSiteFlag/no_site anywhere in Python3.mk or the libc.
+    => a sitecustomize.py dropped in site-packages WILL be executed at startup.
+  - Image contents match the tree: /apps/python3.fry on the image is 16,036,688
+    bytes, identical to ./python3.fry (2026-08-11 10:18). /.hermes holds
+    auth.json 2295 / config.yaml 432 / .env 18780, as fry1810 claimed.
+  - Artifacts intact after the 5-month gap and the 2026-08-19 boot break:
+    kernel.elf + gui.fry + shell.tot 2026-08-15 15:44, ISO 15:46,
+    tater_nvme.img 22:56.
+
+=== CAVEAT ON ORDERING (stated because it would be easy to over-read) ===
+tater_nvme.img PERSISTS ACROSS BOOTS. /.hermes/logs, state.db and
+.skills_prompt_snapshot.json accumulated over the fry1808-1811 runs, not one
+run. Inode numbers imply creation order (state.db 41025 was created before
+.skills_prompt_snapshot.json 41892) but NOT that both happened in the same run.
+Do not build a single-run narrative out of them.
+
+=== NEXT (fry1813) — PROBE THE PRIMITIVES, NOT THE AGENT ===
+Proposed, NOT approved, no code written yet. Stage one small Python probe at
+/apps/ and run `python3 /apps/osprobe.py` (two tokens — the shell tokenizer
+splits on spaces only, shell.c:553-559, so this avoids the quoting trap that
+corrupted the fry1806 in-OS measurements). It prints a marker to fd 2 BEFORE and
+AFTER each primitive, so wherever it stops, the last marker names the blocker:
+    time.strftime / localtime      (FINDING 5)
+    open + fcntl.flock / F_SETLK   (fry1810 candidate 1, FINDING 2)
+    mmap of a ToTFS file           (WAL prerequisite)
+    sqlite3 connect -> PRAGMA journal_mode -> journal_mode=WAL  (FINDING 2)
+Seconds per run instead of a >10-minute agent run, and it isolates ONE primitive
+at a time instead of asking the whole agent to explain itself.
+Secondary net, same boot: sitecustomize.py armed off PYTHONFAULTHANDLER with
+faulthandler.dump_traceback_later(30, repeat=True) — verified above that it will
+actually be imported.
+
+=== STILL OWED (unchanged) ===
+  - totcopy usage text omits --get and --mkdir.
+  - Makefile/-MMD is done; Python3.mk done (fry1805/1806).
+  - 603 uncommitted files, last commit 733c2f1a 2026-06-08.

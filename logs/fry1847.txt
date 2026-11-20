@@ -1,0 +1,13 @@
+fry1847 - READ-ONLY: where the fry1846 fault is, and how libc errno/TLS is built (2026-11-17 14:37:50 CST)
+WHY: fry1846 NEXT - resolve RIP 0x4EA2F1 / 0x403547. Sur's GO (fry1842). No code changed.
+WHAT / HOW: addr2line + objdump on python3.elf (python3.fry is the frypack of it, same 2026-09-26 22:41 build); read libc.c:395-440,1041, errno.c, process.c fs-base sites.
+WHERE: python3.elf; src/user/libc/{libc.c,errno.c}; src/kernel/proc/{process.c,sched.c,syscall.c}.
+EVIDENCE
+ - RIP 0x4EA2F1 = _PyThreadState_Attach+0x11 = the instruction "mov %fs:0x0,%rax" (reads the TLS self-pointer at %fs:0). Fault CR2=0 => %FS BASE WAS 0 when it ran (pid=13 tid=13, the main thread).
+ - rcx=0x403547 = return address of the last syscall, inside fry_tls_get (libc). So the thread's last act before the fault was a libc TLS-block lookup (fry_tls_get -> fry_tls_block_ensure -> SYS_GET_TLS_BASE; if base==0 it calloc()s a block and SYS_SET_TLS_BASE's it, libc.c:400-414).
+ - libc's errno is NOT a __thread variable: errno.c uses fry_tls_get(key) = a slot inside the libc fry_tls_block that %fs points at. So the FAILURE path of open() (errno set) is exactly what calls fry_tls_get; a successful open does not. This matches: missing-file open crashes, existing-file open works.
+ - HANDOFF_HERMES_TLS.md (design, 2026-06-21): kernel lays out PT_TLS image with %fs at a TCB above it; "No self-ptr at fs:0 ... fs:0 overlaps libc fry_tls_block.slots[0]". But CPython's code reads %fs:0 expecting the thread pointer (variant-II ABI: fs:0 must equal the TCB address). So two designs collide on fs:0: ELF ABI wants a self-pointer, libc uses it as slot[0].
+ - Also: the SYS_SET_TLS_BASE/GET syscalls (syscall.c:8548) write cur->user_fs_base; context switch restores via sched.c:1142.
+ THEORY (not proven): the errno/TLS path reaches libc's SET_TLS_BASE with the wrong value (or the kernel's GET returns 0 for this thread), leaving %fs=0 or pointing at a libc block with no self-pointer, then CPython's first %fs:0 use faults or reads garbage. This also would make "errno 0" in route 1 (errno lives in the same slot area) and the later silent hangs plausible.
+RESULT: fault site identified (TLS %fs:0), and a mechanism consistent with every route-1/route-2 observation. Mechanism UNPROVEN.
+NEXT: fry1848 = re-run the failing-open test alone (clean serial) and read the TLSDBG get/set lines (already compiled in) to see what fs base is before/after the errno path. Then decide fix: give the kernel TLS block a real self-pointer at fs:0 and move libc slot[0] off it (libc/kernel only).

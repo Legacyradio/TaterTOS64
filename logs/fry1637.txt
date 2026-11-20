@@ -1,0 +1,44 @@
+# fry1637 - VERIFY (own eyes, headless QEMU): GUI RESTORED. Boot reaches the TaterTOS desktop, not DeepSeek's bare shell.
+Date: 2026-06-18 ~23:46 CDT
+Type: boot verification (serial + framebuffer screendump)
+Author: planv3 Rules 1/5/6/12 + CLAUDE.md
+
+METHOD (no trusting logs — captured real evidence)
+- Headless boot: qemu q35/kvm, -serial file:/tmp/fry1637_serial.log, -display none -vga std,
+  -monitor unix socket. Booted out/tatertos64v3.iso + out/tater_nvme.img (fresh 23:42, fry1636 build).
+- screendump via monitor at 45s / 75s / 110s -> PPM -> PNG (convert). Did NOT open a GTK window on
+  Zack's AnyDesk desktop (Remote Management discipline).
+
+RESULT = PASS
+- SERIAL (decisive):
+    init: running smoketest...
+    SPAWN_OK path=/apps/SMOKETEST.FRY pid=7 parent=2
+    init: skipping chrome_probe (fry1635: blocks init before GUI)   <- my rebuilt init.fry is running
+    SPAWN_OK path=/system/GUI.FRY pid=8 parent=2                    <- GUI IS LAUNCHED (the fix)
+  Confirms init.fry in the booted image is THIS build (my fry1635 comment string is in the boot log),
+  and the GUI launch path DeepSeek deleted (fry1634) is restored.
+- FRAMEBUFFER (/tmp/fry1637_110.png): full TaterTOS desktop rendered — dark bg, right-side icon column
+  (TaterSurf/Browse, Files, Network, SysInfo, Shell, Media, Processes) with potato icons, live cursor,
+  bottom TATER> taskbar + clock. WHITE text on dark = the fry1583 known-good look, NOT a bare green
+  "old version" console. Screens identical at 45/75/110s = desktop fully up by 45s, stable/idle.
+
+REGRESSION CLOSED
+- DeepSeek fry1634 had hard-disabled the GUI (gui_failures=3) -> bare console (Zack's "green / old version /
+  not working"). fry1635 restored the GUI launch loop verbatim from the fry1583 baseline; fry1636 rebuilt
+  the image (python3/hermes port PRESERVED — staged via stage_hermes.sh, NOT rebuilt); fry1637 verifies the
+  desktop boots. Python/Hermes files are staged in the image (build log: python3.fry -> /apps/python3.fry,
+  stdlib + site-packages + /opt/hermes-agent), and shell.c has python3/hermes commands wired (fry1632/1633).
+
+OBSERVED, SEPARATE (not caused by this change; not blocking)
+- SMOKETEST faulted: "USER FAULT pid=7 vec=14 err=0x14 rip=0x0 cr2=0x0" then init continued past it. This is
+  /apps/SMOKETEST.FRY (a test app), not touched by fry1635 (GUI launch only). init did NOT block on it ->
+  boot proceeded to the GUI. Flag for a later look; unrelated to the GUI regression.
+
+STILL UNVERIFIED (next real task — the "make Hermes/Python actually work" ask)
+- Whether `python3` / `hermes` EXECUTE in-OS (CPython actually running on TaterTOS) is NOT yet confirmed.
+  DeepSeek's fry1606-1634 CLAIM it ("Zero regressions", "verified") but its boot claims were already shown
+  unreliable. Next: from the in-OS Shell, run `python3 -c 'print(1+1)'` then `hermes` (bootstrap) and
+  capture serial/screen. Treat DeepSeek's success claims as unproven until reproduced.
+
+Artifacts: /tmp/fry1637_serial.log, /tmp/fry1637_{045,075,110}.png, /tmp/fry1637_verify.sh
+All per planv3 Rules 1/5/6/12. Written immediately on the verification.

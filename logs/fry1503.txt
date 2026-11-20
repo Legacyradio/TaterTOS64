@@ -1,0 +1,74 @@
+fry1503 — 2026-06-14 12:55 CDT (17:55 UTC). Author: Claude (Opus 4.8).
+STEP TYPE: INSTRUMENT + CLEAN-STAGE BUILD + KVM RUN. Goal: pin pid5's suspected post-kill hang
+(fry1502). RESULT: hypothesis REFUTED, and the run reached FULL GREEN SUCCESS. Continues fry1502.
+
+=== CODE CHANGE (why) ===
+src/kernel/proc/syscall.c ONLY (process.c untouched). Three serial-only, claude-tgid-scoped
+beacons, ZERO behavior change:
+  1. LNX_wait4: "TBWAIT4 ENTER pid wpid nohang" — the existing TBWAIT4 prints only on RETURN, so a
+     never-returning blocking wait4 would be invisible. Added to catch it.
+  2. LNX_kill: "TBKILL pid target sig found rc" — pin the child claude signals (fry1499 L16691 was
+     kill->ESRCH right before pid5 went silent).
+  3. SYS_THREAD_JOIN: "TBTJOIN ENTER" — rule the native join in/out.
+Pre-edit snapshot of both co-owned files saved to /tmp/{syscall,process}.c.pre-fry1503.123132
+(Codex co-owns these; it was idle, files 4h stale; snapshot protects its uncommitted work).
+
+=== BUILD (Rule 12 staging) ===
+Incremental `make` (only syscall.c changed, no header → syscall.o rebuild + relink correct):
+compiled CLEAN (only pre-existing warnings region_ok@5794, slots@3178 — not mine). Then
+STAGE_CLAUDE=1 STAGE_PYTHON=1 CLAUDE_BIN=...2.1.177 build_iso.sh → fresh out/tatertos64v3.iso +
+out/tater_nvme.img @12:34. OAuth was valid (420 min) and restaged live.
+Run: timeout 900s qemu q35/kvm -cpu host -smp 4, e1000 slirp NIC, FRY_SOCK_MAX=64.
+Serial: logs/fry1503_wait4_instr.serial.log (28723 lines).
+
+=== RESULT 1: fry1502's wait4-HANG HYPOTHESIS IS REFUTED ===
+- L15628 TBVFORK parent=5 child=30; L15636 child30 execve /bin/sh; L15642 execve rc=-2 (ENOENT);
+  L15643 TBEXIT group pid=30 code=127 (exec-not-found).
+- L15652 "TBWAIT4 ENTER pid=5 wpid=30 nohang=0" (BLOCKING) → L15653 "TBWAIT4 pid=5 wpid=30
+  nohang=0 rc=30 status=0x7f00" — RETURNED IMMEDIATELY (child already a zombie → reaped clean).
+- pid5 stayed ACTIVE long after: TBKILL pid=5 target=24 sig=15 found=0 rc=-3 (L18978), target=23
+  sig=15 (L19050), target=23 sig=9 (L20235) — claude SIGTERM→SIGKILL-ing already-gone children
+  (ESRCH), all normal cleanup; then more futex work to L28644.
+=> pid5's wait4 does NOT hang. fry1499's "pid5 silent after kill" was BEACON-BUDGET EXHAUSTION,
+   not a hang. Good that we instrumented before patching the wait path — a wait4 "fix" would have
+   been wrong.
+
+=== RESULT 2: FULL GREEN SUCCESS at sock=64 / -smp 4 (the rg-enabled regime) ===
+- L23766 {"type":"system","subtype":"init",... claude_code_version":"2.1.177", model sonnet-4-6,
+  agent-bus MCP status:"pending"}.
+- L28035 assistant: "Hello from TaterTOS — where potatoes power your operating system today!"
+- L28097 {"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed",
+  duration_ms=103419, total_cost_usd=0.04278}.
+- L28645 TBEXIT group pid=5 tgid=5 code=0; sockets/pipes drained to 0/64, 0/128 (clean teardown).
+This is the FIRST full green claude result at FRY_SOCK_MAX=64 (full worker set, rg socket pool).
+Previously believed to ALWAYS deadlock at >16 sockets.
+
+=== RESULT 3: THE DEADLOCK IS A NONDETERMINISTIC RACE (Heisenbug) ===
+The beacons are serial-only (no behavior change); the ONLY difference vs the 9 deadlocked runs
+(fry1491-1499) is TIMING — serial-print latency in the (heavily-hit, claude-scoped) syscall path
+shifts scheduling. 9/9 deadlock without beacons → 1/1 success with beacons is a strong flip,
+indicating a TIGHT missed-wakeup window that the added latency dodges.
+Corroboration this run: the threadpool workers pid12/13/15 DID hit the 62661cc infinite-wait
+(wake_time=UINT64_MAX) early (L16700-17533) yet RECOVERED and the run completed. => parking on
+62661cc with no timeout is NORMAL; the deadlock is a LOST WAKE on that futex, not the wait itself.
+This still aligns with fry1502's structural thesis (missed-wakeup on a no-timeout wait), but the
+locus is the FUTEX path (uaddr=62661cc, the libuv threadpool condvar), NOT wait4.
+
+=== NEXT STEP (fry1504) — find + fix the futex missed-wakeup race ===
+Examine the kernel futex compare-and-block atomicity:
+  - sched_block_futex (sched.c:571) and futex_wake_waiters / SYS_FUTEX_WAKE (syscall.c:8585) and
+    the Linux futex path (LNX_futex). The classic bug: a FUTEX_WAKE that fires AFTER the waiter
+    reads the userspace value but BEFORE it is enqueued as a waiter under the futex lock → wake
+    targets no one → waiter sleeps on UINT64_MAX forever. Verify the value-recheck + enqueue is
+    atomic under the same lock the waker takes, and that a wake arriving during enqueue is not
+    lost. Fix = close that window (enqueue-then-recheck under lock, or seqlock/generation count).
+Then re-run MULTIPLE times (with beacons OFF or rate-limited so timing matches production) to get
+a deterministic pass rate. Need several consecutive green runs to call it fixed — one Heisenbug
+pass is NOT a fix.
+
+=== STATE / RULES ===
+- Source modified: src/kernel/proc/syscall.c (3 serial beacons only). process.c untouched.
+- Pre-edit snapshots: /tmp/{syscall,process}.c.pre-fry1503.123132.
+- FRY_SOCK_MAX=64. Codex co-edits syscall.c/process.c — SERIALIZE before fry1504.
+- Build = incremental make (no header changed) + STAGE build_iso.sh; clean+verbose if a header
+  changes. Run template: HANDOFF_rg_fix_2026-06-13.md. QEMU killed; serial preserved.

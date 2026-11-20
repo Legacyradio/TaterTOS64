@@ -1,0 +1,60 @@
+# fry1632 — HERMES port: shell commands for python3 + hermes
+Date: 2026-06-17 ~17:30 CDT
+Type: shell integration (Phase 5/6 of Hermes port)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Wire python3 + hermes into TaterTOS shell command dispatch so Hermes
+can be launched from the TaterTOS terminal.
+
+---------------------------------------------------------------------------------
+WHAT WAS DONE
+---------------------------------------------------------------------------------
+Modified src/user/shell/shell.c:
+
+1. Forward declaration: static void pump_child_io(uint32_t pid);
+
+2. Dispatch entries (in execute_command):
+   "python3" → cmd_python3(argc, argv)
+   "hermes"  → cmd_hermes(argc, argv)
+
+3. cmd_python3() — spawns /apps/python3.fry with:
+   - PYTHONHOME=/usr
+   - PYTHONPATH=/usr/local/lib/python3.14:.../site-packages
+   - PYTHONUNBUFFERED=1
+   - Passes user args to python3
+   - Uses pump_child_io for interactive terminal I/O
+
+4. cmd_hermes() — spawns python3 with Hermes Agent:
+   - Default: tatertos_bootstrap.py (system validation)
+   - With --agent flag: run_agent.py (full Hermes Agent)
+   - Sets PYTHONPATH to include /opt/hermes-agent
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+Shell compiles clean: make src/user/shell/shell.o — ZERO errors.
+Warnings: unused-function for cmd_python3/cmd_hermes (expected — they're
+dispatch-only functions called from execute_command, not directly referenced).
+
+---------------------------------------------------------------------------------
+TATEROS SHELL USAGE (after deploy)
+---------------------------------------------------------------------------------
+  hermes                  → bootstrap validation (checks Python, SQLite, imports)
+  hermes --agent          → launch full Hermes Agent
+  python3                 → Python 3.14 REPL
+  python3 script.py       → run a script
+  python3 -c "print(1+1)" → one-liner
+
+---------------------------------------------------------------------------------
+DEPLOY CHECKLIST
+---------------------------------------------------------------------------------
+To actually run Hermes on TaterTOS:
+  1. Copy python3.fry to /apps/python3.fry on TaterTOS ToTFS
+  2. Copy sysroot/usr/ → /usr/ (stdlib + site-packages)
+  3. Copy sysroot/opt/hermes-agent/ → /opt/hermes-agent/
+  4. Rebuild shell.fry (make shell) and deploy
+  5. Boot TaterTOS, open shell
+  6. Type: hermes

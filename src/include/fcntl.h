@@ -72,6 +72,18 @@ int openat(int dirfd, const char *path, int flags, ...);
 int creat(const char *path, mode_t mode);
 int fcntl(int fd, int cmd, ...);
 
+/* POSIX advisory file locking (struct flock + lock types) */
+struct flock {
+    short l_type;
+    short l_whence;
+    off_t l_start;
+    off_t l_len;
+    pid_t l_pid;
+};
+#define F_RDLCK 0
+#define F_WRLCK 1
+#define F_UNLCK 2
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

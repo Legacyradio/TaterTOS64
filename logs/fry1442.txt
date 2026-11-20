@@ -1,0 +1,55 @@
+fry1442 — FIX: give claude a writable filesystem. HOME and TMPDIR move
+to /nvme (the secondary ToTFS mount — the only FS in the OS with the
+full writable op set), auth config staged onto the NVMe image, and a
+--mkdir mode added to the totcopy host tool to pre-create /.claude
+inside the image (credentials must be READABLE at startup; runtime
+mkdir can't bootstrap that).
+Date: 2026-06-12 05:05 CDT. Author: Claude (Fable 5).
+========================================================================
+
+CHANGES (rule 6 whys)
+------------------------------------------------------------------------
+1. tools/totcopy.c — new "--mkdir <path>" mode (do_mkdir): allocates a
+   DIR inode + one data block with "." / ".." dirents, mirroring
+   mktotfs's root layout; adds the entry to the parent. WHY: totcopy
+   had no way to create directories, and /nvme/.claude must exist
+   before first boot so .credentials.json is readable for auth.
+   (Compile-verified host-side. Usage text still lists the old modes;
+   --get and --mkdir are both functional via main().)
+2. build_iso.sh STAGE_CLAUDE block — stages
+     /.claude.json            (from out/etc/clauth/dot-claude.json)
+     /.claude/.credentials.json (after --mkdir /.claude)
+   onto the NVMe ToTFS image. Same strip-before-push rule as the ESP
+   copies (fry1409). Warns loudly if clauth files are absent.
+3. src/kernel/main.c bridge env — HOME=/nvme, TMPDIR=/nvme (was
+   HOME=/, TMPDIR=/tmp, both on the RO ramdisk where mkdir = EIO,
+   fry1441). TMPDIR=/nvme rather than /nvme/tmp so claude's own
+   "mkdir $TMPDIR/claude-0" has an existing parent.
+
+EXPECTED EFFECT
+------------------------------------------------------------------------
+claude's CLI bootstrap can create /nvme/.claude/debug, /nvme/claude-0,
+and its transcript dirs. The emitter comes up, and the TBWRDATA beacon
+(fry1440) mirrors the debug-file text to serial while stream-json
+events flow to stdout -> kprint_write -> serial. If output appears:
+DONE — read the result event. If the emitter still fails, the debug
+log text (now writable) names the next blocker from inside claude.
+
+RISKS / NOTES
+------------------------------------------------------------------------
+- The NVMe image is reformatted by mktotfs EVERY build, so staged auth
+  must re-stage each build (it does — same block).
+- In-OS ToTFS write support gets its first real workout (claude will
+  create dirs/files live). totfs_write_vfs/mkdir_vfs bugs would show
+  as TBFAIL/TBWRDATA anomalies — watch for them.
+- /nvme/.claude.json now carries Zack's OAuth on BOTH images (ESP copy
+  remains for compatibility). STRIP BEFORE ANY PUSH (fry1409 rule).
+
+TEST COMMANDS (rule 10): rebuild per rule 12 with STAGE_CLAUDE=1
+CLAUDE_BIN=$HOME/.local/share/claude/versions/2.1.172; boot as fry1432,
+serial to /tmp/s_fry1443.log. Verdict greps:
+  grep -a '"result"\|"type"' /tmp/s_fry1443.log | head -10
+  grep -a "TBWRDATA\|TBFAIL mkdir" /tmp/s_fry1443.log | head -30
+
+STATUS: edits complete; build/boot/verdict is the fry1443 step.
+========================================================================

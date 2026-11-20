@@ -1,0 +1,23 @@
+fry1715 — 2026-06-21 09:32 CDT
+STEP: Fixed the build_iso.sh regression so the real claude binary is staged
+      AUTOMATICALLY on every build (was opt-in since Jun 3 / commit eff81672 —
+      Zack: that gating is a regression; claude-in-OS is a shipped working feature).
+
+CHANGE (build_iso.sh, claude staging block ~l.434):
+  - STAGE_CLAUDE now defaults to 1 (`: "${STAGE_CLAUDE:=1}"`).
+  - CLAUDE_BIN auto-detected from ~/.local/bin/claude via readlink -f when unset
+    (currently -> .local/share/claude/versions/2.1.185, 233584424 B).
+  - Loud WARNING if STAGE_CLAUDE=1 but no binary found (so a future reformat that
+    can't find claude is visible, never silent).
+  - Overrides preserved: STAGE_CLAUDE=0 (lean build), CLAUDE_BIN=<path> (pin).
+  History: git log -S confirmed the gate was opt-in from its introduction (Jun 3);
+  it was never auto. Now it is.
+
+CONTEXT: I had wiped /nvme/RCLAUDE.LXE by running build_iso.sh x2 for hermes without
+  STAGE_CLAUDE=1 (build_iso reformats the nvme every run; fry1714). This fix prevents
+  recurrence.
+
+NEXT: shut the running hermes test VM, rebuild ISO (now auto-stages claude +
+  python3), verify RCLAUDE.LXE staged, reboot -> Zack verifies `claude`. Doing the
+  claude restore FIRST (clean, isolated) BEFORE resuming the hermes PT_TLS linker fix
+  (user_linker.ld is UNCHANGED in this rebuild). -> fry1716.

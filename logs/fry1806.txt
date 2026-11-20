@@ -1,0 +1,104 @@
+fry1806 — _SC_IOV_MAX added; Python3.mk dep tracking PROVEN; latent sqlite prereq bug fixed — 2026-08-10
+==========================================================================
+WHAT: Applied the fry1804 fix (_SC_IOV_MAX), proved the fry1805 dependency
+tracking works by acceptance test, and fixed a SEPARATE latent Python3.mk bug
+that the rebuild exposed. Built clean. NOT YET BOOTED — no success claim.
+
+=== CHANGE 1 — THE ACTUAL FIX (fry1804 root cause) ===
+src/include/unistd.h:  + #define _SC_IOV_MAX 60      (the Linux value)
+src/user/libc/posix.c sysconf():  + if (name == _SC_IOV_MAX) return 1024;
+WHY: asyncio/selector_events.py:33-39 does
+    _HAS_SENDMSG = hasattr(socket.socket, 'sendmsg')
+    if _HAS_SENDMSG:
+        try: SC_IOV_MAX = os.sysconf('SC_IOV_MAX')
+        except OSError: _HAS_SENDMSG = False
+Upstream guards it, but ONLY against OSError. CPython builds os.sysconf_names
+from #ifdef _SC_* guards; with the macro undefined the NAME did not exist and
+os.sysconf() raised ValueError("unrecognized configuration name"), which escaped
+the handler and aborted the asyncio import. That abort was then MASKED on retry
+as the bogus "NameError: name 'base_events' is not defined" (fry1804).
+1024 = Linux IOV_MAX. Returning a real value keeps asyncio's sendmsg batching
+path enabled rather than silently degrading to send().
+REJECTED ALTERNATIVE: patching asyncio/selector_events.py to catch ValueError —
+wrong layer (hides an OS gap in the stdlib) and would need re-applying on every
+Python upgrade.
+
+=== CHANGE 2 — LATENT Python3.mk BUG, FOUND BY THIS REBUILD ===
+SYMPTOM: after wiping objects for the fry1805 rebuild, the link failed:
+  x86_64-elf-ld: cannot find .../build-tatertos/Modules/_sqlite/module.o
+  (and connection/cursor/statement/row/blob/prepare_protocol/util/microprotocols)
+222 of 232 objects built; the 10 _sqlite objects were never compiled.
+ROOT CAUSE: CPYTHON_ALL_OBJS (line ~203) referenced $(CPYTHON_SQLITE_OBJS), but
+that variable was not defined until line ~330 — AFTER the `python3:` rule that
+consumes it. Make expands a rule's PREREQUISITES when the rule is READ, so the
+sqlite objects expanded to EMPTY and were never prerequisites. The RECIPE expands
+at execution time, when the variable IS set, so the link command still listed
+them. Net: make never built them, ld demanded them.
+WHY IT WAS INVISIBLE UNTIL NOW: those .o files survived from an older build, so
+the missing dependency never mattered. Deleting them exposed it. This is a
+dormant landmine for anyone doing a clean build — it would have detonated on the
+first `make clean` regardless of this session.
+FIX: moved CPYTHON_SQLITE_SRCS / CPYTHON_SQLITE_OBJS definitions ABOVE
+CPYTHON_ALL_OBJS, with a comment recording the make semantics so it is not
+"tidied" back later.
+(Verified in isolation first: building one sqlite object by ABSOLUTE path
+succeeded — the pattern rule itself was always fine, only the prerequisite
+expansion was broken. Note the objdir is an absolute path, so a relative target
+gives a misleading "No rule to make target".)
+
+=== ACCEPTANCE TEST — fry1805 DEPENDENCY TRACKING PROVEN ===
+  .d files referencing src/include/unistd.h .......... 218
+  touch src/include/unistd.h; make -n python3
+    objects scheduled to rebuild ..................... 216   (BEFORE fry1805: 0)
+  Is Modules/posixmodule.o among them? .............. YES
+posixmodule.o is EXACTLY the object that builds os.sysconf_names — the one that
+would have silently not rebuilt, leaving _SC_IOV_MAX absent while the source
+plainly contained it, and making a correct fix look broken. This is the fry1793
+failure class caught in the act. Python3.mk was the last makefile in the tree
+without header tracking; it now has it.
+NOTE: the tree was left CONSISTENT afterwards by actually rebuilding those 216
+objects — NOT by touching object mtimes. Faking mtimes is precisely what creates
+fry1793-class mixed-object builds.
+
+=== BUILD — VERIFIED ===
+  Full CPython rebuild from 0 objects:
+    make <libc objects> (MAIN Makefile)   LIBC_EXIT=0
+    make -f Python3.mk python3            PY_EXIT=0, no errors, no undefined refs
+  COVERAGE: 231 objects / 231 .d files — 1:1, no object without dependencies.
+  libc: 13 .d files generated (main Makefile, already had -MMD since fry1796).
+  python3.elf  2026-08-10 23:53:15  15,820,112 bytes (was 15,820,048; +64)
+  python3.fry  2026-08-10 23:53:15  15,820,128 bytes
+  Then rebuilt again after the acceptance-test touch, and ISO restaged.
+
+BUILD-ORDER TRAPS RE-CONFIRMED THIS STEP (fry1801, still true):
+  - `make -f Python3.mk python3` CANNOT build libc objects (no rule -> make's
+    BUILT-IN rule runs without -Isrc/include -> "fatal error: stdint.h").
+    Build libc via the MAIN Makefile first (src/user/%.o: src/user/%.c, UFLAGS,
+    Makefile:303).
+  - The complete libc list Python3.mk links includes gap_stubs.o AND
+    rust_compat.o. rust_compat.o has NO rule in Python3.mk — only the main
+    Makefile's src/user/%.o pattern builds it. Omitting it from the pre-build
+    list reproduces the stdint.h failure. (I hit this; recorded so nobody else
+    loses the cycle.)
+
+=== WHAT IS NOT CLAIMED ===
+Nothing was booted this step. Whether _SC_IOV_MAX actually clears the asyncio
+import is UNVERIFIED until a run shows it. The fry1804 open sub-question also
+remains unmeasured: standalone `import asyncio` succeeded while the
+prompt_toolkit path failed, implying _HAS_SENDMSG differed between the two
+processes; both in-OS attempts to read hasattr(socket.socket,'sendmsg') were
+corrupted by xdotool keystroke duplication. Still not measured.
+
+NEXT (fry1807): kill VM (verify dead), boot the new ISO with -smp 4, then
+  1. python3 -c __import__("prompt_toolkit")   <- the direct test; must no longer
+     raise ValueError at selector_events.py:37
+  2. hermes                                    <- the real target
+Read serial to the END. Expect the NameError to be gone too, since it was only
+the masking artifact of the aborted first import.
+
+=== STILL OWED ===
+  🔴 603 uncommitted files; last commit 733c2f1a 2026-06-08. Two months, at least
+     three agents (me, Codex, DeepSeek per fry1651). The two build bugs found
+     today (fry1793 stale objects, and this sqlite prerequisite bug) are exactly
+     the kind of thing a diffable history would make cheap to audit.
+     `gh auth setup-git` first — stored PATs expired.

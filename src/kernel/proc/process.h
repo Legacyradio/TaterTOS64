@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <fry_limits.h>
+#include "elf.h"   /* fry1790: struct fry_tls_template for per-thread TLS */
 
 enum proc_state {
     PROC_UNUSED = 0,
@@ -17,7 +18,11 @@ enum proc_state {
 #define PROC_INBUF 512    /* per-process stdin ring buffer size */
 #define PROC_VMREG_MAX FRY_VMREG_MAX
 
-#define TB_CLAUDE_WATCH_TGID 3u
+/* fry1391: the Claude tgid is NOT stable across configs (3 on -smp 2 boots,
+ * 2 on -smp 1 — fry1390). Gate on the name-tracked dynamic tgid that
+ * tb_trace_is_claude() maintains, never a hardcoded number. */
+extern uint32_t g_tb_trace_claude_tgid;
+#define TB_CLAUDE_WATCH_TGID g_tb_trace_claude_tgid
 #define TB_JSC_CAGE_SLOT_ARRAY_OFF 0x4480000ULL
 #define TB_JSC_SLOT_WATCH0_OFF (0x3f8ULL * 8ULL)
 #define TB_JSC_SLOT_WATCH1_OFF (0x3f9ULL * 8ULL)
@@ -48,7 +53,8 @@ enum fry_fd_kind {
     FD_SIGNALFD   = 9,    /* signalfd — fd_ptrs[fd] is struct signalfd_cb* */
     FD_INOTIFY    = 10,    /* inotify — fd_ptrs[fd] is struct inotify_cb* */
     FD_MEMFD      = 11,    /* memfd — fd_ptrs[fd] is struct memfd_cb* */
-    FD_STDIO      = 12     /* dup of stdin/stdout/stderr — fd_ptrs[fd] encodes fd+1 */
+    FD_STDIO      = 12,    /* dup of stdin/stdout/stderr — fd_ptrs[fd] encodes fd+1 */
+    FD_NETLINK    = 13     /* AF_NETLINK rtnetlink — fd_ptrs[fd] is struct netlink_cb* */
 };
 
 /*
@@ -128,6 +134,11 @@ struct fry_process_shared {
     char     args_buf[FRY_ARGS_BUFSZ];   /* packed null-terminated strings */
     struct fry_vm_region vm_regions[PROC_VMREG_MAX];
     struct fry_linux_sigaction linux_sigact[64]; /* dispositions shared by tgid */
+    /* fry1790: PT_TLS template + bump allocator for spawned threads' TLS blocks
+     * (the loader only builds the MAIN thread's TLS). tls_thread_next is the next
+     * free VA in the per-thread TLS arena above FRY_TLS_REGION_BASE. */
+    struct fry_tls_template tls_tmpl;
+    uint64_t tls_thread_next;
 };
 
 /*
@@ -167,6 +178,18 @@ struct linux_clone_ctx {
     uint64_t rip, rsp, rflags;
 };
 
+/* File-backed ELF image segment range (fry1397). The Linux madvise path
+ * must NOT zero these pages: on Linux, MADV_DONTNEED over a private
+ * file-backed mapping restores FILE content on the next fault, so for
+ * never-dirtied pages the correct semantics are "keep the clean copy".
+ * Blanket-zeroing them destroyed 136MB of Bun's embedded module graph /
+ * JSC bytecode cache (the numCalleeLocals=0 JIT-prologue crash). */
+#define LX_IMG_SEGS_MAX 16
+struct lx_img_seg {
+    uint64_t lo;   /* page-aligned VA start of file-backed bytes */
+    uint64_t hi;   /* page-aligned VA end (exclusive) */
+};
+
 struct fry_process {
     uint32_t pid;
     uint32_t tgid;
@@ -202,7 +225,14 @@ struct fry_process {
     uint8_t is_linux;      /* 1 = Linux-personality process: syscalls route
                               through linux_syscall_dispatch (Tater Bridge) */
     uint8_t is_clone_child; /* 1 = first run restores full GPRs from clone_ctx */
-    uint8_t _prctl_pad[1];
+    uint8_t linux_vfork_child; /* 1 = shares parent's CR3 until exec/exit */
+    /* fry1423: 1 while a CPU owns this task's kernel stack — set when a CPU
+     * picks the task (under g_sched_lock), cleared inside context_switch
+     * immediately after the outgoing rsp store. No CPU may switch to a task
+     * whose on_cpu is still set: its saved_rsp is stale and its previous CPU
+     * is still executing on that stack (fry1422 SMP freeze). Replaces
+     * _prctl_pad so struct layout is unchanged. */
+    volatile uint8_t on_cpu;
     /* Linux-personality per-thread bookkeeping (set via Linux syscalls). */
     uint64_t linux_clear_child_tid; /* set_tid_address — futex-wake on exit */
     uint64_t linux_robust_list;     /* set_robust_list head */
@@ -216,9 +246,14 @@ struct fry_process {
     uint64_t linux_sigalt_size;     /* per-thread sigaltstack ss_size */
     uint32_t linux_sigalt_flags;    /* per-thread sigaltstack ss_flags */
     uint8_t linux_sigsuspend_active; /* 1 while rt_sigsuspend mask is active */
-    uint8_t _linux_sig_pad[3];
+    uint8_t _linux_sig_pad[2];
     struct linux_clone_ctx clone_ctx; /* full register set for a clone child */
     uint64_t timer_slack_ns;
+    /* File-backed image segments of the loaded ELF (main exe + interp),
+     * recorded at load time; consulted by the madvise path (fry1397). */
+    struct lx_img_seg lx_img_segs[LX_IMG_SEGS_MAX];
+    uint8_t lx_img_nsegs;
+    uint8_t _lx_img_pad[7];
     uint64_t kernel_stack_phys;
     uint32_t kernel_stack_pages;
     void (*kentry)(void *arg);
@@ -247,7 +282,7 @@ extern volatile uint64_t g_tb_jsc_slot_watch[4];
 
 static inline void tb_program_jsc_slot_watchpoints_for(const struct fry_process *p) {
     uint64_t dr7 = 0;
-    if (g_tb_jsc_slot_watch[0] && p && !p->is_kernel &&
+    if ((g_tb_jsc_slot_watch[0] || g_tb_jsc_slot_watch[2]) && p && !p->is_kernel &&
         (p->pid == TB_CLAUDE_WATCH_TGID || p->tgid == TB_CLAUDE_WATCH_TGID)) {
         uint64_t dr0 = g_tb_jsc_slot_watch[0];
         uint64_t dr1 = g_tb_jsc_slot_watch[1];
@@ -261,11 +296,14 @@ static inline void tb_program_jsc_slot_watchpoints_for(const struct fry_process 
             :
             : "r"(dr0), "r"(dr1), "r"(dr2), "r"(dr3)
             : "memory");
-        dr7 = (1ULL << 0) | (1ULL << 2) | (1ULL << 4) | (1ULL << 6) |
-              (1ULL << 16) | (2ULL << 18) |
-              (1ULL << 20) | (2ULL << 22) |
-              (1ULL << 24) | (2ULL << 26) |
-              (1ULL << 28) | (2ULL << 30);
+        /* fry1391: 4-byte WRITE watches (RW=01, LEN=11 -> nibble 0xD). The
+         * watched field (CodeBlock+0x14) is only 4-byte aligned; the previous
+         * LEN=10 (8-byte) encoding requires 8-byte alignment and would be
+         * undefined on it. Enable a slot only when it is armed. */
+        if (dr0) dr7 |= (1ULL << 0) | (0xDULL << 16);
+        if (dr1) dr7 |= (1ULL << 2) | (0xDULL << 20);
+        if (dr2) dr7 |= (1ULL << 4) | (0xDULL << 24);
+        if (dr3) dr7 |= (1ULL << 6) | (0xDULL << 28);
     }
     __asm__ volatile("mov %0, %%dr7" : : "r"(dr7) : "memory");
 }
@@ -279,6 +317,9 @@ struct fry_process *process_clone_linux_thread(struct fry_process *parent,
                                                 uint64_t tls,
                                                 uint64_t child_tid_addr,
                                                 uint64_t parent_tid_addr);
+struct fry_process *process_clone_linux_vfork_child(struct fry_process *parent,
+                                                    uint64_t user_rip,
+                                                    uint64_t user_rsp);
 struct fry_process *process_create_kernel(void (*entry)(void *), void *arg, const char *name);
 struct fry_process *proc_current(void);
 void proc_set_current(struct fry_process *p);
@@ -293,6 +334,9 @@ int process_launch_args(const char *path, const char **argv, uint32_t argc,
 int process_last_launch_error(void);
 int process_wait(uint32_t pid);
 int process_wait_status(uint32_t pid, int *exit_code_out);
+int process_wait4(uint32_t pid, int *status_out, int nohang);
+int process_vfork_child_active(uint32_t pid);
+void process_wake_pid_waiters(uint32_t pid);
 uint32_t process_count(void);
 uint32_t process_group_id(const struct fry_process *p);
 
@@ -334,7 +378,13 @@ struct fry_socket {
     uint32_t so_rcvtimeo;  /* receive timeout in ms (0 = infinite) */
     uint32_t so_sndtimeo;  /* send timeout in ms (0 = infinite) */
     uint8_t  reuseaddr;
-    uint8_t  _pad[3];
+    /* fry1474: per-process dup refcount. # of fd slots in ONE process that
+     * point at this struct (via dup/dup2). Cross-process inheritance gives
+     * the child its OWN struct (copy_vfork_fd_table), so this only counts
+     * dups within a process. The backing pipes are released (and used=0)
+     * only when refs hits 0. 0 = single fd (default). */
+    uint8_t  refs;
+    uint8_t  _pad[2];
     /* UDP receive queue */
     struct fry_udp_pkt udp_rxq[FRY_SOCK_UDP_RXMAX];
     uint8_t  udp_rx_head;

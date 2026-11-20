@@ -1,0 +1,48 @@
+fry1736 — 2026-06-21 20:45 CDT
+STEP 2b (native std phase): COURSE CORRECTION — rip out the linux_like approach. It
+       was WRONG. Ground the native Rust std/libc in TaterTOS's OWN ABI, per planv3
+       and src/include/tatertos/syscall.h.
+
+WHY THE linux_like APPROACH WAS WRONG (Zack caught it; I should have known from planv3):
+  - TaterTOS is a 100% INDEPENDENT x86-64 UEFI-native OS: its own kernel, ABI, FS,
+    scheduler, driver base, native userspace, system identity. It offers POSIX SOURCE
+    compatibility + an OPTIONAL Linux binary personality (the subsystem) — but Linux
+    is NOT the native path. Treating tatertos as "linux_like" / linux-ABI-equal was a
+    category error.
+  - PROOF the ABI is genuinely distinct (src/include/tatertos/syscall.h, single source
+    of truth): SYS_WRITE=0, SYS_READ=1, SYS_EXIT=2, SYS_OPEN=5, SYS_MMAP=52, SYS_GETTID
+    =67, SYS_GETRANDOM=85, SYS_CLOCK_GETTIME=86, SYS_FSTAT=91 ... Linux x86-64 is
+    write=1/read=0/exit=60/open=2/mmap=9/getrandom=318. NONE match. linux_like would
+    have bound Rust std to WRONG syscall numbers -> immediate catastrophic breakage.
+
+REVERTS DONE (linux flavor removed):
+  - rust/forks/libc/src/unix/mod.rs: removed tatertos from the linux_like family list;
+    instead added a FIRST-CLASS branch: `if cfg(target_os="tatertos") { mod tatertos;
+    pub use self::tatertos::*; }` placed BEFORE the linux_like arm. (tatertos module
+    body not written yet.)
+  - rust/forks/libc/src/unix/linux_like/mod.rs: reverted the submodule-selector
+    widening (back to plain `target_os="linux"`).
+  - x86_64-tatertos.json: llvm-target back to x86_64-unknown-none (was linux-gnu);
+    env back to "" (was "gnu"). KEPT: os="tatertos", target-family=["unix"]
+    (legit — TaterTOS provides POSIX source compat), has-thread-local=true,
+    panic=abort, static reloc.
+
+SOURCE OF TRUTH for the native bindings (all under src/include/):
+  - tatertos/syscall.h  -> SYS_* numbers (the ABI).
+  - sys/stat.h, sys/types.h, fry_types.h -> struct stat/off_t/mode_t/etc layouts.
+  - unistd.h, fcntl.h, time.h, sys/mman.h, pthread.h, signal.h, sys/socket.h,
+    poll.h, dirent.h, errno.h -> the POSIX surface std's unix PAL will call.
+  - These resolve at link time to TaterTOS's OWN libc.a (src/user/libc), which makes
+    the native SYS_* syscalls. NO Linux personality involved.
+
+CORRECTED PLAN:
+  - Build rust/forks/libc/src/unix/tatertos/mod.rs from the ACTUAL src/include headers
+    (types, struct layouts, consts, extern fns) — TaterTOS's real ABI, not copied from
+    linux. Then add tatertos arms to std's unix PAL that call our libc (not raw linux
+    syscalls). build-std, rebuild pydantic_core natively, link, verify on serial.
+
+STATE: linux_like edits reverted; first-class tatertos dispatch branch added (empty
+  module); target json de-linuxed. tatertos libc module body = NOT yet written.
+NEXT: enumerate the exact type/struct/fn surface std's unix PAL requires from libc,
+  and start writing rust/forks/libc/src/unix/tatertos/ from src/include headers.
+  -> fry1737.

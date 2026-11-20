@@ -1,0 +1,62 @@
+fry1456 - TaterTOS Claude bridge: first Linux vfork(58) bridge added.
+
+Date: 2026-06-13
+
+Why:
+- fry1453 proved execve/execveat were implemented but not reached.
+- The runtime blocker was Linux syscall 58, vfork, from Bun/Claude
+  posix_spawn paths:
+  - posix_spawn failed with ENOSYS.
+  - rg launch failed with ENOSYS.
+- The next correct kernel slice was therefore vfork, not OAuth refresh.
+
+What changed:
+- src/kernel/proc/process.h
+  - Added linux_vfork_child process flag.
+  - Added process_clone_linux_vfork_child() prototype.
+- src/kernel/proc/process.c
+  - Added process_clone_linux_vfork_child().
+  - The vfork child is a real waitable process leader, not a CLONE_THREAD
+    task, because wait4(pid) rejects non-leaders.
+  - The child shares the parent CR3 only until exec/exit.
+  - The child gets a narrow copied fd table for pipes, stdio dups, and dirs.
+    This is enough for posix_spawn pipe wiring while avoiding unsafe shallow
+    copies of VFS files/heap-owned fd objects that still need refcounts.
+  - shared_release() now avoids freeing VM/CR3 when the task is a pre-exec
+    vfork child, so the parent address space is not destroyed.
+- src/kernel/proc/syscall.c
+  - Added LNX_vfork dispatch.
+  - The child starts at the parent's syscall-return frame with rax=0.
+  - Parent receives the child pid.
+  - Exec now clears linux_vfork_child and skips destroying old_cr3 when old_cr3
+    belongs to the vfork parent.
+  - Added TBVFORK beacon for Claude-tracked boots.
+
+Known limits:
+- This is not full fork/clone VM semantics.
+- The fd copy is deliberately narrow. General inherited VFS files, epoll,
+  eventfd, signalfd, inotify, memfd, and sockets still need proper refcounted
+  ownership before copying across process-owned fd tables.
+- Parent blocking until child exec/exit is not fully implemented yet; the
+  syscall yields after scheduling the child to give the child first chance.
+
+Verification:
+- make clean
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" \
+  STAGE_CLAUDE=1 CLAUDE_BIN="$HOME/.local/share/claude/versions/2.1.172" \
+  /bin/bash build_iso.sh
+
+Result:
+- Clean staged build completed.
+- ISO produced at out/tatertos64v3.iso.
+- NVMe image updated at out/tater_nvme.img.
+- Real Claude binary staged as /RCLAUDE.LXE.
+- Host JSON auth files staged as:
+  - /.claude.json
+  - /.claude/.credentials.json
+- No token contents logged.
+
+Next:
+- Boot the new ISO with q35, FS22 OVMF vars, -smp 4, and a long timeout.
+- Check for TBVFORK, TBEXECVE ok, and whether posix_spawn/rg advances past
+  the old ENOSYS.

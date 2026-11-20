@@ -1,0 +1,62 @@
+# hermes002 — PHASE 2 STEP 1: inttypes.h missing stddef.h for wchar_t
+Date: 2026-06-17 ~14:38 CDT
+Type: compile fix (Phase 2 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Begin Phase 2: CPython TaterTOS-native cross-compile. First compile attempt
+of Programs/python.c with x86_64-elf-gcc against TaterTOS headers.
+
+---------------------------------------------------------------------------------
+WHAT HAPPENED
+---------------------------------------------------------------------------------
+First compile command:
+  x86_64-elf-gcc -ffreestanding -fno-stack-protector -O2 -std=gnu11 -Wall -Wextra \
+    -Isrc/include -Isrc/user/libc \
+    -I<cpython> -I<cpython>/Include -I<cpython>/Include/internal \
+    -c Programs/python.c -o /tmp/python_test.o
+
+ERROR:
+  src/include/inttypes.h:96:27: error: unknown type name 'wchar_t'
+     96 | intmax_t  wcstoimax(const wchar_t *nptr, wchar_t **endptr, int base);
+     97 | uintmax_t wcstoumax(const wchar_t *nptr, wchar_t **endptr, int base);
+  src/include/inttypes.h:16:1: note: 'wchar_t' is defined in header '<stddef.h>'
+
+---------------------------------------------------------------------------------
+ROOT CAUSE
+---------------------------------------------------------------------------------
+TaterTOS inttypes.h includes <stdint.h> but NOT <stddef.h>. The file declares
+wcstoimax() and wcstoumax() which take wchar_t* parameters. wchar_t is defined
+in <stddef.h> (a freestanding header). Without the include, the compiler
+doesn't know what wchar_t is.
+
+This is a pre-existing bug in the TaterTOS include tree that was never triggered
+before because no previous native app used wchar_t through inttypes.h. CPython's
+Python.h pulls in inttypes.h early in the include chain.
+
+---------------------------------------------------------------------------------
+FIX
+---------------------------------------------------------------------------------
+Added `#include <stddef.h>` after `#include <stdint.h>` in
+src/include/inttypes.h. One line.
+
+  #include <stdint.h>
+  +#include <stddef.h>  /* wchar_t — needed by wcstoimax/wcstoumax declarations */
+
+WHY: <stddef.h> is a freestanding header that defines wchar_t. inttypes.h
+uses wchar_t in its function declarations. The include is correct and
+required by C99/C11. This is not a hack — it's a missing standard include.
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+Re-ran the same compile command. Programs/python.c compiled clean (zero
+errors, zero warnings). Object file produced at /tmp/python_test.o.
+
+---------------------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------------------
+Continue compiling core CPython source files. Next: Python/pylifecycle.c
+(requires -DPy_BUILD_CORE define).

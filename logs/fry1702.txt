@@ -1,0 +1,55 @@
+fry1702 — 2026-06-21 08:10 CDT
+STEP: ELF TLS (variant II, x86-64) for native .fry — DESIGN FINALIZED + source
+      pre-build verification. (Implements the fry1701 "THE FIX". No build yet.)
+
+WHY: python3.fry / hermes crash in _PyObject_Malloc reading __thread _Py_tss_tstate
+  at fs:-8 -> NULL deref (fry1699/1701). Root: the .fry loader never lays out the
+  ELF PT_TLS image, so __thread vars (CPython _Py_tss_tstate + mimalloc
+  _mi_heap_default) have no backing below %fs. Same no-crt0 family as argv/environ.
+
+DESIGN (decided after reading the actual code, not assumed):
+  USER VA MAP (from fry_limits.h / elf.c / linux_compat.h):
+    mmap arena  = [0x100000000000, 0x7FFF00000000)  (FRY_VM_USER_BASE..LIMIT)
+    user stack  = [0x7FFFFF000000, 0x800000000000)  (top 16MB, USER_STACK_TOP)
+    => GAP [0x7FFF00000000, 0x7FFFFF000000) (~4GB) is used by NOTHING.
+  Place TLS region at fixed FRY_TLS_REGION_BASE = 0x7FFF80000000 (mid-gap).
+    - It's above VM_USER_LIMIT so SYS_MMAP/vm_find_free_range never hand it out.
+    - vm_range_available() also keys off real page mappings, so mapping it = safe.
+  LAYOUT (variant II): region_base is the TLS image start; TP=%fs is just above it.
+    [region_base .. TP)        = ELF TLS image  (tls_alloc = align_up(memsz,align))
+    [TP .. TP+0x1000)          = libc TCB (struct fry_tls_block), left ZEROED
+    region_base = FRY_TLS_REGION_BASE  (2^31-aligned >> any p_align => TP align-ok)
+    copy filesz of .tdata from FILE payload (payload+p_offset) into [base,base+filesz)
+    .tbss [base+filesz, TP) already zero from the map loop.
+    __thread var at module off x -> TP - tls_alloc + x = region_base + x. The
+    linker already emitted fs:-8 for _Py_tss_tstate (= TP-8, last qword of block).
+  NO self-ptr written at fs:0: main exe uses LOCAL-EXEC model (direct fs:-N, no
+    GOT/__tls_get_addr), and fs:0 overlaps libc fry_tls_block.slots[0]. Leaving the
+    TCB zeroed lets fry_tls_block_ensure() see non-NULL %fs and ADOPT it (early
+    `if (block) return block;`) without calloc'ing or clobbering FS. Self-heals
+    block->tls_base in fry_thread_current(). Minimal libc change (none needed).
+
+INTEGRATION: process_start() already does write_user_fs_base(p->user_fs_base) at
+  entry (process.c:162). So kernel sets %fs before the program runs. elf_load_fry
+  gets a new out-param tls_base_out; process_launch / process_launch_args set
+  p->user_fs_base = tls_base after process_create_user().
+
+SCOPE: main thread only this pass. Threads created later by CPython go through
+  fry_thread_create->clone (libc calloc's a bare fry_tls_block, no ELF image below
+  it) — that's a SEPARATE follow-up (documented, separable). The self-test runs on
+  the main thread, so this unblocks it.
+
+PRE-BUILD VERIFICATION (Zack said "source is clean" — verified, didn't trust blind):
+  - irqdesc.c IS modified in working tree, BUT the diff is the OLD dormant
+    fry1391/1392/1393 TBWATCH/TBALIAS CodeBlock-corruption hunt, gated on JSC slot
+    watchpoints (tb_program_jsc_slot_watchpoints_for) that are NOT programmed for a
+    hermes run => dormant, won't fire. NOT mine to revert (different bug); left as-is.
+  - The fry1700 "page-validated FBT" that caused PANIC 2 is GONE from the diff =>
+    Zack's revert held. CONFIRMED clean for the hermes build.
+  - dump_pte_chain(cur->cr3,cr2) at irqdesc.c:452 is COMMITTED 2026-06-08 (733c2f1ac),
+    guarded by `if(cur->cr3)`, physmap-based (vmm_phys_to_virt) => safe; it only
+    prints the PTE chain on a user fault then kills the proc. Not a panic source.
+
+FILES TO TOUCH: src/kernel/proc/elf.h (done), elf.c (PT_TLS parse + region setup),
+  process.c (wire tls_base -> user_fs_base, both launch paths).
+NEXT: fry1703 = elf.c/process.c impl; fry1704 = build; fry1705 = boot/self-test.

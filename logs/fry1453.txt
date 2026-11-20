@@ -1,0 +1,98 @@
+fry1453 - Linux execve/execveat syscall slice added, but not yet reached
+by Claude Code because posix_spawn still fails earlier at vfork(58).
+Date: 2026-06-13. Author: Codex.
+========================================================================
+
+SUMMARY
+========================================================================
+Implemented the first half of the Linux process-spawn ABI path:
+execve(59) and a simple flags=0 execveat(322) for Linux-personality
+processes.
+
+This is intentionally not a fake vfork fix. The previous audit showed the
+real frontier is the spawn chain, not networking:
+
+  posix_spawn -> vfork(58) -> execve(59) -> wait/exit/fd actions
+
+This step adds the exec side so the kernel has a real image-replacement
+target once vfork/fork reaches it.
+
+
+WHAT CHANGED
+========================================================================
+Files changed:
+
+  src/kernel/proc/linux_compat.h
+  src/kernel/proc/syscall.c
+
+Details:
+
+  - Added Linux syscall numbers for:
+      LNX_vfork = 58
+      LNX_execve = 59
+      LNX_execveat = 322
+
+  - Added syscall-name tracing for execve/execveat/vfork so future serial
+    logs identify these syscalls by name instead of only raw syscall number.
+
+  - Added bounded argv/envp copying for Linux exec:
+      max 64 argv entries
+      max 64 envp entries
+      max 16 KiB packed string storage
+      max 512 bytes per string
+
+  - Added lx_execve_current(), which:
+      loads the new Linux ELF via existing elf_load_linux();
+      rejects multi-thread/shared-state exec for now;
+      closes O_CLOEXEC descriptors with the existing lx_close_fd path;
+      releases old tracked VM regions;
+      swaps the process to the new CR3;
+      resets Linux TLS/rseq/signal-altstack/signal action state;
+      resets brk and Linux mmap cursor;
+      rewrites the saved syscall return frame so sysret lands at the new
+      ELF entry with the new stack.
+
+
+WHY
+========================================================================
+Claude Code's normal tool/MCP/subprocess behavior is blocked by
+posix_spawn. The logs showed repeated ENOSYS from syscall 58 (vfork), and
+Claude's own debug output named posix_spawn failures for the MCP agent bus
+and rg file counting.
+
+Execve alone does not make posix_spawn work, but adding it first is the
+correct staged work: vfork is only useful if the child can immediately
+replace its image through a real exec path.
+
+
+VERIFICATION
+========================================================================
+Clean rebuild command:
+
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" \
+    STAGE_CLAUDE=1 \
+    CLAUDE_BIN="$HOME/.local/share/claude/versions/2.1.172" \
+    /bin/bash build_iso.sh
+
+Result:
+
+  - kernel/proc/syscall.c compiled successfully;
+  - final ISO produced at out/tatertos64v3.iso;
+  - staged real Claude binary and auth into out/tater_nvme.img.
+
+Runtime result from the later q35 boot:
+
+  - execve/execveat were not reached;
+  - vfork(58) is still the first posix_spawn blocker;
+  - serial showed repeated:
+      LINUXSYS: unimplemented nr=58
+      MCP server "agent-bus" Connection failed: ENOSYS ... posix_spawn
+      countFilesRoundedRg failed: ENOSYS ... posix_spawn 'rg'
+
+
+NEXT
+========================================================================
+Do not claim subprocess support is fixed yet. The next real step is vfork
+or fork process creation semantics sufficient for posix_spawn to reach
+execve.

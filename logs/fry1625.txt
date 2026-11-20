@@ -1,0 +1,68 @@
+# hermes020 — PHASE 2 STEP 19: getpath.c — generated header + path constants
+Date: 2026-06-17 ~16:18 CDT
+Type: build fix (Phase 2 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Compile Modules/getpath.c — CPython's module path resolution. Finds
+the Python standard library at runtime using PREFIX/EXEC_PREFIX.
+
+---------------------------------------------------------------------------------
+WHAT HAPPENED
+---------------------------------------------------------------------------------
+ERROR 1: Python/frozen_modules/getpath.h: No such file or directory
+ERROR 2: PREFIX, EXEC_PREFIX, VERSION, VPATH, PLATLIBDIR must be defined
+
+---------------------------------------------------------------------------------
+ROOT CAUSE
+---------------------------------------------------------------------------------
+getpath.c includes a precompiled bytecode header (getpath.py frozen
+as a C header). This is normally generated during `make` by freezing
+Lib/getpath.py. Since we're cross-compiling, we need to generate it
+using the host Python.
+
+The second error is that PREFIX/EXEC_PREFIX/VERSION/VPATH/PLATLIBDIR
+are compile-time defines normally set via Makefile flags. They tell
+CPython where to find its stdlib at runtime.
+
+---------------------------------------------------------------------------------
+FIX
+---------------------------------------------------------------------------------
+1. Generated Python/frozen_modules/getpath.h:
+   cd Python-3.14.5
+   python3 Programs/_freeze_module.py getpath Modules/getpath.py Python/frozen_modules/getpath.h
+
+   Host Python compiled getpath.py to bytecode and wrote the C header
+   with a static byte array + marshalled code object.
+
+2. Added compile flags for path constants:
+   -DPREFIX=\"/usr/local\"
+   -DEXEC_PREFIX=\"/usr/local\"
+   -DVERSION=\"3.14\"
+   -DVPATH=\"\"
+   -DPLATLIBDIR=\"lib\"
+
+WHY: TaterTOS will have Python's stdlib on its ToTFS filesystem at
+/usr/local/lib/python3.14/. PREFIX and EXEC_PREFIX match (no separate
+architecture directory — TaterTOS is x86_64 only). VPATH is empty
+(not a VPATH build). PLATLIBDIR is "lib" (standard, not "lib64").
+
+These defines will be in the Makefile target when we write it.
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+Re-ran getpath.c compile:
+  x86_64-elf-gcc ... -DPREFIX=... -DEXEC_PREFIX=... ... -c Modules/getpath.c
+
+Result: ZERO errors. Compiled clean.
+
+Generated getpath.h: 47,174 bytes (contains bytecode blob + marshalled code).
+
+---------------------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------------------
+Generate remaining frozen module headers (abc, codecs, io, etc.).
+Compile all remaining Modules/*.c files. Write Makefile target. Link.

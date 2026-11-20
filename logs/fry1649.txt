@@ -1,0 +1,41 @@
+# fry1649 - Fix xterm layout parser regression after color verification
+Timestamp: 2026-06-19 15:08:24 CDT
+Type: terminal parser/layout fix
+Files changed:
+  - src/user/shell/shell.c
+
+What changed:
+  - Fixed carriage return handling: '\r' now returns to column 0 instead of being ignored.
+  - Added row copy/blank helpers that preserve foreground/background attributes.
+  - Added xterm CSI layout operations commonly used after TERM=xterm-256color:
+      C/a cursor forward, E/e next line, L insert lines, M delete lines,
+      S scroll up, T scroll down.
+
+Why:
+  - Color was confirmed working, but layout was broken. TERM=xterm-256color made Claude
+    emit richer terminal layout controls. Ignoring carriage returns and line
+    insert/delete/scroll controls could make the TUI overwrite or drift into wrong rows
+    and columns.
+
+Verification:
+  - Ran: make -C TaterTOS64 shell
+  - Result: PASS. Rebuilt src/user/shell/shell.o, linked shell.elf, packed shell.tot.
+  - Stopped the live headed QEMU VM before rebuilding the image to avoid writing under
+    an active guest disk.
+  - Ran build_iso.sh with STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 STAGE_HERMES=1.
+  - Result: PASS. build_iso.sh copied the fixed shell.tot into:
+      /SHELL.TOT
+      /apps/SHELL.TOT
+
+Current artifact timestamps:
+  - out/tatertos64v3.iso  2026-06-19 15:08:15 CDT  163876864 bytes
+  - out/tater_nvme.img    2026-06-19 15:08:04 CDT  419430400 bytes
+  - shell.tot             2026-06-19 15:08:00 CDT  159944 bytes
+
+SHA-256 (recorded because this was a user-requested rebuild):
+  - out/tatertos64v3.iso  c42d00d68ecf1b8fe7c6d36a17aeed582285fd04144e794de63e6cd75596ebbd
+  - out/tater_nvme.img    3fb6c5edc72923b0f3bc54076f430ac9b2f7039114e593ff4ee9bf52c37d73fd
+  - shell.tot             8fffa865fb404320851e9d848430d3c91a2c849f3aab553ae0082f1955c9057e
+
+Not done:
+  - Runtime headed relaunch moved to fry1650.txt.

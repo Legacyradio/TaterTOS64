@@ -1,0 +1,25 @@
+fry1716 — 2026-06-21 09:40 CDT
+STEP: Rebuilt ISO with auto-claude staging. RCLAUDE.LXE restored. EXIT=0.
+
+GOTCHA HIT + FIXED: first rebuild FAILED EXIT=1 -> "build_iso.sh: line 442:
+  CLAUDE_BIN: unbound variable". build_iso runs under `set -u`. The ORIGINAL gate
+  was protected by &&-short-circuit (STAGE_CLAUDE defaulted 0 -> never evaluated
+  $CLAUDE_BIN). My default-on change removed that protection, so an unset CLAUDE_BIN
+  tripped set -u. That partial run reformatted the nvme but aborted before staging
+  claude/python3 (left nvme half-staged, ISO stale).
+  FIX: `CLAUDE_BIN="${CLAUDE_BIN:-}"` before use (+ `|| true` on readlink). bash -n
+  OK. Re-ran clean.
+
+RESULT (EXIT=0):
+  - "Staging real claude binary onto NVMe ToTFS:
+     /home/legacyindieradio/.local/share/claude/versions/2.1.185"
+  - totcopy RCLAUDE.LXE inode 25, 233584424 bytes (auto-detected, no env vars).
+  - python3.fry -> /apps/python3.fry (STAGE_HERMES default 1).
+  - .claude.json + .credentials.json staged automatically (build_iso:449+, ungated).
+  - out/tater_nvme.img 09:19:48 ; out/tatertos64v3.iso 09:19:50 (newest). OK.
+
+NOTE: user_linker.ld UNCHANGED this build -> hermes still in its fry1712 state
+  (no PT_TLS yet, expected). This rebuild is the CLAUDE RESTORE only, isolated.
+
+NEXT: boot, Zack types `claude` -> should load /nvme/RCLAUDE.LXE in seconds and run.
+  Verify claude is back BEFORE resuming the hermes PT_TLS linker fix. -> fry1717.

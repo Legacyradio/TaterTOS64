@@ -1,0 +1,51 @@
+# fry1561 - ROOT CAUSE of the input freeze: the main thread (Bun/JSC event loop) parks in an infinite JSC futex (ParkingLot) wait and is NEVER woken -> event loop permanently suspended -> stdin stops being read. Input works ONLY during the window before the park.
+Date: 2026-06-16 01:05 CDT
+Type: diagnosis (live serial + screenshot of the fry1560 run; no code change this step)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+---------------------------------------------------------------------------------
+EVIDENCE (fry1560 run /tmp/serial.log + /tmp/shot1560.png)
+---------------------------------------------------------------------------------
+- SCREENSHOT: the input echoed — "hhello" is visible in the Claude prompt. So input DID reach + render. Then the user
+  pressed backspace x6 (TBPROCIN b0=08 x6) + Enter, but "hhello" never erased -> Claude stopped reading stdin after
+  the first burst.
+- read(fd=0) = 4 then stops: reads returned 1,1,6,2 bytes (consumed "hello"), then no more.
+- TBEPW pid=14 epfd=5 (main thread polling the STDIN set) runs from cnt=37..75 (serial lines ~11525-20565) then STOPS.
+- pid=14 (main thread) LAST appears at serial line 20864; serial continues to 60743 (~40,000 lines) with pid=14 SILENT.
+  Between 20864 and end: pid=15 (100ms timer) 37991 lines, plus small activity from workers pid=19/40/41/42; pid=14: 1.
+- pid=14 terminal futex: TBFUTEX jsc-wait-enter ... key=...063ad6e0 expected=2 current=2 timeout=0; wait-begin shows
+  wake_time=18446744073709551615 (UINT64_MAX = INFINITE / no timeout). JSC ParkingLot wait.
+- Right before parking, pid=14 did a burst of jsc-wake-call / wake-call (waking its worker threads), then parked.
+
+---------------------------------------------------------------------------------
+ROOT CAUSE
+---------------------------------------------------------------------------------
+The main JS thread (Bun on JavaScriptCore) parks in an INFINITE JSC ParkingLot futex wait and never gets woken. With
+the event loop thread suspended, nothing polls epfd=5 (the stdin set) anymore, so keystrokes delivered after the park
+sit unread in the inbuf (delivery still works; the consumer is asleep). This is a LOST WAKEUP / deadlock in the kernel
+futex layer, specifically the JSC futex path (the TBFUTEX jsc-wait / jsc-wake handlers), surfacing under Bun's
+multi-thread coordination. It is intermittent/timing-dependent: the fry1558/1554 debug beacons' serial latency shifted
+scheduling enough to open a working WINDOW before the park (which is why "hhello" got through this run).
+
+Why it is the OS, not Claude: Bun/JSC runs fine on real Linux; the difference is TaterTOS's custom futex implementation.
+A jsc-wake that fails to wake a parked jsc-wait (race between the wait registering and the wake scanning the queue, or
+a hashing/validation mismatch between the jsc-wait and jsc-wake paths) leaves the main thread asleep forever.
+
+NOT the cause (all ruled out earlier): OS input delivery (works), kernel epoll/poll_check_fd (accurate), MCP, missing
+/proc/self/stat, DNS/network (works), spurious socket readiness. The freeze is purely the main thread never resuming.
+
+---------------------------------------------------------------------------------
+FIX DIRECTION (next, with Claude fully networked)
+---------------------------------------------------------------------------------
+PRIMARY: read the JSC futex (jsc-wait / jsc-wake) implementation in src/kernel/proc/syscall.c and find the lost-wakeup
+race (wait registers vs wake scans; the expected/current revalidation; the hash-bucket/key match between jsc-wait and
+jsc-wake). Fix it so a jsc-wake always wakes a concurrently-parking jsc-wait (the standard futex requeue-under-lock +
+revalidate pattern).
+SECONDARY/defensive (if the race is hard to fully close): bound no-timeout (infinite) futex/jsc waits with a safety
+re-check interval so a lost wakeup self-heals within ~tens of ms and the event loop resumes. Legit robustness guard for
+an emulation layer; keeps Claude online; worst case adds small latency. Decide after reading the code.
+
+NEXT (own fry log each): read jsc futex code -> implement fix -> build -> verify typing stays live (type, wait, type
+again, hit Enter, get a response) -> then re-verify with MCP on; remove TBFD0/TBEPW beacons once green.
+
+All per planv3 Rules 1/5/6/12. Written immediately on completion of this root-cause step.

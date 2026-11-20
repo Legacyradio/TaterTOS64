@@ -1,0 +1,9 @@
+# fry1582 - BUILD: clean rebuild with the fry1581 TBDPF demand-page beacon (+ CLAUDE_NO_MCP=1)
+Date: 2026-06-16 07:38 CDT
+Type: build (Rule 12)
+WHY: capture pid=14's demand-page fault cr2 progression to settle huge-region-paging vs fault-loop-bug.
+COMMAND: make clean && STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 CLAUDE_BIN=.../2.1.177 ... bash build_iso.sh (bg -> /tmp/build_1582.log)
+RESULT: EXIT 0 clean. No errors (irqdesc.c compiled; clangd fry_limits noise only). ISO/NVMe fresh @ 11:37.
+Beacons: TBFD0/TBEPW/TBMAIN/TBSPIN/TBREQUEUE + TBDPF(new).
+NEXT (fry1583): headed verify -> type until frozen -> grep TBDPF -> cr2 advancing (huge zero) vs stuck (demand-page bug).
+All per planv3 Rules 1/5/6/12.

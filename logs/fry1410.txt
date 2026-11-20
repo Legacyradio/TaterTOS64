@@ -1,0 +1,34 @@
+fry1410 — Tater Bridge / Claude Code: DNS-exchange visibility pass.
+Date: 2026-06-11 ~12:50 PM CDT. Author: Claude (Fable 5). Follows fry1409.
+========================================================================
+
+WHAT / WHY
+====
+fry1409: claude authenticates in-OS but the resolver's UDP DNS exchange
+silently fails (2x socket retry, no TCP follows). The failing hops were
+trace-invisible. This step adds the eyes; the fix comes next from what
+they show.
+
+CHANGES (syscall.c, compile clean)
+====
+1. tb_trace_selected_syscall += LNX_connect/sendto/recvfrom/sendmsg/
+   recvmsg/poll/ppoll — ret+rc now traced for the claude tgid.
+2. LXUDP tx beacons in SYS_SENDTO (explicit-dest) and SYS_SEND
+   (connected-UDP) DGRAM branches: dst ip:port, src_port, len, udp_send rc.
+3. LXUDP rx beacon at sock_udp_rx entry: dst_port, src ip:port, len —
+   shows whether the slirp DNS reply ever reaches the socket layer and
+   whether the port matches a live socket.
+All three marked for removal once the resolver path is proven.
+
+DECISION TREE FOR THE NEXT BOOT
+====
+- No "LXUDP tx" line: the resolver's send never reaches the UDP branch
+  (translation bug — check which syscall it actually uses, now traced).
+- tx rc!=0: udp_send/e1000 TX failing from the Linux syscall context.
+- tx ok, no "LXUDP rx": reply lost below the socket layer (e1000 RX /
+  netcore demux / slirp) — compare with the working boot-time DHCP path.
+- rx with WRONG dst_port: port mismatch between tx src_port and reply.
+- rx matched but resolver still times out: wakeup/poll delivery bug
+  (lx_poll_fds pump or revents mask).
+
+Boot follows; results -> fry1411.

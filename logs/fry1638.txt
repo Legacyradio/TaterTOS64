@@ -1,0 +1,38 @@
+# fry1638 - RECOVER the LOST fry1583 shell.c (claude cmd + VT terminal) from Claude Code file-history. The tree's shell.c had been reverted to an old stub.
+Date: 2026-06-19 ~00:25 CDT
+Type: recovery (restore src/user/shell/shell.c from snapshot) + compile check
+Author: planv3 Rules 1/5/6/12 + CLAUDE.md
+
+WHY (Rule 6) — Zack was RIGHT; my GUI-only fix (fry1635) treated a symptom.
+- Symptoms in the headed VM (fry1635 build): typing not echoed, `claude` -> "command not found", terminal text
+  GREEN not WHITE. Zack: "it's the wrong copy, we had more than one, the font color tells me."
+- EVIDENCE: current shell.c was a 7,647-byte STUB (simple gets_bounded line-shell): NO `claude` command, NO VT
+  parser (term_feed), 0 sophisticated-terminal markers. git HEAD shell.c = same stub. The fry1521-1583 shell
+  (HANDOFF_claude_interactive_2026-06-15.md sec 2-3: term_feed VT parser, pump_child_io, 120x36 SHM-surface
+  term_render, the `claude` cmd) was UNCOMMITTED and had been OVERWRITTEN/REVERTED in this tree (then DeepSeek
+  added python3/hermes onto the stub on 6-17). It was NOT in the tree, git, stash, or any backup.
+- COLOR ROOT CAUSE: the real shell renders ITSELF white via its SHM surface (term_render); the stub has no
+  surface so its text falls through to gui.c's basic textbuf renderer hardcoded GREEN (gui.c:778/786 = 0x00FF00).
+  So green-vs-white was the tell that the shell binary was the wrong/old one — exactly Zack's read.
+
+RECOVERY SOURCE
+- Claude Code file-history: ~/.claude/file-history/e510bfda-3c59-4d74-8a26-d5af82d13546/d602c43a4877f704@v5
+  (June 16 16:25, the LATEST of v1-v5; the fry1521-1583 session ran with cwd=/home/legacyindieradio, so its
+  snapshots/transcripts live under projects/-home-legacyindieradio, which is why an earlier -TaterTOS64-scoped
+  search missed them). Verified content: 29,241 B / 828 lines, complete (ends on the term_render main loop),
+  includes cmd_claude (line 742: fry_spawn_linux_args("/nvme/RCLAUDE.LXE",...)), `claude` dispatch (797), main (809).
+
+WHAT WAS DONE
+- Backed up the stub (with DeepSeek's python3/hermes) -> backups/pre-gui-restore-20260618_233757/shell.c.STUB_with_python3hermes.
+- Restored d602c43a@v5 -> src/user/shell/shell.c (7,647 -> 29,241 bytes).
+- VERIFIED the kernel/GUI deps the real shell needs are STILL intact in this tree (NOT reverted): syscall.c has 21
+  gui-child routing markers (lx_is_gui_child/lx_write_outbuf/...); gui.c has 7 SHM/resize markers
+  (resize_client_surface/TW_MSG_RESIZED/fry_shm_map). So only shell.c was lost.
+
+NEXT (fry1639 build, fry1640 verify)
+- Phase A: make shell (compile check vs DeepSeek's 6-17 header edits) -> build_iso.sh -> headed boot -> VERIFY:
+  open Shell -> WHITE text, type `claude` -> echoes -> loads /nvme/RCLAUDE.LXE. Screenshot.
+- Phase B (after A verified): re-add python3/hermes commands onto the recovered shell, wired through pump_child_io
+  (the stub's versions are saved in the backup). Keeps Zack's Hermes/Python port.
+
+All per planv3 Rules 1/5/6/12. Written immediately on the restore, before the build.

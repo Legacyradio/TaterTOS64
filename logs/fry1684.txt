@@ -1,0 +1,31 @@
+fry1684 — 2026-06-20 21:55 CDT
+STEP: Removed per-syscall trace (cleanup); discovered python CRASHES (not just
+      slow) — pivot from speed back to a crash fix.
+
+DID: removed the fry1669/1676/1680 PYSC+PYBT trace from native_syscall_dispatch
+  (src/kernel/proc/syscall.c). Verified no trace markers remain. Kernel rebuilt
+  OK (BUILD_EXIT=0). This is the cleanup owed since fry1669.
+
+KEY CORRECTION (re-read fry1682 serial to its end): the SQLite-fixed run did NOT
+  just run slow — it ENDED IN A CRASH. After 45,719 syscalls (no deadlock) it
+  entered teardown (a burst of nr=53 munmap freeing the obmalloc arenas incl.
+  va=0x100000000000) and then:
+    USER FAULT pid=10 vec=14 err=0x14 RIP=0x0 CR2=0x0
+    !REG rax=1 rbx=0 rcx=0x100000264000 rdx=0 rbp=0 rsi=0 rdi=0x9d5e78
+         r8=0 r9=0x9eb770 r10=0 r11=0x202 r12-r15=0
+  err=0x14 = user-mode INSTRUCTION fetch from not-present page 0 => python
+  CALLED A NULL FUNCTION POINTER (rbp=0). It never printed the banner (0 writes
+  to fd=1) and wrote nothing to stderr (no traceback) -> it reached
+  finalize/teardown without producing output, then jumped to NULL during
+  shutdown. So `hermes` returning to the /> prompt = this crash, not a finish.
+  (User was right: it never finished loading.)
+
+  Likely class: an atexit / TLS-destructor / Py_Finalize callback slot that is
+  NULL and gets called during shutdown. Last calls before the fault were
+  get_tls_base (nr=71) then munmap (nr=53) — consistent with thread/TLS cleanup.
+
+NEXT (fry1685): add a fault-handler stack walk (irqdesc.c exc_kill_current_user)
+  that, on a near-null user fault (rip<0x1000), dumps user-stack return
+  addresses in python3.elf .text. Fires ONLY on the crash (no per-syscall
+  slowdown). Then boot, run hermes, symbolize the FBT chain -> find the null
+  call site -> fix.

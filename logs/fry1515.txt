@@ -1,0 +1,24 @@
+fry1515 - route GUI keyboard through rich-event fallback and compositor stdin
+
+Root cause:
+- The GUI reads keyboard input through SYS_KBD_EVENT.
+- SYS_KBD_EVENT only drained the rich keyboard event ring and did not perform
+  the PS/2 fallback poll used by the legacy read(0) path.
+- If keyboard IRQ delivery did not populate the rich ring, the desktop could
+  keep mouse input working while never seeing key events to forward to the
+  focused shell window.
+- GUI-mode read(0) also still allowed non-GUI processes to read the PS/2
+  keyboard directly, which could steal or duplicate keystrokes instead of
+  preserving compositor-owned focus routing.
+
+Change:
+- src/drivers/input/ps2_kbd.c now shares one PS/2 fallback poll helper between
+  legacy ASCII reads and rich SYS_KBD_EVENT reads.
+- src/kernel/proc/syscall.c now drains per-process compositor input first for
+  native and Linux fd0 reads, and while GUI.FRY is running prevents non-GUI
+  processes from bypassing the compositor to read the hardware keyboard.
+
+Why:
+- The visible desktop must own keyboard focus and forward typed bytes to the
+  focused shell/app window, so typing commands such as `claude` works inside
+  the restored GUI without regressing the desktop boot path.

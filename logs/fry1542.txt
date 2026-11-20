@@ -1,0 +1,143 @@
+# fry1542 - Research: root cause of kernel panic / triple fault during Claude (pid=14) network teardown
+Date: 2026-06-15 17:55 CDT
+Type: research / diagnosis (reached conclusion from evidence + source)
+Session: continuation of fry1541 beacon verify run (the run that surfaced the crash)
+Author: following planv3 rules + HANDOFF_claude_interactive_2026-06-15.md logging bar
+
+---------------------------------------------------------------------------------
+WHY (Rule 6)
+---------------------------------------------------------------------------------
+The fry1541 instrumentation (SYS_PROC_INPUT beacon) + headed verify run reached Claude main UI and produced the expected crash: repeated user faults in pid=14 followed by KERNEL PANIC unhandled page fault during process exit.
+
+This is the "network-teardown triple fault" explicitly called out as the #1 open blocker in the 2026-06-15 handoff (section 4): "in Claude's main UI, sending a real prompt ("hi") -> kernel triple-fault -> CPU reset".
+
+Goal of this research step: localize the exact code path, identify the bad assumption, and gather precise evidence (serial lines, source locations, timing) before debating fixes. No code changes yet. Serial is primary evidence channel (QEMU -d / -D logs produced nothing actionable here).
+
+This step completes the diagnosis pass for the crash observed in the fry1541 run. Written immediately on conclusion.
+
+---------------------------------------------------------------------------------
+EVIDENCE - Serial (/tmp/serial.log from the fry1541 run)
+---------------------------------------------------------------------------------
+Key excerpts (chronological, focused on pid=14 / Claude):
+
+[Many repeated user faults during/after input in main UI]
+TBSIG exc-deliver pid=23 tgid=14 sig=11 vec=14 handler=4c22590 sp=6fbbdb8072d8 oldrip=293cb7c
+!EXC vec=000000000000000E err=0000000000000004 RIP=000000000293CB7C CS=000000000000002B RF=0000000000010212 CR2=FFFFFFFFFFFF4AB8 CR3=0000000002412000
+... (repeated pattern ~20+ times with slight register variation)
+USER FAULT: pid=14 tid=23 vec=14 err=0x6 rip=0x293cb68 cr2=0x6fbbdb8009c8
+
+[SPCEN socket cleanup for the exiting process]
+SPCEN exit pid=14 sock=15/64 pipe=8/128
+SPCEN exit pid=14 sock=14/64 pipe=8/128
+SPCEN exit pid=14 sock=13/64 pipe=8/128
+SPCEN exit pid=14 sock=12/64 pipe=8/128
+SPCEN exit pid=14 sock=11/64 pipe=8/128
+
+[Terminal kernel panic]
+!EXC vec=000000000000000E err=0000000000000002 RIP=FFFFFFFF80030040 CS=0000000000000008 RF=0000000000010046 CR2=FFFFFFFF8393FC88 CR3=0000000002412000
+KERNEL PANIC: unhandled kernel page fault
+RSP=0xffffffff83a43e40 CR2=0xffffffff8393fc88 CR3=0x2412000
+
+Notes:
+- All user faults are in Claude's own address space (RIP ~0x293cb7c / 0x293cb68 — Linux compat / Bun runtime layer).
+- SPCEN exits immediately precede the kernel panic.
+- TBPROCIN beacons (from the 1541 instrumentation) were only for Shell (pid=13): "TBPROCIN req=13 -> pid=13 name=/apps/SHELL.TOT len=20 nw=20 b0=11"
+- No TBPROCIN for Claude pid=14 in the trace.
+- Screenshot evidence: Claude UI was up and rendering ("What's new", prompt area active) before the panic screen ("KERNEL PANIC: UNHANDLED KERNEL PAGE FAULT" with registers).
+
+QEMU debug log (-D /tmp/qemu_dbg.log -d guest_errors) contained no useful additional data for this panic.
+
+---------------------------------------------------------------------------------
+EVIDENCE - Source (current tree)
+---------------------------------------------------------------------------------
+Teardown path (triggered on any process exit, including Claude helpers + main on network close):
+
+TaterTOS64/src/kernel/proc/process.c:shared_release (called from proc_free):
+
+   668|            } else if (shared->fd_kind[f] == FD_SOCKET) {
+   669|                struct fry_socket *sk = (struct fry_socket *)shared->fd_ptrs[f];
+   670|                if (sk && sk->used) {
+   671|                    if (sk->refs > 0) {
+   672|                        sk->refs--;
+   673|                    } else {
+   674|                        if (sk->domain == 1 && sk->tcp_handle >= 0 &&
+   675|                            sk->tcp_handle < (int)FRY_PIPE_MAX) {
+... AF_UNIX pipe refcount path ...
+   693|                        } else if (sk->type == 1 /* SOCK_STREAM */) {
+   694|                            if (sk->tcp_handle >= 0)
+   695|                                tcp_close(sk->tcp_handle);
+   696|                            if (sk->listen_handle >= 0)
+   697|                                tcp_close(sk->listen_handle);
+   698|                        }
+   699|                        uint8_t sp_was_unix = (sk->domain == 1);
+   700|                        sk->used = 0;
+   701|                        sk->state = 0;
+   702|                        sk->tcp_handle = -1;
+   703|                        sk->listen_handle = -1;
+... (SPCEN census only for unix case, lines 709-718)
+   722|                }
+   723|                sched_wake_poll_waiters();
+   724|            }
+
+proc_free (737+): walks procs, calls shared_release, then sched_pidwait_exit etc.
+
+Global state:
+TaterTOS64/src/kernel/proc/process.c:48
+   48|struct fry_pipe g_pipes[FRY_PIPE_MAX];
+   51|struct fry_socket g_sockets[FRY_SOCK_MAX];
+
+tcp_close implementation:
+
+TaterTOS64/src/drivers/net/netcore.c:859
+   859|void tcp_close(tcp_conn_t conn) {
+   860|    if (conn < 0 || conn >= TCP_MAX_CONNECTIONS) return;
+   861|    struct tcp_conn *c = &tcp_conns[conn];
+   862|    if (c->state == TCP_ESTABLISHED) {
+   863|        tcp_send_segment(c, TCP_FIN | TCP_ACK, 0, 0);
+   864|        c->seq_num++;
+   865|        c->state = TCP_FIN_WAIT_1;
+   866|    } else {
+   867|        c->state = TCP_CLOSED;
+   868|        c->active = 0;
+   869|    }
+   870|}
+
+(See also tcp_send_segment, tcp_conn struct at netcore.c:662, tcp_conns array at 692, multiple callsites in syscall.c close/shutdown/accept paths that also do direct tcp_close without extra guards.)
+
+Claude path: real AF_INET SOCK_STREAM (not just AF_UNIX socketpairs for stdio), so the else if (type == 1) branch is taken. Claude opens many such for API calls, then kills the helper subprocess (pid ~28 in prior logs), causing bulk fd close in the affected tgid.
+
+---------------------------------------------------------------------------------
+RESULTS / CONCLUSION
+---------------------------------------------------------------------------------
+The kernel page fault is inside the TCP teardown path for real network sockets belonging to an exiting process (Claude pid=14 / its threads).
+
+Precise trigger sequence (from serial + source):
+1. Claude in main UI performs network I/O (real TCP to API).
+2. Kills helper subprocess → many live TCP fds in the process group.
+3. Exit path (proc_free / shared_release) walks fds, hits the SOCK_STREAM case for each, calls tcp_close(handle).
+4. tcp_close does the minimal range check then direct &tcp_conns[conn] + conditional send_segment on c->state / c->fields.
+5. One or more of: stale handle (already closed by network stack or prior path), c in inconsistent state (active=0 but struct not zeroed, bad pointers in tx/rx rings, etc.), or concurrent modification during multi-threaded exit + kill.
+6. Dereference inside tcp_send_segment (or called code) produces kernel page fault at the observed RIP/CR2.
+7. Unhandled → panic + reset.
+
+Collateral user faults (repeated vec=14/sig=11 inside Claude at 0x293cb7c) are symptoms: the app's runtime receives bad socket state/errors during the request, leading to its own page faults before the host teardown even completes.
+
+This is 100% consistent with the handoff diagnosis ("first exercised now that Claude opens REAL TCP sockets", "tcp_close UAF/bad-handle when many sockets close at once on a killed proc", "socket refs double-free", "AF_UNIX g_pipes refcount" — though here it's the non-unix branch).
+
+The fry1541 beacon succeeded in its narrow goal (visibility at SYS_PROC_INPUT) but the verify run was cut short by this pre-existing blocker. Input delivery to Shell was confirmed working; Claude itself never got a clean TBPROCIN in the trace because the app crashed before full roundtrip.
+
+No assumptions: all conclusions tied directly to serial lines + exact source locations in current tree. Reproducible on any run that gets Claude far enough to open + close real TCP sockets + kill a subprocess.
+
+---------------------------------------------------------------------------------
+OPEN ITEMS (for debate)
+---------------------------------------------------------------------------------
+- Harden the tcp_close path and all callsites (range + active check before any c-> access; zero on alloc; refcounting on tcp_conns themselves?).
+- Make socket teardown in shared_release safe for bulk/abrupt close (e.g. mark sockets "zombie" first, drain, or use a separate close queue).
+- Distinguish real TCP vs AF_UNIX handling more explicitly (the unix branch already has extra g_pipes refcount logic; the stream branch jumps straight to tcp_close).
+- Whether the kill of the helper (SIGTERM etc.) should force socket shutdown before fd close.
+- Any locking needed around tcp_conns during process exit (current code has no obvious lock in this path).
+- Repro with targeted logging (e.g. beacon every tcp_close call with the pid).
+
+Next step (per rules) will be a new fry log once a fix direction is chosen and implemented (with clean rebuild).
+
+All per planv3 Rules 1/5/6/12 and the interactive handoff logging discipline.

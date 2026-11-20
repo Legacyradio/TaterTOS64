@@ -1,0 +1,49 @@
+fry1752 — 2026-06-22 13:12 CDT
+STEP 5 (ToTFS): make the inode space SCALE WITH THE DRIVE (no hardcoded cap). Root
+       cause of the hermes boot failure: ToTFS ran out of INODES, not bytes.
+
+DIAGNOSIS (why `hermes` "didn't even attempt"):
+  - boot serial (fry1751): HERMESMAIN ran python3 with
+    /nvme/opt/hermes-agent/tatertos_bootstrap.py -> "[Errno 2] No such file".
+  - The agent was NEVER staged to the NVMe image. stage_hermes.sh DID try (line 68)
+    but every totcopy silently failed (2>/dev/null || true).
+  - Manual totcopy -> "alloc_inode: no free inodes". The 8GB disk has BYTES, but ToTFS
+    formatted a FIXED inode table: TOTFS_MAX_INODES=16384, and a SINGLE-block inode
+    bitmap caps at 4096*8=32768 inodes (totfs.c:472). We staged ~35k files
+    (site-packages 28,759 + hermes-agent 3,402) -> inode table exhausted mid-stage, so
+    site-packages partially landed and the agent got 0 inodes.
+  - Zack: don't trim packages (that's non-production); FIX the design — no hardcoded
+    constraints, the FS must grow/expand with the drive.
+
+FIX — inode space now scales with the partition (mirrors the already-scalable block
+bitmap, fry1718). Files changed:
+  - src/kernel/fs/totfs.h: struct totfs_fs.inode_bitmap is now a HEAP POINTER
+    (uint8_t* + inode_bitmap_bytes), sized to sb.inode_bitmap_blocks*4096 — was a
+    fixed uint8_t[4096].
+  - src/kernel/fs/totfs.c:
+      * mount: kmalloc the inode bitmap to sb.inode_bitmap_blocks*4096 and read ALL
+        those blocks (multi-block), exactly like block_bitmap.
+      * totfs_alloc_inode: removed the `if (max > BLOCK_SIZE*8) max=...` cap; scans the
+        full sb.total_inodes; writes back ONLY the changed bitmap block
+        (inode_bitmap_start + i/(BLOCK_SIZE*8)).
+      * totfs_free_inode: removed the `inum >= BLOCK_SIZE*8` cap; writes back the
+        specific changed bitmap block.
+  - tools/mktotfs.c:
+      * total_inodes = total_blocks/8 (~1 inode / 32KB), floored at TOTFS_MAX_INODES.
+        inode_bitmap_blocks + inode_table_blks computed from it. NO fixed cap.
+      * Layout shifted: SB | inode bitmap(N) | block bitmap(M) | inode table | data.
+      * Writes N inode-bitmap blocks; inode-table loop uses the computed block count.
+      * BLOCK-BITMAP "used blocks" marking made MULTI-BLOCK-SAFE (data_start can now
+        exceed one bitmap block with a large inode table — old single-block loop would
+        have overflowed + left metadata unmarked).
+
+GEOMETRY (8GB partition, verified by calc): total_inodes 16,384 -> 262,144 (16x);
+  inode_bitmap_blocks=8; inode_table=16,384 blks (64MB); data_start=16,457. ~7x
+  headroom over the 35k files, and it scales (16GB -> 512k inodes, etc.).
+
+BUILD: tools/mktotfs.c compiles clean. Kernel rebuilt: kernel.elf 13:12:27, no totfs
+  errors. (mktotfs is also recompiled by build_iso.sh:374.)
+STATE: kernel + formatter updated; NOT yet re-imaged/booted.
+NEXT: build_iso.sh (reformats NVMe with 262k inodes + restages — agent should land
+  this time); verify `opt/hermes-agent` copies appear + no "no free inodes"; boot;
+  run hermes; read serial. -> fry1753.

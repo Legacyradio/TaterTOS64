@@ -1,0 +1,19 @@
+fry1838 - HERMES DIAGNOSIS STEP C3: fry1831 tests A, B, C on the live boot (2026-11-17 14:08:57 CST)
+WHY: Brief Step C, run fry1831's pre-registered tests. No code changed. Same test boot as fry1836 (copy of image, headless, input via HMP sendkey).
+WHAT / HOW: typed into the front Shell window with ~/tatertos-test-20261117/typ.py (monitor sendkey); screenshots s5-s7.png; serial ~/tatertos-test-20261117/serial.log.
+  Input note: first try at test C came out "/nvme/opt/hhermes-agent/hermes" (doubled key at 0.06s/key) - that was MY typing harness, not the OS; retyped at 0.2s/key.
+RESULTS
+ A  'uptime' -> "shell: uptime: command not found". FAIL as written. src/user/apps/uptime.c exists but /apps on the image holds only SHELL.TOT + python3.fry (totcopy --list), so no uptime is staged
+    on the nvme PATH. Test A's premise (a file for PATH to find) is not met by the image. Cause not investigated further. Does NOT prove PATH search broken.
+ B  'notacommand' -> "shell: notacommand: command not found". PASS (clean failure text matches).
+ C  '/nvme/opt/hermes-agent/hermes -z hello' -> serial: "HERMESMAIN argc=4 /nvme/opt/hermes-agent/hermes", "TLSDBG get MAIN tid=13 tgid=13 fs=7fff80000138", then:
+      Exception ignored while running getpath:  File "<frozen getpath>", line 358  OSError: [Errno 0] Error
+      Fatal Python error: error evaluating path / Python runtime state: core initialized / <no Python frame>
+    Screen shows "HERMESSTDOUT-OK" then prompt. grep for "PROC: shebang" in serial.log found NOTHING, so by fry1831's own criterion the kernel shebang line is absent (it may simply not be printed to serial -
+    NOT verified either way; argc=4 is consistent with an interpreter+script+2 args). 
+    getpath.py:358 (source read) is the pyvenv.cfg read: readlines(joinpath(venv_prefix, 'pyvenv.cfg')) inside try/except (FileNotFoundError, PermissionError). It raised OSError with errno 0, which
+    is NOT caught, so Python aborts at startup. => a missing-file open() is returning an error whose errno is 0 (not ENOENT). 
+KEY OBSERVATION (evidence): on the 2026-09-26 build, python3.fry dies in Py_Initialize BEFORE reaching hermes code on this route. That is different from fry1810/1812, where hermes ran for >10 min and finished plugin discovery.
+  So the current state is a REGRESSION relative to those logs, or this launch route (full path, args/env from the new spawn path) differs from the old builtin route. Not yet separated.
+RESULT: A fail (premise), B pass, C fail with a concrete new crash. Hermes did NOT hang here; it crashed in startup.
+NEXT: fry1839 = run the builtin route (plain 'hermes -z hello' -> cmd_hermes, old route) on the same boot to separate route vs build regression.

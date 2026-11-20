@@ -1,0 +1,31 @@
+# fry1603 - VERIFY(fry1602 baseline+NIC): 🟢 fry1583 STATE RESTORED + NETWORKED. Claude loads, is INTERACTIVE ("Hey! How can I help you today" + input cursor), mouse ALIVE, network UP. The "connection issue" = COSMETIC auto-update/self-repair banner, NOT the API.
+Date: 2026-06-16 ~22:00 (host clock) CDT
+Type: verify (fry1601 build, -smp 1 + e1000 NIC) — SUCCESS
+
+ON-SCREEN (import /tmp/shot_qemu_zoom.png): Claude Code TUI live in TaterTOS shell:
+  "Hey! How can I help you today" + input box + cursor + "esc to interrupt" + "Brewed for 11s".
+  Banners: "Auto-update failed  Run /doctor" and "claude command at /nvme/.local/bin/claude missing or broken
+  (/nvme/.local/bin does not exist) run claude install to repair". => self-UPDATE / self-INSTALL-repair noise,
+  NOT an API connection failure. Cosmetic; strip/suppress later.
+
+NETWORK PROOF (works):
+  - TBE1K DROP = 0 (e1000 RX healthy; the QEMU-11 errors-byte fix is present, e1000.c:387-390).
+  - 7 live TCP conns (TBDUMP conn=0..6). conn=6: 3.5 MB (bytes=3499178) — likely the auto-update download.
+    conn=3 169KB, conn=4 133KB, conn=1 92KB. Real bidirectional traffic. DNS resolving (LXUDP rx 10.0.2.3:53).
+  - Root of the earlier "no NIC" connection error: my relaunch cmds dropped the NIC. Fixed by adding
+    -netdev user,id=n0 -device e1000,netdev=n0 (no rebuild). e1000 init OK (mmio/rx_ring/tx_ring set).
+
+SYSTEM HEALTH: census t3=2/5/2/0 (cooperative: threads WAITING not spinning) -> mouse alive on 1 CPU. read(fd0)
+  path present. NO freeze, NO panic.
+
+CONFIG THAT WORKS (lock this in as the known-good base):
+  - Build: fry1601 (single-page demand paging, NO batch, NO lx_map_one lock). KEEP: panic fix, /proc/self/stat,
+    sched dynamic-tgid. Dormant: pipe/redirect/busybox (no SHELL env).
+  - Launch: -smp 1, -m 4G, q35 kvm:tcg, -cpu host, NVMe ToTFS, OVMF, -netdev user,id=n0 -device e1000,netdev=n0,
+    -serial stdio -vga std -display gtk.
+
+PENDING (awaiting user): type a prompt -> confirm streamed response = full fry1583 end-to-end with this restored base.
+FOLLOW-UPS (separate phases, one at a time): suppress auto-update/self-repair banners; correct page-in speedup
+  (IRQ-locked batch or 2MB hugepages) for slowness; re-add Bash tool; pre-push cleanup (TB* beacons, Grok refcount,
+  MCP-on re-verify, OAuth strip).
+All per planv3 Rules 1/5/6/12. Written immediately on the verify.

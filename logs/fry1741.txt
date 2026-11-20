@@ -1,0 +1,46 @@
+fry1741 — 2026-06-21 22:55 CDT
+STEP 2g (native std phase): FRONT A COMPLETE — the libc crate compiles cleanly for
+       x86_64-tatertos (ZERO libc errors). Fixed the dedup + safe_f! + import issues,
+       added the final const/struct batch. Remaining errors are ALL std-side (Front B).
+
+FIXES THIS STEP (rust/forks/libc/src/unix/tatertos/mod.rs):
+  - Switched the W* wait macros from f! to safe_f! (were generated unsafe -> E0133 x9).
+  - DE-DUPLICATED types the crate's COMMON unix layer (src/unix/mod.rs) already
+    defines for all unix targets: removed my timespec, timeval, group, rlimit, sigval,
+    in6_addr, ipv6_mreq, iovec, DIR, and types in_port_t/in_addr_t — these collided
+    (two distinct types -> E0308). Now IMPORTED from crate root:
+      use crate::{gid_t,in6_addr,in_addr_t,in_port_t,iovec,pid_t,sigval,timespec,uid_t,DIR};
+    Their generic POSIX layouts match TaterTOS's headers, so reuse is correct.
+  - Added remaining consts (sourced from src/include; binding-only flagged where the
+    header lacks them): S_I[RWX][USR/GRP/OTH] perm bits; O_ACCMODE/EXCL/DIRECTORY/
+    NOFOLLOW; F_GETFD/SETFD/GETFL/SETFL/DUPFD/DUPFD_CLOEXEC, FD_CLOEXEC, FIOCLEX/FIONBIO;
+    CLOCK_REALTIME=0/MONOTONIC=1 (match kernel); AT_FDCWD/SYMLINK_NOFOLLOW/REMOVEDIR;
+    UTIME_NOW/OMIT; POLLIN/PRI/OUT/ERR/HUP/NVAL + struct pollfd; _SC_PAGESIZE/
+    HOST_NAME_MAX/GETPW_R_SIZE_MAX; SOMAXCONN=128; EAI_SYSTEM=9; EWOULDBLOCK=EAGAIN;
+    EXIT_SUCCESS/FAILURE; PTHREAD_STACK_MIN. Fn: linkat. dirent fns now use *mut DIR.
+
+BUILD-STALENESS PROCEDURE (locked in): after editing the fork ->
+  `touch rust/forks/libc/src/lib.rs; rsync -a --delete fork/src/ <registry>/src/;
+   rm -rf rust/probe_std/target/x86_64-tatertos; cargo +nightly build --release`.
+  Without the touch + clean, build-std links a stale libc and lies about errors.
+
+TRAJECTORY (clean builds): unsupported-PAL(no std) -> 105 -> 70 -> 10 -> [types done]
+  -> 100 -> 85 -> 33 -> 32, and CRUCIALLY: libc crate errors = 0. Front A done.
+
+FRONT B (std unix PAL) — the ONLY remaining compile errors, all in rust-src std
+  (32 errors across ~10 files), well-scoped:
+    os/unix/fs.rs (18)   -> MetadataExt `platform` module: map to our struct stat
+    sys/paths/unix.rs(15)-> path/current_exe bits for tatertos
+    sys/thread/unix.rs(9)-> thread set_name / spawn specifics
+    sys/fs/unix.rs (4), os/unix/raw.rs (3) -> per-os raw type aliases (dev_t etc.)
+    sys/args/unix.rs (2) -> argv source
+    sys/random/mod.rs + random.rs (2) -> fill_bytes -> wire to SYS_GETRANDOM(85)
+    sys/thread/mod.rs, sys/paths/mod.rs, sys/pal/unix/stack_overflow.rs (3)
+  These are std-SOURCE edits -> need to fork rust-src std like libc (vendor + mirror
+  into the toolchain src path, or path-override) and add `tatertos` cfg arms.
+
+STATE: libc crate fully ports to x86_64-tatertos (0 errors), 100% native, zero Linux.
+NEXT (Front B): fork rust-src std; add tatertos arms in the ~10 files above (random
+  via SYS_GETRANDOM first); clean-rebuild to 0; THEN rebuild pydantic_core natively,
+  relink python3.fry, stage wrapper, ISO, boot, serial-verify pydantic_core: OK.
+  -> fry1742.

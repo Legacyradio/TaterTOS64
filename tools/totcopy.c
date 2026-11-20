@@ -22,7 +22,10 @@
 static FILE *g_img;
 static uint64_t g_part_off;
 static struct totfs_superblock g_sb;
-static uint8_t g_inode_bmp[TOTFS_BLOCK_SIZE];
+/* Inode bitmap is heap-allocated to sb.inode_bitmap_blocks*4096 at load — the inode
+ * count scales with the drive, no fixed cap (was a single 4096 block = 32768 max). */
+static uint8_t *g_inode_bmp = NULL;
+static uint32_t g_inode_bmp_blocks = 1;
 /* Block bitmap may span multiple blocks (partitions > 128MB). 64 blocks =
  * 256KB tracks up to ~2M blocks (8GB at 4K) — ample headroom. */
 #define TOTFS_BLOCK_BMP_MAXBLK 64
@@ -68,7 +71,7 @@ static void write_inode(uint32_t inum, const struct totfs_inode *inode) {
 }
 
 static uint32_t alloc_inode(void) {
-    for (uint32_t i = 2; i < g_sb.total_inodes && i < TOTFS_BLOCK_SIZE * 8; i++) {
+    for (uint32_t i = 2; i < g_sb.total_inodes; i++) {
         if (!bit_test(g_inode_bmp, i)) {
             bit_set(g_inode_bmp, i);
             g_sb.free_inodes--;
@@ -475,11 +478,81 @@ static void do_copy(const char *host_file, const char *dest_path) {
            (unsigned long long)file_size, blocks_needed, ext_idx);
 }
 
+/* ── Mkdir (fry1442) ─────────────────────────────────────────────────────
+ * Create a directory inside the image. Needed to pre-stage /.claude on the
+ * NVMe ToTFS: claude must READ /.claude/.credentials.json at startup, so
+ * the directory has to exist before first boot — runtime mkdir can't help.
+ * Mirrors mktotfs's root-directory layout (".", ".." dirent block). */
+
+static void do_mkdir(const char *dest_path) {
+    char parent[256];
+    const char *basename;
+    uint32_t blen;
+    split_path(dest_path, parent, sizeof(parent), &basename, &blen);
+    if (blen == 0) {
+        fprintf(stderr, "Invalid dir path: %s\n", dest_path);
+        exit(1);
+    }
+
+    uint32_t parent_inum = resolve_path(parent);
+    if (!parent_inum) {
+        fprintf(stderr, "Parent directory not found: %s\n", parent);
+        exit(1);
+    }
+
+    struct totfs_inode parent_dir;
+    read_inode(parent_inum, &parent_dir);
+    if (dir_lookup(&parent_dir, basename, blen)) {
+        fprintf(stderr, "Already exists: %s\n", dest_path);
+        exit(1);
+    }
+
+    uint32_t new_inum = alloc_inode();
+    uint64_t data_blk = alloc_block();
+
+    struct totfs_inode inode;
+    memset(&inode, 0, sizeof(inode));
+    inode.type = TOTFS_TYPE_DIR;
+    inode.permissions = 0755;
+    inode.link_count = 2;  /* "." and parent link */
+    inode.size = TOTFS_BLOCK_SIZE;
+    inode.blocks_used = 1;
+    inode.extent_count = 1;
+    inode.extents[0].start_block = data_blk;
+    inode.extents[0].block_count = 1;
+    inode.extents[0].file_block  = 0;
+
+    /* "." and ".." entries, same layout mktotfs writes for root */
+    uint8_t dir_block[TOTFS_BLOCK_SIZE];
+    memset(dir_block, 0, sizeof(dir_block));
+    struct totfs_dirent *dot = (struct totfs_dirent *)dir_block;
+    dot->inode = new_inum;
+    dot->name_len = 1;
+    dot->file_type = TOTFS_TYPE_DIR;
+    uint16_t dot_rec_len = (uint16_t)((8 + 1 + 3) & ~3u);
+    dot->rec_len = dot_rec_len;
+    dir_block[8] = '.';
+    struct totfs_dirent *dotdot = (struct totfs_dirent *)(dir_block + dot_rec_len);
+    dotdot->inode = parent_inum;
+    dotdot->name_len = 2;
+    dotdot->file_type = TOTFS_TYPE_DIR;
+    dotdot->rec_len = (uint16_t)(TOTFS_BLOCK_SIZE - dot_rec_len);
+    dir_block[dot_rec_len + 8] = '.';
+    dir_block[dot_rec_len + 9] = '.';
+    write_block(data_blk, dir_block);
+
+    write_inode(new_inum, &inode);
+    add_dirent(parent_inum, new_inum, basename, blen, TOTFS_TYPE_DIR);
+
+    printf("totcopy: mkdir %s (inode %u)\n", dest_path, new_inum);
+}
+
 /* ── Flush metadata ──────────────────────────────────────────────────── */
 
 static void flush_metadata(void) {
-    /* Write bitmaps (block bitmap may span multiple blocks) */
-    write_block(g_sb.inode_bitmap_start, g_inode_bmp);
+    /* Write bitmaps. Inode bitmap spans g_inode_bmp_blocks blocks (scales w/ drive). */
+    for (uint32_t i = 0; i < g_inode_bmp_blocks; i++)
+        write_block(g_sb.inode_bitmap_start + i, g_inode_bmp + (size_t)i * TOTFS_BLOCK_SIZE);
     {
         uint32_t bbn = g_sb.block_bitmap_blocks ? (uint32_t)g_sb.block_bitmap_blocks : 1;
         if (bbn > TOTFS_BLOCK_BMP_MAXBLK) bbn = TOTFS_BLOCK_BMP_MAXBLK;
@@ -523,8 +596,13 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Read bitmaps (block bitmap may span multiple blocks) */
-    read_block(g_sb.inode_bitmap_start, g_inode_bmp);
+    /* Read bitmaps. Inode bitmap is heap-allocated to the on-disk geometry so the
+     * inode count scales with the drive (was a single 4096 block = 32768 cap). */
+    g_inode_bmp_blocks = g_sb.inode_bitmap_blocks ? (uint32_t)g_sb.inode_bitmap_blocks : 1;
+    g_inode_bmp = (uint8_t *)calloc(g_inode_bmp_blocks, TOTFS_BLOCK_SIZE);
+    if (!g_inode_bmp) { fprintf(stderr, "OOM: inode bitmap %u blocks\n", g_inode_bmp_blocks); exit(1); }
+    for (uint32_t i = 0; i < g_inode_bmp_blocks; i++)
+        read_block(g_sb.inode_bitmap_start + i, g_inode_bmp + (size_t)i * TOTFS_BLOCK_SIZE);
     {
         uint32_t bbn = g_sb.block_bitmap_blocks ? (uint32_t)g_sb.block_bitmap_blocks : 1;
         if (bbn > TOTFS_BLOCK_BMP_MAXBLK) bbn = TOTFS_BLOCK_BMP_MAXBLK;
@@ -536,6 +614,9 @@ int main(int argc, char **argv) {
         do_list(argv[4]);
     } else if (argc >= 6 && strcmp(argv[3], "--get") == 0) {
         do_get(argv[4], argv[5]);
+    } else if (argc >= 5 && strcmp(argv[3], "--mkdir") == 0) {
+        do_mkdir(argv[4]);
+        flush_metadata();
     } else if (argc >= 5) {
         do_copy(argv[3], argv[4]);
         flush_metadata();

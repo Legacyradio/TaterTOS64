@@ -1,0 +1,65 @@
+fry1508 — 2026-06-14 20:00 CDT (2026-06-15 01:00 UTC). Author: Claude (Opus 4.8).
+STEP: Phase 1 — restore the desktop BOOT PATH (get TaterTOS back after the prior
+session left it short-circuiting into claude-prompt-only mode and never reaching
+the GUI). Resumes honest per-step logging after the prior session (the "fry1508"
+code comments in main.c/syscall.c) was NEVER logged — last real log was fry1506,
+fry1507 was a late catch-up consolidation. This file is THIS step only.
+
+=== ROOT CAUSE of "OS doesn't reach the desktop anymore" (confirmed, no guess) ===
+main.c boots a "Tater Bridge proof-of-life" scaffold (lines ~543-818) gated on the
+/LXTEST.RUN marker (always staged by build_iso.sh). With TBRIDGE_CLAUDE_PROMPT_ONLY=1
+(main.c:109), when /nvme/RCLAUDE.LXE is present the kernel launches claude itself,
+sets tbridge_claude_prompt_only=1, then at main.c:819-827 calls sched_tick() and
+kernel_panic()s on return — DELIBERATELY never reaching main.c:835 (INIT.FRY -> GUI).
+=> The desktop and claude were never two "design modes"; this block is bring-up
+TEST SCAFFOLDING that hijacks boot so claude could be debugged alone. It did its job
+(proved the binary runs; surfaced the wait4 deadlock fixed in fry1506) and was never
+graduated/removed.
+
+=== WHAT I DID THIS STEP (no source changes — staging only, lowest risk) ===
+1. find src/kernel -name '*.c' | xargs touch  (no header-dep tracking in Makefile;
+   tree had uncommitted header edits -> force clean kernel rebuild to avoid stale .o).
+2. PATH=/opt/cross/bin:... make  -> kernel.elf rebuilt clean 19:57:57, no errors.
+3. PATH=... bash build_iso.sh   WITHOUT STAGE_CLAUDE  -> out/tatertos64v3.iso 19:58:18,
+   out/tater_nvme.img 19:58:16. No RCLAUDE.LXE staged -> scaffold takes the skip path.
+4. Headed run (NOT run_in_background; that SIGHUPs the GTK window):
+   setsid env DISPLAY=:0 qemu-system-x86_64 -m 4G -machine q35,accel=kvm -cpu host -smp 4 \
+     -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+     -drive if=pflash,format=raw,file=/tmp/fry1508_desktop_VARS.fd \
+     -cdrom out/tatertos64v3.iso \
+     -drive file=out/tater_nvme.img,if=none,id=nvme0,format=raw \
+     -device nvme,drive=nvme0,serial=tatertos-nvme \
+     -netdev user,id=n0 -device e1000,netdev=n0 \
+     -vga std -display gtk -serial file:logs/fry1508_desktop.serial.log
+
+=== RESULT (verified via logs/fry1508_desktop.serial.log) ===
+* "TBRIDGE: /nvme/RCLAUDE.LXE not present (skip)"  <- scaffold skipped, as designed.
+* INIT.FRY ran. SPAWN_OK /apps/SMOKETEST.FRY pid=10; /apps/CHROME_PROBE.FRY pid=11;
+  /system/GUI.FRY pid=12 parent=5.
+* No kernel panic. All 4 CPUs ticking (TBCLK ... ticks=110000+). System STABLE.
+* => THE DESKTOP BOOT PATH IS RESTORED. The OS is no longer hijacked by the claude
+  scaffold. "My OS doesn't even reach the desktop" regression is FIXED at process level.
+
+=== NEW PROBLEM FOUND (becomes next step / fry1509) ===
+* On screen the GTK window shows ONLY the TianoCore (UEFI/OVMF) logo — NO rendered
+  desktop, NO boot text. Zack confirms: "I've got nothing."
+* Serial: "TATER EFI: GOP ok" (framebuffer obtained) but ZERO fb_/draw/gui_/compositor
+  activity, and GUI.FRY (pid12) only logs SPAWN_OK then nothing visible.
+* Two USER FAULTs BEFORE gui: pid=10 (SMOKETEST) + pid=11 (CHROME_PROBE), vec=14
+  err=0x14 rip=0x0 cr2=0x0 (null jump). These are INIT's probe apps, NOT the GUI;
+  GUI.FRY spawned after and did not fault. Unclear yet if relevant.
+* HYPOTHESES for blank screen (to test in fry1509, in order):
+  (a) Kernel isn't drawing to the GOP surface QEMU/GTK shows — even early_fb boot
+      squares/text don't appear -> points at the EFI framebuffer HANDOFF. NOTE:
+      src/boot/efi_loader.c and src/boot/efi_handoff.h are BOTH uncommitted-modified;
+      prime suspect. Recent run templates all used -display none, so fb rendering may
+      have silently regressed and gone unnoticed.
+  (b) GUI.FRY is a minimal stub (memory: "70-line stub") that spawns but paints nothing.
+  Distinguish: if (a), no kernel boot text shows either (current symptom favors (a)).
+
+=== STATE ===
+* No source modified this step. Uncommitted tree = baseline + prior session's work
+  (deadlock fix KEEP: sched.c/sched.h/process.c; TTY-ioctl in syscall.c).
+* qemu (pid was 9482) left RUNNING headed for inspection; window = TianoCore logo.
+* Next: fry1509 = diagnose blank framebuffer (start with git diff of efi_loader.c /
+  efi_handoff.h vs whether kernel ever writes the GOP fb base).

@@ -16,9 +16,20 @@ CXX = $(TOOLBIN)/x86_64-elf-g++
 # in interrupt handlers, clobbering the interrupted user thread's YMM/XMM mid-
 # instruction (e.g. a libc AVX memset(...,0xFF,...) resumes with ymm0=0 and writes
 # zeros, destroying JSC's -1 hash-set empty sentinels -> infinite probe spin). fry1379.
-CFLAGS = -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -mgeneral-regs-only -O2 -std=gnu11 -Wall -Wextra -Isrc/include
-UFLAGS = -ffreestanding -fno-stack-protector -O2 -std=gnu11 -Wall -Wextra -Isrc/include -Isrc/user/libc
-UCXXFLAGS = -ffreestanding -fno-stack-protector -mno-red-zone -O2 -std=gnu++23 -fno-exceptions -frtti -Wall -Wextra -isystem src/include/c++ -Isrc/include -Isrc/user/libc
+# fry1796: -MMD -MP emits a .d sidecar per object listing every header it
+# included, pulled back in by the `-include $(DEPFILES)` block below. WHY: this
+# Makefile had NO header dependencies at all, so editing a header rebuilt
+# NOTHING. fry1790 added two fields to `struct fry_process_shared` in process.h;
+# only process.o/elf.o recompiled while syscall.o and sched.o stayed stale, so
+# kernel.elf was linked from objects using TWO DIFFERENT struct layouts —
+# `user_fs_base` was written at the new offset and read at the old one, silently
+# returning 8. That cost a full day of chasing a phantom TLS bug (fry1792-1795).
+# -MP adds phony targets for each header so a DELETED/renamed header does not
+# wedge the build with "No rule to make target".
+DEPFLAGS = -MMD -MP
+CFLAGS = -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=kernel -mgeneral-regs-only -O2 -std=gnu11 -Wall -Wextra -Isrc/include $(DEPFLAGS)
+UFLAGS = -ffreestanding -fno-stack-protector -O2 -std=gnu11 -Wall -Wextra -Isrc/include -Isrc/user/libc $(DEPFLAGS)
+UCXXFLAGS = -ffreestanding -fno-stack-protector -mno-red-zone -O2 -std=gnu++23 -fno-exceptions -frtti -Wall -Wextra -isystem src/include/c++ -Isrc/include -Isrc/user/libc $(DEPFLAGS)
 HARFBUZZ_CFLAGS := $(filter -I% -D%,$(shell $(PKG_CONFIG) --cflags harfbuzz 2>/dev/null))
 SKIA_CFLAGS ?= -I/usr/include $(filter -I% -D%,$(shell $(PKG_CONFIG) --cflags skia 2>/dev/null))
 SKIA_LIBS = /usr/lib/libskia.a \
@@ -218,7 +229,11 @@ USER_OBJS = \
 .PHONY: all clean kernel init shell gui sysinfo uptime ps fileman netmgr vmtest vmfault abitest thtest smoketest evloop chrome_probe claude hosttools test-elf-bounds test-storage-fuzz
 .SECONDARY:
 
-all: kernel init shell gui sysinfo uptime ps fileman netmgr vmtest vmfault abitest thtest smoketest evloop chrome_probe claude hosttools
+all: kernel init shell gui sysinfo uptime ps fileman netmgr vmtest vmfault abitest thtest smoketest evloop chrome_probe claude python3 hosttools
+
+# Python 3.14 for TaterTOS (fry1631: Hermes port Phase 2)
+python3:
+	$(MAKE) -f Python3.mk python3
 
 
 test-elf-bounds: out/elf_loader_bounds_test
@@ -261,6 +276,21 @@ src/boot/stack_switch.o: src/boot/stack_switch.asm
 
 src/drivers/smp/trampoline.o: src/drivers/smp/trampoline.asm
 	$(AS) -f elf64 $< -o $@
+
+# fry1796: pull in the header dependencies emitted by $(DEPFLAGS). Discovered by
+# find rather than derived from the object lists so that EVERY object is covered
+# — kernel, drivers, boot, libc, apps, BearSSL/QuickJS/OpenH264/Opus, Ladybird —
+# regardless of which of this Makefile's ~20 object lists it belongs to. Missing
+# .d files on a first/clean build are fine: nothing exists to be stale against.
+#
+# Scoped to src/ ONLY, and each candidate must have a sibling .o proving WE
+# generated it. WHY both guards: `.d` is also DTrace's provider-source suffix,
+# and external/Python-3.14.5/Include/pydtrace.d is such a file — a first cut of
+# this rule searched external/ too, fed that source file to make
+# ("missing separator. Stop.") and would have had `clean` DELETE it. This
+# Makefile builds nothing under external/, so src/ is the correct boundary.
+DEPFILES := $(shell find src -name '*.d' -exec sh -c '[ -f "$${1%.d}.o" ]' _ {} \; -print 2>/dev/null)
+-include $(DEPFILES)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -449,6 +479,9 @@ clean:
   evloop.elf evloop.fry \
   chrome_probe.elf chrome_probe.fry \
 	  tools/mktotfs tools/totcopy
+	@# fry1796: drop the generated header-dependency sidecars too, so a clean
+	@# build cannot resurrect a .d that names a header that no longer exists.
+	find src external -name '*.d' -delete 2>/dev/null || true
 
 # =====================================================================
 # Ladybird port — Chunk 2: AK static library
@@ -506,6 +539,7 @@ ifeq ($(LADYBIRD_PORT_ENABLED),1)
 LADY_POSIX_FLAGS =
 
 AK_CXXFLAGS = -ffreestanding -fno-stack-protector -mno-red-zone \
+              $(DEPFLAGS) \
               -O2 -std=gnu++23 \
               -ffunction-sections -fdata-sections \
               -fno-exceptions -frtti \

@@ -1,0 +1,39 @@
+fry1754 — 2026-06-22 14:30 CDT
+STEP 6 (FS): /tmp as a REAL temp filesystem = RAM-backed ToTFS. Zack's call: don't
+       write a separate tmpfs — reuse our own format (ToTFS) on a RAM block device.
+       No new filesystem code; the only new piece is an in-kernel ToTFS formatter.
+
+CONTEXT: fry1751 boot showed the FS test FAIL [Errno 2] writing /tmp/... — /tmp simply
+  doesn't exist on the image (root has apps/usr/opt only), and there was no tmpfs.
+  Zack: build a real tmpfs, but reuse ToTFS ("same fs but for temps"), production-grade
+  (RAM-backed = ephemeral, fast, zero NVMe wear).
+
+WHY RAM-backed ToTFS (not a new FS, not a disk /tmp):
+  - totfs_mount(fs, BD, part_lba) already takes ANY block device -> point ToTFS at RAM.
+  - Reuses 100% of ToTFS (mount/alloc/read/write/dir ops + the multi-block-bitmap
+    scaling from fry1752). Temp lives in RAM -> cleared each boot, no disk wear.
+  - Disk /tmp (mkdir on NVMe) was the band-aid; rejected (persists, wears the drive).
+
+IMPLEMENTED:
+  - src/kernel/fs/totfs.c + .h: NEW `totfs_format(bd, part_lba, total_bytes)` — an
+    IN-KERNEL ToTFS formatter mirroring tools/mktotfs.c exactly (scaled inodes
+    total_blocks/8 floored at 16384; multi-block inode + block bitmaps;
+    metadata-marking across all block-bitmap blocks; root inode + "." ".." dir).
+    The OS can now format ToTFS volumes itself (no host tool dependency). Added
+    extern memset/memcpy (kmem.c) to totfs.c.
+  - src/kernel/fs/vfs.c: /tmp mount —
+      * 64MB RAM region via pmm_alloc_pages; a block_device (tmp_bd_read/write_sector)
+        over it (512B sectors).
+      * vfs_mount_tmp(): alloc RAM -> totfs_format -> totfs_mount(&g_tmp_totfs) ->
+        fill tmp_totfs_ops with the EXISTING totfs_*_vfs wrappers (they take fs_data,
+        already used for the secondary mount) -> vfs_mount("/tmp", ...). Idempotent.
+      * Hooked into vfs_mount_tbridgefs() (runs in every boot path) so /tmp mounts in
+        all of them with one call site. Forward-declared + pmm_alloc_pages extern.
+
+GEOMETRY (/tmp 64MB): 16384 blocks -> 16384 inodes (floor), 4MB inode table, ample for
+  temp files. Format writes ~4MB zeros into RAM at boot (fast).
+
+STATE: code written; kernel NOT yet rebuilt/verified.
+NEXT: rebuild kernel (verify totfs_format/vfs.c compile clean), build_iso, boot, run
+  hermes -> FS test should pass ([Errno 2] gone, os.path.exists('/tmp') True). Then the
+  remaining agent blockers: `hermes` package import + `_ssl` (BearSSL). -> fry1755.

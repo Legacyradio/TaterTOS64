@@ -1,0 +1,70 @@
+fry1520 - Chunked Linux ELF streaming and visible Claude loading state
+Date: 2026-06-15 11:39:14 CDT
+
+Why:
+  The restored GUI Shell now delivers the typed "claude" command to the
+  kernel, but the user-visible Shell appears frozen because
+  fry_spawn_linux_args() is synchronous. It does not return a pid until
+  process_launch_linux() finishes elf_load_linux() for the 250,480,336-byte
+  /nvme/RCLAUDE.LXE image.
+
+  Serial evidence from the headed GUI runs showed the command path was alive:
+    LINUXELF: load start /nvme/RCLAUDE.LXE
+    LINUXELF: open /nvme/RCLAUDE.LXE
+    LINUXELF: size /nvme/RCLAUDE.LXE 250480336
+
+What changed:
+  src/kernel/proc/linux_elf.c
+    - Added lx_stream_to_user(), a bounded bounce-buffer streaming helper.
+    - Streamed PT_LOAD reads now use up-to-1 MiB chunks, with fallback to
+      smaller chunks if contiguous pages are unavailable.
+    - Large segment streaming prints serial progress every 16 MiB.
+    - The existing segment-cache behavior remains enabled so later Claude
+      self-reexec / embedded-rg loads do not regress.
+
+  src/user/shell/shell.c
+    - cmd_claude() now prints and renders:
+        claude: loading /nvme/RCLAUDE.LXE...
+      before entering the synchronous Linux-spawn syscall.
+
+Verification:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make src/kernel/proc/linux_elf.o shell
+    - PASS.
+    - Only the pre-existing src/user/libc/libc.h nested-comment warning appeared.
+
+  STAGE_CLAUDE=1 CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.177 \
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+    - PASS.
+    - SHELL.TOT staged size: 145816.
+    - RCLAUDE.LXE staged size: 250480336.
+    - out/tater_nvme.img and out/tatertos64v3.iso updated.
+    - Live-app fallback verification complete.
+
+  Headed GUI QEMU validation from /tmp/fry1520_desktop_serial.log and
+  /tmp/fry1520b_desktop_serial.log:
+    - selftest: 106 passed, 0 failed.
+    - smoketest: 15 passed, 0 failed.
+    - chrome_probe: 12 passed, 0 failed.
+    - GUI.FRY launched as the real desktop path.
+    - SHELL.TOT launched under GUI.
+    - Typing a bad command ("claudde") produced:
+        PROC: launch fail path=claudde elf_rc=-101
+      proving Shell command parsing and Enter handling reached the kernel.
+    - Typing "claude" reached the Linux ELF loader.
+    - Loader progressed through large streamed segments:
+        LINUXELF: stream progress 16777216/36344556
+        LINUXELF: stream progress 33554432/36344556
+        LINUXELF: streamed seg done va=200000 file=22a92ec
+        LINUXELF: main PT_LOAD 3
+
+Current result:
+  This fixes the silent/no-evidence stall by proving the GUI Shell command path
+  reaches the loader, improving streamed VFS read size, and rendering a visible
+  loading line before the blocking syscall.
+
+Remaining blocker:
+  Claude is not yet confirmed interactive from the GUI Shell. The first desktop
+  launch still pays the synchronous eager-load + segment-cache fill cost before
+  Shell gets a child pid and can pump child stdout/stdin. The next fix should
+  either move Linux launch off the Shell UI path or change the initial/cache
+  load policy without regressing the later embedded-rg self-reexec cache.

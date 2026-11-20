@@ -1,0 +1,50 @@
+fry1538 - Shell resize fix (bigger default + TW_MSG_RESIZED handler); + NEW CRASH on first real prompt
+Date: 2026-06-15 16:20:10 CDT
+
+Type: CODE CHANGE + BUILD + PARTIAL VERIFY (interrupted by a kernel triple-fault -
+see "Crash" below; full root cause continues in fry1539).
+
+Why (Rule 6) - resize distortion (fry1537): the compositor reallocates the window's
+SHM surface on resize and notifies via TW_MSG_RESIZED, but the Shell never handled
+that message - it kept drawing the old buffer while the compositor showed the new
+empty one -> black + garbage. Also the 78x22 terminal made Claude's UI cramped.
+
+Changes (src/user/shell/shell.c):
+  - Default terminal grid enlarged: TERM_W/H 640x384 -> 960x576, TERM_COLS/ROWS
+    78x22 -> 120x36 (de-crowds Claude's UI).
+  - Added term_surf_w/term_surf_h (live surface size); term_render now fills the
+    WHOLE live surface with bg (not the fixed TERM_W/H) so no area is ever left as
+    stale/garbage.
+  - Added term_handle_resize(shm_id,w,h): fry_shm_map the new surface, repoint
+    term_pixels + gfx (stride=new_w), update surface size, clamp cursor, re-render.
+  - process_input_stream now handles TW_MSG_RESIZED (parses tw_msg_resized_t, calls
+    term_handle_resize). tw_msg_size already returned the right size for type 7.
+  src/kernel/proc/syscall.c:
+  - TIOCGWINSZ now reports 36 rows x 120 cols (was 22x78) to match the bigger grid.
+
+Build (Rule 12, clean): BUILD_EXIT=0, no errors. shell.o + syscall.o compiled. Log
+  /tmp/fry1538_build.log.
+
+Verify (PARTIAL): /tmp/fry1538_serial.log. User opened the Shell (came up at the new
+bigger size), reached Claude's MAIN UI (epoll-fd0 input fix from fry1536 still holds;
+de-crowd visible), then typed a real prompt "hi". The resize-distortion fix itself
+was NOT re-exercised before the crash below, so it remains to be confirmed.
+
+CRASH (new, separate issue -> fry1539): sending "hi" made Claude perform its network
+request via a spawned helper subprocess pid=28 (had ~14 open sockets). Claude then
+killed it (serial: "TBSIG default-exit sender=14 target=28 tgid=28 sig=15"). During
+pid 28's teardown - freeing its sockets/pipes ("SPCEN exit pid=28 sock=14/64 ... down
+to sock=9") - the kernel TRIPLE-FAULTED: the serial jumps straight from the SPCEN
+cleanup to a UEFI reboot (BdsDxe loading; "selftest: running" appears a 2nd time at
+line 41227) with NO panic message (a triple fault resets the CPU before anything
+flushes). So the fault is in the PROCESS-EXIT socket/pipe teardown path for a killed
+multi-socket subprocess - first hit now that Claude does real network I/O.
+  Suspects to check (fry1539): the socket/pipe free path in proc_free; possible
+  interaction with this session's epoll-fd0 change (an epoll item with fd==0 has no
+  fd_ptrs[0] - epoll teardown that derefs fd_ptrs[item->fd] would fault); and the
+  block-until-space outbuf write if a dying process is mid-write.
+  A triple fault is invisible to serial - the QEMU -d guest_errors log is the only
+  source for the faulting RIP/CR2/exception chain. Reading it needs express go
+  (planv3 Rule 11); requested from user.
+
+No commit. No hashes (Rule 16). System rebooted itself; VM is back at a fresh boot.

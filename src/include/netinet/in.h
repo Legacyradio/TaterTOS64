@@ -39,6 +39,41 @@ struct sockaddr_in {
 #define INADDR_ANY       0x00000000
 #define INADDR_LOOPBACK  0x7F000001
 #define INADDR_NONE      0xFFFFFFFF
+#define INADDR_BROADCAST 0xFFFFFFFF
+
+#define INET_ADDRSTRLEN  16
+#define INET6_ADDRSTRLEN 46
+
+/* IPv6 support */
+struct in6_addr {
+    uint8_t s6_addr[16];
+};
+
+struct sockaddr_in6 {
+    sa_family_t     sin6_family;
+    in_port_t       sin6_port;
+    uint32_t        sin6_flowinfo;
+    struct in6_addr sin6_addr;
+    uint32_t        sin6_scope_id;
+};
+
+#define IN6ADDR_ANY_INIT { { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 } }
+#define IN6ADDR_LOOPBACK_INIT { { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1 } }
+
+#define IPPROTO_IPV6    41
+#define IPV6_V6ONLY     26
+#define IPV6_UNICAST_HOPS 16
+#define IPV6_MULTICAST_IF 17
+#define IPV6_MULTICAST_HOPS 18
+#define IPV6_MULTICAST_LOOP 19
+#define IPV6_ADD_MEMBERSHIP 20
+#define IPV6_DROP_MEMBERSHIP 21
+
+/* sockaddr_storage — large enough for any address family */
+struct sockaddr_storage {
+    sa_family_t ss_family;
+    char        _ss_padding[128 - sizeof(sa_family_t)];
+};
 
 #ifdef __cplusplus
 }

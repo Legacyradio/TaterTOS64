@@ -1,0 +1,43 @@
+fry1413 — Tater Bridge / Claude Code: epoll fd-close leak = the DNS send
+that never fired. THE NETWORKING ROOT CAUSE.
+Date: 2026-06-11 ~1:35 PM CDT. Author: Claude (Opus 4.8 after a mid-session
+model swap; began as Fable 5). Follows fry1412.
+========================================================================
+
+WHAT WAS FOUND (fry1412 boot — full visibility)
+====
+- LXSOCK/LXCONN beacons made the resolver path fully legible:
+    AF_NETLINK SOCK_RAW (domain=16 type=0x80003) -> EAFNOSUPPORT (glibc
+      __check_pf address-family probe; falls back fine — NOT the bug).
+    AF_INET DGRAM (domain=2 type=0x80802) -> fd=17.
+    LXCONN fd=17 fam=2 dst=10.0.2.3:53 alen=16 rc=0  -> CONNECT SUCCEEDS.
+- After the successful connect, pid=5 issues NO send of any kind (no
+  sendto/sendmsg/sendmmsg/send from ANY pid in the entire boot) and
+  blocks on a futex that times out. The query packet never leaves.
+- SMOKING GUN: epoll_ctl returned -EEXIST (rc=ffffffffffffffef) 60 times.
+
+ROOT CAUSE
+====
+struct epoll_cb keeps interest items keyed by fd NUMBER, and NOTHING
+removed them when an fd closed. On Linux, close() auto-removes the fd
+from every epoll instance. Bun/uSockets cycles DNS sockets rapidly and
+reuses fd numbers; EPOLL_CTL_ADD on a reused number hit the ghost item
+left by the prior socket -> -EEXIST. uSockets treats EEXIST as "already
+armed with my events" and does NOT register the new socket, so the new
+DNS socket never gets its writable (EPOLLOUT) callback -> the query is
+never written -> resolver times out -> claude never reaches TCP/TLS/API.
+(This is the same class as fry1393's epoll bug — epoll correctness is
+load-bearing for every byte of claude's networking.)
+
+FIX (syscall.c, compiles clean)
+====
+epoll_purge_fd_everywhere(shared, fd): walks all FD_EPOLL fds and unlinks
+every item matching the closing fd. Called from BOTH close paths —
+lx_close_fd (Linux ABI) and native SYS_CLOSE — before fd_release.
+
+NEXT
+====
+Boot. Expect: EEXIST count drops to ~0, LXUDP tx dst=10.0.2.3:53 fires,
+LXUDP rx with the slirp answer, resolver returns the A record, then
+LXCONN to api.anthropic.com:443, TLS SYS_SEND/SYS_RECV, first reply.
+Results -> fry1414.

@@ -1,0 +1,26 @@
+# fry1552 - BUILD: clean rebuild with the fry1551 /proc/self/stat implementation (+ CLAUDE_NO_MCP=1)
+Date: 2026-06-15 23:13 CDT
+Type: build (Rule 12)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+WHY (Rule 6)
+- fry1551 added /proc/self/stat to tbridgefs. This build produces the image to test whether removing the /proc/self/stat ENOENT hot-loop lets Claude's main thread return to reading stdin. MCP kept stripped (CLAUDE_NO_MCP=1) so MCP churn does not confound the test.
+
+COMMAND
+  make clean
+  STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.177 \
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+  (backgrounded -> /tmp/build_1552.log; QEMU killed first so NVMe was not open)
+
+RESULT: EXIT 0 (clean)
+- src/kernel/fs/tbridgefs.c (the changed TU) compiled with NO errors (build_1552.log:113 is its compile line; nothing after it). The earlier clangd diagnostics (fry_limits.h not found -> FRY_VMREG_MAX undeclared at pre-existing lines) were language-server-only noise; the cross-gcc build is clean.
+- src/kernel/fs/tbridgefs.o rebuilt (22904 bytes @ 23:11).
+- Artifacts fresh @ 23:13:
+    out/tatertos64v3.iso     166,627,328
+    out/tater_nvme.img     1,073,741,824
+- Staged config still MCP-free: out/etc/clauth/dot-claude.json mcpServers: <<absent>>.
+- "Live-app fallback verification complete."
+
+NEXT (own fry log): headed verify run. Look for: NO more TBFAIL openat /proc/self/stat; and whether Claude now read(fd0)s + the TUI accepts typing/Enter. -> fry1553.
+
+All per planv3 Rules 1/5/6/12. Written immediately on build completion, before relaunch.

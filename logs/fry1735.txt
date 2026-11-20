@@ -1,0 +1,28 @@
+fry1735 — 2026-06-21 20:18 CDT
+STEP 2a (native std phase): vendor the libc crate as an in-repo fork + establish the
+       mechanism by which build-std actually picks up our fork.
+
+CHANGES:
+  - Copied libc-0.2.185 from the cargo registry cache into rust/forks/libc (5.2M).
+    This is the CANONICAL tracked fork (in-repo, durable — per Zack).
+  - Inspected libc dispatch: src/unix/mod.rs:2453-2459 selects the `linux_like`
+    family for target_os in {linux, android, emscripten}. tatertos will be added
+    here (linux_like member) because our C libc implements the SysV/x86-64 (linux)
+    C ABI. Output stays native: our cross-gcc + our libc.a + our SYS_* syscalls.
+
+FINDING — [patch.crates-io] does NOT reach build-std:
+  - Added [patch.crates-io] libc = {path=rust/forks/libc} to probe_std/Cargo.toml.
+    cargo warned "patch ... was not used in the crate graph" and build-std STILL
+    compiled the registry libc (same unresolved-import error). build-std reads the
+    sysroot's libc directly from the registry cache, bypassing leaf-crate patches.
+  - MECHANISM CHOSEN: canonical fork lives in rust/forks/libc; we MIRROR it into the
+    registry src path that build-std reads
+    (~/.cargo/registry/src/index.crates.io-*/libc-0.2.185) before each std build.
+    cargo verifies the .crate checksum only on EXTRACTION, not on rebuild of already-
+    extracted src, so editing the extracted src is safe for build-std. Documented so
+    it's reproducible, not a hidden hack.
+  - Will remove the ineffective [patch] stanza from probe_std/Cargo.toml.
+
+STATE: fork copied; patch mechanism understood; no tatertos code added to libc yet.
+NEXT: add target_os="tatertos" to the linux_like dispatch (+ arch/env mapping) in the
+  repo fork, mirror to registry, rebuild std, capture next error wave. -> fry1736.

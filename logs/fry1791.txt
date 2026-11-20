@@ -1,0 +1,25 @@
+fry1791 — remove boot smoketest (it blocked GUI); confirm fry1790 didn't break boot — 2026-06-26
+==========================================================================
+WHAT: The fry1790 kernel booted to a HALTED console (no desktop) — Zack: "that is
+not my GUI". Root-caused + fixed: it was NOT fry1790; init blocked on the boot
+smoketest. Removed the smoketest (Zack: "we don't use it for anything"). Desktop
+now comes up. fry1790 per-thread TLS is intact and boot-clean.
+
+DIAGNOSIS (serial /tmp/fry1791_serial.log): init.c ran SMOKETEST.FRY (pid=7) and
+fry_wait()'d on it. SMOKETEST faulted at exit (USER FAULT rip=0 cr2=0 — pre-existing
+crude exit). init's wait did not return -> init never spawned GUI.FRY -> halted
+console. The smoketest ran UNCONDITIONALLY every boot and served no product
+purpose (a dev syscall test).
+
+FIX: src/user/init/init.c — deleted the smoketest spawn+fry_wait block entirely.
+(The vmtest/vmfault autotests stay — they're gated on a .RUN file, so they don't
+run normally.)
+
+BUILD: make init EXIT=0 (init.fry), build_iso, boot.
+VERIFIED (shot1791b.png): real TaterTOS desktop — dock (TaterSurf/Files/Network/
+SysInfo/Shell/Media/Processes), taskbar. Serial: SPAWN_OK /system/GUI.FRY pid=7
+(GUI now pid 7 since smoketest no longer takes that slot). No fault, no panic.
+=> fry1790's per-thread TLS did NOT break boot; the smoketest wait was the hang.
+
+NEXT (fry1792): open Shell, run `hermes` — the real test of the fry1790 per-thread
+TLS fix (does python get past the _PyThreadState_Attach abort).

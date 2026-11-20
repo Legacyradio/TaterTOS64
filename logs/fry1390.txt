@@ -1,0 +1,70 @@
+fry1390 — Tater Bridge / Claude Code: -smp 1 falsification test. RESULT: the
+corrupt-CodeBlock crash REPRODUCES on a single CPU. Cross-CPU TLB staleness /
+SMP demand-page races are FALSIFIED as the (sole) corruptor. The bug is
+CPU-count-independent. No code changes this session step (test only).
+Timestamp: 2026-06-10 05:00 CDT (boot ran 04:47-04:51 CDT, 200s KVM timeout)
+Author: Claude (Fable 5), continuing fry1389. HEAD = 733c2f1a (unchanged).
+CLAUDE_BIN = 2.1.170 (artifacts from fry1389 build of 04:29, untouched).
+
+WHY THIS TEST
+  Code audit before the test found two real SMP coherency holes:
+  (a) NO cross-CPU TLB shootdown exists anywhere in the kernel — every invlpg
+      in src/kernel/mm/vmm.c is local-only, and vmm_unmap_user (vmm.c:399)
+      only invalidates even locally when the current CR3 matches the target
+      address space. No IPI infrastructure beyond INIT/SIPI startup exists.
+  (b) lx_try_demand_page (proc/syscall.c:3492) is check-then-map with no lock:
+      two CPUs faulting the same VA can double-install frames (the "Lost a
+      race ... Fine" re-check is not atomic with the install), and lx_map_one
+      maps the PTE PRESENT+WRITE *before* zeroing the frame through the
+      physmap window.
+  Hypothesis: stale TLB entry on the second CPU -> writes land in a freed,
+  reallocated frame -> precise small corruption on a page no VM op touched
+  (which would explain fry1389's zero TBVMTOUCH hits). Cheapest decisive test:
+  boot identical artifacts with -smp 1. If the crash vanishes, SMP coherency
+  confirmed; if it persists, falsified.
+
+HOW (commands)
+  cp /usr/share/edk2/x64/OVMF_VARS.4m.fd /tmp/v.fd
+  timeout 200 qemu-system-x86_64 -m 6G -machine q35,accel=kvm -cpu host -smp 1 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=/tmp/v.fd -cdrom out/tatertos64v3.iso \
+    -drive file=out/tater_nvme.img,if=none,id=nvm,format=raw \
+    -device nvme,serial=deadbeef,drive=nvm -serial file:/tmp/s.log -display none -no-reboot
+  (grep -a on /tmp/s.log — serial contains NUL bytes.)
+
+RESULT
+  - Claude launched as tgid=2 this boot (NOT 3; the name-based gate
+    tb_trace_is_claude tracked it, traces stayed valid).
+  - Bun booted, spawned the thread pool (pids 2,3,7,8), reached the event
+    loop (epoll_pwait -EINVAL loop + heavy futex traffic), ran VISIBLY LONGER
+    than the -smp 2 boots... then crashed with the IDENTICAL signature:
+      TBBFDUMP rip=0x3F4CFB6 cb=0x6FBFF50F4AA0 numLocals=0
+        cb+0=0x0100140001001600 cb+8=0x6FBFF51C0088 cb+10=0x0000000000030100
+        vm=0x6FBFF5400000 softLimit=0x7FFFFFB02F80 ret=0x3F6817C
+      64 TBBIGFRAME buckets (walk to the 512MB cap), #PF CR2=0x7FFFDFFFFFF8,
+      Bun crash reporter, fatal #UD (vec=6) at rip=0x2B05212, handler=0.
+  - Same VA page as fry1388/89 (0x6FBFF50F4000); cb offset differs
+    (0x4AA0 vs 0x42C0 on -smp 2) but neighboring fields are byte-identical.
+    Deterministic per config.
+  - RE-CONFIRMED on -smp 1: 0 TBVMTOUCH, 0 demand-refault lines for the cb
+    page. The page NEVER demand-faults and is never unmapped/dontneeded:
+    its PTE and physical frame are stable for the page's entire life.
+
+CONCLUSIONS
+  1. The corruptor is CPU-count-independent. NOT (solely) missing TLB
+     shootdown, NOT the SMP demand-install race.
+  2. Holes (a)+(b) above are still real architectural bugs that must be fixed
+     before -smp >1 is trustworthy, but they are NOT this crash. Deferred.
+  3. Since the page's PTE/PA never changes and no VM op covers it, the
+     numCalleeLocals=0 dword was produced by a WRITE through some live
+     mapping: user-mode (JIT/interpreter store to a stale/aliased pointer)
+     or kernel-mode through the physmap window (stray write-to-user such as
+     clear_child_tid zeroing, futex WAKE_OP store, or a zero-fill of a
+     double-allocated physical frame). The existing TBWATCH debug-register
+     handler only fires for CPL3 hits (irqdesc.c:482) — kernel-mode writes
+     are currently INVISIBLE to it.
+  NEXT (fry1391): re-arm the DR watchpoint infra at the corrupt field itself
+  (user VA cb+0x14 = 0x6FBFF50F4AB4 on the -smp 1 config) AND its physmap
+  alias (DR1 = vmm_phys_to_virt(PA(cb)+0x14), armed lazily once the page is
+  present), extend the #DB path to log kernel-mode hits, boot -smp 1, and
+  read the corruptor's RIP directly off the TBWATCH line.

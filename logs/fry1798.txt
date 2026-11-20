@@ -1,0 +1,85 @@
+fry1798 — BOOTED: network CONFIRMED WORKING; TLS probe SELF-DEFEATED (my design error) — 2026-08-09/10
+==========================================================================
+WHAT: Booted the fry1797 ISO and ran `hermes`. Two outcomes: the network fix is
+CONFIRMED END-TO-END, and the TLS instrumentation FAILED TO ANSWER ITS QUESTION
+because I budgeted it wrong. No source was changed in this step — this is the
+run + outcome log for the fry1797 build.
+
+LAUNCH (mine to do — correcting a fry1797 error):
+  I told Zack to launch it himself. That was WRONG and he called it out. The
+  standing note "Zack types `hermes`, it's a keypress, don't invent driving"
+  is about typing INTO THE GUEST, not about starting QEMU. I launch the VM; he
+  types the command in it. fry1794 records me killing and relaunching the VM.
+  Do not repeat this confusion.
+
+  Verified nothing running first (0 qemu procs), then:
+    setsid -f env DISPLAY=:0 qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg \
+      -cpu host -drive if=pflash,...OVMF_CODE.4m.fd -drive if=pflash,...OVMF_VARS.fd \
+      -drive file=./out/tater_nvme.img,if=none,id=nvm -device nvme,drive=nvm,serial=deadbeef \
+      -cdrom ./out/tatertos64v3.iso \
+      -netdev user,id=n0 -device e1000,netdev=n0 \
+      -serial file:logs/fry1798_serial.log -vga std -display gtk
+  QEMU pid 859904. Serial went to logs/fry1798_serial.log (kept in logs/, not
+  /tmp, so it survives as evidence next to this log). launch_debug.sh uses
+  -serial stdio which is useless when detached — hence the file redirect.
+
+=== RESULT 1 — NETWORK: FIXED AND CONFIRMED (serial :31-37) ===
+  I219: not found on PCI bus
+  E1000: mmio=0xffff800081040000 rx_ring_phys=0x7c908000 tx_ring_phys=0x81000
+  DHCP:E1000
+  E1000_TX: len=342 tail=1
+  E1000_TX: len=342 tail=2
+  NET_POLL: rx=2 total_polls=15
+  DHCP:OK
+  RX is genuinely RECEIVING (rx=2), not just TX — that is the exact failure mode
+  the fry1276 e1000 descriptor bug produced (TX fine, RX silently discarded), so
+  this confirms that fix still holds on this kernel. DHCP completed.
+  => The ONLY thing wrong with networking was the missing -netdev/-device on the
+     launch line. Kernel networking code needed no change. fry1797's one-line
+     launch_debug.sh:7 edit is validated.
+
+BOOT OTHERWISE CLEAN:
+  selftest: 106 passed, 0 failed
+  SPAWN_OK path=/system/GUI.FRY  pid=7 parent=2
+  SPAWN_OK path=/apps/SHELL.TOT  pid=8 parent=7   (~18s to shell)
+  Benign/known: ACPI EC not available, eSPI PID candidates invalid, P2SB unhide
+  fallback to SBREG_BAR_DEFAULT. Pre-existing, unrelated.
+
+=== RESULT 2 — hermes: FAILURE REPRODUCES EXACTLY (serial :75, :975-981) ===
+  HERMESMAIN argc=2 /nvme/opt/hermes-agent/hermes
+  ...full import runs, no fault...
+  Fatal Python error: _PyThreadState_Attach: non-NULL old thread state
+  !EXC vec=0E err=04 RIP=0x004E5C79 CR2=0x27 CR3=0x2416000
+  USER FAULT: pid=9 tid=10 vec=14 err=0x4 rip=0x4e5c79 cr2=0x27
+  Byte-identical to fry1795 and fry1788. Time to abort: ~769s wall.
+  The import itself is healthy — no missing modules, no traceback, no 0x40350e.
+
+=== RESULT 3 — THE INSTRUMENTATION FAILED. MY ERROR, NOT A PROPERTY OF THE BUG ===
+  96 TLSDBG lines emitted = the ENTIRE global budget.
+  ALL 96 are `TLSDBG get tid=9 tgid=9 fs=7fff80000138` — main thread only.
+  Budget exhausted by serial line 171 of 981. The thread spawn and the abort
+  happen at ~line 975. Every decisive probe (build/spawn/set, and any thread
+  `get`) printed NOTHING.
+
+  ROOT CAUSE OF THE PROBE FAILURE: fry1797 used ONE global budget
+  (g_tlsdbg_budget = 96) shared by all six probe sites. SYS_GET_TLS_BASE on the
+  main thread is a HOT path; the rare-but-decisive spawn/build events had to
+  compete with it for the same counter and lost outright. Rare events must never
+  share a budget with hot ones.
+
+  WHAT WE CAN AND CANNOT CONCLUDE:
+   - CAN: the main thread's %fs is 0x7fff80000138, and it is STABLE across all
+     96 calls (no drift/corruption on the main thread). It sits in the
+     FRY_TLS_REGION_BASE 0x7FFF80000000 region as elf.c intends.
+   - CANNOT: anything at all about tid=10. Only ONE distinct fs value appears in
+     the whole log, but that is an ARTIFACT of the probe dying early, NOT
+     evidence that the threads share a base. DO NOT read it that way.
+   - The fry1797 path=NATIVE vs path=LINUX_CLONE question is STILL UNANSWERED.
+     The static observation at process.c:492 (clone path bypasses
+     process_build_thread_tls) remains an untested hypothesis.
+
+STATE AT LOG TIME: VM pid 859904 still up; the hermes child died so the Shell is
+responsive again. Kernel/ISO unchanged from fry1797.
+
+NEXT: fry1799 — redesign the probe budgets and re-run. No fix will be written
+until a run actually reports tid=10's %fs.

@@ -1,0 +1,12 @@
+# fry1605 - BUILD: SHELL=/nvme/bin/sh re-added (fry1604) on the verified baseline.
+Date: 2026-06-16 ~22:11 (host clock) CDT
+Type: build (Rule 12)
+COMMAND: make clean && STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 \
+  LINUX_SHELL_BIN=/home/legacyindieradio/tatertos-shell/busybox \
+  CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.177 \
+  bash build_iso.sh   (-> /tmp/build_1605.log)
+RESULT: EXIT 0 clean. shell.c has SHELL=/nvme/bin/sh. busybox staged -> /bin/sh (inode 2679) => /nvme/bin/sh.
+  Baseline intact: single-page paging, no batch, no lock.
+NEXT (fry1606 verify): relaunch -smp 1 + e1000 NIC. Launch claude -> ask it to run `pwd`/`ls` -> Bash tool should
+  exec /nvme/bin/sh and return output (no "bash missing/broken"). Confirm chat+network still work, no freeze.
+All per planv3 Rules 1/5/6/12. Written immediately on the build.

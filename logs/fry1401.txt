@@ -1,0 +1,55 @@
+fry1401 — Tater Bridge / Claude Code: load-time sample 561/569 (loader+ToTFS+image exonerated) -> ROOT CAUSE: vm_madvise_dontneed fallback zeroes file-backed image pages; FIX: lx_img_segs tracking + preserve
+Date: 2026-06-11. Author: Claude (Fable 5). Session continues fry1396.
+(Split from the consolidated session log per planv3 rule 5 — one step per file.)
+========================================================================
+[06:00] EXPERIMENT (edit 12, boot #5 building): load-time sample — right
+  after the stream loop, sample every 64th page of each streamed segment
+  (first-qword-page nonzero test) and print "seg sample nonzero=K/N".
+  HOST EXPECTATION if streaming were correct: 562/569 nonzero.
+  ~115/569 (good only below file ~102MB) => ToTFS deep-offset read bug.
+  ~562/569 => post-load zeroing (hunt the writer next).
+[06:25] LOAD-TIME SAMPLE (boot #5): seg sample va=60ed9a0 nonzero=561/569
+  (host expectation 562/569; RO seg 139/139, RX 242/242). THE LOADER AND
+  ToTFS ARE CORRECT — the image loads perfectly. Host check also verified
+  the NVMe image itself is byte-perfect (claude contiguous at img offset
+  0x2EA000, every sampled offset matches the host binary). The 136MB of
+  zeros appear POST-LOAD.
+[06:30] ***ROOT CAUSE FOUND*** — vm_madvise_dontneed() fallback loop:
+  the ELF image is NOT in the mmap vm-region table, so for any
+  MADV_DONTNEED range over image VAs, touched_region stays 0 and the
+  fallback BLANKET-ZEROES every present page in the range. Linux semantics
+  for MADV_DONTNEED on a private FILE-BACKED mapping: next fault re-reads
+  the FILE (content preserved); only anon pages read back zero. Bun trims
+  its embedded standalone blob (module graph + JSC bytecode cache, deep in
+  the 140MB RW PT_LOAD) with MADV_DONTNEED to cut RSS -> our kernel
+  DESTROYED 136MB of file content -> JSC deserialized empty
+  UnlinkedCodeBlocks from zeros -> numCalleeLocals=0 -> divergent JIT
+  prologue zero-loop (proven [05:10]) -> 512MB stack walk-off. Explains
+  EVERYTHING: deterministic per boot, follows the code across versions
+  (Bun always trims the same structural region), errno-independent,
+  "valid header pointers" on the source object (heap cell built from
+  zeroed cache bytes), and five sessions of "heap corruption" symptoms.
+  Why earlier "no DONTNEED on image" checks lied: the TBVMTOUCH beacon is
+  WINDOW-FILTERED (g_tb_win_lo/hi = the 0x6FBB heap window) — image-range
+  madvise calls were invisible.
+[06:35] FIX SHIPPED (edits 13-17, all compile clean):
+  - process.h: +struct lx_img_seg {lo,hi} + lx_img_segs[16]/lx_img_nsegs
+    in fry_process (file-backed extents of main exe + interpreter).
+  - linux_elf.c: lx_map_segment(_at) records each PT_LOAD's file-backed
+    extent; elf_load_linux gains img_segs_out/img_nsegs_out params
+    (linux_compat.h prototype updated).
+  - process.c: launch copies segs into the new process; clone children
+    inherit (threads share the image).
+  - syscall.c: +lx_va_in_img/+lx_range_hits_img; vm_madvise_dontneed
+    fallback SKIPS image pages (their clean content IS the Linux outcome;
+    anon stack/brk zeroing unchanged; the fry1386 anon-region zeroing
+    path untouched); MADV_GUARD_INSTALL likewise never unmaps image pages.
+    TBIMGOP beacon (unconditional, not window-filtered) prints whenever a
+    DONTNEED/guard range hits the image -> confirms Bun's trim live.
+  Known accepted divergence (documented): DONTNEED on a process-DIRTIED
+  file page should revert to file content; we keep the dirty copy. Safe
+  for the RSS-trim use case; a full file-restore demand pager is the
+  long-term fix (needs per-seg file offsets + re-open path).
+[06:36] Verification rebuild + boot launching: expect TBIMGOP beacons,
+  NO TBBFDUMP, Bun running past the old crash point into DNS/TCP via the
+  new socket layer.

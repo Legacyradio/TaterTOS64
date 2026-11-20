@@ -1,0 +1,85 @@
+# fry1644 - Claude TUI cosmetic pass 1: UTF-8 + box-drawing/symbol glyphs (BIG WIN, confirmed) + per-cell color renderer (built, but inert until TERM is upgraded). Box-line alignment needs tuning.
+Date: 2026-06-19 (host clock) CDT
+Type: rendering (src/user/libc/gfx.c font + src/user/shell/shell.c terminal) + build + verify
+Author: planv3 Rules 1/5/6/12 + CLAUDE.md
+Context: working from the documented polish list (CODEX_BRIEFING.md sec 2 "GUI Polish" /
+sec 4 "Shell QoL": font rendering + color scheme). Cosmetic = item #1 of the 3 open items.
+
+================================================================================
+WHAT THE CLAUDE TUI "DISASTER" ACTUALLY WAS (root cause, confirmed)
+================================================================================
+- NOT the column width (winsize correctly reports 120x36; font advance 8px == TERM_CHAR_W).
+- Cause A: font8x16 was [128] (ASCII only) and gfx_draw_char did `if (c>127) c='?'`. Claude's
+  TUI uses UTF-8 box-drawing/blocks/symbols (3 bytes each) -> every byte became '?' = garbage.
+- Cause B: term_render drew every cell in ONE gray (0xD0D0D0) -> no color.
+
+================================================================================
+DONE + CONFIRMED ("holy shit worlds better" - Zack):  UTF-8 + box/symbol glyphs
+================================================================================
+- src/user/libc/gfx.c:
+  * font8x16[128] -> font8x16[256]; removed the `c>127 -> '?'` clamp in gfx_draw_char.
+  * Added glyphs 0x80-0x91: box-drawing (─│┌┐└┘├┤┬┴┼ at 0x80-0x8A; center cols = bits 3,4
+    mask 0x18, center rows = 7,8), full block 0x8B, shade 0x8C, bullet 0x8D, ellipsis 0x8E,
+    check 0x8F, arrow 0x90, spinner-blob 0x91.
+- src/user/shell/shell.c:
+  * term_feed TS_NORMAL: added UTF-8 multibyte assembly (term_u8_cp/need/got) -> one codepoint
+    per cell (was 3x '?'). Escape/control bytes (<0x80) pass through untouched.
+  * cp_to_glyph(cp): maps the box-drawing/block/symbol/braille codepoint ranges (incl heavy/
+    double/rounded variants ━┃═║┏┓┗┛╔╗╚╝╭╮╰╯ and braille spinners U+2800-28FF) onto 0x80-0x91;
+    arrows/quotes/dashes -> ASCII; unknown -> '?' (now single-cell, not tripled).
+  RESULT: boxes/lines/spinners/bullets render as real shapes. Verified on screen.
+
+================================================================================
+BUILT BUT INERT -- COLOR DID NOTHING.  ROOT CAUSE FOUND, ONE-LINE FIX FOR NEXT TIME
+================================================================================
+- Implemented per-cell foreground color in shell.c: uint32_t term_fg[ROWS][COLS], term_cur_fg,
+  term_ansi[16] palette, term_xterm256() (256-color), SGR parser in term_csi_dispatch case 'm'
+  (codes 0/1/22/30-37/39/90-97 + 38;5;n + 38;2;r;g;b), per-cell render via gfx_draw_char(fg),
+  and term_fg carried through term_putchar_raw/term_scroll/term_clear. Compiles clean, staged.
+- IT RENDERED NO COLOR because **shell.c:860 sets `TERM=dumb`** in cmd_claude's env -> Claude
+  Code emits ZERO SGR color codes (dumb terminal). The renderer is correct; there is just
+  nothing to render.
+- >>> NEXT SESSION, FIRST THING: in src/user/shell/shell.c cmd_claude env (line ~860) change
+    "TERM=dumb"  ->  "TERM=xterm-256color"  and ADD  "COLORTERM=truecolor".
+    Rebuild (full build_iso, see below), reboot, run claude. Color should then appear via the
+    already-built renderer.
+  CAUTION: a richer TERM makes Claude emit MORE escape sequences (alt-screen already handled;
+  watch for cursor save/restore, mouse 1000/1006, sync 2026 - mostly already swallowed in
+  term_csi_dispatch, but verify no new garble). TERM=dumb was likely set earlier to dodge the
+  pre-fix parser; the VT parser + color renderer now handle escapes, so the upgrade is the test.
+
+================================================================================
+IMPERFECT -- TUNE NEXT (Zack: "lines that separate the text are not exactly on point")
+================================================================================
+- Box-drawing separator lines don't perfectly align/connect yet. The horizontal ─ sits at rows
+  7,8 (cell is 16 tall) and verticals at bits 3,4 -- corners/junctions (0x82-0x8A) may need the
+  arms shifted to line up with adjacent cells + the text baseline. Tune the bitmaps in gfx.c
+  (indices 0x80-0x8A). Low risk, iterate against a screenshot.
+
+STATUS OF THE 3 OPEN ITEMS (from fry1643):
+  1. Cosmetic TUI rendering -- glyphs DONE; color built (needs TERM fix); line-alignment to tune.
+  2. Shell pipelines (true concurrent fork) -- still open.
+  3. Minor job-control syscalls (getpgrp/setsid/readlinkat) -- still open; MCP off.
+
+REBUILD/RUN (unchanged, self-contained):
+  STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 STAGE_HERMES=1 LINUX_SHELL_BIN=~/tatertos-shell/busybox
+  CLAUDE_BIN=~/.local/share/claude/versions/2.1.177 bash build_iso.sh
+  Launch: setsid -f env DISPLAY=:0 qemu-system-x86_64 -m 4G -machine q35,accel=kvm:tcg -cpu host
+  -smp 4 ...OVMF... -drive nvme=out/tater_nvme.img -cdrom out/tatertos64v3.iso
+  -netdev user,id=n0 -device e1000,netdev=n0 -serial file:/tmp/fry1641_serial.log -vga std -display gtk
+  GOTCHAS: `sleep` blocked in Bash tool; use `pkill -9 -x qemu-system-x86` (NOT -f, self-kills).
+
+Files changed this session (cosmetic): src/user/libc/gfx.c, src/user/shell/shell.c.
+All per planv3 Rules 1/5/6/12. Logged at rate-limit stop; Zack back ~2026-06-20 11:00.
+
+================================================================================
+CODEX LOG CORRECTION
+================================================================================
+The later Codex follow-ups were originally appended here by mistake. They have
+been split into separate per-step logs, as required by planv3 Rule 5:
+  - fry1645.txt: enable Claude color-capable TERM environment
+  - fry1646.txt: add real terminal cell background/reverse color support
+  - fry1647.txt: rebuild ISO/NVMe with color shell
+  - fry1648.txt: headed QEMU launch with networking
+  - fry1649.txt: fix xterm layout parser regression
+  - fry1650.txt: rebuild/relaunch layout-fixed image

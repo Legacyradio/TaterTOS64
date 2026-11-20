@@ -1,0 +1,29 @@
+fry1683 — 2026-06-20 21:40 CDT
+STEP: SQLite fix verified working; speed analysis; remove diagnostic trace.
+
+VERIFY (fry1682 run, monitored): SQLite THREADSAFE=0 fix WORKED. python ran
+  to 35,000+ syscalls with NO futex deadlock (old hang was ~24k), actively
+  importing + writing files (e.g. write(fd=3, 87KB) = .pyc cache). It advances
+  but VERY slowly (~100 syscalls/sec) — never reached the banner in ~5+ min.
+  Functionally past every bug; the remaining problem is purely SPEED.
+
+SPEED ANALYSIS:
+  - Native .fry image is EAGER-mapped: elf_load_fry (elf.c:236-318) allocates +
+    maps + fills every PT_LOAD page and the stack at load. NOT demand-paged.
+  - mmap/heap commit eagerly too (vm_commit_private_pages -> the VM COMMIT
+    bursts). So genuine demand-paging is NOT the native-python bottleneck (the
+    memory's "slow demand-paging" note was about Linux procs via
+    lx_try_demand_page; native .fry doesn't use it for the image).
+  - PRIME SUSPECT for the crawl: the fry1669/1676/1680 PYSC+PYBT trace prints a
+    kprint_serial_only line on EVERY python syscall. 35k+ syscalls * ~60 chars
+    over the emulated 16550 UART (one VM-exit per byte) is a massive tax. The
+    trace was diagnostic only.
+
+ACTION: remove the PYSC/PYBT/rip trace from native_syscall_dispatch
+  (src/kernel/proc/syscall.c) — owed cleanup AND the likely main slowdown. Then
+  measure REAL time-to-banner on a clean build (also confirms end-to-end).
+
+NEXT (fry1684): clean kernel rebuild w/o trace, boot, time `hermes` to banner.
+  If still too slow after the trace is gone, investigate syscall/file-IO
+  overhead + eager-commit/batch options (#1/#2 from the speed plan). Persistent
+  warm hermes (#5) is the big felt win for repeated calls.

@@ -169,6 +169,18 @@ void *memchr(const void *s, int c, size_t n) {
     return 0;
 }
 
+/* memrchr — reverse memchr (GNU extension) */
+void *memrchr(const void *s, int c, size_t n) {
+    const unsigned char *p = (const unsigned char *)s;
+    for (size_t i = n; i > 0; i--) {
+        if (p[i - 1] == (unsigned char)c) return (void *)(p + i - 1);
+    }
+    return 0;
+}
+
+/* wmem* functions are implemented later in this file (lines ~501-524)
+ * but were missing from wchar.h declarations. Added in this step. */
+
 /* -----------------------------------------------------------------------
  * Number parsing: strtol, strtoul, strtoll, strtoull
  * ----------------------------------------------------------------------- */

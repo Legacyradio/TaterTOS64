@@ -1,0 +1,36 @@
+fry1690 — 2026-06-20 23:45 CDT
+STEP: Diag chain -> sys.stdout is None -> ROOT CAUSE = SYS_FSTAT EBADF on fds
+      0/1/2. Fixed in libc fstat.
+
+DIAG RESULTS (bootstrap os.write(2)->serial + screenshot, observed):
+  fry1689 run: "BTSTRAP-RAN" in serial (script body RUNS), "BTSTRAP-RAWFD1" on
+    GUI (raw os.write(1) works), but "BTSTRAP-PRINT-TEST" (python print) MISSING.
+  fry1690 run: STDOUT-REPR: None ; STDOUT-DIAG-EXC: AttributeError 'NoneType'
+    has no attribute 'fileno'. => sys.stdout IS None (and sys.stderr too — which
+    is why NO python traceback ever appeared this whole time; all errors were
+    invisible).
+
+ROOT CAUSE: CPython init_sys_streams builds sys.std{in,out,err} via _io.FileIO(fd)
+  which calls fstat(fd). CPython fileio.c:471-481 treats EBADF from fstat on a
+  std fd as fatal -> the stream is left None. The kernel SYS_FSTAT (syscall.c
+  case 91, line 10745) does `if (fd < 3 ...) return -EBADF;` — it ONLY stats
+  regular files and rejects fds 0/1/2. So every std stream came back None ->
+  print() silent no-op, tracebacks vanish. This is the real cause of "hermes
+  runs but no output".
+
+FIX (fry1691): src/user/libc/posix.c fstat(): special-case fd 0/1/2 -> synthesize
+  a character-device stat (st_mode = S_IFCHR|0666), bypassing the syscall (the
+  kernel's vfs_stat can't express a char device). isatty() already returns true
+  for 0-2, so CPython will set up line-buffered tty streams -> banner flushes.
+  (Libc layer chosen over kernel: vfs_stat only carries FAT attrs, no char-dev
+  type; and python links libc statically.)
+
+BUILD: posix.c in LIBC_OBJ -> static in python3.fry. make ; make -f Python3.mk
+  python3 ; build_iso.sh. Bootstrap diag (fry1690) kept ONE more run as a sanity
+  check (expect STDOUT-REPR=<TextIOWrapper>, STDOUT-WRITE-RET=<n>) plus the real
+  banner.
+
+VERIFY (fry1691) — DO NOT call fixed until the PYTHON ENVIRONMENT banner is on
+  screen [[feedback-verify-before-claiming-success]].
+CLEANUP owed: remove fry1685 FBT (irqdesc.c), fry1688 diag (python.c),
+  fry1690 diag (bootstrap.py).

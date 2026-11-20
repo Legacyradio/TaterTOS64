@@ -1,0 +1,25 @@
+fry1662 - Rebuild image with CPython directory adapter
+Timestamp: 2026-06-19 23:44:23 CDT
+
+Context:
+- fry1661 rebuilt python3.fry with real POSIX opendir/readdir support.
+- The boot image needed to be rebuilt so the refreshed Python binary and
+  staged stdlib/Hermes tree could be tested from TaterTOS.
+
+Command:
+- /bin/bash build_iso.sh
+
+Result:
+- PASS.
+- Re-linked kernel and user apps against the refreshed libc objects.
+- Rebuilt out/tater_nvme.img.
+- Staged native Python and Hermes:
+    /apps/python3.fry
+    /usr/local/lib/python3.14
+    /opt/hermes-agent
+- Rebuilt out/tatertos64v3.iso.
+- Live-app fallback verification completed.
+
+Next:
+- Boot the rebuilt image headed, keep the GUI path intact, and check the
+  QEMU serial log for the next Hermes/native-Python runtime blocker.

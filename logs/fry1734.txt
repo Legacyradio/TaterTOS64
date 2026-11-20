@@ -1,0 +1,37 @@
+fry1734 — 2026-06-21 20:05 CDT
+STEP 1 (native std phase): rewrite x86_64-tatertos.json to a POSIX/unix identity so
+       std builds its UNIX PAL instead of the `unsupported` stub. + first build-std
+       attempt to get real error signal.
+
+CHANGES:
+  - x86_64-tatertos.json: os "none"->"tatertos"; added "target-family":["unix"];
+    has-thread-local false->true (we have ELF-TLS work, handoff_hermes_tls);
+    llvm-target -> x86_64-unknown-linux-gnu (LLVM codegen ABI only — NOT the build
+    target; needed so LLVM emits the standard SysV x86-64 ABI our cross-gcc + libc
+    use); added dynamic-linking:false, relocation-model:static. panic still abort.
+  - rust/probe_std/.cargo/config.toml: [unstable] build-std + json-target-spec=true,
+    [build] target=x86_64-tatertos.json. (build-std re-invokes the inner std build
+    WITHOUT inheriting CLI -Z flags, so the json-target-spec gate must live in the
+    cargo config, not on the command line. -Zjson-target-spec on the CLI failed.)
+
+BUILD SIGNAL (cargo +nightly build, probe_std):
+  - core/alloc/std/panic_abort/compiler_builtins all START compiling for tatertos
+    (PAL selection now reaches the unix backend — the os:none/unsupported shortcut is
+    gone). std build then HALTS at the `libc` crate v0.2.185:
+      error[E0432]: unresolved import `unistd`  (libc-0.2.185/src/new/mod.rs:237)
+    Cause: the libc crate has no target_os="tatertos" module, so its unix dispatch
+    resolves to nothing. EXPECTED — this is exactly step 2 (libc-crate fork).
+
+DECISION TO RESOLVE NEXT (will state to Zack before committing it): tatertos must be
+  added to the libc crate. Cleanest native mechanism = add tatertos to the existing
+  `linux_like` family (alongside linux/android/emscripten), because TaterTOS's OWN C
+  libc deliberately implements the SysV x86-64 / linux C ABI (that's how our libc is
+  laid out). This is matching OUR libc's ABI, NOT invoking the Linux subsystem: the
+  output is a native x86_64-tatertos binary, linked by our cross-gcc against our
+  libc.a, making our SYS_* syscalls. The libc *crate* only supplies type/extern
+  declarations that resolve to our libc symbols at link time.
+
+STATE: target json updated; std build reaches libc and stops (expected). No libc fork
+  written yet.
+NEXT: fork the libc crate to add target_os="tatertos" (linux_like member), wire via
+  [patch.crates-io], rebuild std. -> fry1735.

@@ -1,0 +1,44 @@
+fry1733 — 2026-06-21 19:48 CDT
+STEP: Audit of the existing x86_64-tatertos native-Rust pipeline for HIDDEN SHORTCUTS
+      (per Zack: "make sure there's no other fucking shortcuts"). Found one major one.
+
+AUDITED:
+  - x86_64-tatertos.json (the custom target spec)
+  - rust/probe (no_std core probe), rust/probe_std (std probe)
+  - existing build artifacts under rust/probe/target/x86_64-tatertos/
+  - std PAL selection logic in rustup nightly rust-src sys/pal/mod.rs
+
+FINDING #1 — MAJOR HIDDEN SHORTCUT (the target has no real std):
+  - x86_64-tatertos.json sets "os":"none" and does NOT set target_family="unix".
+  - std/src/sys/pal/mod.rs cfg_select!: unix|windows|solid|hermit|...|<fallthrough>.
+    With os=none + no family, NOTHING matches -> falls through to the `unsupported`
+    PAL (mod.rs line 64-65). The `unsupported` backend STUBS EVERYTHING: fs, threads,
+    time, env, stdio, process, random all return Unsupported / no-op.
+  - VERIFIED by artifacts: tatertos build produced libcore, liballoc, libpanic_abort,
+    libpanic_unwind, libunwind (+deps) but NO libstd-*.rlib. Only libstd_detect (cpu
+    feature sub-crate, not std). => a functional std was NEVER built for tatertos.
+  - The only std-exercising probe (probe_std) was built for x86_64-unknown-linux-gnu,
+    NOT tatertos (fingerprint path confirms). So std-on-tatertos is unproven/absent.
+  - CONSEQUENCE: pydantic_core REQUIRES real std (Vec/String/Mutex/HashMap, getrandom,
+    time, threads via pyo3/once_cell). On the current target it would either fail to
+    build or build against the `unsupported` stub PAL and ABORT at runtime on first
+    OS touch. "Native" std that does nothing = a shortcut. Rejected.
+
+FINDING #2 — target panic strategy mismatch (minor, note for later):
+  - x86_64-tatertos.json: panic-strategy="abort", but a Rust panic in pyo3 normally
+    converts to a Python exception via unwind. With abort, a panic kills the process.
+    Acceptable for v1 but degrades error handling; revisit if pyo3 needs unwind.
+
+CORRECT NATIVE PATH (no shortcut):
+  - Stand up a REAL std for TaterTOS by giving the target a POSIX identity and backing
+    std's unix PAL with TaterTOS's OWN native libc (src/user/libc, which makes native
+    SYS_* syscalls — NOT Linux). Concretely: target os="tatertos",
+    target_family="unix", then build-std so std::sys::pal::unix compiles against our
+    libc. Fill only the tatertos-specific gaps the unix PAL needs. This reuses the
+    generic POSIX unix backend (open/read/write/close/mmap/pthread/clock/etc. — all
+    already in our libc) instead of inventing a backend or stubbing one.
+
+STATE: nothing modified this step (pure audit). Dead linux-gnu .a still referenced at
+  Python3.mk:193 — leave until the native .a exists, then repoint.
+NEXT: design + Zack green-light the std-PAL bring-up as its own phase, then execute.
+  -> fry1734.

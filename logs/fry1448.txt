@@ -1,0 +1,37 @@
+fry1448 — -smp 4 DONE-BAR PASS: result printed on FOUR cores.
+{"type":"result","subtype":"success","is_error":false,
+ "duration_ms":23466,"num_turns":1,
+ "result":"Hello from TaterTOS — where taters power your operating
+           system today!","stop_reason":"end_turn"}
+Same ISO as fry1447, only -smp 2 -> -smp 4. No panic, no TBCLK
+anomalies, no spin regression, clean stream-json end-to-end. Zack's
+SMP mandate (set when the numLocals/SMP crashes were live) is
+SATISFIED: the full claude pipeline holds under 4-core scheduling.
+Date: 2026-06-12 06:1x CDT. Author: Claude (Fable 5).
+========================================================================
+
+DONE-BAR STATUS AFTER THIS STEP
+------------------------------------------------------------------------
+[x] claude authenticates in-OS (OAuth)
+[x] prompt round-trip with real model output inside TaterTOS (fry1447)
+[x] -smp 4 stability pass (THIS step)
+[~] OAuth strip: DEFERRED by Zack (2026-06-12, explicit): NOT pushing
+    this update; credentials stay baked in on his machine for daily
+    use. Strip remains MANDATORY before any future push/distribution
+    (both images: ESP and NVMe).
+[ ] Beacon strip (TB*/LX*): deferred with the above, same gate.
+
+DIRECTION SET BY ZACK (2026-06-12)
+------------------------------------------------------------------------
+Next goal: claude in TaterTOS should do EVERYTHING a normal Claude
+Code instance can do. Known gaps for that (fry1447 census): vfork(58)
+— subprocess spawn for tools/shell — is the big one; then rename(82),
+ftruncate(77), sendfile(40), inotify(294), copy_file_range(326),
+transcript mkdir errno fidelity (-1 -> blanket EIO breaks mkdir -p).
+A milestone copy of the tree + images goes to the 115 flash drive
+(/mnt/usb115), per Zack.
+
+TEST COMMANDS (rule 10): boot = fry1432 command with -smp 4, serial
+/tmp/s_fry1448.log. Verdict:
+  grep -a '"result"' /tmp/s_fry1448.log
+========================================================================

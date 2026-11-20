@@ -1,0 +1,35 @@
+fry1835 - HERMES DIAGNOSIS STEP B: map what is broken, evidence vs theory (2026-11-17 14:06 CST, from date)
+WHY: HERMES-DIAGNOSE-BRIEF.txt Step B, Sur's go via Marshmallow. No code changes.
+WHAT / HOW: read fry1810, fry1812, fry1813, fry1821, fry1831 in full; verified current source state with grep/ls (not inherited).
+WHERE: ~/TaterTOS64/logs/*, src/user/libc/{gap_stubs.c,posix.c,time_ext.c}, src/kernel/proc/{process.c,syscall.c}, artifacts at repo root + out/.
+
+EVIDENCE (observed on a boot, or read directly from source/image)
+ E1 fry1810: hermes -z hello ran >10 min, E1000_TX stayed 2 (DHCP baseline) = ZERO network frames. Not DNS/TLS/API/credentials. Ctrl+C returned the prompt => waiting, not an uninterruptible spin.
+ E2 fry1808/1809 (per fry1810): whole import chain succeeds (prompt_toolkit, asyncio, httpx, urllib3, requests); no traceback.
+ E3 fry1812 (read off the disk image): /.hermes/logs/agent.log ends "Plugin discovery complete: 37 found, 27 enabled". So startup reaches plugin discovery complete,
+    then something after that never finishes. state.db is 0 bytes. fry1812 caveat: image persists across boots, do not build a single-run story.
+ E4 fry1812 errors.log: hashlib.scrypt and socket.NI_NUMERICHOST missing -> 4 plugins disabled. Warnings only, NOT the hang.
+ E5 fry1812 F4: "hermes -z" redirects stdout/stderr to devnull by design (oneshot.py:183), so silence is partly by design. Bare "hermes" = prompt_toolkit TUI that the shell VT parser can't render (fry1821).
+ E6 fry1813 (source-verified): time.strftime was "" (wcsftime stub); ftruncate stub returned 0; kernel SYS_FCNTL only F_GETFL/SETFL/GETFD/SETFD, F_SETLK -> EINVAL. RTC/clock itself correct.
+ E7 Verified THIS step in source: gap_stubs.c now says wcsftime (fry1814), ftruncate/truncate (fry1815), getentropy (fry1816) are real implementations in time_ext.c/posix.c; shebang_parse exists in process.c:1020.
+ E8 Verified THIS step: kernel.elf/shell.tot/gui.fry 2026-09-26 22:41:32, python3.fry 22:41:03 (fry1831 says 21:12 - mtime is later, relinked), ISO 22:43:40, nvme img 22:43:38.
+    No checked source file (libc/*.c, process.c, syscall.c, shell.c) is newer than the ISO => current artifacts correspond to current source. (Not a BUILD_EXIT check; no build run.)
+ E9 fry1821/1829/1830: boots clean, DHCP:OK, selftest 106/0. Mouse can't be injected in guest (human must click Shell icon); keyboard injection works.
+
+THE EIGHT FIXES (fry1831) - all IN SOURCE+BUILT, ZERO RUNTIME-VERIFIED (per fry1831, Sur closed session before testing):
+ 5 libc: getentropy (was returning ZEROS+success), pread/pwrite family (offset discarded), nanosleep (ENOSYS), ftruncate/truncate (no-op), wcsftime (empty).
+ 3 plumbing: kernel #! support, shell PATH search + real argv/env spawn, hermes shebang rewritten at staging.
+ Note: sub-claims "pread offset discarded" and "nanosleep ENOSYS" I have NOT re-verified in source this step (only wcsftime/ftruncate/getentropy/shebang presence).
+
+THEORY (NOT proven; ranked by how well the evidence supports)
+ T1 Worker-thread / TLS: threads from fry_thread_create->clone get a bare libc TLS block with no ELF PT_TLS image (HANDOFF_HERMES_TLS "Still owed"). Main-thread TLS verified fixed (fry1801 CLOSED for main).
+    Hermes/asyncio/httpx start threads; a thread whose __thread vars are unbacked would fault or stall. fry1810 saw NO spawned-thread TLSDBG lines in that run, which argues AGAINST
+    "threads crash" and FOR "thread never starts/never waited on" - ambiguous. Plausible, unproven.
+ T2 Lock/futex wait: fcntl locks return EINVAL (fails fast, so by itself doesn't hang - fry1813 itself weakened this). A thread-join or futex_wait on a thread that never runs would block silently = matches E1/E3.
+ T3 Blocking stdin read: isatty() returns TRUE for fd 0-2 (posix.c:574 per fry1810) so an interactive check may wait for input. Unproven.
+ T4 pread/pwrite non-atomic across threads; getrandom path - only matter after the above.
+ Reading the evidence together: stall happens AFTER plugin discovery and BEFORE any network I/O; Ctrl+C-interruptible. The single missing datum is WHERE (Python stack). fry1811 added PYTHONFAULTHANDLER=1 to
+ shell_env for exactly this, but fry1831 shows no log capturing a traceback from it. The eight fixes might already change the behavior - unknown until booted.
+RESULT: map complete; evidence vs theory separated above. Nothing booted, nothing changed.
+NEXT: fry1836 = Step C test 1: verify BUILD artifacts fresh (done above, E8) + boot current image under QEMU with serial to file, wait for human click on Shell icon (mouse can't be injected),
+  then run test list A-G from fry1831, then hermes -z hello with faulthandler/SIGABRT to get the stack. Need Sur/Marshmallow at the machine for ONE Shell-icon click.

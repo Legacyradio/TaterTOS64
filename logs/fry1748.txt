@@ -1,0 +1,43 @@
+fry1748 — 2026-06-22 07:11 CDT
+STEP 4b (native deps): watchfiles 1.1.1 built NATIVELY (2nd Rust ext) + linked. Solved
+       the multi-Rust-staticlib duplicate-std link conflict. 4 native exts now in
+       python3.fry.
+
+WATCHFILES build:
+  - notify v8 crate auto-selects PollWatcher (pure Rust, std fs+threads) as
+    RecommendedWatcher on non-special target_os -> NO inotify backend needed for
+    tatertos. (SYS_INOTIFY_* exist but unused; PollWatcher is fine.)
+  - Cargo.toml crate-type cdylib->staticlib. .cargo/config.toml: build-std +
+    json-target-spec + target + getrandom rdrand. PYO3_CONFIG_FILE=pyo3_tatertos.cfg.
+  - watchfiles pinned libc 0.2.169 -> forced to our forked 0.2.185
+    (`cargo update -p libc --precise 0.2.185`). Then the `filetime` dep needed
+    libc::futimes/lutimes -> added futimes/lutimes/utimes extern decls (+ timeval
+    import) to rust/forks/libc/src/unix/tatertos/mod.rs; mirrored to registry.
+  - cargo build RC=0 -> lib_rust_notify.a (5.1MB), exports PyInit__rust_notify (40s).
+
+LINK FIX (important, reusable): linking >1 Rust staticlib (pydantic_core + watchfiles)
+  gave `multiple definition of __rustc::rust_panic / rust_eh_personality / __rdl_alloc
+  / __rust_alloc_error_handler ...` — each build-std staticlib bundles its OWN copy of
+  the IDENTICAL Rust std runtime. FIX: added `--allow-multiple-definition` to the
+  python3.elf ld line (Python3.mk). Same impl (same toolchain+target) so first-wins is
+  safe. Now every additional Rust ext links cleanly.
+
+WIRING: config.c extern PyInit__rust_notify + dotted inittab {"watchfiles._rust_notify",
+  ...}. Python3.mk: WATCHFILES_LIB added to PYEXT_LIBS. relink LINK_EXIT=0; python3.elf
+  has all 4 inits (PyInit__pydantic_core, parser, url_parser, _rust_notify);
+  python3.fry 07:11:10.
+
+NATIVE-EXT SCORECARD: DONE(4) = pydantic_core[Rust], httptools[C x2], watchfiles[Rust].
+  REMAINING(3, the heavy ones, each a real sub-project):
+    - Pillow 12.2.0 [C] -> _imaging etc.; zlib/libpng/libjpeg ARE in-tree
+      (external/lib/*.a) -> tractable compile, but big (47MB sdist, many C files).
+    - cryptography 46.0.7 [Rust] -> needs a REAL OpenSSL libcrypto backend
+      (src/user/apps/openssl is STUBS only) -> heavy sub-port.
+    - psutil 7.2.2 [C] -> _psutil_linux/_psutil_posix parse /proc; kernel exposes only
+      /proc/self/{stat,auxv} -> needs real /proc expansion (kernel work) -> heavy.
+
+STATE: 4 native exts linked into python3.fry; ISO NOT rebuilt yet (finishing the
+  remaining 3 before one ISO/boot/verify of the full agent). libc fork gained
+  futimes/lutimes/utimes.
+NEXT: Pillow native build (tractable — libs in-tree), then cryptography (OpenSSL
+  backend) + psutil (/proc kernel). -> fry1749.

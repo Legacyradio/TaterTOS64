@@ -1,0 +1,35 @@
+# fry1580 - robust-futex lead RULED OUT (corrects fry1579). set_robust_list is recorded but never walked on exit (a real gap) — BUT nr=273 was called 0 times this run, so no robust lists are registered; Bun/JSC uses non-robust futexes here. So the main-thread futex livelock is NOT owner-died/zombie-held-robust-mutex. Honest stopping point: panic FIXED + input DELIVERY working; the input freeze is a deep non-robust futex/condvar livelock, cornered precisely, 6 theories disproven, not yet solved.
+Date: 2026-06-16 05:55 CDT
+Type: diagnosis (source + serial; no code change) + honest status
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+ROBUST-LIST CHECK
+- set_robust_list (nr=273): stores the head (syscall.c:6014 cur->linux_robust_list=a1); reset at 5389. get_robust_list
+  present (6525).
+- GAP: process.c exit/proc_free does NOT walk the robust list (no robust/OWNER_DIED code) -> if a thread died holding a
+  robust mutex, waiters would never be released. Real latent bug — but NOT triggered here.
+- nr=273 calls in this run = 0 -> Bun/JSC registered NO robust lists. So no robust mutexes are involved. Lead RULED OUT.
+  (Worth implementing robust-list-on-exit eventually for correctness, but it is not this freeze.)
+
+THE FREEZE (unchanged, precise): pid=14 busy-loops on FUTEX_WAIT -> EAGAIN on contended NON-robust futexes whose words
+churn (e.g. 6fbfee01e950 expected=26 actual=29 counter-like; 6fbff9434190 expected=2 actual=0). Condvar/seq-style.
+It never blocks and never acquires -> event loop never resumes -> stdin not read.
+
+THEORIES DISPROVEN (6): (1) JSC futex lost-wakeup (2) GC stop-the-world handshake (3) userspace spin (4) runqueue
+orphan (5) rt_sigsuspend wedge (6) robust-mutex owner-died. Each by the next measurement.
+
+HONEST ASSESSMENT (for Zack + next session):
+- WINS THIS SESSION, real and verified: network-teardown KERNEL PANIC fixed (fry1544-1546); /proc/self/stat added
+  (fry1551); input DELIVERY proven + brief echo ("hhello"). The dangerous, machine-resetting bug is gone.
+- The input FREEZE is a hard JS-runtime-vs-custom-kernel concurrency livelock (main thread cannot win a contended
+  Bun/JSC futex/condvar). It is cornered to the exact syscalls + uaddrs but not solved. Six specific theories were
+  tested and disproven tonight — that is rigorous cornering, not thrash, but the fix needs a fresh, focused pass, not
+  more 5am theory-and-rebuild cycles.
+- STRONGEST remaining next step (fresh session): instrument the contended uaddrs (6fbff9434190, 6fbfee01e950) — who
+  writes them, who holds the lock, is the holder a live worker starving pid=14 vs a logic mismatch in expected-vs-actual
+  — and study what Bun/JSC primitive these are (likely a parker/condvar). Consider whether a kernel futex semantic
+  (EAGAIN-without-yield, or a missing requeue/bitset behavior) turns a normal contended wait into a livelock here.
+- Instrumentation in tree to remove once solved: TBFD0, TBEPW, TBMAIN, TBSPIN, TBREQUEUE (no-op). KEEP the sched.c
+  TB_TRACE_CLAUDE_TGID dynamic fix. CLAUDE_NO_MCP=1 is a diagnostic toggle (default unchanged).
+
+All per planv3 Rules 1/5/6/12.

@@ -1,0 +1,67 @@
+fry1795 — hermes on the clean kernel: import completes, fry1788 abort RETURNS on tid=10 — 2026-08-07
+==========================================================================
+WHAT: Outcome of the fry1794 run. Two results, one good one bad. The stale-object
+fix is confirmed end-to-end. The fry1790 per-thread TLS fix DID NOT clear the
+original abort. No source changed this step.
+
+GOOD — the fry1793/1794 build fix is fully confirmed:
+  HERMESMAIN argc=2 (serial :82) -> the ENTIRE agent import ran with NO
+  0x40350e fault, NO missing modules, NO tracebacks. The fry_tls_get crash that
+  deterministically killed pid 9 and pid 10 on the stale-object kernel is gone
+  for good.
+  SPEED: the import reached the abort at ~1.20M ticks. fry1788 (last consistent
+  kernel) took ~7.7M ticks to reach the SAME point with the SAME python3.fry.
+  ~6.4x faster. Recorded as an OBSERVATION, not a claim — the fry1788 figure was
+  measured on a different kernel build and the two runs were not controlled for.
+  Worth confirming before anyone treats the demand-paging crawl as improved.
+
+BAD — the original blocker is back, unchanged (serial :673-679):
+  Fatal Python error: _PyThreadState_Attach: non-NULL old thread state
+  Python runtime state: initialized
+  !EXC vec=0E err=04 RIP=0x004E5C79 CR2=0x27 CR3=0x2416000
+  !REG rax=0x100059C97E0 rbx=0x2 rcx=0x403507 rdx=0x10005592C30
+  USER FAULT: pid=9 tid=10 vec=14 err=0x4 rip=0x4e5c79 cr2=0x27
+  Byte-identical message and RIP to fry1788 (0x4E5C79 is inside fatal_error();
+  the #PF is the same cascade while CPython aborts, not the primary failure).
+
+  => fry1790's per-thread variant-II TLS did NOT fix _PyThreadState_Attach.
+     This is now a TRUSTWORTHY reproduction — the kernel is built from one
+     consistent struct layout, so unlike every result since 06-26 20:09 this
+     one means what it says.
+
+NEW EVIDENCE (was not visible in fry1788's log):
+  - "pid=9 tid=10" — the faulting context is a SPAWNED THREAD with its own tid,
+    distinct from the main thread. Thread creation is happening and the thread
+    is running real code, so process_create_user_thread / the fry1790 path is
+    being exercised rather than skipped.
+  - rcx=0x403507 is the SYSCALL return address inside fry_tls_get
+    (SYS_GET_TLS_BASE), i.e. this thread DID query its TLS base, and this time
+    rax came back as 0x100059C97E0 — a plausible heap/TLS pointer, NOT the
+    bogus 8 from fry1792. So the TLS base plumbing is no longer returning
+    garbage; the tstate collision is a separate, still-unexplained problem.
+
+WHAT THIS MEANS FOR fry1789's DIAGNOSIS: fry1789 concluded, from static reading,
+that pthread_create gave spawned threads no private TLS and that this caused the
+abort. fry1790 implemented per-thread TLS. The abort survived. So either the
+per-thread block is not actually distinct/effective for the thread CPython
+cares about, or the fry1789 diagnosis was incomplete and the tstate is not kept
+where it assumed. DO NOT keep building on fry1789's conclusion as settled — it
+is now contradicted by experiment.
+
+SHELL: cmd_hermes -> pump_child_io returns once the child dies, so the Shell
+should be responsive again after the abort.
+
+NEXT (fry1796, PROPOSED — NOT approved, awaiting Zack):
+  The instrumented boot, now worth doing because the kernel is trustworthy:
+   1. process_build_thread_tls() — kprint tid + the tp/user_fs_base assigned,
+      and whether the "no PT_TLS -> user_fs_base=0" early-out was taken.
+   2. SYS_GET_TLS_BASE — kprint tid + returned value (first N calls per tid).
+   3. The pthread_create path in libc — confirm the thread CPython aborts on is
+      the one that went through fry_thread_create at all (vs a clone/linux path,
+      process_clone_linux_thread sets user_fs_base from the clone arg instead).
+  Goal: prove whether tid 10's %fs is genuinely distinct from tid 9's. That is a
+  yes/no question and it decides whether fry1790 is ineffective or irrelevant.
+
+STILL OWED (own step, not approved): Makefile header dependency tracking
+(-MMD -MP + -include). Until then every header edit silently reproduces the
+fry1793 class of failure.

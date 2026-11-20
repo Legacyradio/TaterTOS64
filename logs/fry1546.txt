@@ -1,0 +1,61 @@
+# fry1546 - VERIFY: network-teardown kernel panic is FIXED (no #PF / no reset through a real bulk socket teardown incl. killed helper). Input-to-TUI still broken (separate, next).
+Date: 2026-06-15 22:38 CDT
+Type: verify (headed QEMU run, user-driven) of the fry1544 fix built in fry1545
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+---------------------------------------------------------------------------------
+WHY (Rule 6)
+---------------------------------------------------------------------------------
+fry1544 moved the ~1 MB `struct tcp_conn dummy` in tcp_process()'s RST path off the kernel stack (static/BSS). fry1545 built it clean (exit 0). This step drives the real repro to confirm the teardown no longer panics.
+
+---------------------------------------------------------------------------------
+RUN
+---------------------------------------------------------------------------------
+Launch (exact template), fresh /tmp/serial.log:
+  pgrep qemu | xargs -r kill ; rm -f /tmp/serial.log /tmp/qemu_dbg.log
+  cp /usr/share/edk2/x64/OVMF_VARS.4m.fd /tmp/VARS.fd
+  setsid -f env DISPLAY=:0 qemu-system-x86_64 -m 4G -machine q35,accel=kvm -cpu host -smp 4 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=/tmp/VARS.fd \
+    -cdrom out/tatertos64v3.iso \
+    -drive file=out/tater_nvme.img,if=none,id=nvme0,format=raw -device nvme,drive=nvme0,serial=tatertos-nvme \
+    -netdev user,id=n0 -device e1000,netdev=n0 -vga std -display gtk \
+    -serial file:/tmp/serial.log -D /tmp/qemu_dbg.log -d guest_errors
+QEMU pid 2090085. User drove: desktop -> Shell -> claude -> RCLAUDE.LXE loaded -> trust -> main UI -> attempted to type a prompt.
+
+---------------------------------------------------------------------------------
+RESULT - FIX CONFIRMED
+---------------------------------------------------------------------------------
+PASS. The teardown that previously triple-faulted now completes with the OS alive.
+- grep -E 'KERNEL PANIC|!EXC.*8003|tcp_process|unhandled kernel' /tmp/serial.log  -> EMPTY (zero kernel faults).
+- QEMU process still ALIVE (no CPU reset).
+- The bulk socket teardown that used to precede the panic DID run, on the network helper + Claude main:
+    SPCEN exit  pid=33 sock=31..24/64  (the killed network-helper process tearing down ~12 sockets)
+    SPCEN close pid=14 sock=35,34/64    (Claude main)
+    SPCEN close pid=20 sock=33,32/64
+  In fry1541/1542 this exact SPCEN bulk-close sequence was immediately followed by:
+    !EXC vec=0x0E err=0x02 RIP=0xFFFFFFFF80030040(=tcp_process+0x140) CR2=0xffffffff8393fc88 -> KERNEL PANIC.
+  Now: no such fault. User confirmed in-window: "no panic this time".
+- User report: "no panic this time".
+
+Note: a TBTCP `conn=-1` (RST-dummy) beacon was not captured in this sample window, so the specific unmatched-segment RST path wasn't independently logged this run; the load-bearing confirmation is that the full bulk socket teardown (incl. killed helper pid=33) completed with ZERO kernel #PF where it previously always reset. The 1 MB on-stack object that caused the overflow is gone from that code path.
+
+---------------------------------------------------------------------------------
+STILL BROKEN (separate problem, next step, its own fry log)
+---------------------------------------------------------------------------------
+User: "i also am unable to type in the tui." Hard data from this run's TBPROCIN (SYS_PROC_INPUT delivery) beacons:
+- SOME keys DO reach Claude pid=14:
+    TBPROCIN req=14 -> pid=14 name=/nvme/RCLAUDE.LXE len=1 b0=77   (0x77 = 'w')
+    TBPROCIN req=14 -> pid=14 name=/nvme/RCLAUDE.LXE len=1 b0=0d   (0x0d = '\r' Enter, Grok's standardized map)
+- but MANY keys still go to Shell pid=13:
+    TBPROCIN req=13 -> pid=13 name=/apps/SHELL.TOT b0=04 (Ctrl-D/EOT), b0=11 (DC1), b0=0a (LF)  (repeated)
+=> Input is SPLIT: printable + Enter sometimes reach RCLAUDE, but Shell still consumes control bytes; and even the bytes delivered to pid=14's inbuf are not producing visible TUI accept/echo.
+Leading hypothesis (to verify, NOT yet acted on): the bytes are delivered to the kernel proc inbuf (SYS_PROC_INPUT), but Claude's TUI reads stdin via a different fd/mechanism (pty/socketpair/epoll) than the inbuf, so delivered bytes land where the app never reads; and/or the worker-thread fault (tid=23, sig=11 @ 0x293cb7c) interferes. Do NOT thrash shell.c forwarding again (the fry1543 approach) before confirming WHERE Claude actually reads its input from after alt-screen takeover.
+
+---------------------------------------------------------------------------------
+NEXT (own fry log each)
+---------------------------------------------------------------------------------
+1. Diagnose the input read path: what fd / syscall does RCLAUDE actually read stdin from in main-UI/alt-screen takeover, and is the SYS_PROC_INPUT inbuf connected to it? (trace the app's read()/epoll on fd0 vs the inbuf delivery.)
+2. Decide Grok's tcp_conn refcount (accept-path nc->refs=1 regression vs revert; keep the !active guard).
+
+All per planv3 Rules 1/5/6/12. Written immediately on completion of the verify step.

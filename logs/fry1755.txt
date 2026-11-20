@@ -1,0 +1,35 @@
+fry1755 — 2026-06-22 14:30 CDT
+STEP 6b (FS): /tmp RAM-backed ToTFS VERIFIED working on-screen. + start of the
+       `hermes` package-import investigation (the last Hermes-core blocker).
+
+VERIFY (booted fry1755 ISO, Zack ran hermes, screen read /tmp/shot1755.png):
+  - FILESYSTEM TEST: the [Errno 2] /tmp write FAIL is GONE.
+  - SUMMARY now: Python 3.14 [OK], Stdlib [35/36], SQLite [OK], **FS operations [OK]**
+    (was [ ]/FAIL), Hermes core [FAIL].
+  - Also new since last boot: NETWORK TEST (Socket module: OK), NATIVE EXTENSIONS
+    (pydantic_core: OK v2.46.4). SQLite: OK - (1, 'TaterTOS').
+  => the in-kernel totfs_format + RAM-backed ToTFS /tmp mount (fry1754) WORKS. Kernel
+     mount kprints don't hit serial (GUI console only), but FS ops prove it end-to-end.
+
+REMAINING BLOCKER — `hermes` core: HERMES AGENT IMPORT shows hermes_constants/state/
+  time/logging = OK, but `hermes` = FAIL "No module named 'hermes'". Then the recurring
+  "Full Hermes Agent requires additional dependencies / pyproject.toml / copy from PyPI"
+  message (that text fires because Hermes core failed).
+
+INVESTIGATION (sysroot/opt/hermes-agent):
+  - bootstrap (tatertos_bootstrap.py:135) does `sys.path.insert(0, "/opt/hermes-agent")`
+    — note "/opt", but the files live on "/nvme/opt/hermes-agent" (shell runs the
+    bootstrap from /nvme). The flat hermes_*.py import only because CPython auto-adds the
+    SCRIPT's dir (/nvme/opt/hermes-agent) to sys.path[0].
+  - There IS a real `hermes/` PACKAGE dir at /opt/hermes-agent/hermes (+ many pkgs:
+    agent/, gateway/, providers/, plugins/, hermes_cli/, ...). So `import hermes` should
+    resolve to that package via the script-dir path — yet it fails "No module named".
+  - HYPOTHESES to check next: (a) the hermes/ package dir didn't fully stage to the NVMe
+    image; (b) hermes/__init__.py imports a missing 3rd-party dep (but that throws a
+    different error, not "No module named 'hermes'"); (c) namespace-package / finder
+    gap; (d) the "/opt" vs "/nvme/opt" path mismatch — maybe /opt isn't where the
+    bootstrap thinks and the script-dir add isn't happening.
+
+STATE: /tmp DONE + verified. hermes import = under investigation.
+NEXT: confirm hermes/ staged to NVMe + read hermes/__init__.py imports + check whether
+  CPython adds the script dir to sys.path on TaterTOS. Then _ssl (BearSSL). -> fry1756.

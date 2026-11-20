@@ -1,0 +1,64 @@
+fry1821 — VERIFICATION BOOT: boot healthy on the new ISO, clock theory CONFIRMED
+          on a second data point. Fix criteria NOT yet measured — 2026-09-26
+==========================================================================
+WHAT: Booted the fry1819 ISO (-smp 4). Boot is clean and nothing regressed from
+the five libc changes. The five pass/fail criteria from fry1819 were NOT
+exercised this step — see WHY below. No source changed.
+Serial: /tmp/fry1821_qemu_serial.log (28 lines).
+
+=== LAUNCH ===
+  DISPLAY=:0 qemu-system-x86_64 -m 4G -smp 4 -machine q35,accel=kvm:tcg \
+    -cpu host \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=./out/OVMF_VARS.fd \
+    -drive file=./out/tater_nvme.img,if=none,id=nvm \
+    -device nvme,drive=nvm,serial=deadbeef \
+    -cdrom ./out/tatertos64v3.iso \
+    -netdev user,id=n0 -device e1000,netdev=n0 \
+    -serial file:/tmp/fry1821_qemu_serial.log -vga std -display gtk
+(launch_debug.sh has no -smp and sends serial to stdio; both changed here.)
+
+=== BOOT RESULT — NO REGRESSION FROM THE LIBC CHANGES ===
+  TATER EFI: full handoff chain OK, kernel loaded
+  E1000 mmio ok, DHCP:E1000 -> DHCP:OK
+  selftest: 106 passed, 0 failed
+  Desktop up: wallpaper, dock (TaterSurf/Files/Network/SysInfo/Shell/Media/
+  Processes), taskbar. Shell opens and accepts input.
+Serial is 28 lines — the fry1811 TB* spam removal is still holding.
+
+=== ✅ CLOCK: fry1813's ANALYSIS CONFIRMED ON A SECOND, INDEPENDENT BOOT ===
+fry1813 argued from ONE sample that the taskbar renders a correct epoch as an
+elapsed HH:MM:SS duration. This boot gives a second, taken today:
+    taskbar reads 497354:19:24
+    497354*3600 + 19*60 + 24 = 1,790,474,364
+    epoch 1,790,474,364 = 2026-09-26  (today, this session)
+  vs fry1811's 496348:46:36 = 1,786,855,596 = 2026-08-16, that session's date.
+Two boots 41 days apart, each decoding to its own correct date. The RTC and the
+wall clock are CORRECT; the taskbar's FORMATTING is the bug. This is no longer
+an inference from one number.
+
+=== WHY THE FIVE CRITERIA WERE NOT MEASURED THIS STEP ===
+Zack clicked the Shell icon himself and typed `hermes` before I ran anything.
+I checked WHO did that before writing anything down, rather than recording a
+mystery — [[feedback-tatertos-log-per-step]] and fry1811's own lesson
+("Confirm what a human is doing before declaring a regression"). He confirmed:
+"i clicked it smarty pant". So:
+  - No defect here. Nothing unexplained.
+  - Bare `hermes` is the INTERACTIVE prompt_toolkit path, which takes the
+    terminal to raw mode and paints with escape sequences the shell's VT parser
+    does not render (known broken since fry1809). It sits silent by design.
+    HERMESSTDOUT-OK on screen is the SHELL's own fd1 marker, not agent output.
+  - The testable path remains `hermes -z <oneword>`.
+
+=== ALSO OBSERVED, NOT DIAGNOSED ===
+No SPAWN_OK / GUI pid lines appear on serial this boot, although the GUI and
+the Shell are demonstrably running (screenshots, live taskbar clock advancing
+19:24 -> 20:38 -> 28:45). fry1811 recorded those lines as present in a 40-line
+boot. NOT investigated and NOT called a regression — an absence on serial while
+the thing itself is visibly working is exactly the shape of the false alarm
+fry1811 talked itself into. Recorded for whoever looks next.
+
+=== WHAT IS NOT CLAIMED ===
+NONE of the five fry1819 criteria (strftime, entropy, ftruncate, positional
+I/O, nanosleep) has been measured. The libc fixes are present in the booted
+artifacts and the system boots clean with them — that is all this step shows.

@@ -1,0 +1,50 @@
+fry1537 - RESEARCH: Shell-window resize distortion = unhandled TW_MSG_RESIZED; + crowding cause
+Date: 2026-06-15 16:06:59 CDT
+
+Type: INVESTIGATION / DIAGNOSIS. No code changed.
+User resized the Shell window (to reduce crowding of Claude's main UI) and the
+content area went black with sparse garbage scan-lines (screenshot
+/tmp/fry1537_distortion.png) - the window FRAME resized correctly but the terminal
+content did not follow. Same "crazy distortion" seen after fry1531's resize.
+
+Mechanism (confirmed in source):
+  Compositor (src/user/gui/gui.c):
+    - resize_client_surface() (line 526): on resize it ALLOCATES A NEW SHM buffer
+      (fry_shm_alloc/map), repoints w->shm_ptr/shm_w/shm_h to it, and notifies the
+      app via TW_MSG_RESIZED (tw_msg_resized_t: shm_id, shm_ptr, new_w, new_h)
+      delivered through fry_proc_input -> the app's input channel (line 547-554).
+    - So after a resize the compositor DISPLAYS the new SHM buffer.
+  Shell (src/user/shell/shell.c):
+    - shell_tw_setup() maps the SHM only at TW_MSG_WINDOW_CREATED and renders into a
+      FIXED TERM_W=640 x TERM_H=384 surface (term_pixels). process_input_stream()
+      parses TaterWin messages but ONLY handles TW_MSG_KEY_EVENT - there is NO
+      TW_MSG_RESIZED handler.
+    => After resize the Shell keeps drawing into the OLD buffer while the compositor
+       shows the NEW (never-written) buffer -> black + uninitialized garbage. Not a
+       crash (qemu alive, guest-error log empty); purely a missed resize-follow.
+
+Crowding (separate, also relevant to the user's intent):
+  Claude lays out to its terminal size, reported by TIOCGWINSZ (syscall.c:6224),
+  currently 22 rows x 78 cols (fry1525). That small grid is why the main UI is
+  cramped. A bigger terminal needs both a bigger Shell surface AND a bigger reported
+  winsize.
+
+Fix plan (next step, fry1538):
+  1) shell.c: track the live surface size (surface_w/h) + active cols/rows; grow the
+     terminal grid to a larger MAX (static) and compute active cols/rows from the
+     surface. Make term_render fill the WHOLE surface (surface_w x surface_h) with
+     bg before drawing rows (so no area is ever left as stale/garbage).
+  2) shell.c: handle TW_MSG_RESIZED in the message parser - fry_shm_map(new shm_id),
+     repoint term_pixels + gfx (stride=new_w), update surface_w/h + active cols/rows,
+     re-render. tw_msg_size() must return sizeof(tw_msg_resized_t) for type 7 so the
+     stream parser consumes it correctly.
+  3) De-crowd by default: raise the initial Shell size + the kernel TIOCGWINSZ to a
+     larger value (e.g. ~120x40) so Claude starts with room.
+  Deferred (its own step): making Claude REFLOW to a NEW size on live resize needs a
+     per-child winsize the Shell can set + SIGWINCH delivery (kernel work). Without
+     it, live-resize will re-render cleanly (no garbage) but Claude keeps its
+     startup layout until relaunched. The default-size bump (#3) gives the de-crowd
+     now; dynamic reflow is the follow-up.
+
+No code changed. No build. No hashes (Rule 16). VM left running (distorted Shell
+left as the user found it).

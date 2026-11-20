@@ -1,0 +1,75 @@
+fry1460 - Refreshed-host-JSON/current-Claude QEMU test result.
+Date: 2026-06-13 10:41 CDT. Author: Codex.
+========================================================================
+
+Purpose
+-------
+Run the image after restaging the host Claude auth JSON files and current
+Claude binary, per the user direction to use the JSON for now and get the
+system running before deeper OAuth semantics work.
+
+What was staged before this test
+--------------------------------
+- /.claude.json from the host file last modified 2026-06-13 10:05:35 -0500.
+- /.claude/.credentials.json from the host file last modified
+  2026-06-13 03:26:04 -0500.
+- /RCLAUDE.LXE from host Claude Code 2.1.177.
+
+No token or credential contents were copied into this log.
+
+Test command shape
+------------------
+QEMU booted out/tatertos64v3.iso with out/tater_nvme.img, e1000 user
+networking, -smp 4, and serial captured to /tmp/s_fry1459.log. The run was
+given a 1200-second timeout and was not manually stopped when the first 401
+appeared.
+
+Observed result
+---------------
+The refreshed image reached the real Claude runtime:
+
+- claude_code_version: 2.1.177
+- model: claude-sonnet-4-6
+- output mode reached stream-json/system init
+- apiKeySource: none
+
+Networking is not the blocker in this run. TCP receive continued well past the
+old one-segment stall:
+
+- conn 0 reached at least 77 segments / 95,705 bytes
+- conn 4 reached at least 60 segments / 72,740 bytes
+
+The run failed at authentication:
+
+- API retries returned 401 authentication_error
+- final result: "Failed to authenticate. API Error: 401 Invalid authentication
+  credentials"
+- terminal_reason: completed
+
+Other syscall gaps still visible
+--------------------------------
+These are real porting items, but they are not the reason this run failed auth:
+
+- wait4 / waitpid: Linux syscall nr=61 is still unimplemented and causes rg
+  helper failures such as "ENOSYS: function not implemented, waitpid".
+- watcher setup: Linux syscall nr=294 reported ENOSYS for settings watch paths.
+- statx / related metadata syscall nr=332 appeared early.
+- copy/sendfile-style syscall gaps nr=326 and nr=40 appeared around helper
+  subprocess activity.
+
+Verdict
+-------
+Using the refreshed host JSON and current Claude binary did not fix
+authentication inside TaterTOS. The kernel/networking path is now strong enough
+to reach Claude's API and get a clean 401 response, so the next decision is:
+
+1. If the user wants a working request path immediately, fix auth staging /
+   account-token semantics next, because the API is rejecting the credentials
+   currently visible to Claude inside the guest.
+2. In parallel or after auth, implement wait4(61) because rg/helper subprocess
+   cleanup is still noisy and will matter for normal Claude Code behavior after
+   auth succeeds.
+
+The QEMU wrapper was intentionally left running to timeout/natural exit per the
+long-window rule; this log records the completed Claude result, not an early
+manual stop.

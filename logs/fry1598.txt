@@ -1,0 +1,18 @@
+# fry1598 - BUILD: lx_map_one() self-locking + idempotent (fry1597 fix). Only this changed vs the frozen fry1596.
+Date: 2026-06-16 ~21:06 (host clock) CDT
+Type: build (Rule 12)
+COMMAND: make clean && STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 \
+  LINUX_SHELL_BIN=/home/legacyindieradio/tatertos-shell/busybox \
+  CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.177 \
+  bash build_iso.sh   (-> /tmp/build_1598.log)
+RESULT: EXIT 0 clean. syscall.o fresh @21:05, ISO @21:06. g_pt_commit_lock present in syscall.o (.bss, nm 'b').
+  RCLAUDE.LXE staged (250480336 B), busybox staged /bin/sh+/bin/bash. Shell ENV still OUT (one-variable test).
+CHANGE: lx_map_one() now takes a global spinlock (__sync_lock_test_and_set + pause), re-checks
+  vmm_virt_to_phys_user UNDER the lock (idempotent: already-present -> return 0 success, no double-map),
+  then alloc+map+zero+release. Serializes ALL page-table commits across CPUs sharing a cr3 -> closes the
+  concurrent-PT race that the fry1592 demand-batch made lethal under rg's CLONE_VM worker storm.
+EXPECT (fry1599 verify): boot -> claude opens -> rg startup scan COMPLETES (no join-futex hang) -> MOUSE stays
+  live (compositor not starved) -> TYPE -> read(fd0) climbs + visible echo. NO whole-guest freeze.
+  Serial check: TBCLONE3 pid for rg should reach TBEXIT (rg exits) instead of parking forever on futex ...ce8;
+  census should NOT pin at t3=5/1/0/0 spinning.
+All per planv3 Rules 1/5/6/12. Written immediately on the build.

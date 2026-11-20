@@ -1,0 +1,51 @@
+# fry1565 - CORRECTION to fry1563/1564: the JSC GC suspend/confirm handshake WORKS in the normal case. pid=15 sequentially suspend+scan+resumes each thread via sig=30 + the 63a2620 confirm futex; rt_sigsuspend returning -EINTR is the EXPECTED resume, not a bug. The 2x sig=30 per thread = suspend then resume. So the freeze is a SPECIFIC later failure, not a fundamentally broken suspend.
+Date: 2026-06-16 02:10 CDT
+Type: diagnosis correction (serial window analysis, no code change)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+---------------------------------------------------------------------------------
+EVIDENCE: one COMPLETE, SUCCESSFUL suspend/scan/resume handshake (serial lines 642-712, fry1560 run)
+---------------------------------------------------------------------------------
+Per target (example target=18), pid=15 (GC stack-scanner) does:
+  642  TBSIG queue sender=15 target=18 sig=30 blocked=0           <- SUSPEND signal
+  644  TBFUTEX wait-begin pid=15 uaddr=63a2620 timeout=0          <- pid=15 waits for "I'm suspended" confirm (infinite)
+  649  TBSIG deliver pid=18 sig=30 (handler 0x4c23470)            <- handler runs in target
+  651  TBFUTEX wake-call pid=18 uaddr=63a2620 rc=1                <- handler POSTS the confirm futex
+  653  TBFUTEX wait-return pid=15 uaddr=63a2620 rc=0 actual=1     <- pid=15 got the confirm, proceeds (scans stack)
+  654  TBSIG queue sender=15 target=18 sig=30 blocked=...         <- RESUME signal (2nd send is intentional)
+  655  TBFUTEX wait-begin pid=15 uaddr=63a2620                    <- pid=15 waits for "I'm resumed" confirm
+  656  TBSIG deliver pid=18 sig=30
+  658  TBTRACE ret pid=18 nr=130 rt_sigsuspend rc=-4 (EINTR)      <- sigsuspend returns on the resume sig -> CORRECT
+  661  TBFUTEX wake-call pid=18 uaddr=63a2620 rc=1                <- handler posts resume confirm
+  664  TBFUTEX wait-return pid=15 rc=0                            <- pid=15 proceeds to next thread
+Then identical clean cycles for target=17 (666-688) and target=16 (689-712). ALL SUCCEED.
+
+=> The suspend mechanism (sig=30 + 63a2620 confirm semaphore + rt_sigsuspend EINTR-as-resume) is CORRECT and works.
+   The earlier "duplicate sig=30 breaks sigsuspend / GC can't hold threads" conclusion (fry1563/1564) was a
+   misread of the NORMAL suspend->resume pattern. Own it: I called the mechanism broken from late-trace noise.
+
+---------------------------------------------------------------------------------
+WHAT THIS MEANS FOR THE FREEZE
+---------------------------------------------------------------------------------
+Since the suspend handshake works in general, the freeze at line ~20864 (pid=14 goes silent) is a SPECIFIC failure,
+not a blanket one. Candidates to examine AT the freeze point (not early):
+  - A particular target thread that does NOT post the 63a2620 confirm (so pid=15 waits forever on it, infinite
+    timeout=0), e.g. a thread blocked in a syscall where the sig=30 handler can't run, or that exited.
+  - The MAIN thread pid=14 itself being a suspend target that can't be suspended (it is the GC initiator / or it is in
+    a state where the handler can't run), so the scan never finishes and pid=14 never resumes its event loop.
+  - A confirm posted to 63a2620 that wakes the WRONG waiter (63a2620 is a shared ParkingLot bucket; if multiple
+    threads park on the same key, a post may wake a different one -> pid=15's specific wait is not satisfied -> hang).
+
+---------------------------------------------------------------------------------
+NEXT (own fry log)
+---------------------------------------------------------------------------------
+Pull the suspend/63a2620 handshake AROUND the freeze (serial ~20500-20900): which target is pid=15 trying to suspend
+when pid=14 goes silent? Does that target fail to post the confirm? Is pid=14 a target that never delivers sig=30
+(its handler never runs)? That identifies the exact failing thread/step -> then fix (likely: per-thread confirm
+address instead of a shared bucket, or ensure sig=30 is deliverable to a thread blocked in epoll/futex so its handler
+runs and it can suspend). Keep Claude fully networked.
+
+STATUS unchanged on the wins (panic fixed, input proven, /proc/self/stat). Suspend mechanism: WORKS generally.
+Freeze: specific failure at ~line 20864, to be pinned at the freeze point next.
+
+All per planv3 Rules 1/5/6/12. Written immediately on this correction, before continuing.

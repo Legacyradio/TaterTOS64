@@ -1,0 +1,31 @@
+# fry1588 - FIX: redirect linuxulator tool exec/open of /bin/* and /usr/bin/* to the /nvme ToTFS, so execve("/bin/sh") finds the staged static busybox (was ENOENT on the empty ramdisk root). Makes Claude's Bash tool actually load the shell.
+Date: 2026-06-16 ~15:40 (host clock) CDT
+Type: code change (src/kernel/proc/syscall.c, 2 hunks)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+WHY (Rule 6) — fry1587 verify:
+- The SHELL=/nvme/bin/sh env change (fry1586) did NOT help: Claude's Bash tool execs "/bin/sh" LITERALLY (it ignores
+  $SHELL for `-c` command exec). Serial still: TBEXECVE path=/bin/sh -> execve rc=-2 ENOENT -> exit 127.
+- ROOT: the NVMe ToTFS (where busybox + all staged tools live) is mounted at /nvme (main.c:446); the boot ramdisk
+  root has no /bin/sh. So /bin/sh (root) != /nvme/bin/sh (ToTFS). Pointing $SHELL elsewhere can't help because Claude
+  hardcodes /bin/sh. The OS must make /bin/sh resolve.
+
+FIX (src/kernel/proc/syscall.c)
+1. New helper lx_redirect_tool_path(path, buf): for an ABSOLUTE path not already under /nvme, if it does NOT exist in
+   the primary FS (vfs_stat) but /nvme+path DOES, return /nvme+path; else return the original. Existence-checked BOTH
+   ways -> never shadows a real root / /dev / /proc / /etc path.
+2. lx_execve_current: apply the redirect to the exec path before elf_load_linux -> execve("/bin/sh") loads
+   /nvme/bin/sh (static busybox). THE blocker.
+3. lx_open_path (openat): apply the redirect to the resolved path -> busybox / tools opening /bin/* or /usr/bin/* also
+   resolve to the staged ToTFS copies.
+General fix: makes the whole staged tool surface (/bin/sh, /bin/ls if present, /usr/bin/*) reachable by the literal
+paths tools use, not just RCLAUDE's explicit /nvme/ launch.
+
+BUILD: make clean && STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 LINUX_SHELL_BIN=.../busybox CLAUDE_BIN=.../2.1.177 ... bash build_iso.sh
+
+NEXT (fry1589 build, fry1590 verify): boot -> claude -> run a command. Expect: TBEXECVE /bin/sh -> (redirect) ->
+LINUXELF load done for /nvme/bin/sh, busybox runs, execve SUCCEEDS (no exit 127). Then the remaining gate: does the
+command OUTPUT flow back via the socketpair stdio (dup2 fd->0/1/2) to Claude (fry1463-1481). Reminder: the "typing
+drop" is the demand-paging grind (fry1583), independent of this.
+
+All per planv3 Rules 1/5/6/12. Written immediately on the code change, before the build.

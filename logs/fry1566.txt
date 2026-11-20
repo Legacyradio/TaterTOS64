@@ -1,0 +1,48 @@
+# fry1566 - FREEZE POINT pinned: at the moment pid=14 goes silent, the GC suspend handshake is STILL WORKING (pid=15 cleanly suspends+resumes pid=41). pid=14 is NOT a suspend target and its JSC waits all return. pid=14 simply goes silent in USERSPACE after a burst of worker wake-calls — not in any futex/epoll/suspend wait. => main-thread userspace spin or scheduler starvation while the GC stack-scanner (pid=15) runs hot.
+Date: 2026-06-16 02:20 CDT
+Type: diagnosis (serial window 20500-20900 of the fry1560 run; no code change)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+---------------------------------------------------------------------------------
+EVIDENCE (serial ~20500-20900)
+---------------------------------------------------------------------------------
+- pid=15 suspend/resume of pid=41 at the freeze point COMPLETES cleanly (sig=30 -> confirm 63a2620 -> proceed ->
+  resume sig=30 -> rt_sigsuspend EINTR -> confirm -> proceed). Handshake healthy here too.
+- pid=15 NEVER targets pid=14 with sig=30 (suspend targets are 16,17,18,19,26,27,28,40,41,42 — the worker/helper
+  threads; the main thread pid=14 is not stack-scanned by this path). So pid=14 is NOT suspended.
+- pid=14 timeline at the edge: last epoll on the stdin set TBEPW pid=14 epfd=5 cnt=75 (~line 20565); two more
+  jsc-wait-enter/return on 63ad6e0 (return rc=0, elapsed ~26-37 — woken fine); then the burst of futex WAKE-calls
+  (6fbfee694450/454, 6fbbe4ee5254, 6fbbe4ed11d0, 6fbbe4edd2d4) ending ~line 20864; then SILENT for 40,000 lines.
+- No futex wait-begin, no epoll, no syscall from pid=14 after 20864. tgid=14 waits DO log -> pid=14 is NOT blocked in
+  a logged wait. It returned to userspace and never came back.
+
+---------------------------------------------------------------------------------
+INTERPRETATION (narrowed)
+---------------------------------------------------------------------------------
+The main thread (pid=14) is NOT deadlocked on the GC suspend handshake and NOT parked in a futex. After waking its
+workers it is executing USERSPACE code that makes no syscalls. Two remaining possibilities:
+  (A) USERSPACE SPIN: pid=14 busy-waits in userspace (WTF::Lock adaptive spin / a condition / a worker-result poll)
+      for a worker that cannot make progress -> spins forever, never returns to the event loop. Possibly a
+      livelock/priority-inversion: the worker it waits on is being continuously stack-scanned (suspend/resume) by the
+      hot GC scanner pid=15, or is itself stuck.
+  (B) SCHEDULER STARVATION: pid=14 is runnable but the scheduler keeps running pid=15 (288k futex-timeout wakeups,
+      GC scanner hot) + workers and does not give pid=14 CPU to finish its turn.
+Distinguishing requires seeing whether pid=14 is RUNNING (consuming a CPU; if so, at what userspace RIP) vs not run.
+
+---------------------------------------------------------------------------------
+NEXT (own fry log) - DECISIVE PROBE
+---------------------------------------------------------------------------------
+Add a timer-tick beacon: each scheduler tick, if the main thread (the pid that owns epfd=5 / tgid leader) has gone
+N ticks without a syscall, log (a) whether it is the CURRENTLY RUNNING task on any CPU, and (b) its saved userspace
+RIP. Outcome:
+  - RIP in a tight userspace range + pid=14 running  => (A) userspace spin; resolve the RIP in RCLAUDE.LXE to see what
+    lock/loop it is; fix the condition (likely make the worker it waits on able to progress, or fix a futex/lock the
+    spin polls).
+  - pid=14 never the running task + marked runnable => (B) scheduler starvation; fix scheduler fairness so the main
+    thread gets CPU (e.g. it is being starved by the hot GC scanner pid=15's 288k wakeups).
+Keep Claude fully networked. Beacons TBFD0/TBEPW already in; add the tick/RIP sampler.
+
+STATUS: panic fixed; input proven; suspend handshake works; freeze = main thread userspace stall (spin or starvation),
+to be split by the tick/RIP probe.
+
+All per planv3 Rules 1/5/6/12. Written immediately on completion of this freeze-point analysis.

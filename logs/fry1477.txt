@@ -1,0 +1,57 @@
+fry1477 - Raise FRY_SOCK_MAX 16 -> 128. The socket pool was exhausted
+(ENFILE) so rg's stdout socketpair couldn't be inherited by the vfork
+child -> dup2 EBADF -> rg exits 127. Pool headroom for claude + concurrent
+posix_spawn socketpair stdio.
+Date: 2026-06-13. Author: Claude (Opus 4.8).
+========================================================================
+
+CONTEXT
+------------------------------------------------------------------------
+After the parallel fry1476 work (Python staging + PIE ELF loader, on top
+of my fry1474 AF_UNIX socketpair vfork-inheritance), a KVM verification
+boot (/tmp/s_fry1476kvm.log) showed:
+- segfault count = 0, main inference clean success (no regression),
+- the agent-bus MCP Python child EXECUTES and stays alive
+  (LINUXELF load start /nvme/.../python; wait4 WNOHANG rc=0),
+- BUT rg children still exit 127 with "posix_spawn 'rg' EBADF".
+
+ROOT CAUSE (measured)
+------------------------------------------------------------------------
+Socket pool exhaustion. Evidence from /tmp/s_fry1476kvm.log:
+- 2x "ENFILE" (sock_alloc failed).
+- 35 FD_SOCKET copy attempts logged (TBCOPYFD kind=4) vs FRY_SOCK_MAX=16.
+- rg child dup2 for stdout: TBDUP2 pid=23 oldfd=24 newfd=1 kind=0 open=0
+  (the socketpair end was NOT copied -> EBADF), while its stdin
+  (dup2 oldfd=5 /dev/null -> 0) succeeded.
+My fry1474 socket-copy gives each inherited AF_UNIX socketpair end its own
+g_sockets[] slot; claude already holds ~35 socket refs, so with only 16
+slots the pool runs dry by the time rg (which spawns after the MCP child)
+needs its stdout socketpair -> sock_alloc returns -1 -> copy skipped ->
+child sees fd kind=FD_NONE -> dup2 EBADF.
+
+CHANGE
+------------------------------------------------------------------------
+src/include/fry_limits.h: FRY_SOCK_MAX 16 -> 128. struct fry_socket is
+small (udp_rxq = 4 * 512B), so 128 slots is well under 1 MB. No leak: the
+child's own socket structs are freed on its close/exec/exit (refs==0 ->
+teardown, fry1474); this is peak-concurrency headroom, not a leak fix.
+
+BUILD: make kernel EXIT 0. Full rebuild STAGE_CLAUDE=1 STAGE_PYTHON=1
+EXIT 0 (/tmp/fry1477_build.log).
+
+BOOT (KVM, serial /tmp/s_fry1477.log) — VERDICT: DID NOT FIX rg.
+- segfault=0, main result clean success (no regression). Kernel confirmed
+  built with FRY_SOCK_MAX=128.
+- ENFILE STILL = 2 (IDENTICAL to the 16-socket run) -> the socket pool was
+  NOT the limiting resource. Hypothesis WRONG.
+- rg child stdout dup2 still kind=0 (not copied); rg children exit 127.
+- claude's own debug names the real error: "ENFILE: file table overflow,
+  posix_spawn 'rg'".
+
+REAL CAUSE (fry1478): "file table overflow" = the PER-PROCESS fd table is
+full. FRY_FD_MAX=64, and TBCOPYFD shows claude holds 26 FD_SOCKET fds at
+the rg fork PLUS files/epoll/eventfd/timerfd + transient per-spawn
+socketpairs -> claude can't allocate the 2 fds for rg's stdio socketpair
+-> socketpair returns ENFILE -> rg spawn fails. The FRY_SOCK_MAX=128 bump
+is harmless/defensible headroom but insufficient alone. -> fry1478 raises
+FRY_FD_MAX.

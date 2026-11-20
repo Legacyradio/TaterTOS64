@@ -1,0 +1,99 @@
+fry1416 — Tater Bridge / Claude Code: AF_NETLINK/NETLINK_ROUTE minimal
+RTM_GETADDR implemented + VERIFIED consumed by glibc __check_pf.
+Result: check_pf no longer bails — but the DNS query STILL does not send.
+Date: 2026-06-11 ~5:10 PM CDT. Author: Claude (Fable 5).
+Follows fry1415 (lead #2 there = "TOP FIX BET", greenlit by Zack as lead #1).
+========================================================================
+
+WHAT WAS BUILT (all in tree, clean rule-12 build, BUILD_RC=0)
+====
+- process.h: new fd kind FD_NETLINK=13 (fd_ptrs -> struct netlink_cb*).
+- syscall.c struct netlink_cb {nl_pid, bound, used, rx_len, rx[128]} +
+  wire constants (LNX_AF_NETLINK=16, RTM_GETADDR=22, RTM_NEWADDR=20,
+  NLMSG_DONE=3, NLMSG_ERROR=2, NLM_F_MULTI, IFA_LOCAL=2, MSG_TRUNC).
+- LNX_socket: domain==16 + proto==NETLINK_ROUTE(0) + type RAW/DGRAM ->
+  lx_netlink_create_fd() (honors SOCK_NONBLOCK/CLOEXEC; autobind
+  nl_pid=cur->pid). Other domains keep the EAFNOSUPPORT path.
+- LNX_bind: sockaddr_nl accepted; nl_pid=0 keeps the autobind pid
+  (glibc binds 0 then getsockname's the assigned pid).
+- LNX_getsockname: FD_NETLINK branch returns sockaddr_nl{16,0,nl_pid,0},
+  value-result addrlen=12.
+- send side (LNX_sendto + LNX_sendmsg gather + lx_write_fd):
+  lx_netlink_handle_send(): RTM_GETADDR -> reply built synchronously
+  into cb->rx: RTM_NEWADDR (nlmsghdr 16 + ifaddrmsg{AF_INET,
+  prefixlen=popcount(netmask), scope=0, index=2} 8 + rtattr IFA_LOCAL
+  + IPv4 net-order 8) = 32 bytes, then NLMSG_DONE+int32(0) = 20 bytes;
+  both stamped with the REQUEST's nlmsg_seq and the socket's nl_pid
+  (glibc's match rules: sender nl_pid==0, nlmsg_pid==bound pid,
+  nlmsg_seq==req seq — all satisfied). Address source: net_get_config()
+  (DHCP'd e1000, host byte order -> emitted big-endian). If DHCP not up:
+  DONE-only reply (no addresses). Non-GETADDR types: NLMSG_ERROR ack
+  err=0 echoing the request header. Returns full request length.
+- recv side (lx_netlink_recvmsg for LNX_recvmsg + LNX_recvfrom branch +
+  lx_read_fd): drains the buffered datagram across iovecs, fills sender
+  sockaddr_nl{16,0,pid=0(kernel),0}, writes back value-result
+  msg_namelen (off 8) and msg_flags (off 48, MSG_TRUNC if short).
+- poll_check_fd FD_NETLINK: POLLIN when rx_len>0, POLLOUT always.
+- lx_close_fd FD_NETLINK: kfree. LNX_setsockopt on netlink: accept+
+  ignore (same policy as the AF_INET option shim).
+- NEW BEACON: LXNL req/rx (kprint_serial_only) — ADD TO STRIP LIST with
+  LXSOCK/LXCONN/LXUDP/LXEPCTL before any release.
+
+BUILD + BOOT
+====
+- OAuth: host token valid to 19:49 CDT; build_iso re-staged fresh
+  copies 17:01 (out/etc/clauth/* same expiresAt 1781225381252). No
+  manual re-stage needed.
+- Rule-12: make clean + full build_iso.sh STAGE_CLAUDE=1
+  CLAUDE_BIN=2.1.172. Only pre-existing warnings (region_ok, slots).
+- Boot: fry1415 KVM line verbatim (-smp 1, e1000/slirp, 420s window).
+  Serial /tmp/s.log, 6822 lines. No crash: numLocals/TBBFDUMP/PANIC = 0,
+  TBIMGOP fired once (image pages preserved), claude launched, read
+  /.claude.json (auth still good).
+
+VERIFIED IN SERIAL (the fix works as designed)
+====
+  LXSOCK socket pid=6 domain=16 type=80003 proto=0 -> netlink fd=19
+  LXNL req pid=6 type=22 seq=67 -> reply 52 bytes
+  LXNL rx pid=6 -> 52 bytes
+  LXSOCK socket pid=6 domain=2 type=80802 -> fd=17
+  LXCONN pid=6 fd=17 fam=2 dst=10.0.2.3:53 alen=16 rc=0
+  (same sequence again for pid=5: netlink fd=17 reused after close,
+   then DGRAM fd=17, connect rc=0)
+- type=22 = RTM_GETADDR: glibc __check_pf IS the caller, sent the dump,
+  read back all 52 bytes (RTM_NEWADDR + NLMSG_DONE), no error, and the
+  resolver PROCEEDED: socket(AF_INET,DGRAM|NONBLOCK|CLOEXEC) + connect
+  to nameserver. EAFNOSUPPORT bail = GONE. resolv.conf parse also
+  confirmed-good by implication (it connects to 10.0.2.3:53).
+
+RESULT — HYPOTHESIS PARTIALLY FALSIFIED
+====
+- LXUDP tx count: STILL ZERO. Both workers return to the libuv idle
+  futex (0x62661cc 10s waits) after connect, exactly as fry1414/15.
+- So __check_pf was A gate (now open) but not THE gate. The bail is
+  between connect() and the first send, INSIDE the resolver, past
+  address-family determination.
+- Filtered TBTRACE for pids 5/6 shows only: openat x4, futex x3,
+  newfstatat x2, access x1, nr=83 rc=-5 (=mkdir? "unknown" in name
+  table), nr=332 statx x1 (known fallback). NO poll/ppoll/sendto — but
+  the filter hides most syscalls; ABSENCE IS NOT EVIDENCE (fry1397
+  rule). If glibc send_dg is in play it __poll()s POLLOUT on the DNS fd
+  BEFORE sending — whether that poll happens and what it returns is
+  exactly what the next step must capture.
+
+NEXT (fry1417) = fry1415 lead #1, now decisive
+====
+Per-syscall unfiltered serial beacon gated to the DNS worker: arm on
+LXCONN (fam=2, dst port 53, rc=0) for that pid, log nr+a1..a3+rc for
+the next ~30 syscalls, then disarm. The thing the worker does right
+after connect — and what it returns — IS the answer (glibc send_dg
+poll? c-ares? Bun-native? early errno?). Also resolve what nr=83 rc=-5
+is (mkdir -EIO?) while in there.
+
+STRIP LIST (serial-only diagnostics in tree)
+====
+LXSOCK, LXCONN, LXUDP tx/rx, LXEPCTL/LXEPRDY, LXNL (new). KEEP: TBIMGOP
+guard, serial unimplemented-logger, epoll close-purge.
+
+BUILD/RUN COMMANDS: unchanged from fry1415 (KVM -smp 1, one QEMU at a
+time, grep -a for NUL bytes). Creds staged in image — strip before push.

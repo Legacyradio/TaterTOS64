@@ -1,0 +1,111 @@
+# hermes001 — PHASE 1 START: CPython 3.14.5 posixmodule.c audit against TaterTOS native libc
+Date: 2026-06-17 ~13:30 CDT
+Type: research/audit (Phase 1 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6 + HERMES_NATIVE_PLAN.txt
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Audit CPython 3.14.5 source (Modules/posixmodule.c, socketmodule.c, _ssl.c)
+against the TaterTOS64v3 native libc (src/user/libc/) and include tree
+(src/include/) to produce a complete gap matrix. This matrix drives Phase 2
+(CPython cross-compile) — every missing function must have an action before
+we begin building.
+
+WHY (Rule 6): The native port succeeds or fails on whether the TaterTOS native
+ABI can satisfy CPython's platform layer. The Linux compat layer (Tater Bridge)
+translates 150+ Linux syscalls, but we are NOT using Tater Bridge — we're
+compiling CPython against the NATIVE libc/headers. This audit confirms the
+native surface is sufficient and identifies exactly what's missing.
+
+---------------------------------------------------------------------------------
+METHOD
+---------------------------------------------------------------------------------
+1. Downloaded CPython 3.14.5 source to external/Python-3.14.5/
+   (31 MB tgz from python.org, extracted).
+2. Extracted all POSIX/system function calls from posixmodule.c (143 functions).
+3. Cross-referenced each against:
+   - src/user/libc/libc.c (2014 lines — string/mem/malloc/printf/errno)
+   - src/user/libc/posix.c (816 lines — POSIX wrappers for all syscalls)
+   - src/user/libc/libc.h (76 lines — declarations)
+   - src/user/libc/netdb.c (DNS resolution)
+   - src/include/ (all .h headers — 30+ files including tatertos/syscall.h)
+4. Repeated for socketmodule.c (41 functions) and _ssl.c (27 OpenSSL functions).
+5. Categorized each missing function: stub, disable, or implement.
+
+---------------------------------------------------------------------------------
+RESULTS
+---------------------------------------------------------------------------------
+
+POSIXMODULE.C:
+  143 POSIX/system functions used
+  100 found in TaterTOS native libc (70%)
+   43 missing (30%)
+      35 stubs (return 0 or -ENOSYS — single-user OS, not needed)
+       1 disable in pyconfig.h (fork — TaterTOS uses spawn)
+       7 simple implementations (wrap existing syscalls)
+
+SOCKETMODULE.C:
+   41 functions used
+   34 found (83%)
+    7 missing (trivial stubs/implementations: gethostname, inet_aton, etc.)
+
+_SSL.C:
+   27 OpenSSL API functions used
+   ALL must be replaced with BearSSL equivalents (different API)
+   This is Phase 3 work (~500-1000 lines of C)
+
+HEADERS:
+   ~12 headers missing from src/include/ (sys/wait.h, sys/utsname.h,
+   dirent.h, sys/types.h, etc.) — struct definitions + typedefs only,
+   no kernel changes needed.
+
+KEY FINDING: No new kernel syscalls are required. The 145 existing native
+syscalls (src/include/tatertos/syscall.h) cover CPython's needs entirely.
+The work is in the libc layer (stubs + wrappers) and the _ssl.c replacement.
+
+Full details in GAP_MATRIX.txt.
+
+---------------------------------------------------------------------------------
+GAP MATRIX SUMMARY
+---------------------------------------------------------------------------------
+CATEGORY A (stubs, 35 functions):
+  chown, fchownat, fchmodat, chroot, ctermid, getpgid, getpgrp, getsid,
+  setpgid, setsid, setuid, setgid, seteuid, setegid, setgroups, initgroups,
+  setns, unshare, getxattr, setxattr, listxattr, removexattr, fgetxattr,
+  fsetxattr, flistxattr, fremovexattr, pathconf, fpathconf, posix_fadvise,
+  sync, mknodat, linkat, symlinkat, sched_getparam, sched_setscheduler
+
+CATEGORY B (disable, 1 function):
+  fork — #undef HAVE_FORK in pyconfig.h
+
+CATEGORY C (implement, 7 functions):
+  _exit, fchdir, pwrite, scandir, futimens, futimes, posix_fallocate
+
+SOCKET MISSING (7 functions):
+  gethostname, gethostbyname, gethostbyaddr, inet_aton,
+  getservbyname, getservbyport, sethostname
+
+SSL REPLACEMENT (27 OpenSSL functions → BearSSL):
+  Full _ssl.c module replacement (Phase 3)
+
+MISSING HEADERS (~12):
+  sys/wait.h, sys/utsname.h, sys/resource.h, sys/uio.h, sys/statvfs.h,
+  dirent.h, sys/types.h, termios.h, pwd.h, grp.h, utime.h, semaphore.h
+
+---------------------------------------------------------------------------------
+EXIT GATE STATUS
+---------------------------------------------------------------------------------
+GAP_MATRIX.txt produced and reviewed. Every missing function has an action
+(stub, implement, or disable). No new kernel syscalls needed.
+
+The gap is manageable — 35 trivial stubs, 7 simple wrappers, 12 headers,
+and the Phase 3 _ssl.c replacement. The native libc already covers 70% of
+CPython's POSIX needs, and the remaining 30% is almost entirely stubs for
+features a single-user OS doesn't need (permissions, process groups,
+namespaces, xattrs).
+
+Phase 1 audit is COMPLETE. Ready for user approval to proceed to Phase 2
+(CPython Tater-native cross-compile).
+
+All per planv3 Rules 1/5/6. Written immediately on the audit completion.

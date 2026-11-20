@@ -1,0 +1,96 @@
+fry1391 — Tater Bridge / Claude Code: DR watchpoint catches the corruptor in
+the act. Found + FIXED a real kernel bug (per-CPU gs:24..56 callee-saved
+scratch fed cross-thread registers into signal ucontexts = poisoned JSC GC
+conservative roots), plus a self-inflicted clone3 frame-depth regression.
+The numCalleeLocals crash itself PERSISTS: the watch proved the zero is
+COPIED from an already-zero SOURCE object (r8) — corruption is upstream.
+Timestamp: 2026-06-10 05:05-05:35 CDT
+Author: Claude (Fable 5), continuing fry1390. CLAUDE_BIN = 2.1.170, -smp 1 KVM.
+
+STEP 1 — WATCHPOINT INSTRUMENTATION (code, committed tree)
+  WHY: fry1390 proved the corrupt page's PTE/PA never changes and no VM op
+  covers it -> the zero is a direct WRITE through a live mapping; catch the
+  writer by RIP. Previous TBWATCH infra was unusable for this: hardcoded
+  tgid 3 gate (claude is tgid 2 on -smp 1), 8-byte LEN encoding (field is
+  only 4-aligned), and NO kernel-mode #DB handling (CPL0 writers invisible).
+  WHAT:
+  - process.h: TB_CLAUDE_WATCH_TGID now aliases the dynamic name-tracked
+    g_tb_trace_claude_tgid (was #define 3u). tb_program_jsc_slot_watchpoints_for
+    re-encoded to 4-byte write watches (RW=01 LEN=11, nibble 0xD), per-slot
+    enable only when armed.
+  - syscall.c: g_tb_watch_field_va = 0x6FBFF50F4AB4 (cb+0x14, -smp 1 config);
+    lazy-arm in linux_syscall_dispatch once the page is committed: DR0/DR2 =
+    user VA, DR1/DR3 = physmap alias of the field PA (catches kernel
+    phys-window writes); logs TBWATCHARM with PA.
+  - irqdesc.c: new CPL0 vec-1 branch logs TBWATCHK rip/dr6/field and resumes;
+    CPL3 handler additionally logs the post-write field value via the physmap
+    alias, and (added later this session) r8/r9/rbp/r13/r15 + TBWATCHSRC
+    8-qword dump of the SOURCE object at r8.
+
+STEP 2 — THE CATCH (boot, /tmp/s.log)
+  TBWATCHARM field=6fbff50f4ab4 pa=86a3ab4 alias=ffff8000086a3ab4 (val=0 at arm)
+  HIT 1: rip=0x4C84308 USER, writes numCalleeLocals=6, rbx=rdi=cb. Legit
+    CodeBlock construction.
+  HIT 2: SAME RIP 0x4C84308, same cb address, writes {+0x14=0, +0x18=5}; then
+    TBBFDUMP + the usual crash. NO TBWATCHK ever -> the kernel NEVER writes
+    the field. Disassembly (objdump on host 2.1.170):
+      4c842ff: mov 0x14(%r8),%edx ; and %eax,%edx ; mov %edx,0x14(%rdi)
+      4c84308: and 0x10(%r8),%eax ; mov %eax,0x18(%rdi)
+    => copy-construction from a SOURCE object in r8 (eax mask 0x7fffffff).
+    At HIT 2 rdx=0 -> THE SOURCE +0x14 WAS ALREADY ZERO before the copy.
+    A second CodeBlock is built over the first (cell recycled); the zero is
+    inherited from the source (an Unlinked/cached counterpart in the 0x6FBB
+    cage region — the SAME region as fry1380's 0xC200 buckets and the
+    fry1385/86 #GP).
+
+STEP 3 — REAL KERNEL BUG FOUND + FIXED (per-CPU callee-saved scratch)
+  WHY suspected: hit pattern = object freed while reachable = lost GC root;
+  JSC's GC signal-suspends threads and conservatively scans the ucontext
+  register set. Audit of the delivery path found:
+  - syscall_entry snapshotted user rbx/r12-r15 into PER-CPU gs:24..56.
+    Any other thread's syscall on that CPU overwrites them. A thread blocked
+    in futex_wait (= where GC-suspended threads sit) therefore got ANOTHER
+    THREAD's callee-saved regs in its signal ucontext (lx_deliver_signal_on_
+    sysret read gs slots at sysret time). Conservative roots living only in
+    those regs are lost.
+  - rt_sigreturn wrote callee-saved restores back to gs slots that NOTHING
+    ever read -> dead stores; handler-modified ucontext callee-saved regs
+    were silently dropped.
+  FIX (in tree):
+  - syscall_entry pushes rbx/r12-r15 into the PER-THREAD kernel stack frame
+    (frame grows 12 -> 17 slots; new LX_SYSFRAME_R15..RBX=12..16, _SLOTS=17;
+    lx_syscall_frame updated).
+  - syscall exit restores the 5 regs from the frame (rbp-relative 32..64) —
+    makes rt_sigreturn modifications actually reach the registers.
+  - lx_deliver_signal_on_sysret, lx_rt_sigreturn_sys, clone3 all converted
+    from gs slots to frame slots; lx_read/write_gs_slot deleted; gs:24..56
+    stores removed from syscall_entry.
+  This bug is REAL and could corrupt any threaded Linux app under signals;
+  fixing it is required regardless of the present crash.
+
+STEP 4 — REGRESSION + FIX (clone3 hardcoded frame depth)
+  First boot after Step 3: pid 3 (first clone3 child) died vec=1 SIGTRAP at
+  rip=0x287a9b1, r13-r15 = raw x86 code bytes, TF set in rflags. Cause: the
+  clone3 case computed the frame base itself with a HARDCODED
+  kernel_stack_top - 12*8 (missed in Step 3) -> all child-inherited regs
+  read 5 slots off. Fixed: clone3 now uses lx_syscall_frame() +
+  LX_SYSFRAME_RIP/RSP names. Swept the tree: no other hardcoded depth.
+
+STEP 5 — RE-TEST: crash persists, root cause is UPSTREAM
+  Boot with Steps 3+4: clone3 children fine, thread pool up, TBWATCHARM,
+  HIT 1 (=6) and HIT 2 (=0, rdx=0) IDENTICAL to before (same rsp values
+  even). So the gs-scratch bug was NOT the corruptor of this particular
+  field; the zero is faithfully copied from an already-corrupt source.
+  Determinism (same addresses/rsp every boot, smp-independent) now points
+  AWAY from GC races toward a deterministic upstream zeroing of the source
+  object in the 0x6FBB.. region (candidates: bytecode-cache deserialization
+  divergence, madvise/DONTNEED zero semantics on the source page, vm-region
+  bookkeeping aliasing).
+  NEXT (fry1392): boot with TBWATCHSRC dump -> read source address from r8
+  -> re-arm DR watch + g_tb_target_page on the SOURCE field -> catch the
+  upstream zeroer (or prove it was never written). Then fix THAT.
+
+BUILD/RUN: unchanged from fry1389/1390 (KVM -smp 1 recipe, grep -a).
+  Rebuild used: find src/kernel src/drivers -name '*.o' -delete &&
+  CLAUDE_BIN=~/.local/share/claude/versions/2.1.170 STAGE_CLAUDE=1
+  MTOOLSRC=/dev/null /bin/bash build_iso.sh

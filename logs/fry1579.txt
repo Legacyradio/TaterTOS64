@@ -1,0 +1,63 @@
+# fry1579 - CONSOLIDATED HANDOFF (input freeze): the remaining bug is a MAIN-THREAD FUTEX LIVELOCK. pid=14 busy-loops on FUTEX_WAIT returning EAGAIN because the target futex values churn under heavy multi-thread contention; it never blocks and never acquires, so the JS event loop never resumes and stdin is never read. Panic FIXED; input DELIVERY works; this is the open item.
+Date: 2026-06-16 05:40 CDT
+Type: consolidation / actionable handoff (with the fry1578 futex finding)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+==================================================================================
+SHIPPED + VERIFIED
+==================================================================================
+- fry1544-1546: network-teardown KERNEL PANIC fixed (1 MB `struct tcp_conn dummy` moved off the kernel stack in
+  tcp_process's RST path; netcore.c:1020 made static). OS survives the killed-helper teardown that triple-faulted.
+- fry1551-1552: /proc/self/stat implemented in tbridgefs (procfs gap closed).
+- Input DELIVERY verified end-to-end: keystrokes reach Claude's stdin inbuf; kernel epoll/poll_check_fd correct;
+  typing briefly ECHOED ("hhello", fry1560) before the freeze. So the OS keyboard path is DONE.
+
+==================================================================================
+THE OPEN BUG: main-thread futex livelock (precisely cornered)
+==================================================================================
+SYMPTOM: after a short window, the Claude main/event-loop thread (pid=14) stops servicing stdin; typing not echoed.
+WHAT IT IS (fry1578): pid=14 is in a userspace busy-loop whose syscalls are FUTEX_WAIT (nr=202) returning -11 EAGAIN,
+interleaved with stat(ENOENT) + epoll_ctl(EEXIST). The TBSPIN kernel-PC sampler caught it 156x at cs=0x08 in
+spin_unlock_irqrestore+0x8 / hpet_read_counter / sched_tick / linux_syscall_dispatch_impl — i.e. the syscall+sched
+overhead of that tight loop, NOT a single wedged syscall. FUTEX_WAIT returns EAGAIN because the futex word changes
+between pid=14's userspace read and the kernel's recheck:
+   uaddr=6fbfee01e950 expected=26 actual=29   (a counter/seq racing ahead)
+   uaddr=6fbff9434190 expected=2  actual=0
+Top contended uaddrs pid=14 spins on: 6fbff9434190 (45), 6fbfee01e950/954 (30), 63aabe0, 6fbff800e85x. The JSC futex
+63ad6e0 DOES complete (jsc-wait-return rc=0). So it is these specific contended locks pid=14 cannot win.
+CONTEXT: 8-11 ZOMBIE claude threads (TBCLK t3=~5/~4/~11/0) — exited workers; possible a lock holder exited.
+
+THEORIES DISPROVEN tonight (each by the next measurement — do NOT re-try):
+ 1. JSC futex lost-wakeup        -> jsc-waits all return (fry1565).
+ 2. GC stop-the-world handshake  -> suspend/confirm via sig=30 + 63a2620 works for threads 16/17/18 (fry1565).
+ 3. Userspace spin               -> TBSPIN userspace-only = 0 (fry1574).
+ 4. Runqueue orphan              -> self-heal TBREQUEUE fired 0x; not orphaned (fry1577).
+ 5. Stuck in rt_sigsuspend       -> pid=14 nr=130 count = 0; no sig=30 delivered to pid=14 (fry1578).
+
+==================================================================================
+INSTRUMENTATION IN TREE (remove when done): TBFD0, TBEPW, TBMAIN, TBSPIN (any-mode), TBREQUEUE self-heal (no-op here),
++ the sched.c TB_TRACE_CLAUDE_TGID fix (now uses dynamic g_tb_trace_claude_tgid — KEEP this; the hardcoded 3 was wrong).
+Build toggle CLAUDE_NO_MCP=1 used as a diagnostic control (MCP not the cause).
+
+==================================================================================
+BEST NEXT DIRECTIONS (fresh, focused — not midnight theory-churn)
+==================================================================================
+1. Identify the lock holder: instrument FUTEX so when pid=14 EAGAINs on uaddr U, log who LAST wrote U / who holds the
+   corresponding lock, and whether that thread is a ZOMBIE (exited holding it) or a live thread starving pid=14. The
+   8-11 zombies are the prime suspect: a worker exited while holding a Bun/JSC lock -> pid=14 waits forever.
+   -> If zombie-held: the real fix is making thread EXIT release/robust-list-process its locks (FUTEX robust lists /
+      set_robust_list handling), or reap zombies so their locks are cleared. Check whether set_robust_list (nr=273) is
+      implemented — Bun/glibc use robust mutexes; if TaterTOS ignores the robust list, a thread dying with a held
+      mutex never marks it owner-dead -> permanent livelock. THIS IS THE STRONGEST LEAD.
+2. If live contention/unfairness: the EAGAIN-spin never yields the CPU; consider yielding on the FUTEX_WAIT EAGAIN
+   path so the lock holder runs (mitigation), while fixing fairness.
+3. Re-verify with MCP ON after the fix; remove all TB* beacons; confirm the panic fix still holds.
+
+REPRO: build STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 CLAUDE_BIN=.../2.1.177 ...; headed qemu (see fry1546); type in the Claude
+TUI; serial = truth. Key greps: TBPROCIN (delivery), TBREAD fd=0 (consume), TBMAIN (main-thread state), TBSPIN (PC),
+TBFUTEX wait-block-fail pid=14 (the EAGAIN spin + uaddr), TBCLK t3 (zombies).
+
+ASSESSMENT: the freeze is a hard JS-runtime-vs-kernel concurrency livelock; the single most promising root-cause lead
+is FUTEX robust-list (owner-died) handling vs the zombie threads. That is the next thing to check.
+
+All per planv3 Rules 1/5/6/12. Consolidated handoff for the open input-freeze item.

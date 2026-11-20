@@ -1,0 +1,95 @@
+fry1462 - Auth blocker cleared: real Claude Code authenticates and completes
+a model round-trip inside TaterTOS after restaging fresh host OAuth creds.
+Date: 2026-06-13 11:02 CDT. Author: Claude (Opus 4.8).
+========================================================================
+
+SUMMARY
+========================================================================
+The fry1460 run reached real Claude 2.1.177, stream-json, HTTPS, and a
+clean remote 401 ("Invalid authentication credentials"). Root cause was
+NOT kernel/network: the NVMe image carried the 03:26 CDT OAuth access
+token, which had rotated/expired by the 10:41 run.
+
+This step restaged the freshly-refreshed host creds (host /login at
+~10:51 CDT, expiresAt 2026-06-13 18:51 CDT) via the documented rebuild
+path and re-ran. Result: clean authenticated success.
+
+WHY (root cause)
+------------------------------------------------------------------------
+- Host ~/.claude/.credentials.json refreshed 10:51 CDT (valid to 18:51).
+- Image under test had been staged from the 03:26 CDT credentials.
+- OAuth access tokens are short-lived -> the staged token was stale ->
+  remote API returned 401. Confirmed by timestamp comparison; no token
+  contents read or logged.
+
+WHAT CHANGED
+------------------------------------------------------------------------
+No source/kernel change. Rebuilt the image the sanctioned way so fresh
+creds are staged automatically (build_iso.sh wipes+recreates the NVMe
+image, then copies host creds from out/etc/clauth -> /.claude.json +
+/.claude/.credentials.json):
+
+  PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH" STAGE_CLAUDE=1 \
+  CLAUDE_BIN=$HOME/.local/share/claude/versions/2.1.177 \
+  /bin/bash build_iso.sh    (BUILD EXIT: 0, /tmp/fry1462_build.log)
+
+Toolchain note: cross gcc is system-installed (/usr/bin/x86_64-elf-*,
+16.1.0); tools/host/bin/x86_64-elf-gcc is a wrapper ->
+libexec/resolve-cross-tool.sh, which resolves the libgcc path. The
+hardcoded-15.2.0 concern is a non-issue; build_iso.sh produced working
+ISO+NVMe earlier today (10:09/10:40) and again here.
+
+Staging verification (sizes match host, no contents printed):
+  /.claude/.credentials.json = 466   (host 466)
+  /.claude.json              = 32888 (host 32888)
+  /RCLAUDE.LXE               = 250480336 (Claude 2.1.177)
+
+BOOT COMMAND (documented, -smp 4, full window)
+------------------------------------------------------------------------
+  cp /mnt/usb115/TaterTOS_claude_milestone_2026-06-12/OVMF_VARS_copy.fd \
+     /tmp/OVMF_VARS_fry1462.fd
+  timeout 1200s qemu-system-x86_64 \
+    -m 4G -machine q35,accel=kvm -cpu host -smp 4 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=/tmp/OVMF_VARS_fry1462.fd \
+    -cdrom out/tatertos64v3.iso \
+    -drive file=out/tater_nvme.img,if=none,id=nvme0,format=raw \
+    -device nvme,drive=nvme0,serial=tatertos-nvme \
+    -netdev user,id=n0 -device e1000,netdev=n0 \
+    -display none \
+    -serial file:/tmp/s_fry1462.log
+
+RESULT (the verdict)
+------------------------------------------------------------------------
+{"type":"result","subtype":"success","is_error":false,
+ "api_error_status":null,"duration_ms":44194,"duration_api_ms":19868,
+ "result":"Hello from TaterTOS — small OS, big dreams, endless
+ possibilities!","stop_reason":"end_turn",
+ "total_cost_usd":0.042781...,"terminal_reason":"completed"}
+
+- model: claude-sonnet-4-6 (+ claude-haiku-4-5 helper), real token usage
+  (input 3 / output 19 / cache_read 11388 / cache_creation 6414).
+- NO 401, NO api_retry, NO authentication_failed in /tmp/s_fry1462.log.
+- Serial: /tmp/s_fry1462.log (2,017,632 bytes at result time).
+
+WHAT THIS PROVES
+------------------------------------------------------------------------
+- Real Claude Code 2.1.177 AUTHENTICATES and completes a billed model
+  round-trip from inside TaterTOS (vfork bridge from fry1456 still good).
+- The 401 was purely stale-credential staging, not kernel/network.
+- End-to-end: ELF load -> epoll/event loop -> e1000/slirp DNS+TLS ->
+  /v1/messages -> stream-json result -> exit, with auth accepted.
+
+STILL OPEN (unchanged from fry1461 handoff; not this step's scope)
+------------------------------------------------------------------------
+- wait4/waitpid (nr=61) unimplemented -> rg helper subprocess fails.
+- watcher/stat metadata noise (nr=294 inotify, nr=332 statx).
+- OAuth token rotates (~8h); a stale-token 401 will recur unless creds
+  are restaged before a run. Re-stage = rebuild (this log) until an
+  in-image refresh path exists.
+
+NEXT
+------------------------------------------------------------------------
+Implement Linux wait4 (nr=61) for subprocess reaping (Bash/rg tools),
+then re-run same command to a new /tmp/s_fryNNNN.log. One fry log per
+completed fix/test (rule 5). Never log token contents.

@@ -1,0 +1,36 @@
+fry1706 — 2026-06-21 08:34 CDT
+STEP: Preflight verification before booting to test the ELF-TLS fix (verify-build-
+      before-launch rule). Read-only; nothing modified.
+
+WHAT I VERIFIED (no assumptions):
+  1. Build freshness / ordering (no stale image):
+     - kernel.elf  mtime 2026-06-21 08:19:09  (+TLS fix, +4144B per fry1704)
+     - out/tatertos64v3.iso mtime 08:19:36  -> built AFTER kernel (correct order)
+     - out/tater_nvme.img   mtime 08:19     -> written this build (stage_hermes ran)
+  2. Source actually matches the built kernel (TLS markers present in tree):
+     - elf.h: ELF_LOAD_ERR_TLS_ALLOC=-114; 5th out-param tls_base_out (l.22,25,30)
+     - elf.c: PT_TLS 7; FRY_TLS_REGION_BASE 0x7FFF80000000; FRY_TLS_TCB_RESERVE;
+              PT_TLS parse loop; *tls_base_out=tp (l.56,65,66,333-407)
+     - process.c: BOTH .fry launch paths set p->user_fs_base=tls_base (l.858,923);
+                  write_user_fs_base() programs MSR_FS_BASE at process_start (l.162)
+  3. Boot path -> the kernel that boots IS the fresh one:
+     - build_iso.sh:530 mcopy $ROOT_DIR/kernel.elf -> EFI ::/boot/kernel.elf
+     - UEFI BOOTX64.EFI (src/boot/efi_loader.c) loads /boot/kernel.elf. So the
+       08:19:09 TLS kernel is what runs. NOT loaded from a stale nvme copy.
+  4. Test path is real:
+     - shell.c:1058 dispatch "hermes" -> cmd_hermes (845) -> fry_spawn_args(
+       "/nvme/apps/python3.fry", ...) (825). python3.fry staged to /apps via
+       stage_hermes.sh:58 totcopy (ToTFS). python3.fry unchanged (kernel-only fix);
+       its version only matters at the later argv/environ stage, past the crash.
+  5. Launch sanity:
+     - no qemu-system running (no double-launch); out/tater_nvme.img + OVMF_VARS.fd
+       present; /dev/kvm present (kvm accel).
+
+DECISION: No rebuild needed (kernel-only change already built+staged this morning,
+  verified above). Proceed to boot launch_debug.sh; serial tee'd to
+  /tmp/fry1707_qemu_serial.log. Zack types `hermes` at the shell (normal keypress,
+  no input "driving"). Then read serial to the END -> fry1707 with ACTUAL end state.
+
+EXPECTED at the allocator point: _PyObject_Malloc no longer faults at fs:-8 (TLS
+  now backed by the kernel PT_TLS layout); self-test proceeds past pymalloc. If it
+  still faults, capture RIP/cr2 from the serial log and disasm.

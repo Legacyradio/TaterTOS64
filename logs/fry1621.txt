@@ -1,0 +1,72 @@
+# hermes016 — PHASE 2 STEP 15: flockfile/funlockfile missing from stdio.h
+Date: 2026-06-17 ~15:28 CDT
+Type: compile fix (Phase 2 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Compile Objects/fileobject.c — CPython's file object implementation. Wraps
+FILE* operations for Python file I/O.
+
+---------------------------------------------------------------------------------
+WHAT HAPPENED
+---------------------------------------------------------------------------------
+ERROR:
+  Objects/fileobject.c:16:24: error: implicit declaration of function 'flockfile'
+  Objects/fileobject.c:17:26: error: implicit declaration of function 'funlockfile'
+
+---------------------------------------------------------------------------------
+ROOT CAUSE
+---------------------------------------------------------------------------------
+CPython's fileobject.c uses flockfile()/funlockfile() for thread-safe FILE*
+access when HAVE_GETC_UNLOCKED is defined. TaterTOS has getc_unlocked()
+(declared in stdio.h, implemented as fgetc()) but was missing the file
+locking functions flockfile/funlockfile/ftrylockfile.
+
+The pyconfig.h had HAVE_GETC_UNLOCKED defined (from host probe), and
+TaterTOS does have the function, so the conditional code path was taken.
+
+flockfile/funlockfile are POSIX stdio locking functions. They provide
+recursive locking around FILE* operations so multiple calls (getc_unlocked
++ putc_unlocked) can be done atomically without other threads interleaving.
+
+---------------------------------------------------------------------------------
+FIX
+---------------------------------------------------------------------------------
+1. src/include/stdio.h:
+   Added declarations:
+     void flockfile(FILE *stream);
+     void funlockfile(FILE *stream);
+     int  ftrylockfile(FILE *stream);
+
+2. src/user/libc/stdio.c:
+   Added implementations (all no-ops):
+     flockfile:    no-op (void)
+     funlockfile:  no-op (void)
+     ftrylockfile: return 0 (success)
+
+WHY: TaterTOS FILE* operations are already thread-safe at the kernel level
+(fry_read/fry_write are atomic syscalls). The POSIX flockfile/funlockfile
+pair provides userspace recursive locking for multi-call atomicity, which
+CPython uses for getc_unlocked loops. Since TaterTOS's fgetc already
+uses fry_read (atomic), the no-op is correct — there's no userspace
+buffer state to protect.
+
+The alternative (undef HAVE_GETC_UNLOCKED) would lose the unlocked fast
+path, forcing CPython through the slower getc() wrapper on every character
+read. Keeping the unlocked path with no-op locks is better for performance.
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+Re-ran fileobject.c compile:
+  x86_64-elf-gcc ... -DPy_BUILD_CORE -c Objects/fileobject.c
+
+Result: ZERO errors. Compiled clean.
+
+---------------------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------------------
+Fix obmalloc.c (mimalloc.h generated header). Then compile Modules/*.c
+(posixmodule.c, socketmodule.c, etc.).

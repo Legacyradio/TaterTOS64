@@ -1,0 +1,91 @@
+fry1483 - RUN the fry1482 SPCEN instrument: settle the rg/Grep-spawn
+ENFILE as leak-vs-need WITH DATA. RESULT: genuine concurrent NEED on the
+socket pool (not a leak), pipes have headroom; a SECOND independent
+blocker (EBADF socketpair-stdio inheritance) also surfaced. Main
+inference still SUCCEEDS — no regression from the instrumentation.
+Date: 2026-06-13. Author: Claude (Opus 4.8).
+Serial archived: logs/serial_fry1483.log (2.8 MB).
+========================================================================
+
+RUN SETUP
+------------------------------------------------------------------------
+- Kernel rebuilt with the fry1482 SPCEN beacons (make, clean).
+- Image: STAGE_CLAUDE=1 STAGE_PYTHON=1, CLAUDE_BIN=.../versions/2.1.177,
+  PYTHON_BIN=/usr/bin/python3.14. OAuth restaged from live ~/.claude
+  (.claude.json 33882 B + .credentials.json) -> /nvme.
+- QEMU: q35,accel=kvm -cpu host -smp 4, OVMF (edk2 x64), nvme=tater_nvme,
+  e1000/slirp, -serial file. Baked prompt unchanged ("say hello..."):
+  rg spawns at claude STARTUP via countFilesRoundedRg regardless of
+  prompt, so no prompt change was needed to trigger it.
+
+WHAT THE SPCEN TRACE SHOWED (the data)
+------------------------------------------------------------------------
+Peak socket usage:  sock=15/16   <-- pegging the ceiling
+Peak pipe usage:    pipe=12/128  <-- vast headroom
+Exhaust events:     1  (SPCEN exhaust pid=5 sock=15/16 pipe=12/128)
+  immediately followed by: TBTRACE ret pid=5 nr=53 rc=0xffffff...e9
+  -> nr=53 = socketpair, rc = -23 = -ENFILE. CONFIRMED: socketpair()
+  failed because 15/16 socket slots were live (needs 2 free, had 1).
+
+=> SOCKETS ARE THE BINDING LIMIT, NOT PIPES. This DIRECTLY CONTRADICTS
+   fry1477's "sockets not the limit" conclusion. Root of that mistake:
+   the sockhw beacon (in sock_alloc) only ever read 1-2, because
+   SYS_SOCKETPAIR INLINES ITS OWN socket-slot scan and never calls
+   sock_alloc -> the dominant consumer was invisible to sock_alloc's
+   counter. The census tags (new/close/exhaust/exit, which read the live
+   g_sockets array) expose the true 15/16. fry1477 likely bumped
+   FRY_SOCK_MAX 16->128, got past THIS, then hit a different wall and
+   mis-attributed.
+
+LEAK vs NEED  -> NEED (reclaim is clean)
+------------------------------------------------------------------------
+Socket count over the run oscillates 5<->15 during init, then DRAINS ALL
+THE WAY TO 0 at the end (...8 7 6 5 5 1 0). The floor does NOT ratchet
+up. close (pid=5) AND exit (child pids 22,24) events both reclaim slots.
+=> Not a leak. claude's init legitimately holds up to ~7-8 concurrent
+   AF_UNIX socketpairs (Node/Bun runtime + MCP IPC). The pool of 16 =
+   only 8 concurrent PAIRS, so it momentarily wants one more -> ENFILE.
+This is exactly fry1481's sanctioned "IF genuine need" branch.
+
+SECOND, INDEPENDENT BLOCKER: EBADF (separate from ENFILE)
+------------------------------------------------------------------------
+Two distinct rg spawn failures, 35s apart, logged to claude's own debug:
+  22:42:41 [ERROR] countFilesRoundedRg failed: EBADF: bad file
+           descriptor, posix_spawn 'rg'
+  22:43:16 [ERROR] ENFILE: file table overflow, posix_spawn 'rg'
+The FIRST spawn fails EBADF = the AF_UNIX socketpair stdio fds are not
+correctly inherited into the rg vfork child (fry1473's blocker; fry1474
+only partially closed it). The SECOND fails ENFILE = the pool exhaustion
+above. Both must be fixed for rg/Grep to run. ENFILE is the easy,
+data-justified one; EBADF needs the vfork fd-inheritance path examined.
+
+NO REGRESSION (baseline intact)
+------------------------------------------------------------------------
+- claude session init event present: model claude-sonnet-4-6, full tool
+  list, MCP agent-bus pending, claude_code_version 2.1.177.
+- MAIN INFERENCE: {"type":"result","subtype":"success",
+  "is_error":false,"api_error_status":null,"duration_ms":56811,...} ->
+  full authenticated round-trip succeeded WITH the SPCEN beacons in
+  place. The instrumentation did not perturb the known-good fry1476 path.
+- rg failure is NON-FATAL to the session (claude falls back), but the
+  Grep tool stays dead until both blockers are fixed.
+
+NEXT STEPS (each its own log)
+------------------------------------------------------------------------
+fry1484: fix the ENFILE -> raise FRY_SOCK_MAX. SAFE: g_sockets is a BSS
+  global array (process.c:51), NOT on the kernel stack (unlike fd_paths
+  / FRY_FD_MAX, which is why FD_MAX can't be raised yet). struct
+  fry_socket ~2KB (carries a 4x512B UDP rx ring even for AF_UNIX).
+  16->64 = 32 concurrent pairs (4x the observed ~8-pair peak); ~133KB
+  BSS. 128 is proven-boot-safe (fry1477) if 64 ever pegs. Rebuild + rerun
+  to confirm ENFILE gone and isolate EBADF as the sole remaining rg
+  blocker.
+fry1485: fix the EBADF socketpair-stdio inheritance into the rg vfork
+  child (continue the fry1474 work; instrument the dup2/FD_COPY path at
+  the rg spawn).
+Optional cleanup: route SYS_SOCKETPAIR through sock_alloc (or a shared
+  counter) so the high-water beacon stops lying; trim the AF_UNIX UDP rx
+  ring (unused for AF_UNIX) to shrink the socket struct.
+
+COORDINATION: still 2406 uncommitted lines in syscall.c/process.c (the
+fry1463-1482 chain). Codex co-edits these — serialize.

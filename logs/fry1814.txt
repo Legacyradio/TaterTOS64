@@ -1,0 +1,78 @@
+fry1814 — wcsftime() implemented for real (was a lying stub); gap stub removed
+          — 2026-09-26
+==========================================================================
+WHAT: Replaced the wcsftime() gap stub with a real implementation. This is
+defect 1 of the three confirmed in fry1813. Code edited; log written BEFORE the
+build, per planv3 rule 5/6 and the edit->log->build ordering. NOT YET BUILT at
+the time this file was written — build result is in fry1815.
+
+=== WHY (the defect, from fry1813) ===
+  external/Python-3.14.5/pyconfig.h:1637          #define HAVE_WCSFTIME 1
+  external/Python-3.14.5/Modules/timemodule.c:766-768
+        #ifdef HAVE_WCSFTIME
+        #define format_time wcsftime
+  src/user/libc/gap_stubs.c:169 (BEFORE this step)
+        size_t wcsftime(wchar_t *s, size_t max, const wchar_t *fmt,
+                        const struct tm *tm)
+        { (void)fmt;(void)tm; if(s&&max)s[0]=0; return 0; }
+pyconfig.h claims this platform has wcsftime. It did not — the stub wrote an
+empty string and reported 0. CPython therefore routed every time.strftime()
+call into it, so EVERY Python timestamp string produced anywhere in TaterTOS
+came out empty. Observed as hermes log lines beginning with a bare ",248": the
+logging module's ",%03d" millisecond tail with nothing in front of it
+(logs/fry1812.txt FINDING 5, diagnosed in logs/fry1813.txt DEFECT 1).
+
+=== CHANGES ===
+1. src/user/libc/time_ext.c
+   + #include <stdlib.h>   (malloc/free)
+   + #include <wchar.h>    (wchar_t, mbstate_t, wcslen, wcrtomb, mbrtowc)
+   + size_t wcsftime(wchar_t *s, size_t maxsize, const wchar_t *format,
+                     const struct tm *tm)
+     placed immediately after the existing narrow strftime(), before asctime().
+   MECHANISM: wide format -> UTF-8 -> delegate to the narrow strftime() already
+   in this file (time_ext.c:210+, which correctly handles %Y %m %d %H %M %S %a
+   %A %b %B %e %I %j %p %w %y and %%) -> convert the result back to wide.
+   Conversion uses wcrtomb/mbrtowc from string_ext.c:599-627, which are REAL
+   UTF-8 codecs (verified this step — they call utf8_encode_one/utf8_decode_one
+   and set EILSEQ on bad input). Deliberately NOT the wcstombs in gap_stubs.c,
+   which masks to 7 bits ((char)(s[i]&0x7F)) and would corrupt any non-ASCII
+   format string.
+   SIZING: narrow buffers are 4*n+1 (UTF-8 maximum per wide character), both
+   heap-allocated; every allocation failure path frees what it holds and
+   returns 0.
+   POSIX CONFORMANCE: returns the count of wide characters written excluding
+   the terminator; returns 0 when the result will not fit in maxsize, when a
+   conversion fails, or when the format produced nothing. An empty format is
+   handled explicitly so s is still null-terminated.
+   Embedded-null stop: mbrtowc returns 0 at a null codepoint and the loop
+   breaks, matching what the narrow strftime would have produced.
+
+2. src/user/libc/gap_stubs.c:169
+   Stub DELETED, replaced with a comment recording what it did, why it was
+   dangerous and that it must not be reinstated. Deleting rather than leaving it
+   is required: two definitions of wcsftime would be a duplicate symbol at link.
+
+=== WHAT IS DELIBERATELY NOT DONE ===
+pyconfig.h:1637 is left as HAVE_WCSFTIME 1 and that is now a TRUE statement
+about this platform, so no edit to the vendored CPython tree is needed. Turning
+the define off would have been the smaller change and the wrong one — it would
+leave every other wide-char caller still hitting an empty-string stub. planv3
+rule 2: no minimal implementations.
+
+=== VERIFICATION PLANNED (fry1815) ===
+Editor/clangd warnings on this file are host-toolchain noise (it cannot find
+fry_input.h and sees the host's gettimeofday) and are NOT a build result. The
+only thing that counts is the cross build:
+  1. MAIN Makefile builds the libc objects (Python3.mk has no rule for them —
+     fry1801/fry1806/fry1807 all re-learned this; its built-in rule runs without
+     -Isrc/include and dies on stdint.h). Must include gap_stubs.o AND
+     rust_compat.o.
+  2. make -f Python3.mk python3
+  3. bash build_iso.sh
+Expect nonzero movement in python3.elf size. No success will be claimed until a
+boot shows a real timestamp.
+
+=== NOTE ON SCOPE ===
+This fixes timestamp STRINGS. It does not touch time arithmetic — time.time()
+and monotonic go through SYS_CLOCK_GETTIME and were never broken (fry1813). It
+is NOT claimed to affect the hermes runtime hang.

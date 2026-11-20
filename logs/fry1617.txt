@@ -1,0 +1,75 @@
+# hermes012 — PHASE 2 STEP 11: dladdr1/RTLD_DL_LINKMAP/struct link_map missing
+Date: 2026-06-17 ~15:12 CDT
+Type: compile fix (Phase 2 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Compile Python/traceback.c — CPython's traceback formatting module. Uses
+backtrace() and dladdr1() for symbol resolution in stack traces.
+
+---------------------------------------------------------------------------------
+WHAT HAPPENED
+---------------------------------------------------------------------------------
+ERRORS:
+  traceback.c:1357:21: error: implicit declaration of function 'dladdr1'
+  traceback.c:1357:64: error: 'RTLD_DL_LINKMAP' undeclared
+  traceback.c:1365:45: error: invalid use of undefined type 'struct link_map'
+
+Then after initial fix:
+  dlfcn.h:47:5: error: unknown type name 'Elf64_Dyn'
+
+---------------------------------------------------------------------------------
+ROOT CAUSE
+---------------------------------------------------------------------------------
+CPython's traceback.c uses dladdr1() (GNU extension) to resolve addresses
+to shared object info for backtrace formatting. The code is compiled when
+HAVE_EXECINFO_H, HAVE_DLFCN_H, and HAVE_LINK_H are all defined — which they
+are for TaterTOS (all three headers exist).
+
+TaterTOS's dlfcn.h had dladdr() but not dladdr1(), RTLD_DL_LINKMAP, or
+struct link_map. Also, dladdr/dladdr1 were declared but never implemented
+in dlfcn.c — only dlopen/dlsym/dlclose/dlerror had implementations.
+
+The Elf64_Dyn type (ELF dynamic section entry) doesn't exist in TaterTOS
+elf.h. Used void* for the l_ld field instead.
+
+---------------------------------------------------------------------------------
+FIX
+---------------------------------------------------------------------------------
+1. src/include/dlfcn.h:
+   - Added #include <elf.h> and ElfW macro
+   - Added RTLD_DL_SYMENT and RTLD_DL_LINKMAP defines
+   - Added struct link_map (Elf64_Addr l_addr, char* l_name, void* l_ld,
+     struct link_map* l_next/l_prev)
+   - Added dladdr1() declaration
+
+2. src/user/libc/dlfcn.c:
+   - Added #include <dlfcn.h> (for Dl_info type)
+   - Added dladdr() implementation: zeroes out Dl_info, returns 0 (failure)
+   - Added dladdr1() implementation: wraps dladdr(), ignores extra params
+
+WHY: TaterTOS has no dynamic symbol table — all dl* functions are stubs.
+dladdr1 returning 0 (failure) is correct: CPython's traceback code checks
+the return value and gracefully falls back to raw addresses when dladdr1
+fails. This is the same behavior as running on a system without debug info.
+
+Using void* for l_ld instead of Elf64_Dyn* is a pragmatic choice — TaterTOS
+elf.h doesn't define Elf64_Dyn, and since dladdr1 is a stub, the field is
+never actually accessed. The struct just needs to exist for compilation.
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+Re-ran traceback.c compile:
+  x86_64-elf-gcc ... -DPy_BUILD_CORE -c Python/traceback.c
+
+Result: ZERO errors. Compiled clean.
+
+---------------------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------------------
+Fix last Python/*.c compile error:
+  - perf_jit_trampoline.c: syscall(), SYS_gettid
+Then compile Objects/*.c and Parser/*.c files.

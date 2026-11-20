@@ -1,0 +1,72 @@
+fry1817 — pread/pwrite/preadv/pwritev DISCARDED THE OFFSET; now real — 2026-09-26
+==========================================================================
+WHAT: Second find of the gap_stubs.c sweep. Code edited; log written BEFORE the
+build per planv3 rule 5/6. Not built at time of writing.
+
+=== THE DEFECT ===
+  src/user/libc/gap_stubs.c:220-223 (BEFORE)
+    ssize_t pread(int fd, void *b, size_t c, off_t off)
+    { (void)off; return read(fd,b,c); }
+    ssize_t pwrite(int fd, const void *b, size_t c, off_t off)
+    { (void)off; return write(fd,b,c); }
+    ssize_t preadv(int fd, const struct iovec *iov, int cnt, off_t off)
+    { (void)off; return readv(fd,iov,cnt); }
+    ssize_t pwritev(int fd, const struct iovec *iov, int cnt, off_t off)
+    { (void)off; return writev(fd,iov,cnt); }
+All four CAST THE OFFSET AWAY. Every positional read or write went to the file's
+CURRENT position and then returned a normal success count for it. The caller
+asked for byte N and got byte M, with no error.
+This is not a missing feature. It is silent data corruption on any file accessed
+at random offsets, and it reports success while doing it.
+
+=== WHY IT IS LOAD-BEARING HERE ===
+  external/Python-3.14.5/pyconfig.h:982   #define HAVE_PREAD 1
+  external/Python-3.14.5/pyconfig.h:985   #define HAVE_PREADV 1
+  external/Python-3.14.5/pyconfig.h:1055  #define HAVE_PWRITE 1
+  external/Python-3.14.5/pyconfig.h:1058  #define HAVE_PWRITEV 1
+CPython is configured to use all four, and SQLite's unix VFS reads and writes
+database PAGES through pread/pwrite — page-addressed, i.e. positional by
+definition. A SQLite file driven through these stubs cannot be written
+correctly.
+⚠ This is a better explanation for the 0-byte /.hermes/state.db (fry1812
+FINDING 2) than either of the two hypotheses on record — better than fry1810's
+"a lock" and better than fry1813's ftruncate finding, though all three were
+real and all three are now fixed. NOT ASSERTED as the cause: not yet observed,
+and it will only be settled by a boot. Recording the ranking, not a conclusion.
+
+=== CHANGE ===
+src/user/libc/posix.c — added after lseek():
+  static ssize_t pio_prologue(int fd, off_t offset, off_t *saved_pos)
+      rejects negative offset with EINVAL, records lseek(fd,0,SEEK_CUR), seeks
+      to the requested offset; any failing seek returns -1 with errno intact.
+  static ssize_t pio_epilogue(int fd, off_t saved_pos, ssize_t n)
+      saves the transfer's errno, restores the original position, and returns
+      the transfer result. If the RESTORING seek fails it returns -1 even when
+      the transfer succeeded — the file position is then wrong and the caller
+      has no other way to find out; reporting success there would repeat the
+      exact mistake this step is fixing.
+  pread / pwrite / preadv / pwritev built on that pair.
+No SYS_PREAD or SYS_PWRITE exists in the native ABI (checked directly against
+src/include/tatertos/syscall.h), so seek-transfer-seek is the correct
+implementation for this libc, and is what a libc lacking those syscalls does.
+
+=== KNOWN LIMITATION, STATED NOT HIDDEN ===
+seek + transfer + seek is NOT ATOMIC with respect to other threads sharing the
+same file description; real pread/pwrite are. Two threads doing positional I/O
+on one fd can interleave and corrupt each other's position.
+Making it atomic requires SYS_PREAD/SYS_PWRITE in the kernel, which is an ABI
+addition and is scoped as ITS OWN PHASE. It is not faked here and it is not
+quietly skipped — it is written down as owed work. planv3 rule 2 forbids a
+minimal implementation; it does not require inventing a syscall mid-step
+without approval.
+Practical exposure today: CPython holds the GIL across these calls and SQLite
+serialises its own file access, so the single-fd case this OS actually runs is
+correct. That is a reason it is safe to ship now, NOT a reason to leave it.
+
+=== CHANGE 2 ===
+src/user/libc/gap_stubs.c:220-223 — all four stubs DELETED, replaced with a
+comment recording what they did and not to reinstate them. Deletion is
+mandatory: duplicate definitions would fail to link.
+
+=== WHAT IS NOT CLAIMED ===
+Not built, not booted. No claim about the hermes hang.

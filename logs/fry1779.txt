@@ -1,0 +1,13 @@
+fry1779 — build kernel + ISO without the VM COMMIT OK serial spam — 2026-06-26
+==========================================================================
+WHAT: Built kernel + ISO after the fry1778 removal of the per-mmap serial print.
+
+KERNEL: make kernel -> KBUILD_EXIT=0, kernel.elf 2618888 bytes mtime 14:55:36.
+  No errors, no new warnings.
+
+ISO: killed the fry1777 QEMU (bracket-trick, clean), bash build_iso.sh ->
+  ISO_EXIT=0, out/tatertos64v3.iso mtime 14:57:56 (fresh).
+
+NEXT (fry1780): boot, Zack runs `hermes`, measure HOST wall-clock to completion
+and confirm it FINISHES (not "30 years"). Compare serial volume (expect ~47 KB vs
+the prior 338 KB).

@@ -23,6 +23,14 @@ extern "C" {
 unsigned int if_nametoindex(const char *ifname);
 char *if_indextoname(unsigned int ifindex, char *ifname);
 
+/* Interface name index enumeration */
+struct if_nameindex {
+    unsigned int if_index;
+    char        *if_name;
+};
+struct if_nameindex *if_nameindex(void);
+void                 if_freenameindex(struct if_nameindex *ptr);
+
 #ifdef __cplusplus
 }
 #endif

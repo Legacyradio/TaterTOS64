@@ -1,0 +1,40 @@
+fry1440 — Make claude narrate its own output suppression. Three edits:
+--debug on the bridge argv, file-write payload mirroring to serial, and
+mkdir failure forensics. fry1439 bounded the bug to "the CLI emitter
+produces zero events while the agent loop succeeds"; syscall-level
+inference is exhausted, so the next boot reads claude's own debug log.
+Date: 2026-06-12 04:30 CDT. Author: Claude (Fable 5).
+========================================================================
+
+CHANGES (rule 6 whys)
+------------------------------------------------------------------------
+1. src/kernel/main.c — bridge argv gains "--debug" (argc 6->7).
+   In -p mode debug output goes to FILES (fry1429), which is exactly
+   what we want: claude will explain its emitter state in text we can
+   capture. WHY here: the run is proven healthy end-to-end except
+   emission; only claude itself can name the internal gate.
+2. src/kernel/proc/syscall.c lx_write_fd — TBWRDATA beacon: for claude
+   FD_FILE writes, mirror the first 120 bytes (sanitized printable,
+   newlines as ~) to serial, cap 200. WHY: debug logs land on files we
+   would otherwise have to extract from the NVMe/ESP images post-run;
+   this streams them into the serial record live. Also doubles as
+   proof of WHERE claude can/cannot write (HOME=/ is on read-only
+   boot media — transcript mkdir EIO suspicion).
+3. src/kernel/proc/syscall.c forensics — TBFAIL now logs mkdir paths
+   (LNX_mkdir was missing from the readlink/open/openat/pread64 set;
+   the lone mkdir EIO in fry1437/1439 had no path attached).
+
+FALLBACK if --debug writes nothing: extract claude's files offline —
+  tools/totcopy out/tater_nvme.img $((2048*512)) --list /
+  tools/totcopy out/tater_nvme.img $((2048*512)) --get <path> <dst>
+(--get exists in main() but is absent from the usage text.)
+
+TEST COMMANDS (rule 10): rebuild per rule 12 with STAGE_CLAUDE=1
+CLAUDE_BIN=$HOME/.local/share/claude/versions/2.1.172; boot as fry1432,
+serial to /tmp/s_fry1441.log. Verdict greps:
+  grep -a "TBWRDATA" /tmp/s_fry1441.log | head -40
+  grep -a "TBFAIL mkdir" /tmp/s_fry1441.log
+  grep -a "TBWR " /tmp/s_fry1441.log | head -20
+
+STATUS: edits complete; build/boot/verdict is the fry1441 step.
+========================================================================

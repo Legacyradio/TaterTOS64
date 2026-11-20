@@ -1,0 +1,15 @@
+fry1849 - KERNEL vs LIBC split + ATTEMPT STATUS: not fixed yet, narrowed (2026-11-17 14:41:22 CST)
+WHY: fry1848 NEXT; Sur's one-attempt GO (fry1842). NO code changed so far in this attempt.
+WHAT / HOW: fresh boot iso7: shell 'cat /nvme/nothere', 'ls /nvme/nothere', then a python3 -c command (my typing doubled a letter: "oss.path" - a NameError case, harness artifact).
+WHERE: ~/tatertos-test-20261117/run-iso7.{png,serial.log}
+RESULT (observed)
+ - KERNEL ENOENT PATH IS FINE: shell 'cat /nvme/nothere' -> "cannot open"; 'ls /nvme/nothere' -> "error 2" (ENOENT). So the failing-open return itself works; it is NOT a kernel open/lookup bug.
+ - python3.fry (bare argv[0], no Hermes) crashed again with the SAME fault: RIP 0x4EA2F1 (_PyThreadState_Attach, instruction mov %fs:0,%rax), CR2=0 => %FS BASE = 0 on the python main thread (pid=12). Also seen: TLSDBG baseline fs=0 for shell pid 11 then set to 0x10000000020 (shell is a different, libc-block program).
+ - This command raised a NameError (not a failed syscall), so "failing open()" is NOT the only trigger; earlier NameError (iso1) printed a traceback fine. Failures are NON-DETERMINISTIC between boots: same command gave fault (iso5), silent hang (iso6).
+SO FAR (summary of the whole attempt, evidence only):
+ 1. Route 1 crash (getpath errno 0) reproduces with NO Hermes: python3.fry launched with an ABSOLUTE argv[0] (fry1845).
+ 2. python3.fry on the bare route is itself unreliable: intermittent NULL-%fs fault in _PyThreadState_Attach or a silent hang, on trivial commands (fry1846/1848/1849). Hermes startup (many syscalls, threads, exceptions) hits it far more.
+ 3. Kernel file-open errors are correct (this entry). The libc TLS-self-pointer design is already in source (fry1848).
+ => The real fault is the runtime's THREAD-POINTER (%fs) state of python3.fry's main thread, not Hermes code, not the launcher, not staging.
+NOT YET KNOWN: why %fs is 0 at that instant (kernel context-switch restore, a stray SET_TLS_BASE, or user_fs_base zeroed). No fix attempted: a guess here would repeat the history Sur described.
+NEXT (needs Sur's word because it modifies kernel code + rebuilds): add a kernel diagnostic that prints rdmsr(FS_BASE) vs p->user_fs_base at the fault and at every context-switch-in of a user process, rebuild (BUILD_EXIT + fresh mtimes), re-run; then fix the exact line it shows. Test copy only; project image untouched.

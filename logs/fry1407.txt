@@ -1,0 +1,34 @@
+fry1407 — Tater Bridge / Claude Code: diagnostics strip + stack-cap revert.
+Date: 2026-06-11 ~12:40 PM CDT. Author: Claude (Fable 5). Follows fry1406.
+========================================================================
+
+WHAT / WHY
+====
+The fry1385..fry1401 crash arc is closed (root cause fixed fry1401,
+verified fry1402/1403/1405 LLInt + fry1406 full JIT). Per the standing
+handoff items, the session's investigation instrumentation comes out and
+the diagnostic stack cap reverts to its true value.
+
+CHANGES
+====
+1. irqdesc.c: STRIPPED the fry1397 investigation dumps — TBBFSRC (cb+0x38
+   source-object dump), TBBFP48/TBBFP50 (side-object dumps), TBZSCAN
+   (RW-segment present-but-zero page scan). KEPT: the one-shot TBBFDUMP
+   (fry1389) as permanent first-line triage for any future deep-stack
+   walk-off; its window aligned 512MB -> 64MB to match the restored cap.
+2. linux_elf.c: STRIPPED the fry1397d load-time seg-sample (its job —
+   exonerating the loader — is done and logged in fry1401).
+3. syscall.c lx_try_grow_stack: fry1388's DIAGNOSTIC 512MB stack cap
+   reverted to the true 64MB (matches /proc/self/maps + RLIMIT_STACK,
+   which already report 64MB). The "giant frame" it was sized to observe
+   was garbage from the now-fixed madvise bug; 64MB again kills genuine
+   runaway recursion early.
+KEPT (permanent, by design): TBIMGOP beacon (unfiltered guard logging any
+madvise/guard vm op that intersects the loaded image — the exact blind
+spot that hid this bug for five sessions).
+
+VERIFY
+====
+irqdesc.o, linux_elf.o, syscall.o compile clean (only the two
+pre-existing warnings: write_user_u64_for_exc unused, region_ok unused).
+Confirmation rebuild + boot follows as fry1408.

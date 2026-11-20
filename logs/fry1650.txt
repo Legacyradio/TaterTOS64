@@ -1,0 +1,24 @@
+# fry1650 - Relaunch headed VM with layout-fixed image
+Timestamp: 2026-06-19 15:11:07 CDT
+Type: runtime relaunch + visual confirmation
+
+Command:
+  setsid -f env DISPLAY=:0 qemu-system-x86_64 -m 4G \
+    -machine q35,accel=kvm:tcg -cpu host -smp 4 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=/tmp/fry1489_cache_kvm_OVMF_VARS.fd \
+    -cdrom out/tatertos64v3.iso \
+    -drive file=out/tater_nvme.img,if=none,id=nvm,format=raw \
+    -device nvme,serial=deadbeef,drive=nvm \
+    -netdev user,id=n0 -device e1000,netdev=n0 \
+    -vga std -display gtk -serial none -no-reboot
+
+Result:
+  - PASS. QEMU relaunched headed with the rebuilt layout-fixed image.
+  - Live PID at launch check: 2099240.
+  - User later confirmed success: color stayed and layout recovered.
+  - Network command included:
+      -netdev user,id=n0 -device e1000,netdev=n0
+  - Display command included:
+      -vga std -display gtk
+  - No serial/QEMU log file was requested or created by this command.

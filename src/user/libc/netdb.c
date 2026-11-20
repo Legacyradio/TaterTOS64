@@ -22,6 +22,8 @@
 #include "libc.h"
 #include "fry.h"
 
+int h_errno = 0;
+
 /* -----------------------------------------------------------------------
  * Helper: parse dotted-decimal IP
  * ----------------------------------------------------------------------- */
@@ -216,4 +218,145 @@ int getnameinfo(const struct sockaddr *sa, socklen_t salen,
     }
 
     return 0;
+}
+
+/* -----------------------------------------------------------------------
+ * fry1696: inet_* + service/proto/iface helpers — required to link _socket
+ * (CPython socketmodule.c). IPv4 fully supported; IPv6 reported unsupported;
+ * service DB empty (numeric ports only); protocol DB = tcp/udp/icmp/ip.
+ * ----------------------------------------------------------------------- */
+
+int inet_aton(const char *cp, struct in_addr *addr) {
+    uint32_t v;
+    if (parse_ipv4(cp, &v) != 0) return 0;      /* POSIX: 0 = failure */
+    if (addr) addr->s_addr = v;                 /* network byte order */
+    return 1;                                   /* 1 = success */
+}
+
+char *inet_ntoa(struct in_addr in) {
+    static char buf[INET_ADDRSTRLEN];
+    uint32_t h = ntohl(in.s_addr);
+    snprintf(buf, sizeof(buf), "%u.%u.%u.%u",
+             (unsigned)((h >> 24) & 0xFF), (unsigned)((h >> 16) & 0xFF),
+             (unsigned)((h >> 8) & 0xFF), (unsigned)(h & 0xFF));
+    return buf;
+}
+
+int inet_pton(int af, const char *src, void *dst) {
+    if (af == AF_INET) {
+        uint32_t v;
+        if (!src || parse_ipv4(src, &v) != 0) return 0;  /* 0 = unparseable */
+        if (dst) ((struct in_addr *)dst)->s_addr = v;
+        return 1;
+    }
+    errno = EAFNOSUPPORT;
+    return -1;   /* IPv6 / other families not supported */
+}
+
+const char *inet_ntop(int af, const void *src, char *dst, uint32_t size) {
+    if (af == AF_INET) {
+        if (!src || !dst) { errno = EINVAL; return 0; }
+        uint32_t h = ntohl(((const struct in_addr *)src)->s_addr);
+        char tmp[INET_ADDRSTRLEN];
+        int n = snprintf(tmp, sizeof(tmp), "%u.%u.%u.%u",
+                         (unsigned)((h >> 24) & 0xFF), (unsigned)((h >> 16) & 0xFF),
+                         (unsigned)((h >> 8) & 0xFF), (unsigned)(h & 0xFF));
+        if (n < 0 || (uint32_t)n >= size) { errno = ENOSPC; return 0; }
+        memcpy(dst, tmp, (size_t)n + 1);
+        return dst;
+    }
+    errno = EAFNOSUPPORT;
+    return 0;
+}
+
+/* No /etc/services — numeric ports only; return NULL so callers fall back. */
+struct servent *getservbyname(const char *name, const char *proto) {
+    (void)name; (void)proto; return 0;
+}
+struct servent *getservbyport(int port, const char *proto) {
+    (void)port; (void)proto; return 0;
+}
+
+/* Minimal /etc/protocols. */
+struct protoent *getprotobyname(const char *name) {
+    static char nbuf[8];
+    static char *aliases[1] = { 0 };
+    static struct protoent pe;
+    int proto;
+    if (!name) return 0;
+    if (strcmp(name, "tcp") == 0) proto = 6;
+    else if (strcmp(name, "udp") == 0) proto = 17;
+    else if (strcmp(name, "icmp") == 0) proto = 1;
+    else if (strcmp(name, "ip") == 0) proto = 0;
+    else return 0;
+    strncpy(nbuf, name, sizeof(nbuf) - 1);
+    nbuf[sizeof(nbuf) - 1] = '\0';
+    pe.p_name = nbuf;
+    pe.p_aliases = aliases;
+    pe.p_proto = proto;
+    return &pe;
+}
+
+/* No interface-name table. */
+char *if_indextoname(unsigned int ifindex, char *ifname) {
+    (void)ifindex; (void)ifname;
+    errno = ENXIO;
+    return 0;
+}
+
+/* fry1696 (batch 2): host/iface lookups also referenced by socketmodule.c. */
+const char *hstrerror(int err) {
+    switch (err) {
+    case 0:  return "Resolver Error 0 (no error)";
+    case 1:  return "Unknown host";                    /* HOST_NOT_FOUND */
+    case 2:  return "Host name lookup failure";         /* TRY_AGAIN */
+    case 3:  return "Unknown server error";             /* NO_RECOVERY */
+    case 4:  return "No address associated with name";  /* NO_DATA */
+    default: return "Unknown resolver error";
+    }
+}
+
+struct hostent *gethostbyname(const char *name) {
+    static struct hostent he;
+    static char namebuf[256];
+    static uint32_t addr;            /* network byte order */
+    static char *addr_list[2];
+    static char *aliases[1] = { 0 };
+    uint32_t ip = 0;
+    if (!name) { h_errno = 1; return 0; }
+    if (parse_ipv4(name, &ip) < 0) {           /* not dotted-decimal -> DNS */
+        if (fry_dns_resolve(name, &ip) < 0) { h_errno = 1; return 0; }
+    }
+    addr = ip;
+    strncpy(namebuf, name, sizeof(namebuf) - 1);
+    namebuf[sizeof(namebuf) - 1] = '\0';
+    addr_list[0] = (char *)&addr;
+    addr_list[1] = 0;
+    he.h_name = namebuf;
+    he.h_aliases = aliases;
+    he.h_addrtype = AF_INET;
+    he.h_length = 4;
+    he.h_addr_list = addr_list;
+    h_errno = 0;
+    return &he;
+}
+
+struct hostent *gethostbyaddr(const void *addr, socklen_t len, int type) {
+    (void)addr; (void)len; (void)type;
+    h_errno = 1;                     /* HOST_NOT_FOUND — no reverse DNS */
+    return 0;
+}
+
+unsigned int if_nametoindex(const char *ifname) {
+    (void)ifname;
+    return 0;                        /* unknown interface */
+}
+
+struct if_nameindex *if_nameindex(void) {
+    errno = ENOSYS;
+    return 0;                        /* no interface enumeration */
+}
+
+void if_freenameindex(struct if_nameindex *ptr) {
+    (void)ptr;
 }

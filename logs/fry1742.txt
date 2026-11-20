@@ -1,0 +1,51 @@
+fry1742 — 2026-06-22 06:20 CDT
+STEP 2h (native std phase): FRONT B COMPLETE — a full Rust std now COMPILES for
+       x86_64-tatertos. A std-using crate (Vec/String/Mutex) links into a TaterTOS
+       staticlib. 100% native, zero Linux, zero restricted_std.
+
+WHAT WAS DONE (forked rust-src std; canonical copies in rust/forks/rust-std-edits/,
+re-applied via rust/forks/apply_std_fork.sh; build-std reads the toolchain rust-src):
+  - sys/random/mod.rs: added tatertos to the getrandom arm -> fill_bytes routes to
+    libc::getrandom -> SYS_GETRANDOM(85), TaterTOS's own. (Reused std's generic
+    getrandom backend; no custom code.)
+  - sys/args/unix.rs: added tatertos to the stored-argv `imp` list (argc/argv saved
+    at init).
+  - os/tatertos/{mod,raw,fs}.rs (NEW): the per-OS module `platform` re-exports.
+    raw.rs = raw type aliases + raw `stat` (our widths). fs.rs = MetadataExt mapped
+    to OUR struct stat (st_atim/st_mtim/st_ctim timespec fields, NOT flat *_nsec).
+  - os/mod.rs + os/unix/mod.rs: registered `pub mod tatertos` and added it to the
+    `platform` re-export dispatch.
+  - sys/fs/unix.rs: tatertos follows the TIMESPEC code path (st_mtim.tv_sec/.tv_nsec)
+    for modified()/accessed() like hurd/nuttx — added to both the not(any(...))
+    exclusions and the any(...) timespec arms; DirEntry::ino() uses d_ino.
+  - sys/thread/unix.rs: tatertos set_name = no-op (our libc has no pthread_setname_np;
+    thread naming is non-essential, honest no-op).
+  - sys/paths/unix.rs: tatertos current_exe = REAL native impl via argv[0]
+    (env::args().next()), same approach as Fuchsia — NOT an unsupported stub, since
+    args are provided natively via SYS_GET_ARGV.
+  - std/build.rs: added tatertos to the full-std platform list so std is NOT flagged
+    `restricted_std` (it has a real PAL, not the unsupported stub).
+
+RESULT (clean build-std, probe_std with std Vec/String/Mutex):
+  errors 8 -> 3 -> 0. `Finished release`. Produced
+  target/x86_64-tatertos/release/libtatertos_std_probe.a (3.5 MB).
+  => FULL NATIVE RUST STD compiles + links for x86_64-tatertos. libc:0 + std:0.
+
+OVERALL TRAJECTORY (this whole native-std effort):
+  unsupported-PAL(no std possible) -> [libc] 105->70->10->types done->100->85->33->0
+  -> [std] 30->8->3->0. Native the entire way; every value from src/include or our
+  own SYS_* ABI. Zero Linux, zero linux_like, subsystem untouched.
+
+KNOWN gaps to revisit at RUNTIME (compile-clean, behavior to verify on-target):
+  - current_exe relies on argv[0] being meaningful (it is, via SYS_GET_ARGV).
+  - set_name is a no-op (cosmetic).
+  - A handful of binding-only consts (SO_RCVTIMEO/SNDTIMEO, IP_* multicast, AT_*,
+    O_EXCL/DIRECTORY/NOFOLLOW, F_DUPFD_CLOEXEC) not yet in the C headers — kernel may
+    return ENOPROTOOPT; back-port to src/include when those paths are exercised.
+
+STATE: native Rust std + libc fully port to x86_64-tatertos (0 errors, staticlib
+  builds). The toolchain to build ANY std Rust crate for TaterTOS now exists.
+NEXT: rebuild pydantic_core 2.46.4 for x86_64-tatertos against THIS native std
+  (replace the dead linux-gnu .a); repoint Python3.mk:193; relink python3.fry; stage
+  the pure-Python pydantic_core wrapper; rebuild ISO; boot; serial-verify
+  NATIVEEXT pydantic_core: OK. -> fry1743.

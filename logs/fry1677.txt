@@ -1,0 +1,36 @@
+fry1677 — 2026-06-20 15:20 CDT
+STEP: ROOT CAUSE of the CPython import-lock deadlock found + FIXED (pthread_self).
+
+WHY/INVESTIGATION:
+  fry1676 rip trace showed the hang is a futex from libc's syscall stub
+  (rip=0x40168e), preceded by a burst of nr=67 gettid (rip=0x400dc7) — the
+  classic owner-check pattern of a RECURSIVE lock. python.elf is stripped
+  (nm=0 symbols) so no addr2line; reasoned from the call pattern instead.
+  - SYS_GETTID returns cur->pid (=10, stable) — fine.
+  - BUT CPython's PyThread_get_thread_ident_ex() == pthread_self()
+    (Python/thread_pthread.h:372), NOT gettid.
+  - src/user/libc/pthread.c pthread_self(): searches g_pthreads[] for a slot
+    whose tid==gettid(); the MAIN thread never went through pthread_create so
+    it is NOT in the table -> pthread_self() returns 0 for the main thread.
+  - A thread ident of 0 is CPython's INVALID/no-owner sentinel. The import lock
+    (_PyImport_AcquireLock) uses the ident for reentrancy: a NESTED import on
+    the main thread fails the "do I already own it?" check, so it tries to
+    re-acquire the import lock it already holds -> deadlock. Single-threaded,
+    untimed PyThread lock (heap-allocated 0x10000089178), hangs mid-import
+    (the openat burst) before the banner. Every symptom matches.
+
+FIX: src/user/libc/pthread.c pthread_self() — when the calling thread isn't in
+  the table (main/initial thread), LAZILY register it into a free slot and
+  return its handle, so pthread_self() always returns a stable, non-zero ident.
+  Allocation is done inline under g_pth_lock (must NOT call alloc_pth(), which
+  re-locks the non-recursive g_pth_lock). POSIX-correct regardless (pthread_self
+  must never return 0).
+
+BUILD: pthread.c is in LIBC_OBJ -> statically linked into python3.fry. So:
+  make (recompile pthread.o + kernel) ; make -f Python3.mk python3 (relink
+  python with new pthread.o) ; build_iso.sh (restage). fry1676 PYSC rip trace
+  kept for this verify run.
+
+VERIFY (fry1678): boot headed, run hermes -> expect import lock no longer
+  deadlocks -> "PYTHON ENVIRONMENT" banner prints.
+CLEANUP owed: remove fry1669+fry1676 PYSC trace from syscall.c before commit.

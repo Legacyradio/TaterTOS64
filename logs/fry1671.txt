@@ -1,0 +1,35 @@
+fry1671 — 2026-06-20 12:55 CDT
+STEP: Headed trace run — ROOT CAUSE FOUND.
+
+WHAT: Rebuilt (shell autorun reverted, syscall PYSC trace kept), booted headed
+      (-display gtk, DISPLAY=:0). User ran `hermes` in a terminal. Captured
+      /tmp/fry1671_qemu_serial.log (148KB, 2987 PYSC lines, python pid=10).
+
+RESULT: python got PAST encodings (confirms fry1668: dir adapter is a fix), ran
+      2987 syscalls, never printed PYTHON ENVIRONMENT, then QEMU exited clean.
+      LAST syscall: PYSC pid=10 nr=11 a1=0x545100000003 a2=0x545100000000 a3=0
+      Preceded by nr=59 (SYS_FCNTL) on fd=3.
+
+ROOT CAUSE: native nr=11 = SYS_REBOOT. src/user/libc/libc.c:1928:
+      long fry_ioctl(int fd, uint32_t request, long arg) {
+          (void)arg; return fry_syscall_raw(11, (long)fd | ((long)request<<32));
+      }
+      fry_ioctl issues raw syscall 11 (SYS_REBOOT) and packs fd|(request<<32)
+      into one arg -> matches 0x5451_00000003 exactly (request 0x5451 = FIOCLEX,
+      fd=3). There is NO SYS_IOCTL in the native ABI. So EVERY native ioctl()
+      reboots the box. CPython opens the bootstrap script (fd 3) and calls
+      ioctl(3, FIOCLEX) to set close-on-exec -> SYS_REBOOT -> reboot/halt.
+
+WHY IT LOOKED LIKE A "FREEZE": with QEMU -no-reboot a guest reboot HALTS the
+      vCPU -> TBCLK heartbeat stops -> indistinguishable from a hang. That is
+      exactly Codex's fry1664/1667 symptom. Same root cause, flag-dependent
+      presentation (halt vs clean exit).
+
+FIX PLAN (fry1672): rewrite ioctl()/fry_ioctl so it NEVER calls SYS_REBOOT.
+      Translate the requests CPython needs to existing mechanisms:
+        FIOCLEX  -> fcntl(fd, F_SETFD, FD_CLOEXEC)
+        FIONCLEX -> fcntl(fd, F_SETFD, 0)
+        FIONBIO  -> fcntl O_NONBLOCK on/off
+        TIOCGWINSZ -> fill default winsize (24x80) for tty fds, else ENOTTY
+        default  -> errno=ENOTTY, return -1
+      Then rebuild + headed re-run to confirm PYTHON ENVIRONMENT prints.

@@ -73,8 +73,12 @@ char *asctime(const struct tm *tm);
 char *ctime(const time_t *timep);
 
 int clock_gettime(clockid_t clk_id, struct timespec *ts);
+int clock_getres(clockid_t clk_id, struct timespec *res);
+int clock_settime(clockid_t clk_id, const struct timespec *ts);
 int timespec_get(struct timespec *ts, int base);
 int nanosleep(const struct timespec *req, struct timespec *rem);
+int clock_nanosleep(clockid_t clk_id, int flags, const struct timespec *req, struct timespec *rem);
+#define TIMER_ABSTIME 1
 clock_t clock(void);
 
 void tzset(void);

@@ -1,0 +1,31 @@
+fry1687 — 2026-06-20 22:35 CDT
+STEP: VERIFIED main-return crash fixed; hermes runs but produces NO output;
+      added diag to isolate argv-delivery vs stdout-routing.
+
+VERIFY (fry1686 exit fix; serial /tmp/fry1687_qemu_serial.log + screenshot
+  /tmp/fry1687_crop.png — read to END, no assumptions):
+  * NULL-jump crash GONE for python: 0 "USER FAULT pid=10" / rip=0 (the one
+    rip=0 in serial is pid=7, the smoketest's known fault). fry1686 exit fix
+    CONFIRMED working — python exits cleanly now.
+  * BUT hermes produces NOTHING: screenshot shows "/> hermes" then "/>" with no
+    output. User confirms: ran it, it sat a while (full slow startup), then
+    returned to prompt — never actually launched the bootstrap.
+  => crash fixed, but the script isn't running / no output. Likely python isn't
+     getting the script arg -> interactive -> EOF on stdin -> clean exit.
+
+STATIC CHECKS (no bug found, ruled out):
+  - cmd_hermes args = {"python3","/nvme/opt/hermes-agent/tatertos_bootstrap.py"}.
+  - bootstrap staged: sysroot/opt/hermes-agent/... -> guest /opt/hermes-agent/...
+    reached as /nvme/opt/... (same scheme as /nvme/apps/python3.fry, which
+    works). Path consistent.
+  - SYS_SPAWN_ARGS -> process_launch_args -> setup_process_args stores argc.
+  On paper argv should arrive; behaviour says otherwise. Need data.
+
+DIAG ADDED (fry1688 TEMP, python.c main): write "HERMESMAIN argc=N <argv1>" to
+  fd2 (stderr->serial) and "HERMESSTDOUT-OK" to fd1 (stdout->GUI). One run tells:
+  argc/argv actually received (serial) AND whether GUI renders python stdout
+  (screenshot). Isolates argv-delivery vs output-routing.
+
+NEXT (fry1688): rebuild python + restage, boot, run hermes, read serial for
+  HERMESMAIN line + screenshot for HERMESSTDOUT-OK.
+CLEANUP owed: remove fry1685 FBT (irqdesc.c) + fry1688 diag (python.c).

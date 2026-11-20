@@ -1,0 +1,44 @@
+# fry1597 - DIAGNOSIS: the "whole QEMU froze" regression ROOT-CAUSED to a concurrent page-table race in lx_map_one, EXPOSED (16x) by the fry1592 demand-page batch. NOT the shell env.
+Date: 2026-06-16 ~19:40 (host clock) CDT
+Type: diagnosis / root-cause (Rule 5/6)
+Author: planv3 Rules 1/5/6/12 + handoff bar + CLAUDE.md
+
+A/B RESULT (fry1595/1596): shell env REMOVED (no SHELL, original PATH) and the system STILL froze ->
+the regression is NOT the shell tooling. Ruled out. The remaining suspects were the 3 kernel changes made
+AFTER fry1583 (the last fully-working run): demand-page batch (fry1592), pipe()/pipe2(), /nvme path-redirect.
+
+SYMPTOM (worse than the old Claude-input livelock): the WHOLE guest froze incl. the MOUSE, the instant Claude
+"fully opened." Serial: kernel ALIVE to the end (TBCLK now= advanced on all 4 CPUs, no panic), census t3=5/1/0/0
+= 5 RUNNING threads on a 4-CPU box -> compositor (pid=12) starved of CPU -> frozen mouse. Then the QEMU process
+ended. KEY: TBMAIN was tracking pid=39 = `rg` (ripgrep), Claude's STARTUP file-index scan, a re-exec of
+RCLAUDE.LXE (the exec HIJACKS g_tb_trace_claude_tgid from 14 -> 39). pid=39 stuck state=2 WAITING on
+futex_key=0x34511ce8, wake=UINT64_MAX (infinite). TBCLONE3 flags=0x3d0f00 = CLONE_VM|FS|FILES|SIGHAND|THREAD|
+SYSVSEM|SETTLS|PARENT_SETTID|CHILD_CLEARTID -> pthread/worker-pool spawn; child_tid=...ce8 == the futex uaddr =>
+rg's main thread is blocked in a CLEARTID join futex_wait for a worker that NEVER clears its TID.
+
+ROOT CAUSE (syscall.c):
+  lx_map_one() -> vmm_map_user() allocates intermediate PD/PT pages + writes PTEs with NO lock.
+  lx_try_demand_page() does check-then-act: vmm_virt_to_phys_user(va) [3819] THEN lx_map_one(va) [3823].
+  rg's worker pool is CLONE_VM => SAME cr3, MANY CPUs faulting at once. Concurrent committers race on the same
+  intermediate page-table page / same PTE -> one CPU's PT page or PTE gets stomped -> a worker's page silently
+  vanishes -> that worker corrupts -> it never reaches its CLEARTID write -> the join futex_wait hangs forever
+  -> 5 threads spin -> all CPUs pinned -> compositor starves -> "whole QEMU froze."
+  The fry1592 BATCH made it LETHAL: it SPECULATIVELY maps 16 pages AHEAD -> pages OTHER worker threads are
+  faulting on RIGHT NOW -> double-map / stomp window widened ~16x. UNIQUE to the batch: fry1583 had no batch
+  and ran a full conversation. rg is the first workload violent enough (rapid clone3 worker storm + aggressive
+  fault-in of the big binary) to expose the latent unlocked-page-table race.
+
+PROOF PLAN = the fix itself: serialize page-table commits. If rg no longer hangs + input works -> confirmed.
+
+FIX (fry1598): make lx_map_one() self-locking + IDEMPOTENT.
+  - add `static volatile int g_pt_commit_lock` (matches the codebase __sync_lock_test_and_set spin idiom).
+  - acquire in lx_map_one; RE-CHECK vmm_virt_to_phys_user UNDER the lock (return 0 success if already present ->
+    double-map impossible); alloc+map+zero; release. Critical section only touches kernel/phys-window mappings
+    -> cannot re-enter the user #PF path -> no self-deadlock; no IRQ handler takes this lock -> no IRQ deadlock.
+  - All callers (lx_try_demand_page batch, lx_try_grow_stack, brk 5659, mmap eager 5771) are commit-if-absent
+    (each guards with vmm_virt_to_phys_user ... continue) -> idempotent semantics are strictly safe for all.
+  - KEEPS the batch speedup (now race-free).
+
+KEEPERS unchanged: panic fix, /proc/self/stat, pipe()/pipe2(), /nvme redirect, busybox staging, sched dynamic-tgid.
+NEXT: fry1598 build, fry1599 verify (boot -> claude -> rg completes, mouse stays live, TYPE -> read(fd0) climbs).
+All per planv3 Rules 1/5/6/12. Written immediately on the diagnosis, before the code change.

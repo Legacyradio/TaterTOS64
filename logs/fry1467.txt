@@ -1,0 +1,60 @@
+fry1467 - stdio redirect override: fds 0-2 now support a dup2'd pipe/file
+override (with console/EOF fallback). Advances spawn EBADF -> EINVAL; main
+inference UNREGRESSED. Next: rt_sigaction EINVAL in the spawn child.
+Date: 2026-06-13. Author: Claude (Opus 4.8).
+========================================================================
+
+WHY
+------------------------------------------------------------------------
+fry1466 left the spawn at dup2 EBADF. Root: fds 0-2 were modeled as the
+implicit kernel console with NO table entry, and:
+- dup2 explicitly rejected newfd<3 (return -EBADF) — but dup2(pipe/file,
+  0/1/2) is THE posix_spawn stdio-redirect operation.
+- fd_install / fd_release guarded fd<3 (couldn't store an override).
+- lx_write_fd sent fd 1/2 UNCONDITIONALLY to console (ignored overrides);
+  lx_read_fd treated fd 0 as always-EOF; lx_close_fd no-op'd 0-2.
+
+WHAT CHANGED (override-with-fallback; default path byte-identical)
+------------------------------------------------------------------------
+src/kernel/proc/syscall.c:
+- fd_install / fd_release: guard fd<0 (allow 0-2 entries).
+- LNX_dup2: removed the "newfd<3 -> EBADF" rejection (fd_install + the
+  close-before-install via lx_close_fd now handle 0-2).
+- lx_write_fd: fd 1/2 -> console ONLY when no override entry; else fall
+  through to the table dispatch (pipe/file/socket write).
+- lx_read_fd: fd 0 -> EOF ONLY when no override; else table dispatch.
+- lx_close_fd: 0-2 no-op ONLY when no override; else real close +
+  fd_release (reverts fd to implicit console).
+Principle: when nothing is dup2'd onto 0-2 (the normal case, incl. the
+main claude process), behaviour is exactly as before -> no regression to
+claude's own stdout/serial result path.
+
+BUILD: make kernel EXIT 0 (only pre-existing region_ok warning). Full
+rebuild EXIT 0 (/tmp/fry1467_build.log).
+
+BOOT (-smp 4, serial /tmp/s_fry1467.log; killed by real pid after result)
+------------------------------------------------------------------------
+- REGRESSION GUARD PASSED: main inference still clean, subtype:success,
+  is_error:false, result printed. claude's stdout path intact.
+- stack smashing=0, chdir nr=80=0 (prior fixes hold).
+- dup2 EBADF dropped 5 -> 3 (override works for some); error ADVANCED to
+  EINVAL: claude logs "posix_spawn 'rg' EINVAL".
+- Child syscall census (pids 17-21): nr=13 rt_sigaction EINVAL x15
+  (3/child, fires FIRST), nr=33 dup2: 3x EBADF + 2x EINVAL. Child still
+  _exit 127.
+
+ANALYSIS / NEXT (fry1468)
+------------------------------------------------------------------------
+claude reports EINVAL (not EBADF) -> the fatal call is likely
+rt_sigaction (EINVAL, and it precedes dup2 in the child). lx_signal_valid
+= sig>0 && sig<64; rt_sigaction also -EINVAL on SIGKILL/SIGSTOP or
+sigsetsize not in {8,128}. The serial trace shows "nr=33 unknown" and no
+rt_sigaction sig/sigsetsize args -> NEXT STEP is a focused arg beacon
+(rt_sigaction a1=sig a4=sigsetsize; dup2 a1=oldfd a2=newfd) to identify
+the exact rejected value, THEN fix (do not speculatively loosen the
+signal/size validation). Residual dup2 EBADF (3) likely a child fd kind
+still not copied by copy_vfork_fd_table (socket/eventfd) — confirm via the
+same beacon.
+
+STILL OPEN (low pri): nr=294 inotify_init1, nr=40 sendfile, nr=326
+copy_file_range, nr=332 statx. OAuth rotates ~8h (restage on rebuild).

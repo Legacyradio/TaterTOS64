@@ -1,0 +1,102 @@
+fry1450 — Verification boot for fry1449 parity tier. RESULT: the
+rename/ftruncate/mkdir-errno work compiled and booted under -smp 4.
+Claude reached stream-json again and wrote transcript JSONL under
+/nvme/.claude/projects, but the model round-trip did not succeed this
+run because the staged OAuth credentials now return 401 Invalid
+authentication credentials. This is an auth-data problem, not a kernel
+network/epoll/TCP regression.
+Date: 2026-06-13 02:15 CDT. Author: Codex.
+========================================================================
+
+WHAT WAS VERIFIED
+------------------------------------------------------------------------
+- Clean rebuild per planv3 rule 12 completed:
+    make clean
+    PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" \
+    STAGE_CLAUDE=1 \
+    CLAUDE_BIN="$HOME/.local/share/claude/versions/2.1.172" \
+    /bin/bash build_iso.sh
+- Booted rebuilt ISO/NVMe image under QEMU KVM q35 with -smp 4, e1000
+  slirp networking, serial captured at /tmp/s_fry1450.log.
+- No orphaned qemu-system-x86_64 process remained after the timeout
+  wrapper terminated the VM.
+
+WHY THIS STEP MATTERS (rule 6)
+------------------------------------------------------------------------
+fry1449 implemented the first "normal Claude Code parity" tier:
+rename/renameat/renameat2, ftruncate, and mkdir errno fidelity. The
+expected effect was that claude's atomic-write/transcript machinery
+would stop falling back on ENOSYS/EIO and begin writing project
+transcripts under /nvme/.claude/projects.
+
+VERDICT FROM /tmp/s_fry1450.log
+------------------------------------------------------------------------
+Good OS-side results:
+- stream-json init emitted:
+    line 17726: {"type":"system","subtype":"init", ...}
+- transcript/memory parent mkdir now reports ENOENT when the parent is
+  missing, not the old blanket EIO:
+    line 15424: TBFAIL mkdir path="/nvme/.claude/projects/-/memory/" rc=fffffffffffffffe
+    line 15442: TBFAIL mkdir path="/nvme/.claude/projects/-/memory" rc=fffffffffffffffe
+    line 15454: TBFAIL mkdir path="/nvme/.claude/projects/-" rc=fffffffffffffffe
+  The later retry sees the directory already exists, which is correct:
+    line 15561: TBFAIL mkdir path="/nvme/.claude/projects/-/memory/" rc=ffffffffffffffef
+- transcript JSONL write happened under /nvme/.claude/projects:
+    line 32727: TBWRDATA fd=23 len=1104 "{\"parentUuid\":\"c298629c-...\",\"type\":\"assistant\"..."
+- rename(82), ftruncate(77), and renameat/renameat2 did NOT appear in
+  the unimplemented syscall census. The fry1449 dispatch routes are
+  therefore active.
+
+Run did not complete as a successful model answer:
+- API auth failed after retries:
+    line 24117: api_retry attempt 1, error_status=401 authentication_failed
+    line 30082: api_retry attempt 2, error_status=401 authentication_failed
+    line 31714: assistant synthetic error "Failed to authenticate. API Error: 401 Invalid authentication credentials"
+    line 31738: result is_error=true api_error_status=401
+- Process exited nonzero after emitting the auth failure result:
+    line 32773: TBEXIT group pid=5 tgid=5 code=1
+
+REMAINING UNIMPLEMENTED SYSCALLS OBSERVED
+------------------------------------------------------------------------
+- statx(332): still hit once by glibc-style probing; historically falls
+  back and was non-fatal.
+- copy_file_range(326), sendfile(40): still hit by file-copy fallback
+  paths.
+- vfork(58): hit repeatedly; this remains the major subprocess/tools
+  blocker from fry1448.
+- inotify_init1(294): settings watcher; still non-fatal.
+
+NEXT LOGICAL STEP
+------------------------------------------------------------------------
+Do not chase networking or epoll from this run. Those paths stayed past
+the old done bar and stream-json still emitted. The immediate blocker
+for reproducing a successful model answer is credential freshness:
+refresh/restage the Claude auth files on the NVMe image, then rerun the
+same -smp 4 boot. Once auth is fresh again, the next kernel parity work
+is vfork(58) for subprocess/tool support.
+
+TEST COMMANDS USED
+------------------------------------------------------------------------
+Build:
+  cd /home/legacyindieradio/TaterTOS64
+  make clean
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" \
+  STAGE_CLAUDE=1 \
+  CLAUDE_BIN="$HOME/.local/share/claude/versions/2.1.172" \
+  /bin/bash build_iso.sh
+
+Boot:
+  timeout 240s qemu-system-x86_64 -m 4G -machine q35,accel=kvm \
+    -cpu host -smp 4 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=./OVMF_VARS_copy.fd \
+    -cdrom out/tatertos64v3.iso \
+    -drive file=out/tater_nvme.img,if=none,id=nvme0,format=raw \
+    -device nvme,drive=nvme0,serial=tater \
+    -netdev user,id=n0 -device e1000,netdev=n0 \
+    -serial file:/tmp/s_fry1450.log -display none
+
+Verdict greps:
+  rg -a -n '"type":"system"|"type":"result"|TBWRDATA fd=.*projects|LINUXSYS: unimplemented nr=|TBFAIL mkdir path="/nvme/.claude/projects|TBEXIT group' /tmp/s_fry1450.log
+  ps -C qemu-system-x86_64 -o pid,etime,cmd
+========================================================================

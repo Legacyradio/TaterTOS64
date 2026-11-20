@@ -1,0 +1,52 @@
+fry1532 - Pristine-image test: config STILL corrupt -> ROOT CAUSE = fry1526 totfs fast-path DMAs into USER buffers
+Date: 2026-06-15 15:22:37 CDT
+
+Type: VERIFICATION + ROOT-CAUSE. No fix applied yet (rename rewrite from fry1531 is
+in the build but is NOT the cause of this).
+
+Setup: rm out/tater_nvme.img, clean rebuild (build_iso "Creating NVMe image" line 589
+-> fresh dd+mktotfs, pristine FS). BUILD_EXIT=0. Launched headed; user typed claude.
+
+Result: Claude STILL shows the config-corruption menu even on a pristine disk.
+=> The corruption is NOT a stale file and NOT rename. Traced to source:
+
+1) /nvme/.claude.json is STAGED by the build and is COMPLETE on disk:
+   - build_iso.sh copies $HOME/.claude.json -> out/etc/clauth/dot-claude.json,
+     runs a python3 transform (adds mcpServers.agent-bus), then totcopy -> /.claude.json.
+   - Source dot-claude.json: 33657 bytes, VALID JSON (python json.load OK).
+   - totcopy report (build log 620): "/.claude.json (inode 27, 33657 bytes, 9 blocks,
+     1 extents)". FS image dump (line 2988): "inode=27 size=33657 .claude.json".
+   So the on-disk file is the full 33657 bytes - not truncated at rest.
+
+2) Claude READS it truncated (serial /tmp/fry1532_serial.log):
+   - line 1089: read fd=14 ... -> 44
+   - line 1959: read fd=14 len=33657 off=15 -> 0   (offset 15 in a 33657B file => 0)
+   Claude gets ~44 bytes / EOF instead of 33657 -> "JSON Parse error: Unexpected EOF"
+   -> backs up to .claude.json.corrupted.<ts> -> the menu.
+
+ROOT CAUSE - fry1526 totfs_read_file_data fast path:
+   The fast path does fs->bd->read(lba, out + total_read, run*sectors_per_block) -
+   a direct NVMe DMA straight into the caller's buffer 'out'. nvme build_prp resolves
+   the buffer with virt_to_phys over the KERNEL map.
+   - ELF LOAD path: vfs_read reads into a KERNEL chunk buffer (lx_stream_to_user) ->
+     virt_to_phys works -> DMA lands -> 250MB binary loads fine (why claude RUNS).
+   - Claude RUNTIME file reads: lx_read_fd FD_FILE -> vfs_read(vf, dst, len) where
+     dst is a USER virtual address (syscall.c ~4681). virt_to_phys can't resolve a
+     user VA -> the DMA does not land in claude's buffer -> truncated/garbage read.
+   The OLD code read each block into a kernel stack temp (blk[]) then CPU-copied to
+   'out', which is correct for user buffers. My direct-DMA optimization broke that.
+
+Scope: totfs_read_block's multi-sector change (also fry1526) is SAFE - it only ever
+   receives the kernel stack 'blk' buffer. Only the totfs_read_file_data fast-path
+   direct-DMA-into-out is unsafe.
+
+Fix (next step, fry1533): keep multi-block speed but make it correct for user
+   buffers - DMA the contiguous run into a KERNEL bounce buffer (DMA-safe), then
+   CPU-copy to 'out'. Per-call bounce from pmm (capped; fall back to the per-block
+   slow path on alloc failure) so it stays reentrant. The ELF-load path keeps its
+   speed; user reads become correct. After that: claude should read the staged
+   33657-byte .claude.json intact and boot into its real UI (no config menu).
+   Note: rename rewrite (fry1531) stays - it's correct and needed for atomic writes -
+   but was never the cause of THIS corruption.
+
+No commit. No hashes (Rule 16). VM left running.

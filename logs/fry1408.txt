@@ -1,0 +1,41 @@
+fry1408 — Tater Bridge / Claude Code: confirmation boot — CLEAN TREE, ARC CLOSED.
+Date: 2026-06-11 ~12:40 PM CDT. Author: Claude (Fable 5). Follows fry1407.
+========================================================================
+
+WHAT
+====
+Rule-12 clean rebuild + boot (KVM -smp 1, e1000/slirp, claude 2.1.172)
+with fry1407's housekeeping in: investigation diagnostics stripped
+(TBBFSRC/TBBFP/TBZSCAN/seg-sample), stack cap reverted 512MB -> 64MB,
+TBBFDUMP window realigned, full JIT (fry1404/1406).
+
+RESULTS
+====
+- Crash count: 0. SIXTH consecutive clean full-window boot.
+- ENOSYS for the whole boot: statx (nr=332) x1 — glibc falls back to
+  newfstatat by design. The Linux syscall surface for claude's startup
+  path is COMPLETE.
+- TBIMGOP guard fired: "dontneed pid=2 base=63ae000 len=8b7f000 (image
+  pages preserved)" — Bun's 146MB RSS-trim of its embedded blob handled
+  with correct Linux semantics by the fry1401 fix, every boot.
+- DHCP:E1000 -> DHCP:OK; resolver socket lives; CA trust root loads.
+
+SESSION CLOSE-OUT (fry1397..fry1408)
+====
+The fry1385..fry1396 "numCalleeLocals=0 / heap corruption" arc is CLOSED:
+root cause = vm_madvise_dontneed blanket-zeroing file-backed ELF image
+pages (fry1401), fixed via lx_img_segs tracking, verified under LLInt
+and full JIT across six boots. Shipped alongside: complete Linux socket
+ABI -> native TCP/UDP stack, poll/ppoll, NIC pump in poll/epoll waits,
+socket close-leak fix, mkdir/mkdirat/unlink/unlinkat/epoll_pwait2,
+/etc resolver + CA-bundle staging, ramdisk name[64]/512-file caps,
+build_iso CA staging, JSC bisect-flag removal.
+
+REMAINING GATE TO A REAL API REPLY
+====
+AUTH ONLY. The in-OS claude has no credentials (fry1404) — it stops
+before any TCP egress. Zack's pending decision: stage host
+~/.claude/.credentials.json + .claude.json into the image HOME, or an
+ANTHROPIC_API_KEY in the TBRIDGE launch env. Once provided: expect DNS
+(UDP 53 via slirp 10.0.2.3) -> TCP 443 -> TLS (CA bundle already loads)
+-> first in-OS Anthropic API exchange. That moment is fry1409.

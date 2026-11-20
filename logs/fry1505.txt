@@ -1,0 +1,70 @@
+fry1505 — 2026-06-14 13:25 CDT (18:25 UTC). Author: Claude (Opus 4.8).
+STEP TYPE: INSTRUMENT (memory-only syscall ring) + REPRODUCE attempt. GOAL: catch pid5's no-return
+blocking syscall after kill->ESRCH (fry1504). RESULT: HEISENBUG confirmed — instrumentation
+perturbed the race away; run SUCCEEDED instead of deadlocking. Continues fry1504. Path A (true fix).
+
+=== CODE CHANGE (why) ===
+sched.c: added fxr_rec_sys(pid, tag, arg) — records blocking-syscall events into the futex ring
+(memory only). Defined after the irq_save_disable/irq_restore/now_ms defs (it takes g_sched_lock
+briefly since syscall context does not hold it). process.h: extern decl. syscall.c: call it at
+wait4 (0xE1 enter / 0xE2 return, blocking only), kill (0xE3 target), SYS_THREAD_JOIN (0xE4/0xE5).
+Header edit (process.h) → forced full kernel recompile (find src/kernel -name '*.c' | xargs touch).
+Build clean.
+
+=== RESULT — Heisenbug, run #2 SUCCEEDED ===
+Run: KVM -smp 4, NIC, sock=64. Serial logs/fry1505_waitsys.serial.log.
+- "subtype":init + "subtype":success; result "Hello from TaterTOS — where potatoes power your
+  operating system today!"; TBEXIT group pid=5 code=0 (clean). FULL GREEN.
+- pid5 wait4 sentinels paired CLEAN: e1 pid=5 wpid=30 (enter) -> e2 pid=5 rc=30 (return). NO hang.
+- FXRDUMP also fired once (false positive): the 2-census/~10s wedge threshold tripped on a transient
+  lull (glibc cond waits are TIMED ~10s) but the run RECOVERED and completed. => wedge detector is
+  too aggressive; not a real wedge this run.
+
+=== THE META-FINDING (decisive for strategy) ===
+fxr_rec_sys takes g_sched_lock briefly on EVERY claude wait4/kill/join. That tiny added scheduler-
+lock serialization at subprocess-spawn time shifted scheduling enough to AVOID the race. Tally:
+  - INSTRUMENTED with lock-touching beacons: fry1503 (serial wait4/kill beacons) SUCCESS,
+    fry1505 (memory ring + g_sched_lock) SUCCESS  -> 2/2 success.
+  - UNINSTRUMENTED (or memory-only WITHOUT extra lock traffic): fry1491-1499, fry1504 DEADLOCK
+    -> ~10/10 deadlock.
+=> The deadlock is a TIGHT timing race that ANY added synchronization/observation perturbs away.
+It cannot be caught red-handed with lock-based tracing. This is itself strong corroboration that
+the bug is a missed-wakeup RACE (not a deterministic logic error).
+
+=== ROOT CAUSE (structural pin — as strong as observation can get here) ===
+pid5 (main) hangs in a no-beacon blocking syscall (wait4 or SYS_THREAD_JOIN) right after kill->ESRCH
+(fry1504 confirmed: no further pid5 activity, and pid5's only blocking wait4 had already returned).
+process.c's process_wait4 (1080) and process_thread_join (1031) do their ZOMBIE/DEAD predicate
+check WITHOUT any lock, then call sched_block (which sets PROC_WAITING under g_sched_lock) and block
+on wake_time=UINT64_MAX (NO timeout). The waker proc_free->process_wake_pid_waiters (process.c,
+also NO lock) sets state+wakes. g_sched_lock is STATIC to sched.c — process.c CANNOT synchronize
+with it. So there is a genuine unsynchronized window: waiter sees target alive -> (child exits on
+another core: marks DEAD + wakes, but waiter not yet PROC_WAITING) -> waiter blocks forever. On
+-smp 4 this is hittable; ANY added serialization closes the window (hence the Heisenbug).
+
+=== THE FIX (path A — close the race; NOT the band-aid timeout) ===
+Synchronize the wait/exit paths through g_sched_lock via new sched.c helpers (process.c can't touch
+the static lock directly):
+  1. sched.c: sched_pidwait_exit(pid, state, code) — under g_sched_lock: set procs[pid] state+exit
+     code THEN wake all PROC_WAITING with wait_pid==pid. proc_free calls this for the mark-dead+wake.
+  2. sched.c: sched_pidwait_arm(caller_pid, target_pid) — under g_sched_lock: if target is
+     ZOMBIE/DEAD return 1 (reap, don't block); else arm caller PROC_WAITING+wait_pid and return 0.
+     process_wait4/process_thread_join call this for check-and-arm, then yield only on 0.
+Both sides under the SAME lock => the exit either is seen by the arm (reap) or arms-before-exit
+(wake hits the WAITING waiter). Provably race-closing (not merely timing-shifting), so it is a real
+fix, distinguishable from a perturbation-mask.
+VERIFICATION PLAN: run UNINSTRUMENTED many times (base deadlock rate ~90%; >=5 consecutive greens
+=> fixed with high confidence). Because the fix is structurally race-closing (not just added
+latency), greens reflect the fix, not luck.
+
+=== COORDINATION GATE ===
+This fix is the FIRST change to process.c this session (proc_free + process_wait4 +
+process_thread_join). process.c is CO-OWNED with Codex (idle, 4h stale). Per the standing rule,
+SERIALIZE before editing process.c. Raising with Zack before the surgery (see chat).
+
+=== STATE / RULES ===
+- Modified this step: sched.c (fxr_rec_sys), process.h (decl), syscall.c (3 ring calls). Snapshots
+  /tmp/{syscall,sched}.c.pre-* and process.h is trivially revertible.
+- These instrumentation beacons should likely be REMOVED before the fix run (they mask the race) —
+  keep the wedge detector + ring for post-fix diagnostics only if rate-limited.
+- FRY_SOCK_MAX=64. QEMU killed; serial preserved. Build/run template: HANDOFF_rg_fix_2026-06-13.md.

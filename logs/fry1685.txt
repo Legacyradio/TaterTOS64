@@ -1,0 +1,20 @@
+fry1685 — 2026-06-20 22:05 CDT
+STEP: Instrument the page-fault handler with a crash backtrace (code change).
+
+WHY: fry1684 found python crashes with a NULL function-pointer call (USER FAULT
+  rip=0) during teardown. Need the caller chain. The syscall-stub rip is useless;
+  walk the user stack at the fault instead. Must NOT re-add per-syscall tracing
+  (that caused the crawl) — do it only on the fault.
+
+CHANGE (TEMP, remove before commit):
+  src/kernel/irq/irqdesc.c exc_kill_current_user(): inside the vector==14 block,
+  when the faulting rip<0x1000 (near-null = NULL fn-ptr call), read the user
+  stack at frame[20] (user RSP; still on the faulting CR3 at that point) and
+  print every qword in python3.elf .text range (0x401000..0x900000) as
+  "FBT[i] 0x...". 48 qwords. Guarded usp range check. Fires only on the crash.
+
+BUILD: kernel-only (irqdesc.c). python3.fry unchanged. make + build_iso.sh.
+
+NEXT (fry1686): boot headed, run hermes, let it crash, collect FBT lines, then
+  nm -n python3.elf / addr2line to name the NULL call site in teardown -> fix.
+CLEANUP owed: remove this FBT trace (irqdesc.c) before commit.

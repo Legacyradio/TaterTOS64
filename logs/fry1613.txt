@@ -1,0 +1,75 @@
+# hermes008 — PHASE 2 STEP 7: wcstol/wcstoul missing from TaterTOS libc
+Date: 2026-06-17 ~14:56 CDT
+Type: compile fix (Phase 2 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Compile Python/initconfig.c — CPython's interpreter configuration parser.
+Handles command-line args, environment variables, and configuration options.
+
+---------------------------------------------------------------------------------
+WHAT HAPPENED
+---------------------------------------------------------------------------------
+ERROR:
+  Python/initconfig.c:1804:18: error: implicit declaration of function 'wcstol';
+  did you mean 'wcstok'?
+
+---------------------------------------------------------------------------------
+ROOT CAUSE
+---------------------------------------------------------------------------------
+initconfig.c uses wcstol() to parse integer values from wide-character
+command-line strings. TaterTOS's wchar.h had wide string functions (wcslen,
+wcscpy, etc.) but was missing the wide-character numeric conversion
+functions: wcstol, wcstoul, wcstoll, wcstoull.
+
+The existing wcstoimax/wcstoumax in libc.c were implemented by casting
+wchar_t* to char*, which is incorrect for TaterTOS where wchar_t is 4 bytes
+(int). Casting a 4-byte wchar_t array to char* produces a string with zero
+bytes between characters, so strtol would stop after the first character.
+This was a latent bug that never got exercised because no previous code
+called wcstoimax with multi-character strings.
+
+---------------------------------------------------------------------------------
+FIX
+---------------------------------------------------------------------------------
+1. src/include/wchar.h:
+   Added declarations:
+     long wcstol(const wchar_t *nptr, wchar_t **endptr, int base);
+     unsigned long wcstoul(const wchar_t *nptr, wchar_t **endptr, int base);
+     long long wcstoll(const wchar_t *nptr, wchar_t **endptr, int base);
+     unsigned long long wcstoull(const wchar_t *nptr, wchar_t **endptr, int base);
+
+2. src/user/libc/libc.c:
+   Added proper implementation via _wcstol_impl():
+     - Skips leading wide whitespace
+     - Copies ASCII wide chars to a narrow buffer (max 63 chars)
+     - Calls existing strtol/strtoul on the narrow buffer
+     - Translates the narrow endptr back to wchar_t* offset
+
+WHY: TaterTOS wchar_t is 4 bytes. The conversion must iterate over wchar_t
+values properly, not cast to char*. The narrow-buffer approach is correct
+for ASCII numeric strings (which is all CPython passes to wcstol — command
+line args like L"12345" for buffer sizes, verbosity levels, etc.).
+
+The existing wcstoimax/wcstoumax still use the broken cast approach. They
+should be fixed too, but per Rule 75 (one fix per log), that's a separate
+issue. CPython doesn't call wcstoimax directly through initconfig.c.
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+Re-ran initconfig.c compile:
+  x86_64-elf-gcc ... -DPy_BUILD_CORE -c Python/initconfig.c
+
+Result: ZERO errors. Compiled clean.
+
+---------------------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------------------
+Continue fixing remaining compile errors:
+  - pytime.c: clock_getres
+  - thread.c: pthread_condattr_setclock, pause
+  - traceback.c: dladdr1, RTLD_DL_LINKMAP
+  - perf_jit_trampoline.c: syscall(), SYS_gettid

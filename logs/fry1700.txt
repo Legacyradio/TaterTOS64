@@ -1,0 +1,29 @@
+fry1700 — 2026-06-21 00:40 CDT
+STEP: My FBT backtrace caused a KERNEL PANIC — make it page-safe (code change).
+
+WHAT HAPPENED (serial /tmp/fry1700_qemu_serial.log + screenshot
+  /tmp/fry1700_crop.png): the expected pymalloc fault hit —
+    USER FAULT pid=10 rip=0x6b5c0f cr2=0x10
+  then my fry1699 FBT user-stack walk read 64 qwords up from frame[20] WITHOUT
+  validating mapping, ran off the end of the stack, and faulted IN the exception
+  handler:
+    !EXC vec=0xE RIP=ffffffff80018010 CR2=0x7fffffffe2f0
+    KERNEL PANIC: unhandled kernel page fault
+  i.e. MY diagnostic code panicked the kernel. (Bootstrap had printed the full
+  PYTHON ENVIRONMENT banner + "STANDARD LIBRARY" before the pymalloc fault.)
+
+FIX: src/kernel/irq/irqdesc.c exc_kill_current_user() FBT walk — validate each
+  qword's page with vmm_virt_to_phys_user(cur->cr3, va & ~0xFFF) and BREAK on the
+  first unmapped page before dereferencing. vmm_virt_to_phys_user only walks page
+  tables (already used in this file's pf_log path), so it is safe in fault ctx.
+
+UNCHANGED DIAGNOSIS: the real bug is still _PyObject_Malloc reading a NULL
+  current PyThreadState from TLS (fs:-8) then deref +0x10 (fry1699) — allocation
+  with no tstate attached. The page-safe FBT will now recover the caller chain.
+
+BUILD: kernel-only (irqdesc.c). VERIFY BUILD_EXIT=0 + fresh artifact BEFORE
+  launch [[feedback-verify-build-before-launch]].
+NEXT (fry1701): boot, run hermes, collect FBT chain safely, symbolize vs
+  python3.elf -> the caller allocating with NULL tstate -> fix.
+CLEANUP owed: fry1685/1699/1700 FBT (irqdesc.c), fry1688 marker (python.c),
+  fry1697 diag (bootstrap.py), fake _ssl registration (config.c).

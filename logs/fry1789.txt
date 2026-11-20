@@ -1,0 +1,40 @@
+fry1789 — CONFIRMED: pthread_create has no per-thread TLS (the fry1788 blocker) — 2026-06-26
+==========================================================================
+WHAT: Confirmed the fry1788 root cause by reading the pthread + loader paths. No
+code changed this step — diagnosis + scoped fix plan.
+
+CONFIRMED:
+  - src/user/libc/pthread.c:68 pthread_create -> :79 fry_thread_create(trampoline)
+    with NO TLS block allocated and NO fs_base set for the new thread.
+  - The ELF loader sets up variant-II TLS (own TLS image + TCB, %fs) for the MAIN
+    thread only (src/kernel/proc/elf.c:369). Spawned threads get no private TLS.
+  - Kernel fs_base IS per-thread (each thread struct has user_fs_base; sched.c:1135
+    restores next->user_fs_base on switch; arch_prctl SET_FS at syscall.c:8541).
+    So the machinery to give a thread its own fs_base exists — pthread_create just
+    never allocates a TLS block or sets it.
+  - The file's own fry1677/fry1678 comments document prior main-vs-pthread TLS/
+    stack special-casing — same fragile area.
+  => A spawned thread reads the MAIN thread's (or zero) %fs TLS, so CPython's
+     current-tstate (`__thread`) is shared -> _PyThreadState_Attach sees a
+     non-NULL old state -> Fatal Python error.
+
+SCOPED FIX (per-thread variant-II ELF TLS):
+  1. Expose the ELF PT_TLS template to userspace: image addr, file size (initdata),
+     total mem size, align. (Loader knows it; needs to reach libc — via a known
+     symbol/auxv-style handoff, mirroring elf.c:369's main-thread setup.)
+  2. pthread_create: allocate per-thread block laid out variant-II
+     [TLS image | TCB]; copy the template initdata + zero the .tbss tail; set the
+     TCB self-pointer (tcb[0]=tcb).
+  3. Set the new thread's fs_base to its TCB — either pass it into
+     fry_thread_create so the kernel sets user_fs_base at spawn, or have
+     pthread_trampoline call arch_prctl(SET_FS, tcb) as its first action before
+     fn(arg).
+  4. Free the TLS block on thread exit/join.
+
+This is the next phase of the fry1701-1706 ELF-TLS work (main thread done; threads
+now). It is the real frontier blocker for the async hermes agent — everything
+upstream (native _ssl, all agent imports) is resolved and the agent reaches
+main().
+
+SECONDARY (after threads): full-agent import is slow (~7.7M ticks) — eager-commit
+paging at scale; revisit.

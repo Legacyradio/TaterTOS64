@@ -1,0 +1,78 @@
+fry1431 — TaterTOS networking: TCP receive-path fixes landed but the
+stall is UPSTREAM of them. Per-connection counters show exactly ONE
+1440-byte segment accepted per connection, then no further segments
+reach the TCP layer at all. The overlap-trimming and window fixes are
+correct improvements but did not fire (segs=1, ooo=0, trims=0 on all
+three connections) — so the next session starts at the NIC receive
+ring / IP demux, not the TCP state machine.
+Date: 2026-06-12. Author: Claude (Fable 5).
+========================================================================
+
+VERDICT (uncapped per-conn counters — trustworthy, unlike the old
+3-line global TCP_RX beacon)
+====
+conn=0  segs=1 bytes=1440 ooo=0 trims=0 head=0 tail=0
+conn=1  segs=1 bytes=1440 ooo=0 trims=0 head=0 tail=0
+conn=2  segs=1 bytes=1440 ooo=0 trims=0 head=0 tail=0
+- Each TLS connection delivered ONE full-MTU segment to tcp_process,
+  in order (delta==0), then silence. No out-of-order drops, no
+  retransmit overlaps. The fry1430 "mid-response stall" is real but
+  it is NOT a TCP sequencing problem — segments simply stop being
+  delivered to the TCP layer after the first one per connection.
+- claude consequently never receives a complete response, waits out
+  its request timeout (~60s), and exits 0 with no result. Same
+  end-state as every prior boot; now localized one layer lower.
+
+LANDED THIS STEP (in tree, netcore.c — KEEP, all correct)
+====
+- RFC 793 overlap trimming in TCP_ESTABLISHED: signed seq-delta;
+  retransmits that overlap already-acked data get the received prefix
+  trimmed and the remainder accepted, instead of the old exact-match
+  `seq != ack_num` drop that would wedge a stream permanently on any
+  partial-accept. (Did not trigger this run, but removes a real
+  latent wedge.)
+- Honest advertised receive window: real ring free space capped at
+  65535, replacing the hardcoded 65535. (Ring is 1MB so not the
+  current limiter, but the old advert was dishonest under burst.)
+- Per-conn uncapped counters dbg_in_segs/in_bytes/drop_ooo/trimmed +
+  TBTCP rx/drop/trim beacons. Old 3-line-global TCP_RX beacon REMOVED
+  (it produced false "only 3 packets arrived" conclusions for days).
+
+NEXT SESSION STARTS HERE — NIC RECEIVE RING (driver-level)
+====
+Hypothesis: the e1000 RX descriptor ring stops yielding frames after
+the first per flow — classic causes on this driver class:
+  1. RX descriptor not handed back to the NIC after consumption (tail
+     register RDT not advanced / wrapped) -> ring fills, NIC drops
+     silently. Check e1000 RDT update in the RX poll path.
+  2. RX head/tail wrap or off-by-one so only the first descriptor of
+     each batch is read.
+  3. NET_POLL pump cadence: frames land in the ring but the poll that
+     drains them into IP/TCP runs too rarely under the -smp 2 idle
+     loop (epoll_pwait2 park). NET_POLL totals WERE climbing in
+     fry1430, so frames do keep arriving at the device — favors (1).
+INSTRUMENT: per-RX-descriptor beacon in the e1000 driver (rx index,
+RDH/RDT, descriptor status/length) + an IP-demux counter (frames
+delivered to tcp_process vs udp). Diff "frames the NIC received"
+against "segments tcp_process saw". The gap names the layer.
+Files: src/drivers/net/e1000.c (RX ring), netcore.c ip_input/
+tcp_process. KEEP fry1431 TBTCP counters — they are the TCP-side
+ground truth for the diff.
+
+STANDING (carried, unchanged)
+====
+- -smp 2 minimum every boot; -smp 4 pass required before "done".
+- Output path PROVEN end-to-end (claude stderr text reached serial,
+  fry1427); stdout JSON will print once responses complete.
+- Real ioctl dispatch shipped fry1427; correctness work list in
+  fry1427.txt still open (fd0 poll EOF semantics, native SYS_DUP
+  stdio, mremap shrink, clone fork).
+- CA store staging (/etc/ssl/cert.pem + hashed dir) queued behind the
+  receive fix.
+- Strip before release: TBTCP/TBFULL/TBSTDOUT/TBIOCTL/TBDUP/TBCLK/
+  TBEXIT/TBLOST/TBTRACE + LX*/NET_POLL/E1000_TX beacons.
+- Kill boots by saved PID (pkill -f self-kills the shell); ONE qemu +
+  ONE monitor at a time; fryN.txt per step.
+- Raw serial this step: /tmp/s_fry1431.log. Host references for the
+  divergence diff: /tmp/host_lean.txt (env-matched strace),
+  /tmp/host_full.txt.

@@ -1,0 +1,24 @@
+fry1695 — 2026-06-21 23:33 CDT
+STEP: VERIFY binascii/_random (fry1694) — base64+random now import. 2 modules left.
+
+VERIFY (screenshot /tmp/fry1695_crop.png + serial, observed):
+  STANDARD LIBRARY: Available 34, Missing 2.
+  Missing modules: socket (No module named '_socket'), ssl (No module named
+  '_ssl'). base64 + random NO LONGER missing -> binascii/_random worked.
+  SQLITE TEST: OK. Module count this session: 7 -> 4 -> 2.
+
+REMAINING MODULES = socket + ssl only. Need (the inet_* libc work):
+  _socket: implement inet_pton, inet_ntop, inet_aton, inet_ntoa, getservbyname,
+    getservbyport, getprotobyname, if_indextoname in libc (inet_* are pure
+    conversions; getservby*/getprotobyname/if_indextoname can be minimal/stub).
+    Then add Modules/socketmodule.c is already in build; just register _socket.
+  _ssl: stub (_ssl_stub.c) rides on _socket; register after _socket links.
+
+ALSO OBSERVED (non-fatal, for later): serial traceback "RuntimeError: Could not
+  determine home directory" (HOME=/nvme is set; something reads home via another
+  mechanism) + hashlib shake_128/256 warnings (_sha3 not built). Cosmetic to the
+  module count but may matter for real hermes operation.
+
+STATUS: hermes runs end-to-end; 6 of 8 originally-missing modules now work
+  (math/struct/pickle/json/base64/random) + SQLite. socket/ssl deferred (network
+  libc). Speed + diagnostic cleanup still owed.

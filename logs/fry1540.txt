@@ -1,0 +1,120 @@
+================================================================================
+fry1540 — RESEARCH/DIAGNOSIS: main-UI keyboard input is dead (Claude in GUI Shell)
+================================================================================
+TIMESTAMP: 2026-06-15 16:59 CDT
+TYPE:      research / investigation (NO code changed this step)
+SESSION:   continues the interactive-Claude work (HANDOFF_claude_interactive_2026-06-15.md)
+
+--------------------------------------------------------------------------------
+SYMPTOM (reported by Zack, live VM this run)
+--------------------------------------------------------------------------------
+Booted to GUI, opened Shell, ran `claude`. Claude loaded, rendered its TUI,
+passed the first-run trust prompt (Enter worked), and reached its REAL main UI
+(verified by screenshot /tmp/shot.png: Sonnet 4.6 / Claude Pro / org banner /
+"What's new" panel / input box showing the empty-state placeholder
+'"write a test for <filepath>"' / footer). THEN: keystrokes do nothing and Enter
+does nothing. Input is dead specifically AT the main UI. Trust-prompt input had
+worked moments earlier. Matches the fry1535 user steer: "it breaks when Claude
+takes over the terminal."
+
+NOTE: the documented proc_free socket-teardown TRIPLE FAULT did NOT reproduce
+this run. Claude even SIGTERM'd a helper subprocess (serial: "TBSIG default-exit
+sender=14 target=30 sig=15") and the kernel did NOT reset. We cannot reach/repro
+the teardown crash until input works (can't send a prompt). So this input bug is
+now the TOP blocker, ahead of the triple fault.
+
+--------------------------------------------------------------------------------
+WHY / METHOD (Rule 6) — source review FIRST, then mine existing serial beacons
+--------------------------------------------------------------------------------
+Did NOT guess a fix. Read the actual kernel + shell source and the already-armed
+serial beacons (LXEPCTL/LXEPRDY/TBREAD) from /tmp/serial.log of the live run.
+
+KERNEL PATHS READ (src/kernel/proc/syscall.c) — all VERIFIED CORRECT:
+- lx_read_fd fd0 (4666-4714): data present -> read inbuf; empty + GUI child +
+  O_NONBLOCK -> -EAGAIN (4701) [NOT EOF]; empty + GUI child + blocking ->
+  sched_block_poll(UINT64_MAX)+yield (4702). Correct. (Ruled out a nonblock->0
+  EOF bug.)
+- lx_epoll_ctl_fd (4217-4296): target_fd==0 explicitly allowed (4228); ADD
+  creates item; MOD is handled generically for ANY fd incl fd0 (4274-4281) ->
+  the earlier "MOD-gap" hypothesis is DEAD.
+- lx_epoll_wait_fd (4320-4443): scans items, poll_check_fd per fd, parks via
+  sched_block_poll(park)+sched_yield (4431-4432). Same park primitive as the
+  blocking read path.
+- poll_check_fd fd0 (909-923): for a GUI child returns FRY_POLLIN ONLY when
+  inbuf has data (inbuf_head != inbuf_tail), else 0. (This is the fry1536 design.)
+- SYS_PROC_INPUT (8556-8582): writes bytes into the TARGET proc's inbuf ring and,
+  if it buffered anything, calls sched_wake_poll_waiters() (8580) to wake parked
+  fd0 readers AND epoll waiters (both use sched_block_poll). Resolves target via
+  proc_find_group_leader(tpid) (8562).
+
+SHELL PATH READ (src/user/shell/shell.c) — delivery chain:
+- pump_child_io(pid) (491-532): sets term_child_pid=pid; loop reads ITS OWN fd0
+  via fry_read(0,...) (496) to get compositor messages, input_append +
+  process_input_stream(pid) (498-499); drains child output via fry_proc_output
+  (505) -> term_feed -> render; fry_sleep(16). forward_pid = the child pid.
+- process_input_stream(forward_pid) (444-489): parses TW_MSG_KEY_EVENT (453);
+  GATE at 456: only `key.flags==FRY_KEY_PRESSED && key.ascii != 0` is forwarded;
+  forwards one char via fry_proc_input(forward_pid,&c,1) (459) -> SYS_PROC_INPUT.
+  (Enter=0x0D and letters have ascii!=0, so they pass this gate.)
+  This forwarding code is IDENTICAL whether Claude is at the trust prompt or in
+  the main UI.
+
+--------------------------------------------------------------------------------
+EVIDENCE from the live serial (/tmp/serial.log, existing beacons)
+--------------------------------------------------------------------------------
+Claude DID register fd0 in epoll (epfd=5):
+    LXEPCTL epfd=5 op=1 fd=0 kind=0 events=40000011    (ADD)
+    LXEPCTL epfd=5 op=3 fd=0 kind=0 events=40000011    (MOD)
+    LXEPCTL epfd=5 op=3 fd=0 kind=0 events=40000011    (MOD)
+  events=0x40000011 decode = EPOLLONESHOT(0x40000000) | EPOLLHUP(0x10) |
+  EPOLLIN(0x01). The ADD + 2x MOD = the classic EPOLLONESHOT arm/re-arm loop.
+
+CRITICAL counters:
+    LXEPRDY fd=0   count = 0     <- our epoll NEVER reported fd0 ready
+    TBREAD read fd=0             = exactly 2, both EARLY (-> 1, -> 5; the
+                                   trust-prompt Enter). NONE after main-UI entry.
+
+INTERPRETATION:
+  poll_check_fd(fd0) only returns POLLIN when the inbuf has data. fd0 was NEVER
+  reported ready => Claude's inbuf NEVER received a byte while in the main UI.
+  Since the kernel read/epoll/wake/poll paths are verified correct, the break is
+  UPSTREAM of Claude: the keystroke never lands in Claude's inbuf. I.e. it is in
+  the delivery chain: compositor -> Shell fd0 -> process_input_stream gate ->
+  fry_proc_input -> SYS_PROC_INPUT -> inbuf.
+
+--------------------------------------------------------------------------------
+CONCLUSION (what fry1540 establishes)
+--------------------------------------------------------------------------------
+1. Claude's epoll registration of fd0 is CORRECT (ONESHOT|IN|HUP) and re-armed.
+2. The kernel read/epoll/wake/poll_check_fd paths are CORRECT (verified by source
+   review; ruled out MOD-gap and nonblock-EOF).
+3. The failure is that Claude's INBUF IS NEVER FED at the main UI (LXEPRDY fd=0=0,
+   no fd0 reads). Root cause lives in the input DELIVERY chain, NOT in Claude's
+   epoll/read.
+4. LATENT (separate, NOT the cause): EPOLLONESHOT is UNIMPLEMENTED in
+   lx_epoll_wait_fd (only EPOLLET is handled). Ignoring oneshot would OVER-report,
+   not under-report, so it cannot explain dead input. Fix later to avoid a future
+   spin; track separately.
+
+OPEN QUESTION TO BISECT (needs runtime beacons — no static answer):
+  Does the compositor still deliver TW_MSG_KEY_EVENT to the Shell once Claude
+  enters the Ink full-screen/alt-screen main UI, and does the Shell forward it to
+  Claude's pid? Three candidate break points:
+   (a) compositor stops routing keys to the Shell window (focus/alt-screen), or
+   (b) Shell receives keys but the ascii!=0 gate or a wrong forward_pid drops
+       them, or
+   (c) Shell forwards to SYS_PROC_INPUT but it lands on the wrong proc
+       (proc_find_group_leader) / Claude's inbuf.
+
+--------------------------------------------------------------------------------
+NEXT STEP (fry1541 — code+build): targeted instrumentation to bisect (a)/(b)/(c)
+--------------------------------------------------------------------------------
+- SYS_PROC_INPUT (syscall.c:8556): beacon logging tpid, resolved leader pid,
+  nw (bytes buffered), and first byte. => proves whether Claude's inbuf is fed
+  and with what target pid.
+- process_input_stream (shell.c:453): beacon when a TW_MSG_KEY_EVENT arrives ->
+  ascii + forward_pid. => proves whether the Shell receives keys at the main UI.
+Rebuild (Rule 12), relaunch headed, Zack drives keystrokes at the main UI, read
+serial, localize, then fix. Build/run mechanics: HANDOFF section 6.
+Reading QEMU -d logs stays gated by Rule 11 (not needed for this; serial only).
+================================================================================

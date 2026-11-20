@@ -1,0 +1,45 @@
+fry1762 — boot + root-cause diagnosis of the mmap eager-commit churn — 2026-06-26
+==========================================================================
+WHAT: Resumed after a 2-month gap (compositor work). Booted the fry1760/1761 ISO
+to verify the fry1759 `select` fix and read the next import result; while waiting,
+diagnosed the slow-boot "page churn" Zack flagged. SSL parked by Zack — the boot/
+iteration-loop slowness is the target.
+
+BOOT: launch_debug.sh, serial -> /tmp/fry1762_serial.log. Desktop up (SPAWN_OK
+path=/system/GUI.FRY pid=8) ~quick. Zack typed `hermes` at the keyboard.
+
+RESULT (shot1762.png early report, shot1763.png final — captured because the Shell
+has NO scrollback and the top scrolls off unrecoverably):
+  - fry1759 `select` fix VERIFIED: Missing modules dropped to 1 (only `_ssl`).
+  - hermes_cli.main = OK. SUMMARY: Python 3.14 OK, stdlib 35/36, SQLite OK,
+    FS OK, Hermes core OK -> "Hermes core imports. Run a subcommand, e.g.
+    hermes doctor". This is the fry1761 session goal REACHED — the agent's
+    Python core now imports natively in TaterTOS. Only live-agent blocker left
+    is `_ssl` (BearSSL), parked per Zack.
+
+CHURN DIAGNOSIS (the slow boot):
+  - Serial showed "VM COMMIT OK" (syscall.c:2861, printed for the FIRST page of
+    each mmap commit) flooding for VA 0x1000003a1000, pages=33, with a NEW
+    physical page set each time.
+  - Quantified from /tmp/fry1762_serial.log:
+      * 2927 total VM COMMIT OK lines this boot.
+      * 1402 of them (~48%) are the SAME VA 0x1000003a1000 (a 132 KB / 33-page
+        anon-private region), each a fresh distinct PA (hundreds of PAs, not a
+        2-page flap).
+      * ZERO release/unmap/DONTNEED lines logged.
+  - Interpretation: NOT pager eviction/thrashing. It is userspace mmap/munmap
+    CHURN — CPython (pid 10) maps a 132 KB region, uses a few pages, munmaps,
+    immediately remaps at the same VA (the VA allocator hands back the lowest
+    free address), 1400+ times during `import hermes_cli.main` (consistent with
+    a zipimport/marshal read window per stdlib .pyc).
+  - Why expensive: vm_commit_private_pages (syscall.c:2836) EAGERLY allocs+zeros
+    ALL 33 pages on every map, even though most are never touched before munmap.
+    1402 x (33 alloc + 33 zero) ~= 46k needless page ops at import time = the
+    crawl Zack watched (clock advancing, just slowly).
+
+ROOT CAUSE (pinned): LNX_mmap (syscall.c:5761-5794) only routes anon-private maps
+to the LAZY/demand path when `sparse_reserve` is true, which requires
+`map_len >= 64 MiB` (NORESERVE) or `>= 4 GiB` (gigacage). A 132 KB map fails the
+gate -> falls to the eager path (5796) -> full alloc+zero every cycle.
+
+NEXT (fry1763): design the fix (make anon-private lazy by default) + de-risk it.

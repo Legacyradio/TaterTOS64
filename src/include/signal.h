@@ -16,6 +16,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
+#include <bits/types/stack_t.h>  /* stack_t — used by sigaltstack, faulthandler */
 
 #ifdef __cplusplus
 extern "C" {
@@ -41,6 +42,7 @@ extern "C" {
 #define SIGALRM   14
 #define SIGTERM   15
 #define SIGSTKFLT 16
+#define SIGSTKSZ 8192
 #define SIGCHLD   17
 #define SIGCONT   18
 #define SIGSTOP   19
@@ -125,6 +127,13 @@ extern int sigaction_compat(int sig, const struct sigaction_compat *act,
 
 int sigaction(int sig, const struct sigaction *act, struct sigaction *oldact);
 int sigprocmask(int how, const sigset_t *set, sigset_t *oldset);
+int pthread_sigmask(int how, const sigset_t *set, sigset_t *oldset);
+int sigpending(sigset_t *set);
+int sigwait(const sigset_t *set, int *sig);
+int sigwaitinfo(const sigset_t *set, siginfo_t *info);
+int sigtimedwait(const sigset_t *set, siginfo_t *info, const struct timespec *timeout);
+int sigsuspend(const sigset_t *mask);
+int sigaltstack(const stack_t *ss, stack_t *old_ss);
 int sigemptyset(sigset_t *set);
 int sigfillset(sigset_t *set);
 int sigaddset(sigset_t *set, int sig);

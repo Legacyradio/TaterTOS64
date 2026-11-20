@@ -1,0 +1,52 @@
+HERMES FULL NATIVE AGENT — ROADMAP (TaterLabs, no shortcuts)
+============================================================
+Goal: the FULL Nous hermes-agent (sysroot/opt/hermes-agent) running natively on the
+in-OS CPython 3.14 (python3.fry) in TaterTOS. Production-grade. No 3.13 downgrade, no
+"lighter path". Every compiled dependency statically linked as a CPython BUILTIN
+(the freestanding loader is static-only: Modules/dynload_stub.c — there is no dlopen).
+
+STATUS PREREQS (done this session, fry1701-1723):
+  - Native CPython 3.14 boots + runs Python to completion (TLS ABI, dynamic 8GB
+    ToTFS, stdlib bring-up: abiflags + _sysconfigdata). 35/36 stdlib, sqlite OK.
+
+MECHANISM (established): Modules/config.c declares `extern PyObject* PyInit_<m>(void);`
+  + lists {"<m>", PyInit_<m>} in _PyImport_Inittab[]. Add the module's .o to the
+  Python3.mk link. Precedent in-tree: sqlite3, _ssl. THIS is how every extension
+  below gets linked in.
+
+COMPILED DEPENDENCY AUDIT (what must become builtins):
+  CPython-internal C (source already in external/Python-3.14.5/Modules/):
+    _sha3, _blake2, _md5, _sha1, _sha2, _hashlib(optional/openssl), _socket, _ssl,
+    _struct, math, _random, select, _posixsubprocess, _multibytecodec/_csv as needed.
+  External C:
+    psutil (C; _psutil_posix/_psutil_linux), Pillow (_imaging — large), maybe
+    ruamel.yaml.clib (optional, pure fallback), uvicorn[standard] speedups
+    (httptools/uvloop/websockets — pure fallbacks exist; defer).
+  External RUST (the hard prereq — its own phase):
+    pydantic_core (via pydantic 2.13.4 -> openai 2.24.0). CRITICAL PATH.
+    cryptography (via PyJWT[crypto]).
+  Host has rustc 1.96 + cargo. NO TaterTOS rust target yet (the git "Rust std PAL"
+  work is in chromium-port-wip-2026-05-07.patch — audit/reuse).
+
+PHASES (each prereq scoped + blocks its dependents):
+  PHASE 1 — Builtin-extension PIPELINE (foundation). Prove + harden the static-ext
+    path on CPython's OWN C modules that the agent needs: _sha3, _blake2 (+ verify
+    _md5/_sha1/_sha2/_hashlib) so hashlib is complete; confirm _socket/_struct/etc.
+    Wire config.c + Python3.mk, relink, verify in-OS (hashlib.sha256/sha3_256 work).
+    This pipeline is reused by every later extension.
+  PHASE 2 — External C extensions: psutil, Pillow. Cross-compile their C against the
+    TaterTOS libc as static .o, register as builtins. (Pillow is large; isolate.)
+  PHASE 3 — RUST extensions (the wall): establish Rust -> freestanding x86-64 static
+    staticlib linking into python3.fry (reuse/extend the Rust std PAL). Build
+    pydantic_core as a cdylib->staticlib with its PyInit, register as builtin. Then
+    cryptography. This is the largest phase; audit the PAL patch first.
+  PHASE 4 — Stage the agent + pure-Python deps + entrypoint. The real package is
+    `agent/` + top-level modules (run_agent.py / serve_mcp.py), NOT the empty
+    `hermes/` dir the smoke test probes. Stage agent/ + all pure-Python deps to
+    site-packages; mkdir a writable /nvme/tmp + TMPDIR; wire `hermes` shell cmd to
+    the real entrypoint; run end-to-end.
+  PHASE 5 — Harden: missing-hash cleanup, error paths, the smoke test rewritten to
+    import the real entrypoint (not the empty hermes/).
+
+NEXT: PHASE 1 — read Modules/config.c inittab, add the needed CPython C hash modules
+  as builtins, wire Python3.mk, relink, verify. -> fry1725+.

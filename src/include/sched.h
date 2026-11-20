@@ -57,10 +57,19 @@ struct sched_param {
 int sched_yield(void);
 int sched_get_priority_min(int policy);
 int sched_get_priority_max(int policy);
-
-/* CPU affinity */
 int sched_getaffinity(pid_t pid, size_t cpusetsize, cpu_set_t *mask);
 int sched_setaffinity(pid_t pid, size_t cpusetsize, const cpu_set_t *mask);
+
+/* Stubs — TaterTOS has a single scheduling policy (no priorities) */
+int sched_getparam(pid_t pid, struct sched_param *param);
+int sched_setparam(pid_t pid, const struct sched_param *param);
+int sched_getscheduler(pid_t pid);
+int sched_setscheduler(pid_t pid, int policy, const struct sched_param *param);
+int sched_rr_get_interval(pid_t pid, struct timespec *ts);
+
+#define SCHED_OTHER 0
+#define SCHED_FIFO  1
+#define SCHED_RR    2
 
 #ifdef __cplusplus
 }

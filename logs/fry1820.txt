@@ -1,0 +1,60 @@
+fry1820 — RETROACTIVE: two interim compile+nm verification steps that were not
+          logged when they happened — 2026-09-26
+==========================================================================
+WHAT: A record of two completed steps from earlier this session that did not get
+their own fry file at the time. Written retroactively and labelled as such.
+Numbering is monotonic, so these cannot be inserted at fry1814.5/fry1815.5 —
+this file stands in for both. No code changed in this step.
+
+=== WHY THIS FILE EXISTS ===
+Zack asked "you logged every move so far?" Checking honestly rather than
+answering from memory: eight logs existed (fry1812-1819) and every CODE CHANGE
+had its log written BEFORE the build that tested it, which is the ordering rule.
+But two VERIFICATION steps were folded into fry1819 instead of being logged when
+they completed. That is the documented failure mode in
+[[feedback-tatertos-log-per-step]]: "THE failure mode = the rapid
+build->fail->fix loop ... When iterating fast I keep skipping the log."
+It happened again here, in the milder form of batching verifications forward.
+Recording it rather than letting fry1819 imply the checks happened at build time.
+
+=== STEP A (belongs between fry1814 and fry1815) ===
+After the wcsftime edit (fry1814), BEFORE starting the ftruncate work:
+  rm -f src/user/libc/time_ext.o src/user/libc/gap_stubs.o
+  make src/user/libc/time_ext.o src/user/libc/gap_stubs.o
+RESULT: LIBC_EXIT=0. Filtering the output for "time_ext.c" plus error/warning
+returned NOTHING — the new code compiled with no diagnostics of its own. The
+warnings in that build were all pre-existing -Wmisleading-indentation and
+-Wunused-parameter in untouched one-line stubs in gap_stubs.c.
+  x86_64-elf-nm src/user/libc/time_ext.o | grep wcsftime
+      0000000000000ca0 T wcsftime
+  x86_64-elf-nm src/user/libc/gap_stubs.o | grep wcsftime
+      (no output)
+VERDICT: symbol present in its new home, absent from the old one. This check is
+NOT optional on this project — the python3 link uses
+--allow-multiple-definition, so a surviving duplicate would link cleanly and
+silently keep the stub's behaviour, producing a "fix" that changes nothing and
+looks correct.
+
+=== STEP B (belongs between fry1815 and fry1816) ===
+After the ftruncate/truncate edit (fry1815), BEFORE starting the getentropy work:
+  rm -f src/user/libc/posix.o src/user/libc/gap_stubs.o
+  make src/user/libc/posix.o src/user/libc/gap_stubs.o
+RESULT: LIBC_EXIT=0, no errors or warnings attributable to posix.c.
+  x86_64-elf-nm src/user/libc/posix.o
+      0000000000000670 T ftruncate
+      00000000000006c0 T truncate
+  x86_64-elf-nm src/user/libc/gap_stubs.o | grep -E ' T (ftruncate|truncate)$'
+      (no output)
+VERDICT: same as step A — relocated, no duplicates.
+
+=== WHAT THIS DOES NOT CHANGE ===
+fry1819's symbol table is still correct; it re-ran the same check across ALL ten
+symbols after the full build, which is the authoritative result. These two steps
+were earlier, narrower instances of it. Nothing recorded anywhere is invalidated
+by this file — the omission was of timing, not of substance.
+
+=== PROCESS NOTE FOR NEXT TIME ===
+The rule that keeps getting bent is not "log code changes" — that one held all
+session. It is "a step is one coherent unit, INCLUDING an experiment and its
+verdict." A compile + nm check is an experiment with a verdict. Log it when it
+completes, not when the next thing that needs it completes.

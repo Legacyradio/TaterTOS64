@@ -1,0 +1,35 @@
+fry1657 - clean rebuild and Hermes staging verification
+Timestamp: 2026-06-19 15:40:13 CDT
+
+What changed:
+- Rebuilt the TaterTOS64v3 boot artifacts after the shell native-Hermes
+  launcher path fix from fry1656.
+- Restaged the native Python 3.14 binary, Python sysroot, and Hermes Agent
+  tree into out/tater_nvme.img through stage_hermes.sh.
+
+Why:
+- The shell path fix only affects the running OS after shell.tot is rebuilt
+  and copied into the image. A fresh boot image was needed before retesting
+  the `hermes` command in headed QEMU.
+- The user explicitly allowed QEMU log use for this Hermes debug loop, so the
+  next headed boot can include a serial log while preserving GUI validation.
+
+Commands:
+- make clean
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+- ./tools/totcopy out/tater_nvme.img 1048576 --list /apps
+- ./tools/totcopy out/tater_nvme.img 1048576 --list /usr/local/lib/python3.14
+- ./tools/totcopy out/tater_nvme.img 1048576 --list /opt/hermes-agent
+
+Verification:
+- Clean rebuild completed and produced:
+  out/tatertos64v3.iso
+  out/tater_nvme.img
+- /apps contains:
+  SHELL.TOT size 160120
+  python3.fry size 7328264
+- /usr/local/lib/python3.14 contains the Python stdlib, including encodings,
+  importlib, json, os.py, site-packages, sqlite3, and urllib.
+- /opt/hermes-agent contains Hermes files and directories, including
+  tatertos_bootstrap.py, hermes, run_agent.py, hermes_cli, providers, tools,
+  skills, and website.

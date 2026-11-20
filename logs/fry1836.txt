@@ -1,0 +1,9 @@
+fry1836 - HERMES DIAGNOSIS STEP C1: headless boot of the CURRENT image on a COPY (2026-11-17 14:07:00 CST)
+WHY: Brief Step C; test current state for real. Sur's go via Marshmallow. No code changed.
+WHAT / HOW: artifacts checked fresh first (fry1835 E8: ISO 2026-09-26 22:43:40, no source newer; no build run, so no BUILD_EXIT to cite - boot is of the existing 09-26 build).
+  Copied out/tater_nvme.img (sparse, 8 GiB) + OVMF_VARS to ~/tatertos-test-20261117/ so test boots cannot alter the project artifact. ISO read-only from out/.
+  QEMU: -m 4G -smp 4 kvm, -display none (no host window/grab), serial -> file, HMP monitor on unix socket ~/tatertos-test-20261117/mon.sock, pidfile qemu.pid. Script: ~/tatertos-test-20261117/launch.sh.
+  No pkill used; will stop via monitor 'quit' or kill of the pid in qemu.pid.
+WHERE: this PC; ~/tatertos-test-20261117/{launch.sh,serial.log,mon.sock,nvme.img,OVMF_VARS.fd}. Serial: ~/tatertos-test-20261117/serial.log
+RESULT: boot clean: EFI handoff ok, DHCP:OK, selftest 106 passed 0 failed, init pid=5, SPAWN_OK /system/GUI.FRY pid=9 (verified in serial.log at ~20s). Desktop not yet visually checked.
+NEXT: fry1837 = get a screen (monitor screendump) and try input via HMP monitor (sendkey / mouse_move / mouse_button) - NOT tried before (fry1830 only tried host-pointer warp). If it works, open Shell and run tests.

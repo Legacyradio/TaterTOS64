@@ -1,0 +1,65 @@
+fry1451 — Decision note: short-term auth policy vs OAuth filesystem
+semantics. No code change in this step; this is a memory aid so the
+next session does not lose the distinction.
+Date: 2026-06-13. Author: Codex.
+========================================================================
+
+DECISION
+------------------------------------------------------------------------
+For the time being, keep using the staged Claude JSON auth files:
+
+  /nvme/.claude.json
+  /nvme/.claude/.credentials.json
+
+Do NOT make OAuth refresh semantics the immediate next blocker unless
+auth becomes the only thing preventing useful testing. The current goal
+set by Zack after fry1448 is still: make in-OS Claude Code behave like
+a normal Claude Code instance. The next kernel parity target for that
+is vfork(58) / subprocess support, then the other tool-enabling gaps.
+
+WHY
+------------------------------------------------------------------------
+fry1450 proved Claude can find and read the staged auth files. It also
+proved the OS reached stream-json, wrote transcript JSONL under
+/nvme/.claude/projects, and exited cleanly with a synthetic auth error.
+The auth failure is not a network/TCP/epoll regression.
+
+The OAuth refresh path failed because Claude Code expects normal
+filesystem semantics around refresh locks and atomic config writes.
+The fry1450 log showed:
+
+  - OAuth token check starting
+  - OAuth refresh lock compromised: unable to update lock within the
+    stale threshold
+  - OAuth refresh failed with status code 400
+  - later API calls returned 401 Invalid authentication credentials
+
+Likely kernel/filesystem gaps behind that:
+
+  - utimensat currently returns success as a no-op; ToTFS has no real
+    timestamp model yet, so lock mtime/staleness checks can fail.
+  - at least one atomic rename of /nvme/.claude.json still logged EIO,
+    so overwrite-rename semantics may still be incomplete.
+
+RECOMMENDATION
+------------------------------------------------------------------------
+Use the JSON auth staging as the short-term bridge and continue with
+Claude Code parity work:
+
+  1. vfork(58) / subprocess support.
+  2. copy_file_range(326) and sendfile(40), if still hit after vfork.
+  3. inotify_init1(294) / settings watcher polish.
+  4. statx(332) if it becomes direct/fatal instead of fallback-only.
+
+Then come back and implement the real filesystem semantics for OAuth
+refresh:
+
+  - actual timestamps or at least meaningful mtime updates for utimensat
+    and write/rename paths;
+  - correct atomic rename-over-existing behavior on ToTFS;
+  - refresh-lock behavior that passes Claude Code's stale-lock checks.
+
+This preserves momentum: fresh/staged JSON can keep test boots useful,
+while deeper filesystem semantics are handled deliberately once the
+tool/subprocess path is working.
+========================================================================

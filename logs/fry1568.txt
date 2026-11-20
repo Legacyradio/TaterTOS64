@@ -1,0 +1,40 @@
+# fry1568 - CORRECTION to fry1567: the "userspace spin confirmed" conclusion is INVALID. It used the sched.c TBCLK census, which counts a HARDCODED tgid=3 (sched.c:38 `#define TB_TRACE_CLAUDE_TGID 3u`), NOT claude's tgid=14. So t3=1/0/0/0 described process 3, not claude. Spin-vs-starve for claude is NOT yet determined.
+Date: 2026-06-16 02:50 CDT
+Type: diagnosis correction (source read; no code change)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+---------------------------------------------------------------------------------
+THE BUG IN OUR OWN INSTRUMENTATION
+---------------------------------------------------------------------------------
+- src/kernel/proc/sched.c:38  #define TB_TRACE_CLAUDE_TGID 3u        <-- HARDCODED 3
+- src/kernel/proc/syscall.c:158 #define TB_TRACE_CLAUDE_TGID g_tb_trace_claude_tgid  <-- DYNAMIC (=claude's real tgid, 14)
+=> All syscall.c beacons (TBFUTEX, TBPROCIN, TBSIG, TBEPW, TBFD0, TBTRACE) correctly traced claude (tgid=14): those
+   conclusions STAND. But every sched.c-side trace (the TBCLK t3 census; TBSCHED signal-wake/futex-wake) used tgid=3,
+   i.e. some OTHER process (likely init/shell). The t3=1/0/0/0 in fry1567 = process 3's thread count, irrelevant to
+   claude. fry1567's "main thread is a userspace spinner (confirmed)" is therefore UNPROVEN. Retract it.
+
+---------------------------------------------------------------------------------
+WHAT WE STILL RELIABLY KNOW (from the correct tgid=14 syscall.c beacons)
+---------------------------------------------------------------------------------
+- pid=14 (main thread) makes its LAST syscall at serial line 20864 (a futex wake), then NO syscalls for ~40,000 lines.
+- No futex wait-begin and no TBEPW for pid=14 after 20864 -> it is NOT in a futex or epoll wait (those log for tgid=14).
+- So pid=14 is either (A) spinning in userspace (running, no syscalls) or (B) blocked in some non-futex/non-epoll
+  syscall that left no wait beacon, or (C) runnable-but-not-scheduled. STILL UNDISTINGUISHED — the census that would
+  have told us was pointed at the wrong process.
+
+---------------------------------------------------------------------------------
+NEXT (own fry log) - fix the instrumentation tgid, THEN sample
+---------------------------------------------------------------------------------
+1) Make the sched.c-side tracing use claude's REAL tgid: export g_tb_trace_claude_tgid from syscall.c (extern) and use
+   it in sched.c instead of the hardcoded 3 (at least for the TBCLK census + the new RIP sampler). Verify g_tb_trace_
+   claude_tgid is set to claude's tgid at launch.
+2) Add the RIP sampler in sched_tick using the IRQ frame (confirmed layout: ctx[17]=RIP, ctx[18]=CS; (cs&3)==3 =
+   userspace). When current[cpu] is the real claude main thread (pid==tgid) interrupted in userspace, log TBSPIN
+   cpu/pid/rip (throttled). Also: the corrected TBCLK census will now show claude's true run/wait split (spin vs blocked).
+3) Build + run + type + read TBSPIN/TBCLK -> finally pin spin (and where) vs blocked vs starved. Then fix.
+Keep Claude fully networked.
+
+Lesson logged: verify the trace constant actually matches the target before drawing conclusions from a census. Caught
+it by reading the macro definitions; do this earlier next time.
+
+All per planv3 Rules 1/5/6/12. Written immediately on catching the wrong-tgid census.

@@ -1,0 +1,66 @@
+# hermes024 — PHASE 4: SQLite3 cross-compile + _sqlite3 module
+Date: 2026-06-17 ~16:50 CDT
+Type: build phase (Phase 4 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Add SQLite support to TaterTOS CPython build. CPython's _sqlite3 module
+wraps the SQLite C API for database access. Before this phase, TaterTOS
+had no SQLite — the _sqlite3 module wasn't compiled.
+
+---------------------------------------------------------------------------------
+APPROACH
+---------------------------------------------------------------------------------
+1. Download SQLite amalgamation (sqlite3.c + sqlite3.h, version 3.49.0.0)
+2. Cross-compile for TaterTOS with unix VFS + thread safety
+3. Compile CPython's 9 _sqlite module source files
+4. Link everything into python3.elf
+
+---------------------------------------------------------------------------------
+WHAT WAS NEEDED
+---------------------------------------------------------------------------------
+Headers added:
+  fcntl.h: struct flock + F_RDLCK/F_WRLCK/F_UNLCK (POSIX file locking)
+  stdio.h: FILENAME_MAX (4096)
+  unistd.h: utimes declaration
+
+Stubs added:
+  gap_stubs.c: utimes() — stub returning 0
+
+SQLite compile flags:
+  -DSQLITE_OS_UNIX=1        (TaterTOS has POSIX filesystem)
+  -DSQLITE_THREADSAFE=1     (TaterTOS has pthreads)
+  -DSQLITE_OMIT_LOAD_EXTENSION  (no dlopen)
+  -DSQLITE_OMIT_WAL         (omit Write-Ahead Log for now)
+
+Build additions:
+  Python3.mk: _sqlite3 module sources (9 files), sqlite3 amalgamation
+  config.c: PyInit__sqlite3 extern + inittab entry
+
+---------------------------------------------------------------------------------
+BINARY SIZE
+---------------------------------------------------------------------------------
+Before SQLite: 6,152,520 bytes (6.15 MB)
+After SQLite:  7,328,248 bytes (7.33 MB)
+Delta:         +1,175,728 bytes (+1.18 MB)
+
+SQLite3 amalgamation: 261,452 lines of C → 1.4 MB object file
+_sqlite module: 9 source files → ~200 KB object files
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+Build: make -f Python3.mk python3
+Result: python3.elf 7,328,248 bytes — ZERO undefined references
+
+SQLite compiled on first try (after adding flock/utimes stubs).
+No SQLite code modifications needed — the unix VFS works directly
+on TaterTOS POSIX layer (open/close/read/write/fcntl/mmap/pthreads).
+
+---------------------------------------------------------------------------------
+NEXT
+---------------------------------------------------------------------------------
+Phase 5: Native Hermes staging and launch (Hermes Agent on TaterTOS Python)
+Phase 6: Self-hosting dev loop (native compiler)

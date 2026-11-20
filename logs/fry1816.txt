@@ -1,0 +1,63 @@
+fry1816 — 🔴 SECURITY: getentropy() returned ZEROS and reported success. Now
+          real, on SYS_GETRANDOM — 2026-09-26
+==========================================================================
+WHAT: Found by the gap_stubs.c sweep (defect 3 of fry1813, the audit Zack
+greenlit). This is the most serious defect found this session. Code edited; log
+written BEFORE the build per planv3 rule 5/6. Not built at time of writing.
+
+=== THE DEFECT ===
+  src/user/libc/gap_stubs.c:131 (BEFORE)
+      int getentropy(void *b, size_t l)
+      { if(b&&l){for(size_t i=0;i<l;i++)((unsigned char*)b)[i]=0;} return 0; }
+It filled the caller's buffer with ZERO BYTES and returned 0 = success.
+
+=== WHY IT MATTERS MORE THAN IT LOOKS ===
+  external/Python-3.14.5/pyconfig.h:493    #define HAVE_GETENTROPY 1
+  external/Python-3.14.5/pyconfig.h:592    /* #undef HAVE_GETRANDOM */
+  external/Python-3.14.5/pyconfig.h:595    /* #undef HAVE_GETRANDOM_SYSCALL */
+CPython therefore draws ALL of its entropy through getentropy() and has no
+other configured source. Everything downstream of it in this OS has been
+consuming zeros while believing the bytes were random:
+  os.urandom()  secrets.token_*()  uuid.uuid4()  PYTHONHASHSEED / hash
+  randomisation  random.SystemRandom  ssl/TLS client randomness  and SQLite's
+  own randomness where it draws from the Python layer.
+This is a correctness AND a security defect. Any key, token, nonce, session id
+or UUID generated inside TaterTOS to date must be treated as compromised and
+regenerated. Nothing here was exposed off-machine, but the property that makes
+those values safe never existed.
+
+=== THE ENTROPY SOURCE ALREADY EXISTED AND WAS ALREADY WIRED ===
+Verified each link this step, read directly:
+  src/include/tatertos/syscall.h:137   SYS_GETRANDOM = 85
+  src/kernel/proc/syscall.c:10658      case 85: SYS_GETRANDOM(buf, len, flags)
+  src/user/libc/libc.c:788             long fry_getrandom(void*, unsigned long,
+                                                          unsigned int)
+  src/user/libc/rust_compat.c:89       long getrandom(...) -> fry_getrandom
+=> The RUST path has been using the real kernel entropy source since fry1743.
+   The C path — which is the one CPython uses — was hitting the zero stub the
+   whole time. Same machine, same kernel, two different answers.
+
+=== CHANGE ===
+src/user/libc/posix.c — added getentropy() immediately before usleep():
+  - NULL buf with non-zero len -> EFAULT.
+  - len > 256 -> EIO (POSIX caps getentropy at 256 bytes).
+  - loops fry_getrandom() until len bytes are filled, because POSIX getentropy
+    must fill completely or fail; it has no short-count return.
+  - negative rc -> errno = -rc, return -1.
+  - rc == 0 -> EIO rather than looping forever on a source making no progress.
+src/user/libc/gap_stubs.c:131 — stub DELETED, replaced with a comment recording
+what it did, why it was dangerous, where the real one lives, and not to
+reinstate it. Deletion is mandatory: two definitions would fail to link.
+
+=== RELATED, NOT FIXED THIS STEP (recorded, not silently left) ===
+src/user/libc/rust_compat.c:60-77, the generic syscall() shim, still answers
+Linux SYS_getrandom (318) from a hardcoded LCG seeded with a fixed constant
+(0x9E3779B97F4A7C15), with its own comment reading "TODO: route to a real
+TaterTOS entropy source." That is a deterministic sequence, identical on every
+boot. Its comment says it exists for Rust's HashMap RandomState and the native
+Rust build no longer reaches these glibc shims (the linker GC-drops them), so
+it is believed dead — BELIEVED, not proven. Left alone deliberately rather than
+changed without evidence; flagged as its own follow-up.
+
+=== WHAT IS NOT CLAIMED ===
+Not built, not booted. Not claimed to fix the hermes hang.

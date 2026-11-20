@@ -1,0 +1,76 @@
+fry1394 — Tater Bridge / Claude Code: epoll_pwait clamp fix CONFIRMED as a
+major step — it pushed the GC-safepoint corruption crash from early JS-engine
+init to ~7,500 serial lines later, PAST networking init (socket() reached) and
+far enough that Bun's own crash reporter runs. But the SAME corruption class
+recurs later on a different CodeBlock: the root GC-safepoint race is reduced,
+not eliminated. The main thread (pid 2) is NEVER signal-suspended by the GC at
+all, so it can still mutate during a sweep in any userspace stretch between
+syscalls.
+Timestamp: 2026-06-10 06:35-06:55 CDT. Author: Claude (Fable 5), cont. fry1393.
+CLAUDE_BIN = 2.1.170, -smp 1 KVM. HEAD = 733c2f1a + this session's edits.
+
+THE FIX APPLIED (in tree, KEEP — it is correct + load-bearing)
+  lx_epoll_wait_fd: `maxevents > 64 -> -EINVAL` REPLACED with a clamp to a
+  64-event batch (`if (maxevents<=0) return -EINVAL; batch=min(maxevents,64);
+  maxevents=batch;`). Returning fewer than requested is legal epoll semantics;
+  the caller re-polls. Bun passes large event buffers, so the old cap made
+  EVERY epoll_pwait fail -> the main thread never blocked in the event loop ->
+  it spun in userspace instead of parking at a GC safepoint.
+
+RESULT (this boot, /tmp/s.log)
+  - socket() (nr 41) reached at serial line ~1149 (= JS engine fully booted,
+    networking init started) — previously the crash hit at engine init, long
+    before this.
+  - First/only TBBFDUMP now at line ~8712 (cb=0x6FBFF50F4B80, a DIFFERENT
+    CodeBlock than the pre-fix 0x6FBFF50F4AA0), fatal #UD at line ~9274.
+  - Bun crash reporter ran (serial shows
+    https://bun.report/1.3.14/B_1521eedd...). Proof the runtime executed a huge
+    amount of real work before dying.
+  - A source in the 0x6FBBF9 block now copies a VALID numLocals=0x1E(30)
+    (TBWATCH val=000000050000001E, rdx=0x1E) — pre-fix every 0x6FBBF9-block
+    source was zero. Heap integrity is materially better, not yet perfect.
+  - Net: same crash CLASS, dramatically later. The epoll cap was one enabler;
+    the underlying GC-stop-the-world gap remains.
+
+WHY IT'S NOT FULLY FIXED (sharpened root cause)
+  The GC thread (pid 3) sends its suspend signal sig 30 ONLY to pid 4 and pid 8
+  (52x/2x), NEVER to pid 2 — confirmed again this boot. pid 2 (the main mutator
+  AND the crashing thread) is only ever at a safepoint when it happens to be
+  inside a blocking syscall (epoll/futex). epoll now blocks, so it parks far
+  more, but ANY userspace interval between syscalls that overlaps a pid-3 sweep
+  can still let pid 2 read/build an object the collector is recycling.
+  Two non-exclusive explanations for "pid 2 never signaled":
+   (a) JSC skips signaling threads it believes are already parked; a race
+       between that check and pid 2 leaving its syscall.
+   (b) thread-id mapping: JSC tgkill()s a tid that our kernel resolves to the
+       wrong pid (it always lands on 8/4). Verify gettid()/tgkill tid->pid
+       mapping for the main thread.
+
+NEXT (fry1395 — finish the safepoint correctness)
+  1. VERIFY tid mapping: log gettid() per thread and every tgkill(tid,30) with
+     the tid AND the pid it resolves to. If JSC intends to suspend the main
+     thread but our tgkill misroutes it to pid 8, fix the tid->pid resolution.
+     (Cheapest + highest-leverage; may be the whole bug.)
+  2. If mapping is correct but JSC genuinely never signals the main thread:
+     implement PREEMPTIVE signal delivery — on timer-IRQ return to a CPL3
+     thread with a pending unblocked signal, build the signal frame from the
+     IRQ frame (same layout lx_deliver_signal_from_exception already consumes)
+     and divert to the handler. Real-Linux async-signal parity; lets the GC
+     stop a userspace-spinning thread. Pair with making the JSC stop-the-world
+     handshake actually wait for pid 2's ACK.
+  3. Re-arm the DR watch on the NEW cb field (cb=0x...4B80 drifts per build;
+     better: watch via the SOURCE-object path generically) to reconfirm zero
+     bad copies once safepoints are correct.
+  4. THEN: strip fry1391-1393 instrumentation, revert the fry1388 512MB stack
+     cap to 64MB, and implement sockets/TLS/DNS (socket()=-ENOSYS is the next
+     functional gate to an actual API reply).
+
+KEEP (correct fixes shipped this session, do not revert)
+  - epoll_pwait clamp (this log).
+  - fry1391 per-thread callee-saved frame slots (replaces per-CPU gs:24..56
+    scratch; correct signal-ucontext GC roots for syscall-blocked threads).
+  - fry1391 clone3 frame-depth via lx_syscall_frame()/LX_SYSFRAME_*.
+
+BUILD/RUN unchanged (KVM -smp 1; grep -a; rebuild = delete src/kernel +
+  src/drivers *.o, CLAUDE_BIN=.../2.1.170 STAGE_CLAUDE=1 MTOOLSRC=/dev/null
+  build_iso.sh; boot recipe in fry1389).

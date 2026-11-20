@@ -375,12 +375,20 @@ gcc -O2 -o "$ROOT_DIR/tools/mktotfs" "$ROOT_DIR/tools/mktotfs.c"
 gcc -O2 -o "$ROOT_DIR/tools/totcopy" "$ROOT_DIR/tools/totcopy.c"
 
 # Create/update NVMe image with ToTFS partition
-NVME_SIZE=$((400 * 1024 * 1024))  # 400 MB (holds large binaries e.g. claude)
+# NVMe image size is CONFIGURABLE and SPARSE. ToTFS sizes itself to the partition
+# (kernel allocates its bitmap cache dynamically), so this is not a hard limit --
+# it just sets how much "drive" the VM sees. Default 8 GB; override NVME_SIZE_MB.
+# Sparse (truncate) means only the data actually written consumes host disk.
+NVME_SIZE_MB="${NVME_SIZE_MB:-8192}"
+NVME_SIZE=$((NVME_SIZE_MB * 1024 * 1024))
 NVME_PART_SIZE=$((NVME_SIZE - NVME_PART_OFFSET))
 
-if [ ! -f "$NVME_IMG" ]; then
-  echo "Creating NVMe image: $NVME_IMG ($NVME_SIZE bytes)"
-  dd if=/dev/zero of="$NVME_IMG" bs=1M count=400 >/dev/null 2>&1
+# Recreate when missing OR when the requested size changed (so resizing takes effect).
+cur_sz=0; [ -f "$NVME_IMG" ] && cur_sz=$(stat -c%s "$NVME_IMG" 2>/dev/null || echo 0)
+if [ "$cur_sz" != "$NVME_SIZE" ]; then
+  echo "Creating NVMe image (sparse): $NVME_IMG (${NVME_SIZE_MB} MB / $NVME_SIZE bytes)"
+  rm -f "$NVME_IMG"
+  truncate -s "$NVME_SIZE" "$NVME_IMG"
 fi
 
 # Write GPT header with ToTFS partition type
@@ -431,14 +439,65 @@ if [ -f "$ROOT_DIR/vmtest_fixture.txt" ]; then
 fi
 copy_tbridge_test_totfs
 copy_autotest_markers_totfs
-# The REAL claude binary (ET_EXEC, ~243MB) onto the NVMe ToTFS, opt-in via
-# STAGE_CLAUDE=1. Launched from /nvme/RCLAUDE.LXE and STREAMED from disk by
-# the loader (never staged in the ramdisk). Live boot is unaffected.
+# The REAL claude binary (ET_EXEC, ~223MB) onto the NVMe ToTFS. Auto-staged by
+# DEFAULT (STAGE_CLAUDE defaults to 1) and auto-detected from the ~/.local/bin/claude
+# symlink, so reformatting the nvme on every build NEVER silently drops it. Claude
+# in-OS is a shipped, working TaterTOS feature -- keep it automatic. Overrides:
+# STAGE_CLAUDE=0 for a lean build; CLAUDE_BIN=<path> to pin a specific version.
+# Launched from /nvme/RCLAUDE.LXE and STREAMED from disk by the loader (never in
+# the ramdisk). Live boot is unaffected.
+: "${STAGE_CLAUDE:=1}"
+CLAUDE_BIN="${CLAUDE_BIN:-}"   # define for `set -u` (may be empty)
+if [ -z "$CLAUDE_BIN" ] && [ -e "$HOME/.local/bin/claude" ]; then
+  CLAUDE_BIN="$(readlink -f "$HOME/.local/bin/claude" 2>/dev/null || true)"
+fi
 if [ "$STAGE_CLAUDE" = "1" ] && [ -n "$CLAUDE_BIN" ] && [ -f "$CLAUDE_BIN" ]; then
   echo "Staging real claude binary onto NVMe ToTFS: $CLAUDE_BIN"
   "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
     "$CLAUDE_BIN" "/RCLAUDE.LXE"
+elif [ "$STAGE_CLAUDE" = "1" ]; then
+  echo "WARNING: STAGE_CLAUDE=1 but no claude binary found (set CLAUDE_BIN or install ~/.local/bin/claude) -> /nvme/RCLAUDE.LXE NOT staged"
 fi
+
+# fry1641: restore the working OAuth staging (documented in fry1483): copy the
+# host's live Claude config + token onto the image so the in-OS Claude (HOME=/nvme)
+# is already logged in. BOTH files are required -- with only the token (and no
+# .claude.json carrying oauthAccount + hasCompletedOnboarding) Claude treats it as
+# first-run and drops to a browser OAuth login it cannot complete in-OS. The bulky,
+# private `projects` history is stripped; all auth/onboarding fields are kept.
+if [ -f "$HOME/.claude.json" ]; then
+  python3 -c "import json;d=json.load(open('$HOME/.claude.json'));[d.pop(k,None) for k in ('projects','tipsHistory','cachedGrowthBookFeatures','changelogLastFetched','feedbackSurveyState')];json.dump(d,open('$OUT_DIR/claude.json.staged','w'))" 2>/dev/null \
+    && "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" "$OUT_DIR/claude.json.staged" "/.claude.json"
+fi
+if [ -f "$HOME/.claude/.credentials.json" ]; then
+  "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" --mkdir "/.claude" 2>/dev/null || true
+  "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" \
+    "$HOME/.claude/.credentials.json" "/.claude/.credentials.json"
+fi
+
+# fry1642: stage the Linux shell (busybox) at /bin/sh so Claude's Bash tool finds a
+# shell. The kernel redirects /bin/* -> the /nvme ToTFS (fry1588); without a shell
+# binary there, execve("/bin/sh") is ENOENT -> Claude reports "Bash broken: no shell
+# found". busybox v1.35 is statically linked + STANDALONE (applets run via sh with no
+# symlinks). LINUX_SHELL_BIN was passed on the build but build_iso never consumed it.
+if [ -n "${LINUX_SHELL_BIN:-}" ] && [ -f "$LINUX_SHELL_BIN" ]; then
+  "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" --mkdir "/bin" 2>/dev/null || true
+  "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" "$LINUX_SHELL_BIN" "/bin/sh"
+fi
+
+# fry1643: stage a static bash at /bin/bash. Claude Code's Bash tool probes
+# `bash --version` at /bin/bash (etc.) and requires REAL bash -- busybox sh/ash
+# does NOT satisfy it ("no POSIX shell"). This bash was built static + no-readline
+# (configure --enable-static-link --without-bash-malloc --disable-readline
+# --disable-history CFLAGS=-std=gnu17), so it has no shared-lib/loader deps.
+BASH_STATIC_BIN="${BASH_STATIC_BIN:-$HOME/tatertos-shell/bash}"
+if [ -f "$BASH_STATIC_BIN" ]; then
+  "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" --mkdir "/bin" 2>/dev/null || true
+  "$ROOT_DIR/tools/totcopy" "$NVME_IMG" "$NVME_PART_OFFSET" "$BASH_STATIC_BIN" "/bin/bash"
+fi
+
+# fry1631: Stage native Python + Hermes Agent
+. "$ROOT_DIR/stage_hermes.sh"
 
 # Verify
 echo "NVMe ToTFS contents:"

@@ -1,0 +1,55 @@
+# fry1655 - Restage native Python/Hermes into NVMe ToTFS and verify actual destination paths.
+Date: 2026-06-19 15:33:13 CDT
+Type: image staging verification
+Author: Codex, following planv3 Rules 1/5/6/12
+
+WHY
+- fry1651 restored the shell launch commands.
+- fry1652/fry1653/fry1654 fixed the staging script so the Python/Hermes
+  sysroot actually lands in ToTFS instead of only printing success.
+
+WHAT WAS DONE
+- Ran:
+  ROOT_DIR="$PWD" NVME_IMG="out/tater_nvme.img" NVME_PART_OFFSET="1048576" \
+    STAGE_HERMES=1 HERMES_SYSROOT="$PWD/sysroot" /bin/bash stage_hermes.sh
+- This updated the current `out/tater_nvme.img` without needing another full
+  compile.
+
+VERIFY
+- `/apps` now contains:
+  - `SHELL.TOT` size 160120
+  - `python3.fry` size 7328264
+- `/usr/local/lib/python3.14` now contains stdlib directories/files including:
+  - `site-packages`
+  - `asyncio`
+  - `encodings`
+  - `importlib`
+  - `json`
+  - `os.py`
+  - `sqlite3`
+- `/usr/local/lib/python3.14/site-packages` now contains staged pure-Python deps:
+  - `openai`
+  - `httpx`
+  - `httpcore`
+  - `rich`
+  - `requests`
+  - `urllib3`
+  - `pydantic`
+  - `prompt_toolkit`
+  - `certifi`
+- `/opt/hermes-agent` now contains:
+  - `tatertos_bootstrap.py`
+  - `hermes`
+  - `run_agent.py`
+  - `hermes_autobuild.py`
+  - `hermes_cli/`
+- `/opt/hermes-agent/hermes_cli` now contains `main.py` and the CLI package
+  modules.
+
+NEXT
+- Boot the rebuilt ISO + updated NVMe image through the normal headed GUI path.
+- Verify:
+  1. desktop still comes up,
+  2. Shell opens with the recovered VT/TaterWin terminal,
+  3. bare `hermes` or `python3 /opt/hermes-agent/tatertos_bootstrap.py`
+     reaches the native CPython bootstrap path.

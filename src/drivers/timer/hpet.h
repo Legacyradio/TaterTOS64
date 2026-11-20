@@ -6,6 +6,7 @@
 void hpet_init(void);
 uint64_t hpet_get_freq_hz(void);
 uint64_t hpet_read_counter(void);
+uint64_t hpet_read_config(void);
 void hpet_sleep_ms(uint64_t ms);
 
 /* HPET period in femtoseconds per tick (for nanosecond-resolution time). */

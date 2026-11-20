@@ -1,0 +1,68 @@
+fry1481 - REGROUP: revert the fry1477-1480 rg-ENFILE experiments back to
+the fry1476 known-good baseline. VERIFIED: boots, claude runs to a clean
+result, MCP Python child executes, 0 segfaults. rg ENFILE remains open
+(documented for a focused follow-up).
+Date: 2026-06-13. Author: Claude (Opus 4.8).
+========================================================================
+
+WHY (own the drift)
+------------------------------------------------------------------------
+After fry1476 (Codex Python staging + PIE loader, on top of my fry1474
+socket inheritance) the tree was known-good: 0 segfaults, MCP Python
+child executes, main inference clean. Chasing rg's "ENFILE: file table
+overflow" I made THREE speculative pool bumps instead of diagnosing
+first:
+- fry1477 FRY_SOCK_MAX 16->128: didn't change ENFILE (sockets not the
+  limit).
+- fry1478 FRY_FD_MAX 64->256: didn't fix ENFILE AND is dangerous —
+  fd_paths[256][128]=32KB makes fry_process_shared ~40KB > KSTACK_SIZE
+  (32KB); a stack-local copy during process setup overflows -> claude ELF
+  load halts.
+- fry1479 FRY_PIPE_MAX 128->256: BROKE early boot.
+Net effect: a muddied, intermittently-unbootable tree. This was a
+retry-loop drift (violates "diagnose don't loop"). Zack called it ->
+regroup.
+
+REVERTED (back to fry1476 baseline)
+------------------------------------------------------------------------
+- src/include/fry_limits.h: FRY_SOCK_MAX 128->16, FRY_FD_MAX 256->64,
+  FRY_PIPE_MAX 256->128 (all originals).
+- src/kernel/proc/syscall.c: removed the TBSPAIR socketpair pool-pressure
+  beacon (fry1479).
+KEPT (these ARE the fry1476-good chain, verified, NOT drift):
+- fry1463 wait4/waitpid, fry1464 real-vfork parent-suspend, fry1465
+  chdir/fchdir, fry1466 vfork FD_FILE copy, fry1467 stdio override 0-2,
+  fry1469 fd_path_set, fry1474 AF_UNIX socketpair vfork inheritance
+  (own-struct + pipe refcount), plus Codex's fry1476 Python staging +
+  PIE ELF loader. Diag beacons TBSIGACT/TBDUP2/TBCOPYFD remain (capped,
+  harmless).
+
+BUILD: make kernel EXIT 0. Full rebuild STAGE_CLAUDE=1 STAGE_PYTHON=1
+EXIT 0 (/tmp/fry1481_build.log).
+
+BOOT (KVM, serial /tmp/s_fry1481.log) — REGROUP VERIFIED:
+- serial 2,846,813 bytes (full claude run).
+- "claude launch rc=5" is NORMAL (rc=5 = launched as pid 5, not an error;
+  present in every working run — do NOT mistake it for a regression).
+- {"type":"result","subtype":"success","is_error":false,
+  api_error_status:null, "Hello fr..."} -> clean inference.
+- segfault count = 0.
+- MCP Python child still execs: LINUXELF load start /nvme/home/.../python.
+=> Drift fully undone. Tree == fry1476 known-good.
+
+OPEN PROBLEM (rg / Grep tool) — for a FOCUSED follow-up, NOT this session
+------------------------------------------------------------------------
+rg's child spawn fails "ENFILE: file table overflow, posix_spawn 'rg'"
+(invariant at 2; the MCP Python child works, rg does not). Pool-size
+bumps were the WRONG approach (and FD_MAX/PIPE_MAX bumps break boot at
+current struct sizes). PROPER next steps, in order:
+1. Instrument WITHOUT bumping: log used-pipe / used-socket / per-proc-fd
+   counts at the rg socketpair call (a safe beacon) to settle LEAK vs
+   GENUINE-NEED. A leak (counts climb every spawn, never drop) is the most
+   likely cause -> fix the close/refcount path, NOT the cap.
+2. If genuine need: raising FRY_FD_MAX requires moving fd_paths OFF the
+   process struct (heap/indirect) first, or KSTACK_SIZE up, so the bigger
+   struct can't overflow the 32KB kernel stack. Raising FRY_PIPE_MAX needs
+   the boot-halt root understood first.
+3. COORDINATE with Codex (agent-bus) — both were editing syscall.c/
+   process.c; avoid concurrent edits to the spawn/socket subsystem.

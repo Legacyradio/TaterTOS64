@@ -1,0 +1,117 @@
+fry1813 — CLOCK AUDIT: the RTC is FINE. Three confirmed defects found instead:
+          wcsftime stub, ftruncate lying stub, POSIX file locking absent — 2026-09-26
+==========================================================================
+WHAT: Source/code audit, read-only. No source changed, nothing built, nothing
+booted. Triggered by Zack (2026-09-26): "the clock being fuckedup in tatertos
+prolly dont help i dont think it actually works."
+VERDICT: the kernel clock DOES work. Two SEPARATE things look like a broken
+clock and are not the clock. Both are confirmed by code, not inference.
+
+=== THE CLOCK IS NOT BROKEN — EVIDENCE ===
+1. src/drivers/timer/rtc.c is a complete CMOS RTC driver (BCD decode, seconds-
+   rollover re-read guard, century, Rata Die epoch conversion at rtc.c:116-133).
+   rtc_init() IS wired into boot at src/kernel/main.c:322.
+2. SYS_GETTIME (syscall.c:8616) = rtc_boot_epoch_sec()*1000 + HPET uptime.
+   SYS_CLOCK_GETTIME/86 (syscall.c:10680): MONOTONIC/BOOTTIME = hpet_get_ns();
+   REALTIME = rtc_boot_epoch_sec() + hpet. Both correct in shape.
+3. src/kernel/selftest.c:315-320 asserts "rtc_epoch_sane" (epoch > 1704067200,
+   i.e. later than 2024-01-01) — and EVERY boot in fry1802-1811 reports
+   "selftest 106 passed / 0 failed". The epoch has been verified sane on every
+   single boot this whole time.
+4. THE TASKBAR PROVES IT. fry1811 recorded the taskbar reading 496348:46:36 and
+   treated it as a frozen/garbage clock. Convert it:
+       496348*3600 + 46*60 + 36 = 1,786,855,596
+       epoch 1,786,855,596 = 2026-08-16 04:46:36 UTC
+   That is the CORRECT wall-clock time for that boot (fry1811 ran 2026-08-15).
+   => The GUI is handed a correct epoch and formats it as an ELAPSED HH:MM:SS
+      duration. The clock is right; the taskbar's FORMATTING is the bug.
+   => fry1811's "the GUI had stopped repainting" concern is also dead: two
+      screenshots 30s apart showing the same value is what you get when hours
+      are computed from an epoch — the hours field changes once an hour.
+
+=== DEFECT 1 (CONFIRMED) — time.strftime() ALWAYS RETURNS "" IN-OS ===
+This is the cause of the fry1812 FINDING 5 anomaly (every hermes log line
+starting with a bare ",248" — the milliseconds tail present, the entire
+strftime portion empty).
+CHAIN, all three links verified in this tree:
+  external/Python-3.14.5/pyconfig.h:1637      #define HAVE_WCSFTIME 1
+  external/Python-3.14.5/Modules/timemodule.c:766-768
+        #ifdef HAVE_WCSFTIME
+        #define format_time wcsftime
+  src/user/libc/gap_stubs.c:169
+        size_t wcsftime(wchar_t *s, size_t max, const wchar_t *fmt,
+                        const struct tm *tm)
+        { (void)fmt;(void)tm; if(s&&max)s[0]=0; return 0; }
+=> CPython's time.strftime() is routed to wcsftime because pyconfig.h claims we
+   have it. We do not. The stub writes an empty string and returns 0. So EVERY
+   Python timestamp string produced anywhere in TaterTOS is empty.
+NOTE: src/user/libc/time_ext.c:210-292 implements NARROW strftime PROPERLY —
+%Y %m %d %H %M %S %a %A %b %B %e %I %j %p %w %y and %% are all handled. The
+working implementation is right there; CPython just never calls it.
+NOT THE HANG: time.time() and monotonic go via SYS_CLOCK_GETTIME and are
+unaffected. This breaks timestamp STRINGS, not time arithmetic. Do not conflate.
+
+=== DEFECT 2 (CONFIRMED) — ftruncate() IS A STUB THAT REPORTS SUCCESS ===
+  src/user/libc/gap_stubs.c:98
+      int ftruncate(int fd, off_t l) { (void)fd;(void)l; return 0; }
+It does NOTHING and returns 0, i.e. it LIES. Every caller believes the file was
+resized. SQLite calls ftruncate to size the database and to truncate journals;
+this is the most dangerous class of stub there is, because failure is invisible.
+Contrast lockf() one line below it (gap_stubs.c:99), which honestly sets ENOSYS
+and returns -1. That is the correct shape for a gap.
+
+=== DEFECT 3 (CONFIRMED) — POSIX FILE LOCKING IS NOT IMPLEMENTED ===
+  src/include/fcntl.h:42-44, 83-84 define F_GETLK/F_SETLK/F_SETLKW/F_RDLCK/F_WRLCK
+  src/user/libc/posix.c:133 fcntl() passes the cmd straight to fry_fcntl()
+  kernel SYS_FCNTL (src/kernel/proc/syscall.c ~9473-9502) handles ONLY
+      F_GETFL, F_SETFL, F_GETFD, F_SETFD
+      default: return -EINVAL
+=> fcntl(fd, F_SETLK, &lk) returns -1 / EINVAL. The constants EXIST in the
+   header, so third-party code compiles happily, calls it, and gets an error.
+   There is no flock() in the tree at all.
+RELEVANCE to fry1812 FINDING 2 (state.db is 0 bytes): hermes_state.py:39-56
+states WAL "requires shared-memory (mmap) coordination and fcntl locking". With
+locking returning EINVAL and ftruncate lying, a 0-byte state.db across every run
+is fully explained WITHOUT needing a hang.
+⚠ HONESTY CHECK — THIS WEAKENS THE fry1812 HANG HYPOTHESIS, AND I AM SAYING SO:
+  SQLite's os_unix.c maps a failed lock to SQLITE_IOERR_LOCK (EINVAL is not in
+  its EAGAIN/EACCES/EBUSY/ETIMEDOUT -> SQLITE_BUSY set), i.e. it RAISES rather
+  than blocking. hermes_state.SessionDB.__init__ wraps init in try/except
+  (hermes_state.py:408) and _create_session_db_for_oneshot (oneshot.py) catches
+  Exception and returns None. So a SQLite lock failure would be SWALLOWED and
+  degrade silently — it would NOT hang. fry1812 proposed "mmap/fcntl blocks
+  instead of raising" as the hang mechanism; EINVAL is an immediate return, not
+  a block, so that specific mechanism is NOT supported by this audit.
+  These three defects are REAL and worth fixing on their own merits. Their link
+  to the runtime hang is UNPROVEN and should not be asserted.
+
+=== WHAT THIS SAYS ABOUT gap_stubs.c GENERALLY ===
+276 lines. It contains at least one stub that reports success while doing
+nothing (ftruncate) and one that returns empty-success (wcsftime). Both were
+invisible for months precisely because they do not fail. A full audit of
+gap_stubs.c for "lying" stubs — anything returning 0/success without doing the
+work — is proposed as its own step. Given Zack's standing point that several
+agents have worked this tree, stubs that report success are the highest-value
+thing to sweep.
+
+=== PROPOSED NEXT (none approved, nothing written) ===
+  A. Implement wcsftime() properly in libc (wide->narrow format, delegate to the
+     existing correct strftime in time_ext.c, narrow->wide the result). planv3
+     rule 2: real implementation, not a minimal one. Fixes every Python
+     timestamp in the OS. Do NOT "fix" it by editing pyconfig.h alone — though
+     note pyconfig.h claiming HAVE_WCSFTIME 1 is itself a false statement about
+     this platform and should be corrected either way.
+  B. Implement ftruncate() for real against the ToTFS truncate VFS op, which
+     ALREADY EXISTS (totfs_truncate_vfs, committed in cf5777f2). Until then it
+     should at minimum fail honestly like lockf does.
+  C. Audit gap_stubs.c end to end for success-reporting stubs.
+  D. POSIX advisory locking (F_SETLK/F_SETLKW/F_GETLK) in SYS_FCNTL — its own
+     phase, larger, needs a lock table in the kernel.
+  E. Fix the taskbar to render wall-clock time instead of formatting an epoch as
+     elapsed HH:MM:SS.
+  F. The fry1812 osprobe.py primitive probe still stands as the way to settle
+     the hang, and should now also probe ftruncate and fcntl(F_SETLK) directly.
+
+=== STILL OWED (unchanged) ===
+  - totcopy usage text omits --get and --mkdir.
+  - 603 uncommitted files, last commit 733c2f1a 2026-06-08.

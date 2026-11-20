@@ -224,6 +224,7 @@ long fry_readv(int fd, const struct fry_iovec *iov, int iovcnt);
 long fry_writev(int fd, const struct fry_iovec *iov, int iovcnt);
 long fry_spawn(const char *path);
 long fry_spawn_args(const char *path, const char **argv, uint32_t argc, const char **envp, uint32_t envc);
+long fry_spawn_linux_args(const char *path, const char **argv, uint32_t argc, const char **envp, uint32_t envc);
 long fry_exit(int code);
 __attribute__((noreturn)) void fry_thread_exit(int code);
 long fry_gettid(void);

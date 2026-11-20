@@ -1,0 +1,85 @@
+fry1433 — TaterTOS networking: LAYER-DIFF BOOT. VERDICT: the network
+stack is EXONERATED end to end. Every frame the NIC delivered reached
+TCP; claude drained every byte (unread=0); slirp sent no retransmits
+(our ACKs reached it); no RSTs; no refused descriptors. The stall is
+a BUSY-SPIN in claude's event loop: 1,037 consecutive epoll_pwait2
+calls each returning the SAME ONE ready event that claude never
+consumes — and that event is NOT a socket. Frontier moves from
+netcore.c to the linuxulator's epoll/eventfd readiness.
+Date: 2026-06-12 03:0x CDT. Author: Claude (Fable 5).
+========================================================================
+
+RUN
+------------------------------------------------------------------------
+Clean rebuild per rule 12 (make clean + build_iso.sh, claude 2.1.172
+staged to NVMe ToTFS as /RCLAUDE.LXE, 248,743,632 bytes, inode 25).
+Boot: KVM q35, -smp 2, e1000+slirp user netdev, NVMe img, serial to
+/tmp/s_fry1433.log (6,694 lines). QEMU PID saved/killed cleanly.
+Watch fired VERDICT_QUIESCENT_STALL (150s with no non-TBCLK/TBDUMP
+serial growth).
+
+LAYER DIFFS (the fry1432 beacons, what each showed)
+------------------------------------------------------------------------
+TBE1K  : 32+ frames delivered, ZERO "TBE1K DROP" lines — the NIC layer
+         refused nothing.
+TBIP   : tcp_fwd counter tracks TBE1K exactly (16/24/32) — no demux loss.
+TBTCP rx: conn2 accepted 13 segments / 15,396 bytes; conn1 4/4,264;
+         conn0 4/4,058. ooo=0 trims=0 everywhere. fry1431's "exactly one
+         segment" was an artifact of its own sampling, as suspected.
+TBTCP tx: ACKs flowed with win=65535 throughout; no stale acks, no
+         window starvation. Late in the run: conn0 got a server FIN
+         (ack bump 68060->68061) and closed cleanly; conns 1+2 were
+         closed by CLAUDE ITSELF (FIN|ACK with NO server-FIN ack bump)
+         minutes after data stopped — that's an idle keep-alive reaper,
+         WHICH PROVES CLAUDE'S TIMERS FIRE during the stall.
+TBDUMP : final state conn1/conn2 ESTABLISHED with unread=0 — the app
+         drained the rings completely. TBTCP RST: none.
+
+THE STALL, PINNED ONE LAYER DEEPER
+------------------------------------------------------------------------
+Timeline: last data frame at serial line 3890; claude reads everything
+(recvfrom rc=0x2fff on fd 0x13 visible); then the TBFULL syscall trace
+shows the loop: 1,042 epoll_pwait2 calls, 1,037 returning rc=1 — one
+ready event, identical, forever — plus 903 clock_gettime, 108
+sched_yield, 79 futex, and only SIX recvfrom and ONE read(8 bytes,
+fd 15) in the whole window. Level-triggered readiness nobody consumes
+= the event loop spins; the next work item (host fry1430 reference:
+OPEN MORE CONNECTIONS, proceed to session init) never runs.
+
+The stuck fd is NOT a socket: LXEPRDY prints UNCONDITIONALLY for every
+FD_SOCKET ready event (verified in lx_epoll wait loop, syscall.c
+~4131) yet printed only 10 times total against 1,037 rc=1 returns.
+Socket readiness itself is computed honestly (poll_check_fd:
+tcp_rx_available()>0, not sticky). Remaining suspects, in order:
+  1. EVENTFD with a counter that never reaches a reader. Two
+     eventfd-style fds visible: 6x 8-byte writes to fd 16, 6x to fd 7,
+     but only ONE 8-byte read (fd 15) in the entire stall window. A
+     counter>0 eventfd registered on epfd 14 reports POLLIN forever
+     (poll_check_fd FD_EVENTFD branch) — exactly matches eternal rc=1.
+     claude is Bun-based (see fry1393 note in syscall.c); Bun's loop
+     wakeup is an eventfd; threads share one fd table (tgid 3 — pid 8
+     closed UDP fd 17, pid 9 reused it for TCP).
+  2. TIMERFD expirations never cleared by a read.
+  3. A pipe read-end with residue.
+Cannot name the fd from this log: LXEPCTL and LXEPRDY are both
+FD_SOCKET-filtered (the registration of the stuck fd was never even
+logged), and the TBFULL trace budget ([2154]..[1]) exhausted mid-stall.
+
+WHY THE CODE WAS NOT CHANGED THIS STEP (rule 6)
+------------------------------------------------------------------------
+No fix candidate is proven yet; changing eventfd/epoll semantics on a
+hypothesis violates the discipline. The fry1434 step is surgical beacon
+widening only:
+  - LXEPCTL: log ALL fd kinds (with kind), not just FD_SOCKET.
+  - LXEPRDY: log ALL fd kinds with kind tag; rate-limit (first 32, then
+    every 256th) so a 1,000-spin stall can't flood serial; for
+    FD_EVENTFD include the live counter value.
+  - Eventfd read/write beacons: fd, value, counter-after.
+Then one boot names the stuck fd, its kind, and why its readiness never
+clears. That is the fry1435 run.
+
+TEST COMMANDS (rule 10) — unchanged from fry1432, serial to
+/tmp/s_fry1435.log on the next boot. Verdict greps:
+  grep -a "LXEPRDY" /tmp/s_fry1435.log | tail -20
+  grep -a "LXEVFD" /tmp/s_fry1435.log | tail -20
+========================================================================

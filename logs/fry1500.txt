@@ -1,0 +1,77 @@
+fry1500 — 2026-06-14 12:18 CDT (17:18 UTC). Author: Claude (Opus 4.8).
+STEP TYPE: ORIENTATION + RE-DIAGNOSIS of today's claude-in-TaterTOS runs. Pure analysis of existing serials + git state + source (NO rebuild, NO run, NO edit). Continues fry1486/1487/1489. Confirms the current wedge on the LIVE tree.
+
+=== WHY THIS STEP ===
+New session picked up a Codex run (fry1499) that had been interrupted mid-validation. Codex spent today (fry1491–1499, nine QEMU runs) on an MCP-wire-framing / native-MCP-server theory. Needed to establish ground truth: where are we actually blocked, and did Codex's morning edits change the diagnosis.
+
+=== HARD EVIDENCE (from logs/fry1499_native_mcp.serial.log unless noted) ===
+1. ALL nine runs today wedged identically; NONE reached "subtype":init or "subtype":success.
+   Scan across fry1491..1499: init=0, success=0, rg_fail(countFilesRoundedRg)=0 everywhere.
+   wake-call→e880 = 1.9k–6.0k per run; wake-call→e8c8 = 0 in every run.
+2. FRY_SOCK_MAX is now 64 (src/include/fry_limits.h:51); selftest.c:122 matched to 64.
+   (fry1489 known-good-init run was at sock=32. Today's edits bumped it.)
+3. Loader cache (fry1489, linux_elf.c) IS firing: 9× "reused RO seg"/"cached seg" in fry1499.
+   linux_elf.c was NOT modified today — the cache is intact and working.
+4. RCLAUDE.LXE (250,480,336 bytes) re-execs as rg (argv: --no-config --files --hidden /)
+   at fry1499 lines 11038, 11203, 11470. These do NOT stall the whole run anymore (3 starts
+   within ~430 lines), unlike fry1487's single 700s stall — consistent with the cache working.
+5. THE ACTUAL WEDGE (fry1499): real progress continues to ~line 32024 of 55714.
+   - Network was UP: TLS conn=0/conn=1, TBDUMP conn=1 bytes=90153 (≈90 KB API response received), lines 28786–29702.
+   - Then pid 14 (libuv loop) collapses into a PURE 2-syscall loop:
+     epoll_pwait2(fd=14) + "TBREAD read fd=15 len=8 off=0 -> 8" repeating 29016→32022.
+     fd=15 is the timerfd; every read returns 8 bytes => timerfd always reports expirations.
+   - Last real op: line 32024 "LXEPCTL epfd=14 op=2 fd=18 kind=4 events=0".
+   - 32024→55714 (≈23.7k lines): 100% pid 6 e8c8/e880 100ms futex heartbeat. Dead.
+   This is the EXACT signature fry1486 documented: pid 14 services ONLY the timerfd and never
+   advances to socket I/O, so the callback that satisfies pid 6's e8c8 wait never runs.
+
+=== VERDICT ===
+- It is NOT the futex (re-confirmed fry1486/1487). e8c8/e880 is a benign heartbeat (woken 0× in
+  both the fry1483 SUCCESS run and every deadlock run). MEMORY.md's headline "futex deadlock =
+  the real remaining bug" is STALE and was corrected by fry1486/1487; it misled this session for
+  ~20 min until Zack flagged it. (Memory entry being corrected this session.)
+- It is NOT the vfork/250MB-re-exec stall (fry1487's root cause): the fry1489 loader cache fixed
+  that and is firing. Re-exec is no longer the wedge.
+- It is NOT MCP wire framing: the native MCP binary loads cleanly (fry1499:10753) and the Python
+  framing question is downstream — the main JS thread never reaches MCP servicing because pid 14
+  has starved the I/O phase. Codex's nine runs all wedged at the SAME timerfd-spin, untouched.
+- THE REAL BLOCKER = fry1486's timerfd-spin: libuv's loop (pid 14) busy-services the always-due
+  timerfd (fd=15) and never processes the ready socket carrying the 90 KB API response.
+
+=== DID CODEX CHANGE THE DIAGNOSIS TODAY? (answering Zack's question) ===
+Files modified today (Jun 14, after the 00:56 fry1489 init run):
+  07:39 src/include/fry_limits.h (FRY_SOCK_MAX 32→64), src/kernel/selftest.c (assert 32→64)
+  07:51 src/kernel/proc/process.c
+  08:43 src/kernel/proc/linux_compat.h
+  08:44 src/kernel/proc/syscall.c
+  11:52 tools/tbridge_agent_bus_mcp.c (native MCP — irrelevant to the wedge)
+The timerfd/epoll path itself (fry1413/1414/1434/1436 EPOLLET emulation, epoll_et_token,
+timerfd readiness) was NOT changed today — it is pre-existing. So the timerfd-spin is the same
+pre-existing fry1486 bug; today's edits did not fix it and were not aimed at it.
+NOTE: with NO NIC (fry1489) claude reached init via the offline/degraded path and never entered
+the network phase where the spin bites. WITH a NIC (today) claude reaches TLS+API early, so the
+timerfd-spin triggers BEFORE init is emitted — which is why today's runs show init=0 even though
+they got "further" (real network I/O) than fry1489.
+
+=== CODE LOCATIONS (for the next step) ===
+- Timerfd readiness / EPOLLET token: src/kernel/proc/syscall.c epoll_et_token() (case FD_TIMERFD
+  reads ((struct timerfd_cb*)...)->expirations) and the epoll wait path lx_epoll_wait_fd().
+- timerfd_settime / timerfd_create: 10 refs in syscall.c (unchanged HEAD vs working tree count).
+- copy_vfork_fd_table socketpair handling: src/kernel/proc/process.c (~519-524) — fry1486's
+  alternate lead: whether pid 14's socket fd is a working/readable fd post-spawn at sock=64, or a
+  dud, so its epoll interest-set never reports the socket readable.
+
+=== NEXT STEP (fry1501) — fry1486's open lead, decisive, no new theory ===
+1. Determine WHY pid 14 services only the timerfd. Compare pid 14's epoll interest-set + the
+   poll-timeout it computes in the DEADLOCK (fry1499) vs the SUCCESS run (fry1483, archived
+   serial_fry1483.log): is the loop computing a 0ms timeout off the always-due timerfd, OR is the
+   socket fd in pid 14's interest-set a dud handed over by copy_vfork_fd_table?
+2. Instrument fd=15 timerfd it_interval/it_value/deadline and the computed epoll timeout, scoped
+   to the claude tgid, in the window after TLS conn=1 first delivers bytes.
+
+=== STATE / RULES ===
+- No source modified this step. No build. No run launched (the interrupted fry1499 QEMU was
+  killed — it was spinning a core on the dead heartbeat with no value; serial log preserved).
+- FRY_SOCK_MAX currently 64 (live tree). Makefile has no header-dep tracking: after any header
+  edit, `find src/kernel -name '*.c' | xargs touch` before make.
+- Codex co-edits syscall.c/process.c — serialize edits before touching them.

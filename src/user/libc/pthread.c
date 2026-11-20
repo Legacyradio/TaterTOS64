@@ -107,13 +107,36 @@ int pthread_detach(pthread_t thread) {
 
 pthread_t pthread_self(void) {
     uint32_t tid = (uint32_t)fry_gettid();
+    int free_slot = -1;
     fry_mutex_lock(&g_pth_lock);
     for (int i = 0; i < MAX_PTHREADS; i++) {
-        if (g_pthreads[i].in_use && g_pthreads[i].tid == tid) {
-            pthread_t t = (pthread_t)(i + 1);
-            fry_mutex_unlock(&g_pth_lock);
-            return t;
+        if (g_pthreads[i].in_use) {
+            if (g_pthreads[i].tid == tid) {
+                pthread_t t = (pthread_t)(i + 1);
+                fry_mutex_unlock(&g_pth_lock);
+                return t;
+            }
+        } else if (free_slot < 0) {
+            free_slot = i;
         }
+    }
+    /* fry1677: the main/initial thread never went through pthread_create, so it
+     * was absent from the table and pthread_self() returned 0. CPython's
+     * PyThread_get_thread_ident_ex() IS pthread_self(); a 0 ident is its
+     * INVALID/no-owner sentinel, which breaks owner-tracked recursive locks —
+     * the import lock's reentrancy check fails, so a NESTED import on the main
+     * thread tries to re-acquire the import lock it already holds and deadlocks
+     * (single-threaded, untimed futex). Lazily register any unregistered thread
+     * here so pthread_self() always returns a stable, non-zero handle.
+     * Done inline under g_pth_lock (must NOT call alloc_pth — it re-locks). */
+    if (free_slot >= 0) {
+        g_pthreads[free_slot].in_use = 1;
+        g_pthreads[free_slot].tid = tid;
+        g_pthreads[free_slot].fn = 0;
+        g_pthreads[free_slot].arg = 0;
+        pthread_t t = (pthread_t)(free_slot + 1);
+        fry_mutex_unlock(&g_pth_lock);
+        return t;
     }
     fry_mutex_unlock(&g_pth_lock);
     return 0;
@@ -149,6 +172,17 @@ int pthread_getattr_np(pthread_t thread, pthread_attr_t *attr) {
     if (!attr) return EINVAL;
     struct pthread_info *pi = find_pth(thread);
     if (!pi) return ESRCH;
+
+    /* fry1678: the main/initial thread is lazily registered by pthread_self()
+     * with a zeroed fry_thread (no recorded stack), so stack_base/stack_len
+     * are 0. Returning success with a zero stack made CPython compute
+     * top == 0 in hardware_stack_limits() and abort the assert(top != 0) in
+     * _Py_InitializeRecursionLimits (ceval.c:541). Report "no stack attributes"
+     * so callers (CPython) fall back to their stack-pointer-based estimate,
+     * which is correct for the main thread. Real pthread_create threads have
+     * stack_base/len set and take the normal path below. */
+    if (pi->thr.stack_base == 0 || pi->thr.stack_len == 0)
+        return EINVAL;
 
     memset(attr, 0, sizeof(*attr));
     attr->_stackaddr = pi->thr.stack_base;
@@ -293,6 +327,18 @@ int pthread_condattr_destroy(pthread_condattr_t *attr) {
     return 0;
 }
 
+int pthread_condattr_setclock(pthread_condattr_t *attr, clockid_t clock_id) {
+    if (!attr) return EINVAL;
+    attr->_clock = (int)clock_id;
+    return 0;
+}
+
+int pthread_condattr_getclock(const pthread_condattr_t *attr, clockid_t *clock_id) {
+    if (!attr || !clock_id) return EINVAL;
+    *clock_id = (clockid_t)attr->_clock;
+    return 0;
+}
+
 /* -----------------------------------------------------------------------
  * pthread_rwlock — simple readers-writer lock
  * ----------------------------------------------------------------------- */
@@ -431,6 +477,18 @@ int pthread_attr_getstack(const pthread_attr_t *attr, void **stackaddr,
 int pthread_attr_setscope(pthread_attr_t *attr, int scope) {
     if (!attr) return EINVAL;
     attr->_scope = scope;
+    return 0;
+}
+
+int pthread_attr_getguardsize(const pthread_attr_t *attr, size_t *guardsize) {
+    if (!attr || !guardsize) return EINVAL;
+    *guardsize = attr->_guardsize;
+    return 0;
+}
+
+int pthread_attr_setguardsize(pthread_attr_t *attr, size_t guardsize) {
+    if (!attr) return EINVAL;
+    attr->_guardsize = guardsize;
     return 0;
 }
 

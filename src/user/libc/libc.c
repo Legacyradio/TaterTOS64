@@ -374,11 +374,15 @@ static inline long syscall0(long n) {
 #define FRY_TLS_KEYS_MAX 64u
 
 struct fry_tls_block {
+    /* tls_base MUST be the first member: it sits at offset 0 == %fs:0, the
+     * x86-64 variant-II TLS self-pointer (glibc tcbhead_t.tcb).  Code built with
+     * __thread (CPython, mimalloc) reads %fs:0 via __builtin_thread_pointer() to
+     * get the thread pointer, so this slot cannot be reused for a key. */
+    void *tls_base;
     void *slots[FRY_TLS_KEYS_MAX];
     uint32_t thread_tid;
     void *stack_base;
     size_t stack_len;
-    void *tls_base;
 };
 
 struct fry_thread_bootstrap {
@@ -414,8 +418,19 @@ __attribute__((noreturn))
 static void fry_thread_trampoline(void *opaque) {
     struct fry_thread_bootstrap ctx = *(struct fry_thread_bootstrap *)opaque;
     struct fry_tls_block *block = (struct fry_tls_block *)ctx.tls_base;
-    if (fry_tls_set_base(ctx.tls_base) < 0) {
-        fry_thread_exit(1);
+    /* fry1801: ONLY install libc's heap block if the kernel gave this thread no
+     * ELF TLS base. fry1790 builds a correct per-thread variant-II PT_TLS block
+     * and sets %fs before our first instruction; overwriting it with a bare heap
+     * struct strands every __thread var (CPython _Py_tss_tstate at tp-0xB0,
+     * mimalloc _mi_heap_default at tp-0x138) over unrelated heap bytes, which is
+     * what produced "_PyThreadState_Attach: non-NULL old thread state" (fry1800).
+     * Binaries with no PT_TLS still get the legacy heap path unchanged. */
+    if (!fry_tls_get_base()) {
+        if (fry_tls_set_base(ctx.tls_base) < 0) {
+            fry_thread_exit(1);
+        }
+    } else {
+        block = (struct fry_tls_block *)fry_tls_get_base();
     }
     if (block) {
         block->tls_base = block;
@@ -671,12 +686,32 @@ long fry_spawn_args(const char *path, const char **argv, uint32_t argc,
                     (long)envp, (long)envc);
 }
 
+/* fry1638 recovery: linuxulator spawn wrapper. Lost when shell.c was reverted;
+ * the fry.h decl (227) and the kernel handler (SYS_SPAWN_LINUX_ARGS=145,
+ * syscall.c:9490) both survived — only this 1-line libc wrapper was missing.
+ * Identical to fry_spawn_args but routes through the linux-ELF spawn path. */
+long fry_spawn_linux_args(const char *path, const char **argv, uint32_t argc,
+                          const char **envp, uint32_t envc) {
+    return syscall5(SYS_SPAWN_LINUX_ARGS, (long)path, (long)argv, (long)argc,
+                    (long)envp, (long)envc);
+}
+
 long fry_get_argc(void) {
     return syscall0(SYS_GET_ARGC);
 }
 
 long fry_get_argv(uint32_t index, char *buf, size_t len) {
     return syscall3(SYS_GET_ARGV, (long)index, (long)buf, (long)len);
+}
+
+/* fry1697: environment enumeration (mirror argv) so libc/CPython can populate
+ * the `environ` global — no crt0 does it, leaving os.environ empty otherwise. */
+long fry_get_envc(void) {
+    return syscall0(SYS_GET_ENVC);
+}
+
+long fry_get_env(uint32_t index, char *buf, size_t len) {
+    return syscall3(SYS_GET_ENV, (long)index, (long)buf, (long)len);
 }
 
 long fry_getenv(const char *name, char *buf, size_t len) {
@@ -1916,18 +1951,29 @@ size_t malloc_usable_size(void *ptr) {
 }
 
 long fry_ioctl(int fd, uint32_t request, long arg) {
-    (void)arg; return fry_syscall_raw(11, (long)fd | ((long)request << 32));
+    /* fry1672: native ABI has no ioctl syscall. NEVER issue a raw syscall here
+     * (the old code used raw 11 == SYS_REBOOT, so any ioctl rebooted the box).
+     * ioctl() in posix.c now translates real requests; this is a safe backstop. */
+    (void)fd; (void)request; (void)arg; return -ENOTTY;
 }
 long fry_getsockname(int fd, struct fry_sockaddr_in *addr, uint32_t *addrlen) {
-    (void)addr; (void)addrlen; return fry_syscall_raw(42, (long)fd);
+    /* fry1672: no SYS_GETSOCKNAME in the ABI (old code used raw 42 ==
+     * SYS_WIFI_INIT_LOG). Report unimplemented, don't fire a wrong syscall. */
+    (void)fd; (void)addr; (void)addrlen; return -ENOSYS;
 }
 long fry_getpeername(int fd, struct fry_sockaddr_in *addr, uint32_t *addrlen) {
-    (void)addr; (void)addrlen; return fry_syscall_raw(43, (long)fd);
+    /* fry1672: no SYS_GETPEERNAME in the ABI (old code used raw 43, an unused
+     * gap number). */
+    (void)fd; (void)addr; (void)addrlen; return -ENOSYS;
 }
 
 
-long fry_sigaction(int sig, const struct fry_sigaction *act, struct fry_sigaction *oldact) { 
-    return fry_syscall_raw(13, (long)sig); 
+long fry_sigaction(int sig, const struct fry_sigaction *act, struct fry_sigaction *oldact) {
+    /* fry1672: no signal-delivery syscall in the ABI (old code used raw 13 ==
+     * SYS_WAIT, which would block on a child pid == signal number). TaterTOS
+     * delivers no async signals, so report success without installing anything;
+     * CPython treats handler registration as having succeeded. */
+    (void)sig; (void)act; (void)oldact; return 0;
 }
 int fry_sigemptyset(uint32_t *set) { if (set) *set = 0; return 0; }
 int fry_sigfillset(uint32_t *set) { if (set) *set = 0xFFFFFFFF; return 0; }

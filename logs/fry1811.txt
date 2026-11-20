@@ -1,0 +1,163 @@
+fry1811 — TB* debug spam KILLED (43,018 -> 40 serial lines); faulthandler armed; shell no longer auto-spawns — 2026-08-15
+==========================================================================
+WHAT: Diagnosed the "it's frozen and I've been waiting days" state, removed the
+dead diagnostic instrumentation that was drowning the serial and burning time,
+and armed PYTHONFAULTHANDLER for the next hermes run. Ended with a NEW problem:
+the Shell no longer auto-spawns. Nothing is claimed as working.
+
+=== FIRST: THE "FREEZE" WAS DIAGNOSED, NOT GUESSED ===
+The fry1810 VM had run 3.6 DAYS at ~70% host CPU with a 69MB serial log still
+actively being written. Facts gathered before touching anything:
+  - QEMU alive 309,169s, 70.9% CPU, serial mtime = now, kernel ticks advancing
+    (323,025,000) => the KERNEL WAS ALIVE, not wedged.
+  - 53% of all serial output was TBSPIN. 599,643 emissions, ALL at ONE address.
+  - addr2line -e kernel.elf 0xFFFFFFFF800679E1  ->  **idle_loop** (sched.c)
+=> The guest was IDLE. Nothing was computing. hermes was blocked, the Shell was
+   stuck in pump_child_io waiting on it, and the 70% host CPU was QEMU spinning
+   on an idle loop that does not halt. "Frozen" = blocked, not crashed, not busy.
+
+=== ROOT PROBLEM FOUND: DEAD INSTRUMENTATION FROM A CLOSED INVESTIGATION ===
+TBSPIN/TBCLK/TBMAIN/TBPROCIN are leftovers from the fry1571-1577 Claude spin
+hunt. lapic_timer.c:47 literally says "REMOVE once fixed". They were never
+removed. TBSPIN is emitted from inside the LAPIC TIMER INTERRUPT HANDLER via
+early_serial_puts(), which writes the serial port ONE BYTE AT A TIME with port
+I/O. That is per-tick overhead on every CPU, forever, plus it buries real program
+output — which is exactly why hermes' behaviour has been so hard to read all
+session, and plausibly a real contributor to the "demand-paging crawl".
+
+=== FIX + A BUG I INTRODUCED AND THEN FIXED (recorded honestly) ===
+STEP 1: syscall.c:157 `g_tb_trace_claude_tgid` 3u -> 0u.
+  It was hardcoded to 3, so it traced pid 3 (TaterBridge main) from boot forever.
+  tb_trace_is_claude() still sets it when a process named RCLAUDE/claude starts,
+  so Claude tooling keeps tracing on demand. RESULT: TBSPIN 599,643 -> 0. GOOD.
+STEP 2 — MY CHANGE MADE TBMAIN WORSE, NOT BETTER:
+  Measured after step 1: TBSPIN 0, but TBMAIN 42,804 in ONE boot (43,018 lines
+  total). CAUSE: sched.c's census filter is
+      if (procs[i].tgid != TB_TRACE_CLAUDE_TGID &&
+          procs[i].pid  != TB_TRACE_CLAUDE_TGID) continue;
+  With the traced tgid set to 0 this INVERTS: it stops skipping, and instead
+  MATCHES every UNUSED proc-table slot (pid 0 / tgid 0). Setting the tracer to
+  "off" switched a different diagnostic ON. I caused this; I measured it; I fixed
+  it rather than shipping it.
+STEP 3: gated the whole heartbeat block on the tracer being enabled:
+      if (TB_TRACE_CLAUDE_TGID && (g_tbclk_ticks[cpu] % 5000ULL) == 0) {
+  (sched.c, with a comment explaining the inversion so it is not "tidied" back.)
+
+RESULT — MEASURED, SAME POINT IN BOOT:
+  BEFORE: 43,018 serial lines   TBSPIN 0 (after step 1) / TBMAIN 42,804
+  AFTER:  **40 serial lines**   TBSPIN 0  TBCLK 0  TBMAIN 0  TBPROCIN 0
+  The serial log is READABLE for the first time this session. Boot is clean:
+  DHCP:OK, selftest 106 passed / 0 failed, GUI pid=10 parent=5.
+
+=== ALSO ADDED ===
+shell.c native_python_env: + "PYTHONFAULTHANDLER=1"
+  So the next hang can be turned into a real Python traceback (file + line) on
+  stderr -> serial. Rationale: every blocker solved this session was solved by
+  EVIDENCE (TLSDBG probes, ELF symbols, the TX counter, addr2line). The two
+  solved by THEORY (fry1797 clone path, fry1809 credentials) were both WRONG.
+BUILD: make kernel EXIT=0, make shell EXIT=0, build_iso EXIT=0, 0 errors.
+
+=== ❌ CORRECTION (Zack, same day) — THE SECTION BELOW IS WRONG. IGNORE IT. ===
+There is NO shell auto-spawn regression. Zack has been launching the Shell BY
+HAND from the dock icon this entire session; on this boot he fell asleep, so
+nobody clicked it. The Shell was never expected to auto-spawn.
+=> The "wildly variable spawn times" (11s/17s/30s/48s/198s/226s) I recorded
+   across boots were simply HOW LONG UNTIL HE CLICKED THE ICON. Not a defect,
+   not a race, not timing-sensitive. I invented a bug out of a human being's
+   reaction time.
+=> DO NOT revert the sched.c gate. My "first action: revert only the sched.c
+   gate" instruction in NEXT below is WRONG and would undo a correct fix for no
+   reason. The gate is fine and the TB* removal stands.
+=> Also drop the "GUI stopped repainting" concern: with no Shell running and
+   nothing to draw, an unchanged taskbar clock between two screenshots is not
+   evidence of a freeze.
+LESSON (same failure mode as fry1797 and fry1809): I saw an absence, assumed a
+defect, and wrote it up as one. Two prior wrong calls this session came from
+exactly this. Confirm what a human is doing before declaring a regression.
+The original (incorrect) section is preserved below unedited, per log discipline.
+
+=== 🔴 NEW PROBLEM — SHELL NO LONGER AUTO-SPAWNS (UNRESOLVED) [WRONG — SEE CORRECTION ABOVE] ===
+On this boot the desktop comes up healthy (dock, taskbar, wallpaper) but
+SPAWN_OK for /apps/SHELL.TOT NEVER APPEARS. Only GUI.FRY pid=10 spawns. Waited
+400s+. Previous boots spawned the Shell at 11s / 17s / 30s / 48s / 198s / 226s —
+wildly variable, which in hindsight was probably this same defect intermittently.
+NOT diagnosed. Candidate causes, untested:
+  - The GUI spawns the Shell; something in GUI startup is now failing or racing.
+  - My sched.c gate touched the block containing the TBLOST overdue-sleeper
+    detector. That block is diagnostic-only, but it is the change closest in time
+    to the symptom and MUST be ruled out first (revert the gate, re-boot, see if
+    the Shell returns). Do this before blaming anything else.
+  - Unrelated pre-existing raciness that the (now much faster, non-serial-bound)
+    boot timing has exposed.
+ALSO OBSERVED: the taskbar clock read IDENTICALLY (496348:46:36) in two
+screenshots ~30s apart, so the GUI had stopped repainting. Whether that is a
+consequence of the missing Shell or a separate freeze is UNKNOWN.
+
+=== xdotool: MOUSE HAS THE SAME LIMITATION AS THE KEYBOARD ===
+`xdotool mousemove/click --window <id>` is IGNORED by QEMU's GTK display, exactly
+like `xdotool type --window`. Use XTEST (no --window) after
+`xdotool windowactivate --sync <id>`. My attempt to click the dock's Shell icon
+used --window and therefore never landed — do not read that as "clicking the icon
+does not work", it was never tried properly.
+Full working recipe is in fry1808. Window id changes every launch.
+
+=== SESSION SCOREBOARD ===
+  TLS / _PyThreadState_Attach ......... CLOSED (fry1801, verified 1 + 4 vCPU)
+  Network / missing -netdev ........... CLOSED (fry1797/1798)
+  Stale objects, main Makefile ........ CLOSED (fry1796)
+  asyncio ValueError + NameError ...... CLOSED (fry1806/1807)
+  Python3.mk header deps .............. CLOSED (fry1805/1806)
+  Python3.mk sqlite prereq bug ........ CLOSED (fry1806)
+  pyexpat ............................. CLOSED (fry1808)
+  package metadata (.dist-info) ....... CLOSED (fry1809), durable (fry1810)
+  auth/config staging ................. DONE (fry1810), NOT the blocker
+  TB* serial spam / per-tick overhead .. CLOSED (this step, 43,018 -> 40 lines)
+  ALL IMPORT BLOCKERS ................. CLOSED
+  Shell auto-spawn .................... 🔴 OPEN, NEW, blocks all testing
+  hermes runtime hang (pre-network) ... OPEN — never transmits a packet (fry1810)
+  TUI rendering for bare `hermes` ..... OPEN, known; use `hermes -z <oneword>`
+  🔴 603 uncommitted files, 2026-06-08 . OPEN
+
+=== NEXT (fry1812), IN THIS ORDER ===
+ 1. Fix/clear the Shell auto-spawn regression — nothing else can be tested until
+    a prompt exists. FIRST ACTION: revert only the sched.c gate, rebuild, boot.
+    That is a 2-minute experiment and it either exonerates my change or finds it.
+ 2. If the Shell needs launching by hand, click the dock icon with proper XTEST
+    (no --window), or have init spawn it directly.
+ 3. Then `hermes -z hello` with PYTHONFAULTHANDLER=1 armed, and when it hangs,
+    signal it for a Python stack. The serial is finally clean enough to read it.
+
+=== ADDENDUM (same session, after the correction above) ===
+With the Shell launched BY ME (proper XTEST click on the dock icon, absolute
+screen coords — see recipe below), `hermes -z hello` was run on the now-clean
+serial. RESULT IS UNCHANGED FROM fry1810:
+  HERMESMAIN argc=4 -> TLSDBG get MAIN tid=12 -> urllib3 + requests warnings
+  -> SILENCE. E1000_TX stays at 2 (DHCP baseline). No output, no exception,
+  no prompt returned. Serial total: 108 lines (vs 43,018 before the TB* removal).
+
+SIGINT DOES NOT REACH PYTHON. Ctrl+C into the guest produced NO KeyboardInterrupt
+traceback and no new serial output at all — the Shell tears the child down
+instead of delivering a signal the runtime can handle. So PYTHONFAULTHANDLER=1,
+which only arms handlers for FATAL signals, cannot be triggered this way either.
+Do not burn more time trying to signal the process.
+
+WORKING xdotool RECIPE FOR THE DOCK (mouse needs XTEST + ABSOLUTE coords):
+  eval $(xdotool getwindowgeometry --shell $W)
+  ABSX=$((X + 1223 * WIDTH / 1280)); ABSY=$((Y + 347 * HEIGHT / 800))
+  xdotool windowactivate --sync $W; sleep 2
+  xdotool mousemove $ABSX $ABSY; sleep 1; xdotool click 1
+  -> verified: SPAWN_OK path=/apps/SHELL.TOT pid=11 parent=10
+  (1223,347 = the Shell dock icon in the 1280x800 guest framebuffer.)
+  I can now launch the Shell AND type into it unattended — Zack does not need to
+  be awake for a test run.
+
+NEXT (fry1812) — GET THE STACK WITHOUT SIGNALS:
+Have Python dump its OWN stack on a timer. Drop a sitecustomize.py into the
+staged site-packages (auto-imported at interpreter startup, no shell or CLI
+changes needed, no argv quoting problems):
+    import faulthandler, sys
+    faulthandler.enable(file=sys.stderr)
+    faulthandler.dump_traceback_later(60, repeat=True, exit=False, file=sys.stderr)
+stderr goes to the serial, which is now clean, so a hang self-reports its exact
+file+line every 60s. This is the same "make it explain itself" move that cracked
+the TLS bug in fry1799-1800, and it needs no signal delivery.

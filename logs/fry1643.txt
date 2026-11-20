@@ -1,0 +1,69 @@
+# fry1643 - Bash tool WORKING in TaterTOS: route fork(57)->vfork + build & stage a static bash at /bin/bash. Claude's full native tool suite is now green in-OS.
+Date: 2026-06-19 (host clock) CDT
+Type: kernel change (syscall.c) + static bash build + image staging + build_iso persistence + verification
+Author: planv3 Rules 1/5/6/12 + CLAUDE.md
+
+RESULT = PASS. Zack confirmed "bash is official". Claude Code 2.1.177 in TaterTOS is now
+connected + authenticated (fry1641/1642) AND its Bash tool runs commands.
+
+PROBLEM CHAIN (each peeled):
+- After staging busybox at /bin/sh (fry1642), busybox LOADED but Bash still "broken".
+- Cause 1: busybox sh called legacy fork(2) (nr=57) -> UNIMPLEMENTED. (vfork/nr=58 was
+  implemented; fork was not.)
+- Cause 2 (the real one): Claude Code's Bash tool PROBES `bash --version` at /bin/bash,
+  /usr/bin/bash, /usr/local/bin/bash, /opt/homebrew/bin/bash and REQUIRES real bash.
+  busybox has sh/ash but NO bash applet -> all probes ENOENT -> "no POSIX shell". So
+  busybox-as-/bin/sh can never satisfy the Bash tool. Zack's instinct (bash != busybox)
+  was correct.
+
+FIX 1 - fork routing (src/kernel/proc/syscall.c):
+- Added `case LNX_fork:` falling through to the existing `case LNX_vfork:` handler, +
+  `case LNX_fork: return "fork";` in the name table. fork now gets vfork semantics
+  (child returns 0, execs immediately; parent suspended until child execs/exits) -- the
+  fork+exec pattern shells use. Compiles clean.
+- LIMIT: this is NOT concurrent COW fork. Sequential command lists (cmd && cmd) work;
+  shell PIPELINES (a | b, which need both processes live at once) do NOT. True fork is
+  a separate, larger kernel item (see OPEN).
+
+FIX 2 - static bash:
+- No static bash on Garuda (Arch-based); its bash is dynamic. Built one from source:
+  ~/bash-static-build/bash-5.2, `./configure --enable-static-link --without-bash-malloc
+  --disable-readline --disable-history CFLAGS="-O2 -std=gnu17"` then make.
+  - -std=gnu17 needed: gcc 16 defaults to C23 where K&R `()` decls mean (void) ->
+    bash 5.2 fails with "too many arguments". gnu17 restores unspecified-args.
+  - --disable-readline/-history dropped the libtinfo.a dependency (no static ncurses on
+    Arch). Fine: Claude runs `bash -c`, non-interactive, no line editing needed.
+  - Result: ELF x86-64 STATICALLY LINKED, 2.16MB stripped. `bash --version` + `bash -c`
+    (substitution, vars) verified on host.
+- Saved to ~/tatertos-shell/bash; staged to ToTFS /bin/bash (kernel redirects /bin/* ->
+  /nvme ToTFS, fry1588). build_iso.sh now stages it (BASH_STATIC_BIN, default
+  ~/tatertos-shell/bash), alongside busybox /bin/sh (LINUX_SHELL_BIN) + the auth files.
+
+VERIFY (serial /tmp/fry1641_serial.log):
+- TBVFORK parent=13 child=53 -> TBEXECVE /bin/bash -> LINUXELF /nvme/bin/bash size
+  2164368 -> read main rc=0. bash --version probe passes; argc=3/4 `bash -c` runs follow.
+- Non-fatal unimplemented during bash run: nr=111 getpgrp, nr=112 setsid (job control),
+  nr=267 readlinkat. bash skips these in -c mode; commands still execute. (Implement
+  later for completeness.)
+
+BUILD/RUN (self-contained now -- one command produces a working, authed, bash-capable image):
+  STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 STAGE_HERMES=1
+  LINUX_SHELL_BIN=~/tatertos-shell/busybox CLAUDE_BIN=~/.local/share/claude/versions/2.1.177
+  bash build_iso.sh    (build_iso now stages busybox /bin/sh, static bash /bin/bash,
+  .claude.json + .credentials.json, and the DHCP-derived /etc/resolv.conf is kernel-gen'd)
+
+================================================================================
+####  >>>>>  STILL-OPEN: COSMETIC TUI RENDERING IS BROKEN (top priority)  <<<<<  ####
+================================================================================
+**  The in-OS Claude TUI layout renders WRONG: columns stretched too wide, characters  **
+**  dropped/missing. SHELL renderer bug (src/user/shell/shell.c term_render / 120x36   **
+**  SHM-surface VT parser). Cosmetic, NOT functional -- everything WORKS. Zack flagged  **
+**  it explicitly: MUST FIX before any demo/ship. Separate from all the above.          **
+================================================================================
+
+OTHER OPEN:
+- Shell PIPELINES need true concurrent fork (COW) -- vfork routing only does sequential.
+- Job-control syscalls getpgrp(111)/setsid(112)/readlinkat(267) unimplemented (non-fatal).
+- MCP disabled (CLAUDE_NO_MCP=1) -- not yet exercised.
+
+All per planv3 Rules 1/5/6/12.

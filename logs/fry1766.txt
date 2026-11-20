@@ -1,0 +1,21 @@
+fry1766 — rebuild ISO with lazy-anon-mmap kernel — 2026-06-26
+==========================================================================
+WHAT: Staged + rebuilt the ISO after the fry1765 kernel build.
+
+PRE-STEP (critical): the fry1762 QEMU was STILL RUNNING (locks out_nvme img ->
+build_iso would hang ~10 min). Killed it; the bg boot task b96vkatjd reported
+completed (exit 0) = QEMU died. NOTE: the kill command itself hit the recurring
+`pgrep -f "qemu-system-x86_64"` SELF-MATCH (my shell's argv contained the pattern
+-> matched + SIGTERM'd the wrapper, exit 144). Re-verified dead cleanly with the
+bracket trick `pgrep -af "[q]emu-system-x86_64"` -> "no qemu running". (Lesson:
+always use the [q] bracket form for qemu checks.)
+
+CMD: bash build_iso.sh
+RESULT: ISO_EXIT=0. out/tatertos64v3.iso 164825088 bytes, mtime 2026-06-26
+12:50:42 (verified fresh, ~6s before check). Live-app fallback verification
+complete.
+
+NEXT (fry1767): boot launch_debug.sh (serial -> /tmp tee, bg), wait for
+SPAWN_OK GUI.FRY, Zack types `hermes`. VERIFY: (a) churn VA 0x1000003a1000 eager
+"VM COMMIT OK" count ~0 (was 1402), (b) total VM COMMIT OK count dropped, (c)
+boot->report wall time, (d) report still all-OK (no regression). Screenshot.

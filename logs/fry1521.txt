@@ -1,0 +1,90 @@
+fry1521 - DIAGNOSTIC: GUI Shell "claude" runs, exits on missing TTY (no /dev/tty, ioctl ENOTTY)
+Date: 2026-06-15 11:58:17 CDT
+
+Type: DIAGNOSTIC / OBSERVATION ONLY. No code changed in this step.
+
+Context:
+  Continues fry1520 (chunked Linux ELF streaming + visible "claude: loading..."
+  line in the GUI Shell). fry1520 left this open blocker:
+    "Claude is not yet confirmed interactive from the GUI Shell."
+  This log records the observed end-state of the fry1520 headed GUI run and the
+  root cause of why Claude exits instead of becoming interactive.
+
+Build under test (no rebuild performed this step):
+  out/tatertos64v3.iso + out/tater_nvme.img as staged by fry1520.
+  RCLAUDE.LXE staged size: 250480336.
+
+Run observed:
+  Fresh headed QEMU launched by Codex prior to this session (PID 1111118):
+    DISPLAY=:0 qemu-system-x86_64 -m 4G -machine q35,accel=kvm -cpu host -smp 4
+      -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd
+      -drive if=pflash,format=raw,file=/tmp/fry1520c_desktop_VARS.fd
+      -cdrom out/tatertos64v3.iso
+      -drive file=out/tater_nvme.img,if=none,id=nvme0,format=raw
+      -device nvme,drive=nvme0,serial=tatertos-nvme
+      -netdev user,id=n0 -device e1000,netdev=n0
+      -vga std -display gtk
+      -serial file:/tmp/fry1520c_desktop_serial.log
+  Evidence channel: serial file only. QEMU -D debug log NOT read (planv3 Rule 11).
+  GUI screenshots captured of the QEMU window (0x06400009):
+    /tmp/fry1520c_loading.png        - full desktop
+    /tmp/fry1520c_qemu_window.png    - "claude: loading /nvme/RCLAUDE.LXE..."
+    /tmp/fry1520c_qemu_window2.png   - garbled TUI banner painted to fb console
+    /tmp/fry1520c_qemu_window3.png   - returned to fresh "/>" Shell prompt
+
+Observed sequence (GUI is the protected INIT.FRY -> GUI.FRY desktop path; NOT bypassed):
+  1) selftest 106/0, smoketest 15/0, chrome_probe 12/0; GUI.FRY launched as desktop.
+  2) SHELL.TOT launched under GUI; user typed "claude".
+  3) Shell rendered "claude: loading /nvme/RCLAUDE.LXE..." (fry1520 cmd_claude path
+     works - command reaches the kernel and the visible line renders).
+  4) Synchronous eager-load streamed the 250MB image to completion
+     (serial: LINUXELF stream progress lines up to a ~151MB PT_LOAD segment).
+  5) Claude/node runtime came alive: TBFUTEX activity across pids 14-18, tgid=14
+     (pid14 = libuv event loop, 15-18 = worker threads). Real startup work seen:
+       - DNS:    LXDNS pid=22 (network reached)
+       - config: openat /nvme/.claude/backups -> fd=19
+                 readlink /nvme/.claude.json -> -22 EINVAL (not a symlink; benign)
+                 openat /nvme/.claude.json.tmp.14.<hash> -> fd=19 (atomic write begun)
+                 rename (nr=82) -> -5 EIO/unimpl (atomic config write rename FAILED)
+                 openat /nvme/.claude.json -> fd=19
+  6) Claude attempted to initialize its interactive terminal and FAILED:
+       - ioctl (nr=16) -> -25 ENOTTY      (stdout is not a tty)
+       - openat /dev/tty -> -2 ENOENT     (no controlling-terminal device exists)
+       - openat /proc/self/stat -> -2 ENOENT (procfs not populated; minor)
+  7) Claude printed its non-interactive startup banner to the RAW FRAMEBUFFER
+     console (fb-console fallback from fry1467 stdio override), NOT into the Shell
+     window's text area. Output was garbled: a literal ANSI escape ("[?2031H"-class)
+     plus dropped/transposed glyphs ("SINGPACE", "ICKAFETYSST?UR,NOWNOURCE",
+     "...CONFIRM..." - fragments of the startup/trust screen).
+  8) Claude EXITED. TBFUTEX activity ceased; serial returned to TBCLK heartbeat
+     only. Shell event loop resumed, repainted its window (clearing the fb garbage),
+     and showed a fresh "/>" prompt. The on-screen text "disappearing" = Shell
+     window repaint after the child exited, NOT a crash and NOT user input.
+
+Root cause:
+  The GUI Shell hands Claude a framebuffer-console fallback, NOT a real PTY/TTY.
+  Claude Code's interactive UI (Ink/React) requires a terminal: it calls
+  ioctl(TCGETS/TIOCGWINSZ) and opens /dev/tty to enter raw mode. With ioctl
+  returning ENOTTY and /dev/tty absent, isatty()/raw-mode setup fails, so Claude
+  falls back to a non-interactive write-and-exit path and terminates.
+  Secondary: rename (nr=82) returning -5 broke the atomic .claude.json write.
+
+What works (do not re-litigate):
+  - GUI desktop boot + Shell terminal app under GUI.
+  - Typed command reaches kernel; fry1520 visible "loading" line renders.
+  - 250MB Linux ELF eager-load completes and hands off a running node/libuv runtime.
+  - Network/DNS, config dir/file I/O all reached.
+
+Remaining blocker (next step, to be scoped with user before any code):
+  Provide a real terminal to the GUI Shell child:
+    1) /dev/tty device node + working termios ioctls (TCGETS/TCSETS/TIOCGWINSZ)
+       so isatty() succeeds and raw mode can be set.
+    2) stdin fed from ps2_kbd_read (keyboard -> child fd0; currently EOF).
+    3) stdout/stderr routed into the Shell window's terminal buffer with a
+       VT/ANSI parser (interpret escapes, render glyphs) instead of the raw
+       fb-console fallback.
+    4) Implement rename (nr=82) so atomic config writes succeed.
+  Open architectural question (from fry1520): keep the synchronous Linux spawn or
+  move it off the Shell UI thread. Decision deferred to user.
+
+No code changed. No rebuild performed. No hashes recorded (Rule 16).

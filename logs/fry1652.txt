@@ -1,0 +1,46 @@
+# fry1652 - Fix Hermes sysroot staging so nested Python/Hermes directories are created in ToTFS.
+Date: 2026-06-19 15:28:20 CDT
+Type: staging script fix
+Author: Codex, following planv3 Rules 1/5/6/12
+
+WHY
+- The clean rebuild after fry1651 completed and printed:
+  `Staging Python stdlib + site-packages...`
+  `Staging Hermes Agent (669 .py files)...`
+- Direct ToTFS verification showed only `/apps/python3.fry` landed:
+  `tools/totcopy out/tater_nvme.img 1048576 --list /apps`
+  showed `SHELL.TOT` and `python3.fry`.
+- Direct checks failed:
+  `tools/totcopy out/tater_nvme.img 1048576 --list /usr/local/lib/python3.14`
+  -> `list: path not found`
+  `tools/totcopy out/tater_nvme.img 1048576 --list /opt/hermes-agent`
+  -> `list: path not found`
+- Root cause: `stage_hermes.sh` referenced a missing helper
+  `tools/host/stage_tree.sh`, then fell back to copying files directly into
+  nested destinations without creating `/usr`, `/usr/local`, `/opt`, etc.
+  The per-file copy errors were redirected away, so the build looked green.
+
+WHAT CHANGED
+- stage_hermes.sh:
+  - Added `stage_tree_totfs(src, dest)`.
+  - It creates every directory from the source tree in the ToTFS destination
+    using `tools/totcopy --mkdir`.
+  - It then copies each file into the now-existing destination tree.
+  - Replaced the missing-helper/fallback path with this local function for:
+    `/usr/local/lib/python3.14`
+    `/opt/hermes-agent`
+
+VERIFY
+- Command:
+  bash -n stage_hermes.sh
+- Result:
+  PASS. Script syntax is valid.
+
+NEXT
+- Rerun image staging/rebuild.
+- Verify ToTFS contains:
+  `/apps/python3.fry`
+  `/usr/local/lib/python3.14`
+  `/usr/local/lib/python3.14/site-packages`
+  `/opt/hermes-agent`
+  `/opt/hermes-agent/tatertos_bootstrap.py`

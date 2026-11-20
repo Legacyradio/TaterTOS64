@@ -1,0 +1,100 @@
+fry1463 - Linux wait4 (nr=61) implemented + verified: subprocess reaping
+works; main inference still clean. New blocker exposed: execve'd child's
+address space (mmap ENOMEM + stack-canary abort).
+Date: 2026-06-13 11:xx CDT. Author: Claude (Opus 4.8).
+========================================================================
+
+GOAL
+========================================================================
+Close the tool-calls blocker. fry1456 bridged vfork(58); the remaining
+gap (fry1461 handoff) was wait4/waitpid (nr=61) unimplemented -> the
+Bash/Grep(rg)/hook helper subprocess could not be reaped ("ENOSYS:
+function not implemented, waitpid").
+
+WHAT CHANGED (no shortcut; mirrors existing thread-join lifecycle)
+------------------------------------------------------------------------
+1. src/kernel/proc/process.c — new process_wait4(pid, *status_out, nohang):
+   - Targets a child PROCESS leader (pid==tgid), not a sibling thread.
+   - An exited process is already left PROC_DEAD by proc_free with
+     exit_code preserved and the slot retained until proc_alloc reuses
+     it, so a dead child is collectable. No change to the universal exit
+     path was needed (the existing PROC_DEAD+exit_code IS the zombie).
+   - PROC_ZOMBIE -> encode status, proc_free, return pid.
+   - PROC_DEAD   -> encode status, mark slot UNUSED (final reap, no
+     double-collect), return pid.
+   - alive + nohang -> return 0 (no status write).
+   - alive + blocking -> sched_block/sched_yield/recheck loop, modeled on
+     process_thread_join.
+   - status encoding: ((exit_code & 0xff) << 8)  [wait(2) normal-exit].
+   - Returns -ECHILD for no-such-pid / pid-is-a-thread.
+2. src/kernel/proc/process.h — prototype.
+3. src/kernel/proc/syscall.c — case LNX_wait4 (nr 61):
+   wait4(pid,*wstatus,options,*rusage). nohang = options & 1 (WNOHANG).
+   pid>0 -> process_wait4; pid<=0 -> -ECHILD (any-child/pgrp waits need
+   parent->child tracking we don't keep yet; posix_spawn reaps a specific
+   pid, so this covers the tools path). Writes *wstatus (user_buf_writable
+   guarded), zeroes rusage(144B) if provided. TBWAIT4 trace beacon for the
+   claude tgid.
+
+BUILD
+------------------------------------------------------------------------
+make kernel -> EXIT 0 (only pre-existing warnings: region_ok unused,
+slots maybe-uninitialized — not from this change).
+Full rebuild (fresh creds restaged, valid to 18:51 CDT):
+  PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH" STAGE_CLAUDE=1 \
+  CLAUDE_BIN=$HOME/.local/share/claude/versions/2.1.177 \
+  /bin/bash build_iso.sh    (BUILD EXIT 0, /tmp/fry1463_build.log)
+
+BOOT (standard -smp 4, serial /tmp/s_fry1463.log)
+------------------------------------------------------------------------
+  cp /mnt/usb115/TaterTOS_claude_milestone_2026-06-12/OVMF_VARS_copy.fd \
+     /tmp/OVMF_VARS_fry1463.fd
+  timeout 1200s qemu-system-x86_64 -m 4G -machine q35,accel=kvm -cpu host \
+    -smp 4 <OVMF pflash> -cdrom out/tatertos64v3.iso \
+    -drive file=out/tater_nvme.img,if=none,id=nvme0,format=raw \
+    -device nvme,drive=nvme0,serial=tatertos-nvme \
+    -netdev user,id=n0 -device e1000,netdev=n0 -display none \
+    -serial file:/tmp/s_fry1463.log
+(Killed by real pid after the result printed — no idle full-window wait.)
+
+VERDICT (what this proves)
+------------------------------------------------------------------------
+- wait4 wired: "unimplemented nr=61" count = 0 (was the blocker).
+- "function not implemented, waitpid" count = 0.
+- wait4 actually runs and reaps (TBWAIT4 beacons):
+    TBWAIT4 wpid=20 nohang=1 rc=-10 status=0x0     (ECHILD: gone/not leader)
+    TBWAIT4 wpid=23 nohang=1 rc=23  status=0x8600   (reaped child 23)
+    TBWAIT4 wpid=25 nohang=1 rc=25  status=0x8600   (reaped child 25)
+- MAIN INFERENCE STILL CLEAN (no regression, auth holds):
+    subtype:success, is_error:false, api_error_status:null,
+    "Hello from TaterTOS — small, scrappy, and built to get things done!",
+    total_cost_usd 0.00627.
+
+NEW BLOCKER EXPOSED (next step — NOT this step's scope)
+------------------------------------------------------------------------
+The execve'd child subprocess spawns and is now reaped, but ABORTS before
+doing useful work. status 0x8600 = exit 134 = 128+SIGABRT. Trace of the
+child (pid 20):
+    TBVFORK parent=5 child=20
+    nr=13 rt_sigaction rc=-22 (EINVAL)
+    nr=9  mmap        rc=-12 (ENOMEM)   <-- child AS can't map memory
+    fd=2 writes "*** stack smashing detected ***: terminated"
+    TBSIG default-exit target=20 sig=6  (SIGABRT)
+Root area: the child's post-execve address space is not fully set up —
+anonymous mmap returns ENOMEM and the stack canary (__stack_chk_fail)
+trips. This is the "separate AS on exec" half of child lifecycle. wait4
+was necessary but the child needs a working AS to actually run a tool.
+
+ALSO STILL OPEN (low priority, not fatal this run)
+------------------------------------------------------------------------
+- nr=294 inotify_init1 (settings watcher) x2
+- nr=434 pidfd_open, nr=40 sendfile, nr=326 copy_file_range, nr=332 statx
+- OAuth rotates ~8h -> restage creds (rebuild) before each run.
+
+NEXT
+------------------------------------------------------------------------
+Fix execve'd child address space: make anonymous mmap succeed in the
+child cr3 and ensure stack-canary/TLS (%fs:0x28) is initialized for the
+execve'd image. Then re-run same command to a new /tmp/s_fryNNNN.log and
+confirm the helper (rg) runs to a real exit (status 0x0000) instead of
+SIGABRT. One fry log per fix/test. Never log token contents.

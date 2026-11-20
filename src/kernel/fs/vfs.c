@@ -43,6 +43,8 @@ static struct vfs_mount *find_mount_ref(const char *path, const char **out_rel);
 static struct vfs_mount *find_mount_exact_ref(const char *mountpoint);
 static void vfs_mount_devfs(void);
 static void vfs_mount_tbridgefs(void);
+static void vfs_mount_tmp(void);   /* RAM-backed ToTFS at /tmp (idempotent) */
+extern uint64_t pmm_alloc_pages(uint64_t count);  /* contiguous RAM for /tmp */
 #define SEC_MAX_MOUNTED 8u
 // ── Ramdisk backend ──────────────────────────────────────────────────────────
 static struct ramdisk_header *g_rd_hdr  = 0;
@@ -81,6 +83,9 @@ static void vfs_mount_tbridgefs(void) {
     if (tbridgefs_mount_usr() != 0) {
         kprint("VFS: /usr mount failed\n");
     }
+    /* RAM-backed ToTFS at /tmp (idempotent) — every boot path mounts tbridge, so
+     * hooking here gives /tmp in all of them with one call site. */
+    vfs_mount_tmp();
 }
 
 static void vfs_mem_zero(void *ptr, uint64_t len) {
@@ -352,6 +357,94 @@ static int rd_stat(void *fs_data, const char *path, struct vfs_stat *out) {
     }
     return -1;
 }
+/* ── /tmp : RAM-backed ToTFS ─────────────────────────────────────────────
+ * A real temp filesystem with NO new filesystem code: ToTFS on a RAM block
+ * device. Ephemeral (cleared each boot), fast, zero NVMe wear — same on-disk
+ * format as the main drive, just in RAM. */
+#define TMP_SIZE_BYTES (64ull * 1024 * 1024)   /* 64 MB temp volume */
+static uint64_t            g_tmp_base = 0;      /* virt addr of the /tmp RAM region */
+static uint64_t            g_tmp_size = 0;
+static struct block_device g_tmp_bd;
+static struct totfs_fs     g_tmp_totfs;
+static struct fs_ops       tmp_totfs_ops;
+static int                 g_tmp_mounted = 0;
+
+static int tmp_bd_read_sector(struct block_device *bd, uint64_t lba, void *buf) {
+    (void)bd;
+    if (!buf || !g_tmp_base) return -1;
+    uint64_t off = lba * 512ull;
+    if (off + 512ull > g_tmp_size) return -1;
+    const uint8_t *src = (const uint8_t *)(uintptr_t)(g_tmp_base + off);
+    uint8_t *dst = (uint8_t *)buf;
+    for (uint32_t i = 0; i < 512u; i++) dst[i] = src[i];
+    return 0;
+}
+static int tmp_bd_write_sector(struct block_device *bd, uint64_t lba, const void *buf) {
+    (void)bd;
+    if (!buf || !g_tmp_base) return -1;
+    uint64_t off = lba * 512ull;
+    if (off + 512ull > g_tmp_size) return -1;
+    uint8_t *dst = (uint8_t *)(uintptr_t)(g_tmp_base + off);
+    const uint8_t *src = (const uint8_t *)buf;
+    for (uint32_t i = 0; i < 512u; i++) dst[i] = src[i];
+    return 0;
+}
+static int tmp_bd_read(void *ctx, uint64_t lba, void *buf, uint32_t count) {
+    (void)ctx;
+    uint8_t *d = (uint8_t *)buf;
+    for (uint32_t i = 0; i < count; i++)
+        if (tmp_bd_read_sector(&g_tmp_bd, lba + i, d + (uint64_t)i * 512u) != 0) return -1;
+    return 0;
+}
+static int tmp_bd_write(void *ctx, uint64_t lba, const void *buf, uint32_t count) {
+    (void)ctx;
+    const uint8_t *s = (const uint8_t *)buf;
+    for (uint32_t i = 0; i < count; i++)
+        if (tmp_bd_write_sector(&g_tmp_bd, lba + i, s + (uint64_t)i * 512u) != 0) return -1;
+    return 0;
+}
+
+static void vfs_mount_tmp(void) {
+    if (g_tmp_mounted) return;
+    uint64_t pages = TMP_SIZE_BYTES / 4096ull;
+    uint64_t phys = pmm_alloc_pages(pages);
+    if (!phys) {
+        kprint("VFS: /tmp RAM alloc failed (%llu pages)\n", (unsigned long long)pages);
+        return;
+    }
+    g_tmp_base = TATER_PHYSMAP + phys;
+    g_tmp_size = TMP_SIZE_BYTES;
+
+    g_tmp_bd.sector_size   = 512;
+    g_tmp_bd.total_sectors = TMP_SIZE_BYTES / 512;
+    g_tmp_bd.read_sector   = tmp_bd_read_sector;
+    g_tmp_bd.write_sector  = tmp_bd_write_sector;
+    g_tmp_bd.read          = tmp_bd_read;
+    g_tmp_bd.write         = tmp_bd_write;
+    g_tmp_bd.ctx           = 0;
+
+    if (totfs_format(&g_tmp_bd, 0, TMP_SIZE_BYTES) != 0) { kprint("VFS: /tmp format failed\n"); return; }
+    if (totfs_mount(&g_tmp_totfs, &g_tmp_bd, 0) != 0)    { kprint("VFS: /tmp mount failed\n");  return; }
+
+    tmp_totfs_ops.open     = totfs_open_vfs;
+    tmp_totfs_ops.read     = totfs_read_vfs;
+    tmp_totfs_ops.write    = totfs_write_vfs;
+    tmp_totfs_ops.close    = totfs_close_vfs;
+    tmp_totfs_ops.readdir  = totfs_readdir_vfs;
+    tmp_totfs_ops.stat     = totfs_stat_vfs;
+    tmp_totfs_ops.create   = totfs_create_vfs;
+    tmp_totfs_ops.mkdir    = totfs_mkdir_vfs;
+    tmp_totfs_ops.unlink   = totfs_unlink_vfs;
+    tmp_totfs_ops.seek     = totfs_seek_vfs;
+    tmp_totfs_ops.truncate = totfs_truncate_vfs;
+    tmp_totfs_ops.rename   = totfs_rename_vfs;
+
+    if (vfs_mount("/tmp", &tmp_totfs_ops, &g_tmp_totfs) != 0) { kprint("VFS: /tmp vfs_mount failed\n"); return; }
+    g_tmp_mounted = 1;
+    kprint("VFS: /tmp mounted (RAM-backed ToTFS, %llu MB)\n",
+           (unsigned long long)(TMP_SIZE_BYTES / 1024 / 1024));
+}
+
 static struct fs_ops rd_ops;
 static int rd_mount_packed(void) {
     uint64_t irqf = vfs_lock_irqsave();

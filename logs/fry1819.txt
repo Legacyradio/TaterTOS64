@@ -1,0 +1,87 @@
+fry1819 — BUILD: all five libc fixes compiled, linked and staged. EXIT=0
+          throughout. NOT BOOTED — nothing is claimed to work — 2026-09-26
+==========================================================================
+WHAT: Build step for the five defects fixed in fry1814-1818. No source changed
+in this step. Every result below was read back from the filesystem, not assumed.
+
+=== BUILD ORDER (not optional — fry1801/1806/1807 each re-learned this) ===
+  1. MAIN Makefile -> all 14 libc objects. Python3.mk has NO rule for them, so
+     running it first makes make fall back to its built-in rule, which omits
+     -Isrc/include and dies on "stdint.h: No such file". The list must include
+     gap_stubs.o AND rust_compat.o.
+  2. make -f Python3.mk python3
+  3. make            (kernel + userland apps, which also link libc)
+  4. bash build_iso.sh
+PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" throughout.
+
+=== RESULTS — ALL EXIT 0, ZERO ERRORS ===
+  LIBC_EXIT=0   14/14 objects. No errors. The only warnings are pre-existing
+                -Wmisleading-indentation and -Wunused-parameter in the untouched
+                one-line stubs in gap_stubs.c; posix.c and time_ext.c compiled
+                with NO warnings of their own (checked by filtering for each
+                file by name rather than eyeballing the tail).
+  PY_EXIT=0     "undefined reference" count in the full 36.9KB link log: 0.
+  MAKE_EXIT=0   kernel + apps.
+  ISO_EXIT=0    no WARNING / NOT staged lines.
+
+=== SYMBOL RELOCATION VERIFIED (nm, not assumption) ===
+Now defined in src/user/libc/posix.o:
+    clock_nanosleep  ftruncate  getentropy  nanosleep
+    pread  preadv  pwrite  pwritev  truncate
+Now defined in src/user/libc/time_ext.o:
+    wcsftime
+Still present in src/user/libc/gap_stubs.o: NONE of the above.
+That last check matters as much as the first: if a stub had survived alongside
+its replacement, --allow-multiple-definition (which this link uses) would have
+silently picked one. It would have LINKED CLEANLY and kept the old behaviour.
+Confirmed empty.
+
+=== ARTIFACTS — ORDERING CHECKED BEFORE ANY BOOT ===
+  gui.fry      169,176      2026-09-26 21:12   (was 168,760)
+  kernel.elf   2,619,072    2026-09-26 21:12
+  shell.tot    170,104      2026-09-26 21:12   (was 165,584)
+  python3.fry  16,036,800   2026-09-26 21:12   (was 16,036,688, +112)
+  tater_nvme.img            2026-09-26 21:15
+  tatertos64v3.iso          2026-09-26 21:15
+ISO and disk image are the NEWEST files — no stale-artifact boot.
+STAGING CONFIRMED BY READING THE IMAGE BACK, not by trusting build_iso.sh:
+  tools/totcopy out/tater_nvme.img 1048576 --list /apps
+    /apps/python3.fry  = 16,036,800 bytes  == the local binary, byte count exact
+    /apps/SHELL.TOT    = 170,104 bytes     == the rebuilt shell
+The +112 bytes on python3.fry is the expected direction: five real
+implementations replacing five one-line stubs.
+
+=== BUILD STRATEGY NOTE (deliberate deviation, recorded) ===
+planv3 rule 12 makes the DEFAULT rebuild `make clean && build_iso.sh`. This was
+an INCREMENTAL build instead. Justification: header dependency tracking now
+exists in both makefiles (main Makefile -MMD since fry1796, Python3.mk since
+fry1805/1806, proven by the 216-object acceptance test), which is exactly the
+protection a clean build was compensating for; and only .c files changed, no
+headers, so the fry1793 mixed-layout hazard does not apply. A full clean rebuild
+would also have recompiled 841 untouched third-party files. Flagged rather than
+done quietly — if Zack wants the clean rebuild before hardware validation, it is
+one command.
+
+=== WHAT IS NOT CLAIMED ===
+NOTHING HAS BEEN BOOTED. Five defects are fixed in source and present in the
+artifacts. Whether any of them changes observed behaviour is UNVERIFIED.
+Specifically NOT claimed: that timestamps now print, that state.db stops being
+0 bytes, that entropy is non-zero, or that the hermes hang is affected.
+
+=== NEXT (fry1820) — THE VERIFICATION BOOT, EACH FIX WITH A NAMED CRITERION ===
+Criteria stated IN ADVANCE, the way fry1801/1802 did it, so the result cannot be
+read generously after the fact:
+  1. strftime  — hermes log lines carry a real "2026-.. ..:..:.." prefix
+                 instead of a bare ",248". Re-read /.hermes/logs/agent.log off
+                 the image with totcopy --get after the run.
+  2. entropy   — python3 printing repr(os.urandom(16)) twice gives two
+                 DIFFERENT non-zero values. Zeros or a repeat = still broken.
+  3. ftruncate — /.hermes/state.db is no longer 0 bytes after a run.
+  4. pread/pwrite — implied by 3; a correct SQLite header is positional I/O
+                 working.
+  5. nanosleep — a timed sleep actually elapses rather than returning ENOSYS.
+Boot with -smp 4. Launch the Shell by XTEST click on the dock icon (fry1811
+recipe, absolute coords, NO --window). Read serial to the END.
+The osprobe.py primitive probe proposed in fry1812 is now the cheaper way to
+check 2 and 5 in seconds, and should also exercise fcntl(F_SETLK) — still
+unimplemented in the kernel (fry1813 DEFECT 3), deliberately untouched today.

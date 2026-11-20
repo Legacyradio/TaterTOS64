@@ -1,0 +1,39 @@
+fry1518 - Restore Shell as TaterWin keyboard client
+Date: 2026-06-15
+
+Why:
+  Keyboard input in the GUI Shell still did not echo printable characters.
+  Reading the older fry logs showed the important regression:
+    - fry354: GUI Shell keyboard previously routed through fry_proc_input to
+      the shell inbuf and echoed back through the shell loop.
+    - fry377: Shell was deliberately converted to a TaterWin SHM app with
+      non-blocking per-frame input.
+  The current src/user/shell/shell.c had regressed back to a raw printf() /
+  blocking gets_bounded() shell, which does not match the TaterWin app model.
+
+What changed:
+  src/user/shell/shell.c
+    - Reintroduced TaterWin window creation for Shell.
+    - Added a small SHM-backed terminal buffer rendered with gfx_draw_text().
+    - Replaced the blocking gets_bounded() main loop with a cooperative loop.
+    - Consumes TW_MSG_KEY_EVENT frames and echoes printable ASCII into the
+      terminal buffer.
+    - Preserved the newer claude command and its /nvme/RCLAUDE.LXE launcher.
+    - Routed cat output into the terminal buffer instead of raw stdout.
+
+Verification:
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" make shell
+    - PASS; only existing libc.h nested-comment warning.
+
+  STAGE_CLAUDE=1 CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.177 \
+  PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh
+    - PASS.
+    - NVMe image updated: out/tater_nvme.img
+    - ISO output: out/tatertos64v3.iso
+    - Live-app fallback verification complete.
+    - NVMe listing shows SHELL.TOT size 141584 and RCLAUDE.LXE staged.
+
+Next:
+  Boot the rebuilt headed GUI image and test Shell typing. The expected
+  behavior is that printable characters echo immediately inside the Shell
+  TaterWin window before Enter is pressed.

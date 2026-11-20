@@ -1,0 +1,98 @@
+fry1423 — Tater Bridge / Claude Code: on_cpu context-save gate landed
+(real SMP hole, closed) — but the boot FROZE AGAIN at guest ~77s, and
+the new evidence overturns the fry1422 diagnosis: the freeze is a
+STOPPED CLOCK (HPET 'now' never advances), not a stack-corruption
+wedge. LAPIC timer is proven alive on both CPUs throughout the freeze.
+Date: 2026-06-11 ~7:0x PM CDT. Author: Claude (Fable 5).
+Follows fry1422 (-smp 2 freeze at 75.5s, diagnosed then as the
+unsaved-context race).
+========================================================================
+
+WHAT LANDED (in tree, kernel/proc/sched.c + process.h)
+====
+fry1423 on_cpu gate (kept — it closes a REAL race even though it did
+not stop this freeze):
+- struct fry_process gains volatile on_cpu (repurposed _prctl_pad —
+  layout unchanged). 1 = some CPU owns this task's kernel stack.
+- sched_tick claims next->on_cpu=1 under g_sched_lock before switching;
+  never switches to a candidate with on_cpu set (rotates it back;
+  TBSCHED oncpu-defer beacon, capped 40, when nothing is safely
+  runnable); idle fallback now picks `idle` explicitly.
+- context_switch publish protocol: save rsp -> clear from->on_cpu ->
+  load new rsp FROM A REGISTER (after the clear the old stack may be
+  stolen instantly; nothing may reference it; IRQs off bridge the
+  one-instruction gap). x86 TSO orders save before clear.
+- init_boot_context marks the live boot context on_cpu=1.
+- proc_set_current audited: no callers (dead API), no other switch path.
+
+BUILD/STAGE GOTCHA (recorded)
+====
+build_iso.sh runs with set -u: STAGE_CLAUDE must be SET (=1 with
+CLAUDE_BIN=~/.local/share/claude/versions/2.1.172) or the script dies
+at line 496 — AND by that point it has ALREADY ZEROED out/tater_nvme.img
+(dd at line 442), wiping RCLAUDE.LXE. A failed run therefore REQUIRES a
+re-run with staging vars or the next boot has no claude. Hit this,
+caught it, re-staged (binary + fresh OAuth json both verified in image).
+
+THE BOOT (-smp 2, 3600s window per Zack's directive to widen it)
+====
+- Healthy to ~77s guest: DNS ok, 3x TCP to api.anthropic.com:443
+  (fd17/18/19), TLS in progress, futex timeouts RETURNING correctly
+  (rc=-110 observed). No oncpu-defer beacon (gate never even strained).
+- Serial stopped at 18:48:26 (352,720 bytes), guest now≈76.5-77.3s.
+  Same signature as fry1422: silence at guest ~75-77s, ~10% host CPU.
+
+WHY THE fry1422 DIAGNOSIS IS OVERTURNED
+====
+Measured per-vCPU host CPU accrual during the fry1423 freeze:
+  CPU 0/KVM and CPU 1/KVM each accrue ~2% steadily; iothread 0%.
+- A spin deadlock would burn high CPU (even PLE-throttled, asymmetric).
+- A dead timer would accrue ~0% (pure HLT, no wakeups).
+- ~2%/vCPU on BOTH cores == LAPIC periodic timer FIRING at 1000Hz on
+  both CPUs, each tick finding nothing runnable, HLT again.
+So the timer interrupt machinery is ALIVE through the "freeze". The
+TBFUTEX wait-begin beacon is UNCAPPED for tgid=3 — threads in 10s timed
+waits would re-enter (and print) every 10s if wakes fired. 12+ min of
+total silence => timed sleepers never wake => now_ms() IS FROZEN while
+sched_tick keeps running: the HPET main counter (sole time source for
+now_ms/sys_now_ms/poll/futex timeouts) stopped advancing.
+A frozen kernel clock also stalls claude internally (its clock_gettime
+is HPET-backed; libuv timers + epoll timeouts all dead, event-only
+processing alive) — matching pid9's epoll loop going quiet with no
+crash and no error in BOTH 1422 and 1423.
+KEY CLUE: 'now' went BACKWARD right before the freeze (a TBSCHED line
+shows now=77346, then TBFUTEX wait-yield shows now=76478).
+
+CANDIDATE MECHANISMS (next boot discriminates)
+====
+(a) HPET halted: stray store cleared GEN_CONF.ENABLE (bit 0) — wild
+    kernel write into the 0xFED00000 MMIO page.
+(b) Stale reads: HPET page lost its UC attribute (e.g. later physmap
+    work mapping a huge page over the hole) -> per-CPU CACHED counter
+    reads -> frozen, and DIVERGENT per CPU. The backward 77346->76478
+    step is exactly two CPUs holding different stale lines.
+(c) QEMU HPET quirk. (Least likely; nothing host-side changed.)
+fry1422's freeze-at-75.5s + last-line-was-a-timeout-beacon now reads
+as: the counter froze near 75571; the final timeout fired at the
+boundary (now==wake_time==75571); nothing time-based ever fired again.
+Both freezes at guest ~75-77s suggests a time-correlated trigger, not
+a pure race — fry1421's identical image ran 900s clean, so it is not
+strictly deterministic either. Tracer will tell.
+
+NEXT (fry1424)
+====
+TBCLK heartbeat in sched_tick (per-CPU, every 5000 ticks ≈ 5s): tick
+counter + raw HPET counter + HPET GEN_CONF + now_ms, printed per CPU.
+Discriminates: ticks rising + counter frozen + cfg bit0=0 -> (a);
+cfg bit0=1 + counter frozen and PER-CPU DIVERGENT -> (b); counter
+frozen identically with cfg enabled -> (c)/deeper. New hpet_read_config
+accessor. Boot -smp 2, 3600s window. on_cpu gate stays in.
+
+WATCHLIST (carried)
+====
+- oncpu-defer never fired in 1423 — gate cost is zero in practice.
+- Beacon strip list grows: TBCLK joins LXSOCK/LXCONN/LXUDP/LXEPCTL/
+  TBFUTEX/TBSCHED/TBTRACE/TBRIP/TBPROBE/LXDNS before release.
+- Raw serial: /tmp/s_fry1422_smp2_hang.log kept; fry1423's serial is
+  /tmp/s.log until fry1424 launches (will be preserved as
+  /tmp/s_fry1423_smp2_hang.log).

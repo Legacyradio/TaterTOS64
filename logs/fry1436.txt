@@ -1,0 +1,67 @@
+fry1436 — Linuxulator: EPOLLET (edge-triggered epoll) IMPLEMENTED.
+ROOT CAUSE OF THE STALL FAMILY, NAMED BY fry1435: Bun (claude's
+runtime) registers its event-loop wakeup eventfds with EPOLLIN|EPOLLET
+(LXEPCTL events=80000001, fds 7 and 16) and NEVER reads the counter —
+which is CORRECT under edge semantics, where each write yields exactly
+one wakeup. Our epoll was purely level-triggered and silently dropped
+the ET bit in lx_epoll_to_fry, so once a wakeup counter went nonzero it
+was re-reported on EVERY epoll_pwait2 — fry1435 measured the same
+eventfd (fd 16, counter frozen at 4) delivered as a ready event
+12,032+ times. Bun's loop spun on the phantom wakeup instead of
+parking, and the next phase of work (session init, new connections)
+never ran. This is the mechanism behind the fry1419..1433 stall masks.
+Date: 2026-06-12 03:20 CDT. Author: Claude (Fable 5).
+========================================================================
+
+EVIDENCE CHAIN (fry1433 -> fry1435)
+------------------------------------------------------------------------
+- fry1433: network exonerated end-to-end; stall = 1,037 consecutive
+  one-event epoll returns, source not a socket (socket beacon
+  unconditional yet silent).
+- fry1435 (widened beacons): stuck fd named — fd=16 kind=6 EVENTFD,
+  revents=1, evctr=4, forever. Registration: epfd=14 op=MOD fd=16
+  events=80000001 = EPOLLIN|EPOLLET. Sibling loop identical: epfd=5
+  fd=7 events=80000001, counter 18+, zero reads ever. All TCP/timerfd
+  registrations are level (events=1/4) — eventfds are the only ET users.
+
+CHANGES — all in src/kernel/proc/syscall.c (rule 6 whys inline)
+------------------------------------------------------------------------
+1. #define LX_EPOLLET 0x80000000u (was undefined — the bit vanished in
+   mask translation, which is why no code path could ever see it).
+2. struct epoll_item: + et / et_valid / et_token. Token = the fd's
+   kind-specific readiness state at last report; unchanged token ==
+   same edge == suppressed.
+3. epoll_ctl ADD and MOD: capture ET bit; both reset et_valid (MOD
+   re-arms edge reporting, matching Linux).
+4. epoll_et_token(): FD_EVENTFD -> counter value; FD_TIMERFD ->
+   expirations. Both are natural edge counters: every eventfd write
+   changes the counter, so each write re-arms exactly one report, and
+   coalesced writes between polls collapse to one wakeup — Linux
+   behavior. Other kinds: no token -> LEVEL fallback + one-shot
+   "LXEPET WARN" serial beacon, so an ET registration on an
+   unsupported kind can never become an invisible spin again. (Scoped
+   honestly: sockets/pipes would need monotonic arrival counters
+   plumbed through netcore; nothing registers them ET today, and the
+   fallback is the pre-fry1436 status quo, made loud.)
+5. Wait loop: ET items with unchanged token are suppressed before the
+   ready-list fill; when readiness drops to zero the item re-arms
+   (covers read-then-rewrite of the same counter value).
+
+EXPECTED EFFECT
+------------------------------------------------------------------------
+The wakeup eventfd reports once per write instead of once per poll.
+Bun's loop consumes real wakeups, then PARKS in epoll (sockets keep
+the 10ms NIC-pump cap). The fry1430/1433 divergence window — host
+proceeds to session init, guest spins — should close. If claude still
+stalls after this, the next log will show epoll parked (no rc=1 spam)
+and the blocker is elsewhere; either way the spin is dead.
+
+TEST COMMANDS (rule 10) — rebuild per rule 12 with STAGE_CLAUDE=1
+CLAUDE_BIN=$HOME/.local/share/claude/versions/2.1.172; boot identical
+to fry1432's QEMU command, serial to /tmp/s_fry1437.log. Verdict:
+  grep -a "LXEPRDY" /tmp/s_fry1437.log | tail -10   # spin dead?
+  grep -a "LXEPET WARN" /tmp/s_fry1437.log          # must be empty
+  grep -a "result" /tmp/s_fry1437.log | tail -3     # claude's reply
+
+STATUS: code complete; build/boot/verdict is the fry1437 step.
+========================================================================

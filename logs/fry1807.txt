@@ -1,0 +1,86 @@
+fry1807 — ✅ _SC_IOV_MAX FIX VERIFIED: asyncio imports; next blocker = pyexpat — 2026-08-11
+==========================================================================
+WHAT: Booted the fry1806 ISO (-smp 4) and ran the direct test. The fix works.
+asyncio now imports cleanly and BOTH symptoms are gone. The import chain advanced
+into prompt_toolkit and stopped on a genuinely different, further blocker:
+a missing C module, pyexpat. No source changed this step.
+
+=== VERIFICATION — BOTH SYMPTOMS GONE ===
+  grep -cE "SC_IOV_MAX|unrecognized configuration|base_events"  ->  0
+  ZERO occurrences in the entire serial. Specifically:
+   - No "ValueError: unrecognized configuration name" at
+     asyncio/selector_events.py:37 (the real fry1804 root cause).
+   - No "NameError: name 'base_events' is not defined" (the masking artifact) —
+     as predicted in fry1806, it vanished on its own once the FIRST asyncio
+     import stopped aborting. That confirms the fry1804 masking analysis was
+     correct: it was never an independent bug.
+  => _SC_IOV_MAX 60 in src/include/unistd.h + sysconf() returning 1024 in
+     src/user/libc/posix.c:598 is CONFIRMED as the correct fix.
+
+TEST RUN: `python3 -c __import__("prompt_toolkit")` typed via xdotool.
+Previously this died fast inside asyncio. Now it imports asyncio fully, proceeds
+through prompt_toolkit's own module tree, and fails ~58s later, much deeper.
+
+=== NEW BLOCKER (serial :2761-2787) ===
+  __import__("prompt_toolkit")
+   -> prompt_toolkit/__init__.py:29  from .shortcuts import PromptSession, ...
+   -> shortcuts/__init__.py:13       from .progress_bar import ProgressBar, ...
+   -> progress_bar/__init__.py:3     from .base import ProgressBar, ...
+   -> progress_bar/base.py:57        from .formatters import Formatter, ...
+   -> progress_bar/formatters.py:134 template = HTML("<percentage>...")
+   -> formatted_text/html.py:35      minidom.parseString(...)
+   -> xml/dom/minidom.py:2010        from xml.dom import expatbuilder
+   -> xml/dom/expatbuilder.py:32     from xml.parsers import expat
+   -> xml/parsers/expat.py:4         from pyexpat import *
+  ModuleNotFoundError: No module named 'pyexpat'
+
+ANALYSIS: this is the SAME CLASS as the fry1784-1787 grind — one missing stdlib
+C module at a time, each revealed only once the previous is satisfied. It is NOT
+a regression and NOT related to TLS, sysconf, or the build system. Note it is
+triggered at prompt_toolkit IMPORT time (a class-body constant builds an HTML
+template), so it cannot be dodged by not using progress bars.
+DIFFERENCE FROM PREVIOUS MODULE ADDITIONS: pyexpat is NOT self-contained like
+unicodedata/_csv/_statistics/_asyncio were. Modules/pyexpat.c needs the libexpat
+sources (Modules/expat/*). fry1787 explicitly deferred _decimal for the same
+reason (needs libmpdec). So this one carries a real dependency and should be
+scoped as its own step, not batched.
+
+=== BOOT DETAILS ===
+  ISO out/tatertos64v3.iso 2026-08-11 00:13:35 (carries python3.fry 00:11:26,
+  15,820,128 bytes — the build containing the fix; ordering verified before boot)
+  QEMU pid 1258757, -smp 4. Serial logs/fry1807_serial.log.
+  selftest 106 passed / 0 failed. DHCP:OK. GUI pid=10, SHELL pid=11.
+  SHELL took +198s to spawn (vs ~17-30s on other boots). Same slow-shell
+  behaviour seen on the fry1800 boot, which also came up "late" and was a false
+  alarm. Cause still unexplained; NOT investigated this step. Worth a look if it
+  worsens — it is not blocking.
+
+=== BUILD-ORDER LESSON RE-LEARNED THIS STEP (I got it wrong once) ===
+After the fry1806 acceptance-test `touch src/include/unistd.h`, posix.o became
+out of date. Running `make -f Python3.mk python3` FIRST failed with
+  "[<builtin>: src/user/libc/posix.o] fatal error: stdint.h: No such file"
+because Python3.mk has no rule for libc objects and make fell back to its
+built-in rule. THE ORDER IS NOT OPTIONAL:
+    1) MAIN Makefile  -> all libc objects (incl. gap_stubs.o AND rust_compat.o)
+    2) Python3.mk     -> python3 relink
+    3) build_iso.sh
+The artifact was NOT compromised — python3.fry at 23:53:15 came from the earlier
+PY_EXIT=0 FULL rebuild that already contained both source edits, and that exact
+file (15,820,128 bytes) was what got staged. The tree was afterwards reconciled
+properly (LIBC_EXIT=0, PY_EXIT=0, `make -n` pending = 0) and the relink produced
+a byte-identical-size binary, then the ISO was rebuilt so ordering is clean.
+
+=== SESSION SCOREBOARD ===
+  TLS / _PyThreadState_Attach ......... CLOSED (fry1801, verified 1 + 4 vCPU)
+  Network / missing -netdev ........... CLOSED (fry1797/1798, DHCP:OK every boot)
+  Stale objects, main Makefile ........ CLOSED (fry1796, 13-object proof)
+  asyncio ValueError + NameError ...... CLOSED (fry1806/1807, this step)
+  Python3.mk header deps .............. CLOSED (fry1805/1806, 216-object proof)
+  Python3.mk sqlite prereq bug ........ CLOSED (fry1806)
+  pyexpat ............................. OPEN — new, needs libexpat sources
+  🔴 603 uncommitted files, 2026-06-08 . OPEN — the biggest remaining risk
+
+NEXT (fry1808, PROPOSED — not approved): add pyexpat. Unlike the fry1787 batch
+this needs the bundled libexpat (external/Python-3.14.5/Modules/expat/*) compiled
+in plus config.c extern/inittab entries and Python3.mk sources. Confirm the expat
+sources are present in the tree before committing to it.

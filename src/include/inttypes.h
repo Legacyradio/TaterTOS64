@@ -13,6 +13,7 @@
 #define _TATERTOS_INTTYPES_H
 
 #include <stdint.h>
+#include <stddef.h>  /* wchar_t — needed by wcstoimax/wcstoumax declarations */
 
 #ifdef __cplusplus
 extern "C" {

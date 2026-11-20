@@ -1,0 +1,44 @@
+fry1708 — 2026-06-21 08:55 CDT
+STEP: Root-caused the _PyObject_Malloc NULL-tstate fault from fry1707. CONFIRMED
+      (static disasm + readelf + kernel/libc source + the fault regs). No guessing.
+
+THE BUG (x86-64 variant-II TLS self-pointer missing):
+  - python3.fry: ALL 921 %fs accesses use `mov %fs:0x0,%reg` (objdump). CPython &
+    mimalloc read the thread pointer via __builtin_thread_pointer(), which on
+    x86-64 is *(fs:0) — the ABI-mandated TCB self-pointer (glibc tcbhead_t.tcb).
+    So the WHOLE binary requires fs:0 == tp.
+  - Kernel elf.c sets MSR fs_base = tp (region_base + align_up(memsz)) but leaves
+    *(tp) = 0 (elf.c:403-405 comment "leaving fs:0 zero is intentional" — WRONG).
+  - libc struct fry_tls_block (libc.c:376) puts slots[0] at offset 0 == fs:0. libc
+    ADOPTS the kernel %fs (SYS_GET_TLS_BASE returns cur->user_fs_base, syscall.c:
+    8549 -> fry_tls_block_ensure returns early, libc.c:399, no reprogram). Then a
+    pthread key-0 store (fry_tls_set(0,..)) wrote slots[0] = 0xA70550, CLOBBERING
+    the self-pointer slot.
+  - Proof from the fault regs (fry1707): rdx = *(fs:0) = 0xA70550 (a heap addr),
+    NOT tp (~0x7FFF8xxxxxxx). So __builtin_thread_pointer() returns 0xA70550 ->
+    _Py_tss_tstate resolved at 0xA70550+tpoff (heap) = 0/garbage -> deref+0x10 ->
+    cr2=0x10. The kernel-mapped TLS region at 0x7FFF80000000 is never used.
+  - Why it ran far before crashing: __thread accesses silently used the wrong base
+    (0xA70550, a mapped heap page) returning garbage/0 until one (_Py_tss_tstate)
+    was dereferenced.
+
+CONCLUSION: my PT_TLS layout (region map + .tdata copy + fs_base=tp) is correct AND
+  necessary, but INCOMPLETE: it omitted the self-pointer at fs:0, and libc's TCB
+  layout collides with offset 0. Both must be fixed.
+
+THE FIX (ABI-correct, no shortcut) — see plan presented to Zack:
+  1. elf.c: after mapping the TLS region, write the self-pointer into the TCB:
+     *(uint64_t at phys(tp)) = tp  (must go through pml4_virt_to_phys like the
+     .tdata copy at elf.c:388-401 — kernel can't deref the user VA directly).
+  2. libc.c: reorder struct fry_tls_block so the self-pointer (tls_base) is at
+     OFFSET 0 (fs:0); slots[] follow at +8.. (TCB positive area, ABI-correct).
+     Prevents key-0 / slots[0] from clobbering fs:0. ensure()/trampoline already
+     set tls_base=block, which now == the ABI self-ptr.
+  3. Rebuild: kernel + ISO (kernel change). RELINK python3.fry via
+     `make -f Python3.mk python3` (statically embeds libc -> needs new struct
+     layout), then rebuild ISO again. Backward-compat: apps without PT_TLS
+     unaffected (has_tls=0 -> fs_base=0 -> libc lazy path).
+
+VERIFY (after fix): boot, hermes, expect _PyObject_Malloc to pass (tstate non-NULL,
+  resolves into the 0x7FFF8xxxx TLS region); self-test proceeds. -> fry1709.
+NEXT: presented plan; awaiting Zack go-ahead before editing (kernel+libc ABI change).

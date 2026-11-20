@@ -1,0 +1,28 @@
+# fry1592 - THE RESPONSIVENESS FIX: batch demand-paging (commit a RUN of pages per #PF, not one) so the interactive "freeze"/slow-typing (which is slow page-in, NOT a deadlock — fry1583) goes away. + made the fry1588 tool-path redirect near-free (only checks /bin//sbin//usr/bin/, no vfs_stat on the open storm).
+Date: 2026-06-16 ~16:20 (host clock) CDT
+Type: code change (src/kernel/proc/syscall.c, 2 hunks)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+WHY (Rule 6) — Zack's (correct) point: "we already had it working; we were only supposed to add tools; why did
+that stop typing input?" Truth: the changes did NOT break input (serial identical: 92 keys delivered, read(fd0)=1,
+846 opens, TBDPF=66). Input was NEVER reliable — it worked ONCE (fry1583) when the page-in happened to finish. The
+real root is the DEMAND-PAGING grind (fry1583): the main thread faults in Bun/JSC's large allocations 4KB at a time,
+which looks frozen. I should have fixed THIS before adding tools. Both the typing problem and the slow tools are the
+same bottleneck.
+
+FIX (src/kernel/proc/syscall.c)
+1. lx_try_demand_page: after committing the faulting page, commit up to LX_DEMAND_BATCH(=16)-1 FOLLOWING pages in the
+   SAME vm_region (skip already-mapped; stop at region end / on OOM). A large sequential zero now costs ~1 fault per
+   64KB instead of per 4KB -> ~16x fewer #PF -> the page-in is fast -> typing responsive + busybox/tools load fast.
+   Bounded by the region, so sparse cages are not over-committed beyond the touched run.
+2. lx_redirect_tool_path (fry1588): added an early prefix gate -> only /bin/, /sbin/, /usr/bin/ paths do the vfs_stat
+   redirect; every other open returns immediately. Removes any per-open overhead on the openat storm.
+
+BUILD: make clean && STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 LINUX_SHELL_BIN=.../busybox CLAUDE_BIN=.../2.1.177 ... bash build_iso.sh
+
+NEXT (fry1593 build, fry1594 verify): boot -> claude -> TYPE. Expect typing to be RESPONSIVE now (TBDPF count should
+be far lower / page-in fast; read(fd0) should climb as Claude consumes input). Then the prompt + the shell tool
+(pipe done fry1590) should both be usable. If responsive: this was the whole thing; then peel any remaining tool
+syscalls (shell stdout flow) on a base that actually works.
+
+All per planv3 Rules 1/5/6/12. Written immediately on the code change, before the build.

@@ -1,0 +1,53 @@
+fry1418 — Tater Bridge / Claude Code: FRY_POLLOUT 0x2 -> 0x4 SHIPPED +
+VERIFIED. ***THE DNS QUERY SENDS — AND THE ANSWER COMES BACK.***
+New (smaller) frontier found in the same boot: recvfrom returns 0 on a
+queued datagram (uint16_t length-clamp truncation; fix = fry1419).
+Date: 2026-06-11 ~5:45 PM CDT. Author: Claude (Fable 5).
+Follows fry1417 (root cause: kernel POLLOUT bit was Linux POLLPRI).
+========================================================================
+
+THE FIX (one line + comment, syscall.c ~322)
+====
+  #define FRY_POLLOUT 0x0002u  ->  0x0004u
+  (0x2 is Linux POLLPRI; 0x4 is Linux POLLOUT and ALSO what the OS's own
+  user libc fry.h already defined. Epoll translators become identity.)
+
+VERIFIED IN SERIAL (rule-12 clean build, same KVM line, /tmp/s.log)
+====
+  LXCONN pid=5 fd=17 fam=2 dst=10.0.2.3:53 alen=16 rc=0
+  LXDNS nr=7 poll a2=1 a3=0    rc=1     <- POLLOUT seen (was rc=0!)
+  LXUDP tx dst=10.0.2.3:53 src_port=49200 len=35 rc=0   <- THE QUERY
+  LXDNS nr=44 sendto a1=11 a3=23 rc=23                  <- 35 bytes out
+  LXUDP rx dst_port=49200 src=10.0.2.3:53 len=51        <- THE ANSWER
+  LXDNS nr=7 poll a3=bb8 rc=1                           <- readable
+- FOUR DNS round trips this boot (ports 49200-49203, two 35-byte and
+  two 52-byte queries, 51/68-byte answers) — slirp's resolver answers
+  every time. After 5 sessions, the resolver SENDS. Lead #1's trace
+  paid for itself in one boot.
+
+NEW FRONTIER (same boot, one syscall later)
+====
+  LXDNS nr=16 ioctl a2=541b rc=-25    <- FIONREAD unimplemented (ENOTTY,
+                                         glibc tolerates; optional later)
+  LXDNS nr=45 recvfrom a1=11 a2=buf a3=10000 rc=0   <- ZERO?!
+  LXDNS nr=3 close                                   <- glibc: empty
+- The 51-byte answer IS queued (LXUDP rx + poll POLLIN prove it). The
+  native SYS_RECVFROM DGRAM clamp is:
+      if (copylen > (uint16_t)a3) copylen = (uint16_t)a3;
+  glibc's answer buffer is 65536 (a3=0x10000); (uint16_t)0x10000 == 0
+  -> copylen clamped to 0 -> recvfrom returns 0 -> glibc reads an empty
+  datagram, closes, retries, same result, EAI_AGAIN.
+- SAME truncating clamp at 4 recv sites (recv/recvmsg-iov x2/recvfrom:
+  syscall.c 6965/8567/8585/8763). Send sides are safe (LNX wrappers
+  clamp len>0xFFFF to a short write before the cast).
+
+FIX (fry1419, in tree at session time): all four sites ->
+      if ((uint64_t)copylen > a3) copylen = (uint16_t)a3;
+  (if the clamp fires, a3 < copylen <= 0xFFFF so the cast is exact).
+
+PREDICTION for the fry1419 boot: recvfrom rc=51/68 -> getaddrinfo
+resolves api.anthropic.com -> first TCP connect :443 -> TLS handshake
+(BearSSL CA bundle already staged) -> first real API reply in-OS.
+
+STRIP LIST grows: LXDNS (fry1417 tracer) + LXNL join LXSOCK/LXCONN/
+LXUDP/LXEPCTL. KEEP: TBIMGOP, serial unimpl-logger, epoll close-purge.

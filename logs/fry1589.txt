@@ -1,0 +1,7 @@
+# fry1589 - BUILD: rebuild with the /nvme tool-path redirect (fry1588) + busybox staged
+Date: 2026-06-16 ~15:25 (host clock) CDT
+Type: build (Rule 12)
+COMMAND: make clean && STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 LINUX_SHELL_BIN=/home/legacyindieradio/tatertos-shell/busybox CLAUDE_BIN=.../2.1.177 ... bash build_iso.sh (bg -> /tmp/build_1589.log)
+RESULT: EXIT 0 clean. No errors (syscall.c compiled with lx_redirect_tool_path; clangd fry_limits noise only). syscall.o rebuilt @ 15:24; ISO + NVMe @ 15:25. busybox staged at ToTFS /bin/sh (= /nvme/bin/sh).
+NEXT (fry1590 verify): boot -> claude -> run a command (uname -a / ls /). Expect: TBEXECVE path=/bin/sh -> redirect -> elf_load_linux /nvme/bin/sh -> LINUXELF load done, execve SUCCEEDS (no exit 127). Then: does command stdout flow back to Claude via the dup2 socketpair stdio (fry1463-1481 gate)? "typing drop" = demand-paging grind, separate.
+All per planv3 Rules 1/5/6/12.

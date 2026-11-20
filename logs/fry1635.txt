@@ -1,0 +1,45 @@
+# fry1635 - RESTORE GUI: undo DeepSeek's fry1634 GUI rip-out in init.c (regressed boot to a bare shell).
+Date: 2026-06-18 ~23:40 CDT
+Type: regression fix (code change: src/user/init/init.c)
+Author: planv3 Rules 1/5/6/12 + CLAUDE.md
+
+WHY (Rule 6)
+- Zack reported the last QEMU boot (DeepSeek session, June 17) came up with green text / "looks like an
+  old version" and "isn't working anymore." We restored continuity and audited the tree.
+- ROOT CAUSE (confirmed in code, not DeepSeek's logs): DeepSeek (fry1606-1634, the "Rules 1/5/6/75" logs)
+  ported CPython 3.14 + Hermes into TaterTOS, bumped the NVMe image 1024->2048 MB for the 217MB sysroot,
+  then in init.c (fry1634) DELETED the GUI launch loop and chrome_probe block, hardcoding
+  `pid=-1; gui_failures=3` to force a straight-to-bare-shell fallback. That is the regression: boot no
+  longer launches gui.fry, so it drops to the kprint bare console -> looks like a pre-GUI "old version".
+- git diff HEAD -- src/user/init/init.c shows init.c was UNCHANGED June 8 -> June 16; DeepSeek's June 17
+  edit is the ONLY change. So git HEAD's GUI launch loop == the fry1583 known-good GUI behavior.
+- DeepSeek's stated reason ("chrome_probe/GUI hang after NVMe bump") is almost certainly a MISREAD of the
+  known slow demand-paging grind (fry1586 + the Linux-compat handoff: the "freeze" is page-in, NOT a
+  deadlock; TBDPF cr2 advances per fault). The one genuinely-blocking item is chrome_probe, which
+  fry_wait()s on Chromium paging in BEFORE the GUI launches.
+
+WHAT WAS DONE
+- src/user/init/init.c: replaced DeepSeek's forced-shell block with the GUI launch loop restored verbatim
+  from the fry1583 baseline (try_spawn_first(gui_paths) -> fry_wait -> shell fallback after 3 failures).
+- KEPT chrome_probe skipped (it is a diagnostic, blocks init before GUI on the 2048MB image). Updated the
+  WHY-comment to reflect the real reason (not "NVMe size bump").
+- gui.fry IS built (159KB) and staged to /system/GUI.FRY + /GUI.FRY by build_iso.sh (lines 327/354/576);
+  paths match init.c gui_paths[] -> the binary was present all along, just never launched.
+
+SAFETY (done before edit)
+- backups/pre-gui-restore-20260618_233757/ : init.c, build_iso.sh, shell.c, python3.fry, python3.elf.
+- Nothing committed since June 8; git HEAD (733c2f1a) + reflog clean = deep net. Python/Hermes port is all
+  untracked working-tree files, untouched by this change.
+
+BUILD PLAN (fry1636)
+- build_iso.sh line 300 make rebuilds init.fry (with this change) + gui/shell/claude; does NOT rebuild
+  python3 (not in its target list) -> existing python3.fry (Jun17 16:50) re-staged via stage_hermes.sh.
+- Env: STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 LINUX_SHELL_BIN=~/tatertos-shell/busybox CLAUDE_BIN=<2.1.177>
+  STAGE_HERMES default=1. NVME_SIZE_MB stays 2048 (needed for 217MB Python sysroot).
+- NO `make clean` (preserve python3.fry; incremental rebuild of only init.c is correct + fast).
+
+NEXT (fry1636 = build result; fry1637 = boot verify)
+- fry1637: boot in QEMU, VERIFY WITH OWN EYES (no trusting logs): GUI desktop comes up (not bare green
+  console), Claude launchable + interactive, `python3`/`hermes` present in shell. Screenshot as proof.
+
+All per planv3 Rules 1/5/6/12. Written immediately on the code change, before the build.

@@ -1,0 +1,71 @@
+# hermes021 — PHASE 2 STEP 20: gap matrix stub implementations + missing modules
+Date: 2026-06-17 ~16:45 CDT
+Type: link fix (Phase 2 of HERMES_NATIVE_PLAN.txt)
+Author: planv3 Rules 1/5/6/75
+
+---------------------------------------------------------------------------------
+OBJECTIVE
+---------------------------------------------------------------------------------
+Complete the CPython link by resolving all undefined symbols. After fixing
+the toolchain (hermes020), 295 symbols remained undefined.
+
+---------------------------------------------------------------------------------
+WHAT HAPPENED
+---------------------------------------------------------------------------------
+295 undefined symbols at link time, categorized as:
+
+1. Missing CPython module files (23 symbols):
+   PyInit_atexit, PyInit_faulthandler, PyInit__tracemalloc, PyInit__suggestions,
+   PyInit__datetime, PyInit__collections, PyInit__sysconfig, PyInit__types,
+   PyInit__typing, PyInit__locale, PyInit__opcode, PyInit__stat, PyInit_pwd
+
+2. Missing CPython runtime internal functions (6 symbols):
+   _PyAtExit_Call/Fini/Init, _PyDateTime_InitTypes, _PyFaulthandler_Fini/Init,
+   Py_GetBuildInfo, _Py_gitidentifier, _Py_gitversion
+
+3. Missing POSIX function implementations (266 symbols):
+   All the gap matrix functions declared in hermes002-hermes019 but never
+   implemented in TaterTOS libc .c files.
+
+---------------------------------------------------------------------------------
+FIX
+---------------------------------------------------------------------------------
+1. Created src/user/libc/gap_stubs.c (650+ lines):
+   Comprehensive implementation of all Phase 2 gap matrix functions.
+   Categories:
+   - GCC runtime: __assert_fail, __stack_chk_fail, __errno_location,
+     __ctype_b_loc, __popcountdi2
+   - environ: empty environment array
+   - Process control: _exit, execv, execve, raise, wait, wait3, wait4, waitid
+   - File ownership: chown, chroot, fchmodat, fchown, fchownat, setegid,
+     seteuid, setgid, setuid, setresuid/gid, setreuid/gid, setns, unshare
+   - User/group: geteuid, getegid, getuid, getgid, getpgid, getpgrp, getppid,
+     getsid, getgroups, getgrouplist, initgroups, getresuid/gid
+   - Terminal: ctermid, ttyname_r, tcgetpgrp, tcsetpgrp
+   - File I/O: pread, pwrite, preadv, pwritev, fchdir, futimens, ftruncate,
+     lockf, mkfifo, mkfifoat, mknod, mknodat, symlinkat, truncate, umask
+   - Directory: closedir, fdopendir, opendir, readdir, rewinddir
+   - Time/timers: clock_nanosleep, clock_settime, getitimer, setitimer
+   - Path config: fpathconf, pathconf, confstr, getloadavg
+   - Signal: sigemptyset/fillset/addset/delset/ismember/pending/wait/waitinfo/
+     timedwait, pthread_sigmask, strsignal, alarm, killpg
+   - Scheduling: sched_getparam/setparam/getscheduler/setscheduler/rr_get_interval
+   - Others: sync, getentropy, posix_fadvise/fallocate, sem_*, pthread_getcpuclockid
+   - Wide char: wcscmp, wcsncmp, wcscpy, wcsncpy, wcschr, wcsrchr, wcstok,
+     wcsftime, wcstombs, mbstowcs, wmemchr
+
+2. Added missing CPython module sources to Python3.mk:
+   atexitmodule.c, faulthandler.c, _tracemalloc.c, _suggestions.c,
+   _datetimemodule.c, _collectionsmodule.c, _sysconfig.c, _typesmodule.c,
+   _typingmodule.c, _localemodule.c, _opcode.c, _stat.c, pwdmodule.c,
+   getbuildinfo.c, getversion.c, arraymodule.c
+
+3. Updated Python3.mk:
+   - Added TOOLBIN, CC, LD, UFLAGS definitions (was using system tools)
+   - Added LIBC_OBJ with gap_stubs.o
+   - Added compile rule for gap_stubs.c
+
+---------------------------------------------------------------------------------
+VERIFICATION
+---------------------------------------------------------------------------------
+Attempting final link after these fixes. See hermes022 for link result.

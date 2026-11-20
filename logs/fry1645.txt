@@ -1,0 +1,26 @@
+# fry1645 - Enable Claude color-capable terminal environment
+Timestamp: 2026-06-19 14:54:53 CDT
+Type: terminal color enablement (env + alt-screen color preservation)
+Files changed:
+  - src/user/shell/shell.c
+
+What changed:
+  - Removed Claude launch color suppression from the interactive shell path by dropping
+    NO_COLOR=1.
+  - Replaced TERM=dumb with TERM=xterm-256color.
+  - Added COLORTERM=truecolor.
+  - Added term_savefg[][] so per-cell foreground colors survive alternate-screen
+    enter/exit and child-exit restore paths.
+
+Why:
+  - fry1644 had foreground SGR parsing/rendering, but Claude emitted no color because
+    the launch environment advertised a dumb, no-color terminal.
+
+Verification:
+  - Ran: make -C TaterTOS64 shell
+  - Result: PASS. Rebuilt src/user/shell/shell.o, linked shell.elf, packed shell.tot.
+  - Note: compiler printed the pre-existing src/user/libc/libc.h nested-comment warning.
+
+Not done:
+  - No full build_iso.sh rebuild in this step.
+  - No QEMU/runtime visual verification in this step.

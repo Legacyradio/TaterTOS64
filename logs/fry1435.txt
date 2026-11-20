@@ -1,0 +1,60 @@
+fry1435 — Widened-beacon boot. STUCK FD NAMED: fd=16, kind=6 EVENTFD —
+Bun's event-loop wakeup — registered EPOLLIN|EPOLLET (events=80000001)
+on epfd 14, counter frozen at 4, delivered as a ready event 12,032+
+times while never being read. Sibling loop identical: fd=7 on epfd 5,
+events=80000001, counter 18+, zero reads. Our epoll dropped the EPOLLET
+bit and reported level-triggered forever; Bun never drains its wakeup
+counter because under edge semantics it doesn't have to. ROOT CAUSE OF
+THE STALL FAMILY. Fix is the fry1436 step (EPOLLET implementation).
+Date: 2026-06-12 03:20 CDT. Author: Claude (Fable 5).
+========================================================================
+
+RUN
+------------------------------------------------------------------------
+Clean rebuild per rule 12, claude 2.1.172 staged. Boot: same KVM q35
+-smp 2 e1000+slirp NVMe shape, serial /tmp/s_fry1435.log. Watch fired
+VERDICT_QUIESCENT_STALL. Gotcha fixed this run: the fry1433 pid file
+held the wrapper shell's PID, not QEMU's — the old QEMU survived its
+"kill" and held the NVMe write lock; first fry1435 launch failed with
+"Failed to get write lock". Killed the real PID (verified via ps),
+relaunched, saved the qemu-system PID itself.
+
+WHAT THE NEW BEACONS SHOWED
+------------------------------------------------------------------------
+LXEVFD new fd=7  init=0 pid=3   (loop A wakeup eventfd)
+LXEVFD new fd=16 init=0 pid=9   (loop B wakeup eventfd)
+LXEPCTL epfd=5  op=1 fd=7  kind=6 events=1
+LXEPCTL epfd=5  op=3 fd=7  kind=6 events=80000001   <- EPOLLET MOD
+LXEPCTL epfd=14 op=1 fd=16 kind=6 events=1
+LXEPCTL epfd=14 op=3 fd=16 kind=6 events=80000001   <- EPOLLET MOD
+LXEPCTL epfd=5  op=1 fd=9/8 kind=8 events=1         (timerfds, LEVEL)
+LXEPCTL epfd=14 op=1 fd=15  kind=8 events=1
+All TCP sockets: ADD events=4 -> MOD events=1 (LEVEL). The ONLY
+edge-triggered registrations in the entire run are the two wakeup
+eventfds — exactly the fds our epoll cannot handle correctly.
+
+LXEVFD wr lines: writes land on both eventfds from multiple threads
+(pids 3,7,8,9) — wakeup traffic is healthy. LXEVFD rd lines for
+fd 7/16: NONE anywhere in the log. Correct Bun behavior under ET.
+
+LXEPRDY tail (post-stall): an unbroken run to n=12,032+ of
+  fd=16 kind=6 revents=1 (asked 1) evctr=4
+— the same un-drained eventfd, every poll, counter never moving.
+LXEPRDY rate-limit (first 32 + every 256th) held serial volume fine.
+
+CONCLUSION
+------------------------------------------------------------------------
+The fry1433 busy-spin is fully explained: level-triggered re-reporting
+of an edge-registered, deliberately-never-drained wakeup eventfd. The
+guest's event loop consumed phantom wakeups instead of parking, so the
+work that follows a real wakeup (session init, next connections) never
+got scheduled. Fix = honor EPOLLET: report a readiness state once per
+state-change (eventfd counter as the edge token), implemented as
+fry1436. fry1437 = fix boot.
+
+TEST COMMANDS (rule 10): as fry1432, serial /tmp/s_fry1435.log;
+verdict greps used:
+  grep -a "LXEPRDY" /tmp/s_fry1435.log | tail -12
+  grep -a "LXEPCTL" /tmp/s_fry1435.log | head -25
+  grep -a "LXEVFD" /tmp/s_fry1435.log | head -30
+========================================================================

@@ -1,0 +1,44 @@
+fry1668 — 2026-06-20 11:58 CDT
+STEP: Static root-cause analysis of native CPython `hermes` startup freeze
+       (Claude picking up after Codex handoff; no code changed this step)
+
+WHY: User reports `hermes` freezes at launch. Codex spent a session suspecting
+     the new POSIX directory adapter and Claude-era scheduler beacons, never
+     pinned it, and skipped its own fry logs (no fry1666/1667.txt written).
+     Re-derived the diagnosis from the serial evidence only.
+
+EVIDENCE (serial logs in /tmp, sanctioned by user 2026-06-20: QEMU logs are
+          now essential, planv3 rule 11 lifted):
+  fry1660 (BEFORE posix.c directory adapter):
+     5x "VM COMMIT OK pid=13" (obmalloc arenas) then
+     "Fatal Python error: Failed to import encodings module"
+     traceback tail: _bootstrap_external.py:1412 in _fill_cache
+       -> _fill_cache calls os.listdir() -> readdir(). It failed because no
+          working readdir existed yet. This is the ORIGINAL bug.
+  fry1664 / fry1667 (AFTER posix.c directory adapter):
+     6x "VM COMMIT OK pid=13" (one MORE arena than 1660 = more modules loaded),
+     NO encodings error, NO traceback, NO bootstrap output -> silent hang.
+     TBCLK timer heartbeat STOPS after the 6th commit; TBSPIN (kernel rip
+     0x80066621, sched.c) continues -> a syscall pid 13 makes right after the
+     6th arena commit never returns (kernel-side wedge, not userspace spin).
+
+CONCLUSIONS:
+  1. Codex's posix.c opendir/readdir/closedir adapter is a CORRECT FIX, not the
+     bug. Header layout (fry_readdir_ex_hdr) matches kernel fry_dirent_hdr
+     exactly (16B: rec_len/name_len/attr/size). readdir() loop always advances
+     by rec_len>=sizeof(hdr) with an EIO guard -> no infinite loop. DO NOT
+     revert it.
+  2. The freeze is a NEW, LATER hang: CPython now imports encodings fine and
+     proceeds into post-encodings startup (stdio stream init via _io, then
+     `site`) before tatertos_bootstrap.py prints its first "PYTHON ENVIRONMENT"
+     header. The hang is in a kernel syscall that does not return.
+  3. The directory adapter does ONE-SHOT readdir into a fixed 128KiB buffer;
+     kernel readdir_ex_cb silently truncates when full (returns 1). Not a hang,
+     but a latent correctness bug for large dirs (site-packages) — note for
+     later, not the current blocker.
+
+NEXT STEP (proposed, pending user OK — kernel edit + 1 rebuild + 1 boot):
+  Instrument kernel syscall dispatch to trace syscall nr (+ key args) for the
+  native python pid, boot once, read serial. Last syscall before the freeze =
+  the culprit handler. Fix that handler. Prime suspects at this startup phase:
+  isatty()/fstat()/read() on the tty fd during sys.std{in,out,err} setup.

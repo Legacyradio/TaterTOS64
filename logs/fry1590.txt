@@ -1,0 +1,26 @@
+# fry1590 - FIX: implement Linux pipe(22)/pipe2(293) (route to native SYS_PIPE). busybox sh exits code 2 on the unimplemented pipe syscall; this lets it actually run a command.
+Date: 2026-06-16 ~16:00 (host clock) CDT
+Type: code change (linux_compat.h + syscall.c)
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+WHY (Rule 6) — fry1589 verify (the path-redirect win):
+- The /nvme redirect WORKED: TBEXECVE path=/bin/sh -> "LINUXELF open /nvme/bin/sh" -> "LINUXELF size 1131168" ->
+  "read main rc=0" = busybox LOADED + ran (exit code went 127 -> 2, i.e. it executed). Then:
+  "LINUXSYS: unimplemented nr=22 ... pid=38" -> TBEXIT code=2. nr=22 = Linux pipe(2). busybox sh calls legacy pipe()
+  (for command pipelines / job control) and dies when it ENOSYS's.
+
+CHANGE
+- linux_compat.h: + LNX_pipe 22, + LNX_pipe2 293.
+- syscall.c Linux dispatch (next to LNX_socketpair): case LNX_pipe / LNX_pipe2 -> native_syscall_dispatch(SYS_PIPE, a1,...).
+  Native SYS_PIPE (syscall.c:9174) already allocs a g_pipes pair + writes [rfd,wfd] to a1 (the same pipe machinery
+  AF_UNIX socketpairs use). pipe2 flags (O_CLOEXEC/O_NONBLOCK in a2) are NOT yet applied to the fds — noted; fine for
+  busybox's immediate need; revisit if a tool depends on O_CLOEXEC pipe semantics.
+
+BUILD: make clean && STAGE_CLAUDE=1 CLAUDE_NO_MCP=1 LINUX_SHELL_BIN=.../busybox CLAUDE_BIN=.../2.1.177 ... bash build_iso.sh
+
+NEXT (fry1591 build, fry1592 verify): boot -> claude -> run a command. Expect busybox to get PAST pipe and either run
+the command (output flows back via the dup2 socketpair stdio = the fry1463-1481 gate) OR hit the NEXT unimplemented
+syscall (peel it the same way). This is the subprocess-tool chain; expect a few more small syscall fills. "typing drop"
+= demand-paging grind, separate. Watch serial: LINUXSYS unimplemented nr=, TBWR/TBSTDOUT pid=<sh child>, TBEXIT code.
+
+All per planv3 Rules 1/5/6/12. Written immediately on the code change, before the build.

@@ -1,0 +1,46 @@
+# fry1553 - VERIFY: /proc/self/stat fix CONFIRMED working but it was NOT the input wedge. Input still not consumed. Wedge isolated to the epoll<->fd0 readiness / main-thread-not-reading path.
+Date: 2026-06-15 23:40 CDT
+Type: verify (headed run, user-driven) + diagnosis of the fry1552 image
+Author: planv3 Rules 1/5/6/12 + handoff logging bar + CLAUDE.md
+
+---------------------------------------------------------------------------------
+RESULT: input still FAILS. /proc/self/stat fix is correct but not sufficient.
+---------------------------------------------------------------------------------
+User: "absolutely no typing ... hit enter ... still not a peep."
+
+Evidence (this run, /tmp/serial.log):
+- /proc/self/stat FIX WORKS: TBFAIL openat "/proc/self/stat" = 0 (was 119); TBOPEN "/proc/self/stat" = 111 (now succeeds). So the file is correctly served.
+  BUT it is read ~111x as a PERIODIC poll (~every 100ms), not a retry-on-ENOENT storm -> filling it removed the ENOENT spam (good, real fix) but did NOT unblock input. So the missing file was a symptom, not the wedge.
+- Keystrokes STILL delivered to inbuf (TBPROCIN req=14 nw=1 b0=3f '?' / 0d Enter). Delivery fine.
+- Claude read(fd=0) STILL only twice, both at startup (len=262144 -> 1). Never in the main UI.
+- fd 0 epoll registration is CORRECT and STABLE: LXEPCTL epfd=5 op=1(ADD) then op=3(MOD) x2, events=0x40000011 (EPOLLIN|EPOLLONESHOT), never DEL'd, never zeroed. So stdin IS being watched the whole time.
+- Event loop thread pid=15 is idle-spinning on a 100ms futex timeout (TBFUTEX WAIT_BITSET rc=-110), NOT parked in epoll_pwait2 on epfd=5.
+- Network/DNS WORKS: LXDNS resolver threads (pid=20, pid=22) do connect/sendto(rc=23 query)/recvfrom(rc=33 response)/close — real DNS round-trips completing. The "[N]" in LXDNS is a trace-budget countdown, not a retry count. So Claude is NOT stuck on DNS.
+- No file is storming now (top failing opens are low-count optional config: managed-settings.json, .claude/settings.json, plugins/skills — normal optional probes). The /EFI/FRY lookups (45x) succeed.
+- VM ALIVE (panic fix holding across all runs).
+
+---------------------------------------------------------------------------------
+WHERE THE WEDGE IS (narrowed, not yet closed)
+---------------------------------------------------------------------------------
+Everything around input is healthy: delivery works, fd0 is armed in epoll, poll_check_fd(fd0) returns POLLIN when inbuf non-empty (level-triggered; kernel ignores ONESHOT), SYS_PROC_INPUT calls sched_wake_poll_waiters, network+procfs are fine. Yet the main thread never returns to read fd0 in the main UI.
+
+Two remaining possibilities, not yet distinguished:
+ (A) The main thread (the one holding epfd=5 with fd0) is NOT in epoll_pwait2 when the user types — it's parked in FUTEX (waiting on a JS promise / worker / lock), so the keystroke wake (sched_wake_poll_waiters) can't reach it and it only re-polls on its own timer, but by design that re-poll should still see fd0 ready within ~10ms if epfd=5 has a socket. So either it is NOT re-entering epoll on epfd=5 at all, or
+ (B) epoll_pwait2 on epfd=5 IS running and reporting fd0 ready, but Bun is not issuing the read (EPOLLONESHOT bookkeeping mismatch: Bun thinks it must re-arm before reading again; kernel keeps reporting level-triggered; some state desync after the 2 startup reads).
+
+DECISIVE NEXT PROBE (fry1554, code): add a targeted, non-rate-limited beacon in lx_epoll_wait_fd: whenever an item has fd==0, log poll_check_fd(fd0) result + whether it is being returned to the caller, and log which pid/epfd is calling. Also log when epoll_pwait2 is entered/returns on epfd=5. Type a key and read the serial:
+ - If the beacon shows fd0 POLLIN returned to the caller but no subsequent read(0) -> it's (B), a Bun ONESHOT/read-arming mismatch -> consider implementing EPOLLONESHOT properly (disable-after-fire + honor MOD re-arm) so Bun's state machine matches.
+ - If the main thread never calls epoll_pwait2 on epfd=5 during typing (only the futex spin) -> it's (A), the loop is blocked off epoll -> find what futex/promise the main thread waits on.
+
+---------------------------------------------------------------------------------
+STATUS SUMMARY / HANDOFF (this thread)
+---------------------------------------------------------------------------------
+DONE + VERIFIED:
+- fry1544-1546: network-teardown KERNEL PANIC fixed (1 MB struct tcp_conn dummy moved off the kernel stack in tcp_process RST path). OS survives the killed-helper teardown.
+- fry1551-1552: /proc/self/stat implemented in tbridgefs (real procfs gap closed; no more ENOENT spam).
+RULED OUT as the input wedge: MCP servers (fry1548-1550, CLAUDE_NO_MCP), missing /proc/self/stat (fry1551-1553), epoll EPOLLONESHOT-not-implemented (kernel level-triggers fd0 anyway), DNS/network (works).
+OPEN (the remaining gate to an interactive prompt): main thread does not read fd0 in the main UI despite correct delivery + armed epoll. Next = the fry1554 beacon above.
+STILL OPEN (separate): Grok's tcp_conn accept-path refs=0 regression (nc->refs=1 vs revert; keep !active guard).
+Build toggle in use for the test: CLAUDE_NO_MCP=1 (build_iso.sh, gated; default unchanged).
+
+All per planv3 Rules 1/5/6/12. Written immediately on completion of the verify+diagnosis step.

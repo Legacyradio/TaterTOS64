@@ -1,0 +1,49 @@
+fry1740 — 2026-06-21 22:20 CDT
+STEP 2f (native std phase): Front A — add the libc FUNCTION + CONST + NET-STRUCT
+       surface for tatertos. Plus two important build-system / correctness findings.
+
+CHANGES (rust/forks/libc/src/unix/tatertos/mod.rs), sourced from src/include:
+  - errno: full set (E2BIG..ENOTRECOVERABLE) <- errno.h
+  - signals: SIG* 1..31 + SIG_DFL/IGN, SIG_BLOCK/UNBLOCK/SETMASK, SA_SIGINFO/RESTART,
+    sighandler_t=size_t <- signal.h
+  - sockets/net consts: AF_*/SOCK_*/SOL_SOCKET/SO_*/MSG_PEEK/IPPROTO_*/TCP_NODELAY/
+    IPV6_*/SHUT_* <- sys/socket.h, netinet/in.h. A few NOT yet in TaterTOS headers
+    (SO_RCVTIMEO/SNDTIMEO, IP_TTL/MULTICAST_*/ADD/DROP_MEMBERSHIP, ip_mreq/ipv6_mreq):
+    added as BINDING-ONLY with standard values; flagged for back-port to the C
+    headers; kernel may return ENOPROTOOPT at runtime.
+  - net structs: in_addr, sockaddr_in, in6_addr, sockaddr_in6, ip_mreq, ipv6_mreq,
+    sockaddr_un (UNIX_PATH_MAX=108), sockaddr_storage(128), iovec.
+  - wait status: WNOHANG/WUNTRACED/... consts + W* macros via f! <- sys/wait.h
+  - extern "C" fn surface: waitpid/fork/kill/get*id/getpwuid_r/sigaction/clock_gettime/
+    nanosleep/gmtime_r/lstat/fstatat/statvfs/ftruncate/mkdir/unlink/rename/readlink/
+    fcntl/ioctl/readv/writev/pread/pwrite/futimens/utimensat/opendir/readdir/dirfd/
+    socket/bind/connect/listen/accept/send/recv/sendto/recvfrom/get-setsockopt/
+    shutdown/getsockname/pthread_*(full)/getenv/setenv/strerror_r/sysconf/getrandom.
+
+FINDING #1 — BUILD STALENESS (critical, cost a confused cycle): rsync of the fork to
+  the registry src does NOT reliably invalidate cargo's build-std fingerprint — libc
+  appeared to rebuild but std linked a stale libc -> identical 304 errors twice.
+  FIX/PROCEDURE: after editing the fork, `touch fork/src/lib.rs` AND for a true
+  reading `rm -rf rust/probe_std/target/x86_64-tatertos` (clean build-std). Clean
+  build then showed the REAL count: 304(stale) -> 100.
+
+FINDING #2 — errors INSIDE my tatertos module broke its re-export (so ALL my new
+  symbols vanished from libc root -> the long "missing" lists were a cascade):
+  - E0133 x9: the W* wait fns via `f!` are generated UNSAFE; std calls them in safe
+    context. FIX: use `safe_f!` macro instead of `f!`.
+  - E0308 x7: DUPLICATE type identities. std sees `libc::unix::tatertos::timespec`
+    vs a bare `timespec`, same for in6_addr (and likely in_addr/sockaddr_in). Means a
+    common libc layer ALSO defines these, so mine collide -> two distinct types.
+    TO FIX: do NOT redefine in tatertos the structs the crate's common/new layer
+    already provides; reuse them (import) instead. Need to identify which (timespec,
+    in6_addr, in_addr, sockaddr_in, sockaddr_in6 candidates) via grep, then drop my
+    dupes and re-export the canonical ones.
+
+TRAJECTORY: unsupported-PAL -> 105 -> 70 -> 10 -> types done -> (clean) 100. Forward.
+  Remaining after the 2 fixes: a batch of still-missing consts std imports
+  (AT_FDCWD/AT_*, CLOCK_MONOTONIC/REALTIME, EWOULDBLOCK, EXIT_SUCCESS/FAILURE,
+  FD_CLOEXEC, F_GETFL/SETFL/GETFD/DUPFD_CLOEXEC, FIOCLEX/FIONBIO, O_ACCMODE/EXCL/
+  DIRECTORY/NOFOLLOW, POLL*+pollfd, EAI_SYSTEM, linkat) + std-PAL fill_bytes(random).
+STATE: Front A drafted; module has 16 self-errors (safe_f! + dup types) to clear next.
+NEXT: switch f!->safe_f!; de-duplicate timespec/in6_addr/in_addr/sockaddr_in(6) vs the
+  common layer; add remaining consts; clean-rebuild; measure. -> fry1741.

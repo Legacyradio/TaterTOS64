@@ -1,0 +1,43 @@
+fry1474 - process-exit AF_UNIX socketpair cleanup fix
+timestamp: 2026-06-13T13:18:04-05:00
+
+What changed:
+- Patched src/kernel/proc/process.c shared_release() socket cleanup.
+- Process exit now honors fry_socket refs before tearing a socket down.
+- AF_UNIX socketpairs are released by decrementing their backing pipe
+  reader/writer counts instead of calling tcp_close() on tcp_handle and
+  listen_handle.
+- Real non-AF_UNIX SOCK_STREAM sockets still close through tcp_close().
+
+Why:
+- The fry1474 serial log showed the child inherited AF_UNIX socketpair fds,
+  dup2'd them onto stdio, failed execve, and exited 127.
+- shared_release() then treated the child socketpair pipe indexes as TCP
+  connection handles. Pipe indexes 0/1 overlapped live claude TLS TCP
+  connections, so the child exit sent FIN/RST on conn 0/1.
+- claude then received HUP events on those live epoll fds and crashed with
+  the old sig=11/RIP=0 path.
+
+Verification:
+- make clean: passed.
+- PATH="/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" /bin/bash build_iso.sh:
+  built kernel.elf and claude.fry, then stopped at existing script issue
+  "STAGE_CLAUDE: unbound variable".
+- Reran build with explicit variables:
+  env STAGE_CLAUDE=1 CLAUDE_BIN=/home/legacyindieradio/.local/share/claude/versions/2.1.177 MTOOLSRC=/dev/null PATH=/opt/cross/bin:/usr/bin:/bin:/usr/sbin:/sbin /bin/bash build_iso.sh
+  Result: passed; produced out/tatertos64v3.iso and out/tater_nvme.img.
+- KVM boot could not run in this sandbox: qemu reported "Could not access KVM
+  kernel module".
+- TCG boot command ran to the 240s timeout with serial at /tmp/s_fry1475.log.
+  It crossed the old trigger:
+  * MCP server "agent-bus": Starting connection
+  * TBCOPYFD child=13 fd=17..22 kind=4 dom=1
+  * TBDUP2 pid=13 oldfd=17->0, oldfd=20->1, oldfd=22->2
+  * TBEXIT group pid=13 tgid=13 code=127
+  * TBWAIT4 pid=3 wpid=13 rc=13 status=0x7f00
+- No exc-deliver sig=11 appeared anywhere in /tmp/s_fry1475.log.
+- No TBTCP tx ... conn=0 or conn=1 appeared anywhere in /tmp/s_fry1475.log.
+
+Remaining note:
+- build_iso.sh still expects STAGE_CLAUDE to be set under set -u. This was not
+  changed here; use explicit STAGE_CLAUDE=1/0 on the build command.

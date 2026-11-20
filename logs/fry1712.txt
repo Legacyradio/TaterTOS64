@@ -1,0 +1,43 @@
+fry1712 — 2026-06-21 09:02 CDT
+STEP: Booted the TLS-fixed build, Zack ran hermes (x2: pid=10, pid=11). Read serial
+      to END. The self-pointer fix WORKED (past the allocator) but hermes still
+      crashes at a NEW, later CPython error. NOT working yet.
+
+ALSO VERIFIED (Zack asked: is hermes secretly going through TaterBridge?): NO.
+  - cmd_hermes -> spawn_native_python -> fry_spawn_args("/nvme/apps/python3.fry")
+    (shell.c:825) -> elf_load_fry (process.c:844/909) = the NATIVE .fry loader.
+    Does NOT set is_linux, does NOT use linux_elf / TaterBridge path.
+  - HERMESMAIN printed by external/Python-3.14.5/Programs/python.c:63 (our compiled
+    native CPython). Crash is native CPython (pylifecycle.c fatal_error).
+  - TB* serial lines are KERNEL debug beacons, not TaterBridge: TBMAIN/TBCLK
+    (sched.c:935/959), TBPROCIN (syscall.c:8730) — generic sched/clock/input traces
+    for all pids (idle pid=3, shell pid=9). (Leftover beacons, slated for cleanup.)
+
+PROGRESS (self-ptr fix confirmed working):
+  - Previous crash was _PyObject_Malloc 0x6b5c0f (tstate read NULL). GONE.
+  - Now CPython runs deep into lifecycle. fs:0 now = tp (self-ptr), so __thread
+    accesses resolve into the real 0x7FFF8xxxx TLS region.
+
+NEW FAILURE (serial):
+  Fatal Python error: _PyThreadState_Attach: non-NULL old thread state
+  Python runtime state: preinitialized
+  Then USER FAULT pid=10/11 rip=0x4E4FF9 cr2=0x4D414C5C err=0x4.
+  Disasm: 0x4e4ed0 t fatal_error (pylifecycle.c). At 0x4e4fdb-0x4e4ff9:
+    mov %fs:0,%rdx ; mov (rdx-8),%r15  ; r15 = _Py_tss_tstate
+    mov 0x10(%r15),%r14                ; FAULT (r15 garbage)
+  Regs: r15 = 0x4D414C4C (= bytes "LLAM"/"MALL"-ish), cr2 = r15+0x10 = 0x4D414C5C.
+  => _Py_tss_tstate at tp-8 holds GARBAGE 0x4D414C4C, not 0 (init) nor a valid
+     tstate. CPython's _PyThreadState_Attach read it (non-NULL) -> "non-NULL old
+     thread state" fatal -> fatal_error handler then deref'd the garbage -> #PF.
+     (The USER FAULT is the secondary crash; the PRIMARY bug is the garbage at
+     tp-8.)
+
+OPEN (next step fry1713 — investigate, no guessing):
+  - Why is tp-8 garbage 0x4D414C4C and not zero? .tbss IS zeroed by the map loop.
+    Candidates: (a) TLS region 0x7FFF80000000 collides with an mmap/stack mapping
+    CPython writes into; (b) filesz/memsz/tpoff math vs linker layout mismatch so
+    tp-8 lands in initialized .tdata; (c) a real write of garbage to the slot.
+  - Get static layout: readelf -lW (PT_TLS filesz/memsz/align) + the tpoffs of
+    _Py_tss_tstate / _mi_heap_default; confirm tp-8 is in .tbss not .tdata.
+  - Check 0x7FFF80000000 vs mmap-arena top / stack base for overlap.
+NEXT: investigate the garbage-tstate. Do NOT rebuild until pinned down.

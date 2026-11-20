@@ -1,0 +1,22 @@
+fry1710 — 2026-06-21 08:52 CDT
+STEP: Relinked python3.fry so its statically-embedded libc uses the reordered
+      struct fry_tls_block (self-ptr at offset 0).
+
+GOTCHA HIT + FIXED: `make -f Python3.mk python3` first FAILED (EXIT=2):
+  Python3.mk has NO compile rule for src/user/libc/libc.o (only links LIBC_OBJ +
+  has rules for gap_stubs.o / openssl_stubs.o). When my libc.c edit made libc.o
+  stale, GNU make rebuilt it with its BUILT-IN rule (bare `x86_64-elf-gcc -c`, no
+  -ffreestanding / no -Isrc/include) -> "stdint.h: No such file or directory"
+  (include_next). libc.o is meant to be prebuilt by the MAIN Makefile (UFLAGS,
+  Makefile:20).
+  FIX (no Makefile hack): `make src/user/libc/libc.o` (main Makefile, correct
+  UFLAGS) -> EXIT=0, libc.o 08:51:26 (only a pre-existing unused-var warning in
+  nl_langinfo, not mine). Then `make -f Python3.mk python3` -> EXIT=0.
+
+RESULT: link via user_linker.ld --gc-sections; frypack -> python3.fry.
+  python3.elf 08:51:33, python3.fry 08:51:33 (7678208B). The "needs stdlib
+  installation" line is the normal pre-existing note (stdlib staged separately by
+  stage_hermes.sh), not an error.
+
+NEXT: rebuild ISO (must re-stage the new python3.fry into the nvme ToTFS via
+  stage_hermes STAGE_HERMES=1) -> fry1711. Then shut current VM, reboot, verify.

@@ -1,0 +1,26 @@
+fry1402 — Tater Bridge / Claude Code: VERIFICATION boot — fix holds (TBIMGOP beacon, zero crashes); +LNX_mkdir/mkdirat/epoll_pwait2; CA bundle staging
+Date: 2026-06-11. Author: Claude (Fable 5). Session continues fry1396.
+(Split from the consolidated session log per planv3 rule 5 — one step per file.)
+========================================================================
+[06:55] ***VERIFICATION BOOT (#6) — THE FIX HOLDS***:
+  - TBIMGOP dontneed pid=2 base=63ae000 len=8b7f000 — Bun's RSS-trim
+    caught LIVE, over EXACTLY the region that was zero at crash time
+    (VA 0x63AE000, 146MB). Mechanism confirmed end-to-end.
+  - ZERO crashes: no TBBFDUMP, no Bun crash reporter, full 420s run.
+    The numCalleeLocals=0 crash (fry1385..1396, 5 sessions) is FIXED.
+  - claude progressed into config phase: probing /.claude.json,
+    /.claude/backups, managed-settings; resolver socket created (pid=5).
+  NEW GAPS (TBTRACE inventory): mkdir nr=83 x14 ENOSYS (claude can't make
+  /.claude dirs), epoll_pwait2 nr=441 x1, statx nr=332 x1 (glibc falls
+  back to newfstatat — leave), stat nr=4 x8 returned ENOENT = WORKING
+  (files genuinely absent).
+[07:00] EDITS 18-20 (compile clean):
+  - +LNX_mkdir(83) -> SYS_MKDIRAT(AT_FDCWD), +LNX_mkdirat(258) (Linux
+    AT_FDCWD -100 == FRY_AT_FDCWD, direct delegate), +LNX_epoll_pwait2(441)
+    (timespec->ms ceil, sigmask no-op like epoll_pwait).
+  - CA bundle staged: build_iso prepare_linux_etc copies host
+    /etc/ssl/certs/ca-certificates.crt (deref symlink) -> image
+    ::/etc/ssl/certs/; EFI scanner filter += ".crt". Bun probed exactly
+    this path — needed for TLS to api.anthropic.com.
+  Boot #7 = mkdir+pwait2+CA bundle. Watch: claude config writes, second
+  socket (TCP), TLS bytes, first API exchange.

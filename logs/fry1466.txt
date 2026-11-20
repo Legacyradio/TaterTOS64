@@ -1,0 +1,45 @@
+fry1466 - vfork child fd-table: copy FD_FILE by re-opening the path
+(independent vfs_file). Necessary groundwork; spawn EBADF persists,
+now pinpointed to dup2 targeting stdio (fixed in fry1467).
+Date: 2026-06-13. Author: Claude (Opus 4.8).
+========================================================================
+
+WHY
+------------------------------------------------------------------------
+fry1465 advanced the spawn failure to EBADF: child dup2 (nr=33) returns
+-9. posix_spawn redirects child stdio: dup2(/dev/null, 0/1/2). claude
+opens /dev/null as FD_FILE; copy_vfork_fd_table SKIPPED FD_FILE ("VFS
+files need real refcounts"), so the dup2 SOURCE was absent in the child.
+
+WHAT CHANGED
+------------------------------------------------------------------------
+src/kernel/proc/process.c copy_vfork_fd_table: add an FD_FILE branch that
+gives the child its OWN vfs_file via vfs_open(src->fd_paths[f]). vfs_file
+is pool-allocated with NO refcount, so sharing the parent's pointer would
+double-free on close; re-opening the recorded path is independent and
+correct for the /dev/null stdio-redirect case (offset irrelevant). Skips
+if no recorded path.
+
+BUILD: make kernel EXIT 0. Full rebuild EXIT 0 (/tmp/fry1466_build.log).
+
+BOOT (-smp 4, serial /tmp/s_fry1466.log; killed by real pid after result)
+------------------------------------------------------------------------
+- MAIN INFERENCE STILL CLEAN: subtype:success, "Hello from TaterTOS —
+  where potatoes power your operating system...".
+- stack smashing = 0, chdir nr=80 = 0 (prior fixes hold).
+- BUT spawn STILL EBADF (5x dup2 nr=33 rc=-9), child _exit 127. So the
+  FD_FILE source wasn't the (only) problem.
+
+ROOT NOW PINPOINTED (fixed in fry1467)
+------------------------------------------------------------------------
+The dup2 handler rejected the TARGET: "if (newfd < 3) return -EBADF" —
+i.e. dup2(x, 0/1/2) was refused. But redirecting child stdio onto 0/1/2
+is the ENTIRE purpose of posix_spawn. Additionally fds 0-2 are modeled as
+the implicit kernel console with no table entry: fd_install/fd_release
+guarded fd<3, and lx_write_fd sent fd 1/2 UNCONDITIONALLY to console
+(ignoring any override). => fry1467 makes 0-2 support a redirect override
+(install/release/read/write/close/dup2), with console/EOF fallback when
+no override is installed (so claude's own stdout path is unchanged).
+
+NOTE: FD_FILE copy here is still REQUIRED — dup2(/dev/null,0) needs the
+source present in the child. Groundwork, not wasted.

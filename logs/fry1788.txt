@@ -1,0 +1,35 @@
+fry1788 — agent reaches main(); blocker = per-thread TLS (thread-state attach) — 2026-06-26
+==========================================================================
+WHAT: With unicodedata/_csv/_statistics/_asyncio added (fry1787), the real hermes
+CLI now imports the ENTIRE agent with NO missing-module crashes, reaches main(),
+then CPython fatally aborts. Root-caused to a per-thread TLS bug. VERIFIED on
+screen (shot1788c: `hermes` -> HERMESSTDOUT-OK -> back to `/>`).
+
+PROGRESS: zero tracebacks now — every import resolves (the _ssl module + all the
+stdlib C modules are in). The agent's main() runs.
+
+THE CRASH (serial /tmp/fry1788_serial.log:3579):
+  HERMESMAIN argc=2 /nvme/opt/hermes-agent/hermes
+  Fatal Python error: _PyThreadState_Attach: non-NULL old thread state
+  Python runtime state: initialized
+  !EXC vec=0E err=04 RIP=0x4E5C79 CR2=0x27   (secondary #PF)
+  RIP 0x4E5C79 is inside fatal_error() (0x4e5b50) -> the #PF is a CASCADE while
+  CPython aborts (deref ~null+0x27 dumping thread info). PRIMARY fault is the
+  thread-state attach.
+
+ROOT CAUSE (diagnosed): _PyThreadState_Attach reads the current tstate from TLS;
+on a newly-spawned thread it must be NULL, but it returns the MAIN thread's
+tstate. => pthread_create on TaterTOS does NOT give each new thread its own TLS
+block / %fs base, so `__thread` vars (incl. CPython's current-tstate
+`_Py_tss_tstate`/current_fast) are SHARED across threads. The first thread the
+async agent / _asyncio spawns collides with the main thread's state. The
+fry1701-1706 ELF-TLS work set up variant-II TLS for the MAIN thread only; spawned
+threads need the same (own TLS image + TCB + user_fs_base).
+
+SECONDARY NOTE: the full-agent import is SLOW (~7.7M ticks before the crash) — the
+eager-commit paging at this import scale. Separate concern; revisit after threads.
+
+NEXT (fry1789): confirm in src/user/libc/pthread.c + the kernel thread-create
+path whether pthread_create allocates a per-thread TLS block and sets the new
+thread's fs_base; implement per-thread variant-II TLS if not. This is the real
+frontier blocker for the async agent.
